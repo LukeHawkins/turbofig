@@ -8,8 +8,8 @@
    Phase 1 result: CONFIRMED. `initialize` returns `mcp-session-id`; subsequent calls reuse it; responses are SSE `data:` lines. A Rust integration test (`daemon/tests/transport.rs`) and a curl script (`scripts/handshake.sh`) both pass. The rmcp #1108 risk is retired.
    Fallback (retained, not needed now): if a future rmcp release breaks `legacy_session_mode`, hand-roll the transport with axum. Add a POST `/mcp` handler that assigns an `mcp-session-id` on `initialize`, stores session state in an in-memory map, and streams SSE `data:` responses. The WebSocket connection to the plugin stays on axum regardless. This is a drop-in replacement because the daemon already owns the axum `Router`.
 
-3. **Ports are a product contract: default HTTP 3846, WS 3847, env-overridable (TURBOFIG_MCP_PORT / TURBOFIG_WS_PORT).**
-   Why: intentionally overrides ai-boilerplate's "randomised high ports" rule because 3846 is a drop-in for existing curl-based skills.
+3. **Ports are a product contract: default HTTP 18846, WS 18847, env-overridable (TURBOFIG_MCP_PORT / TURBOFIG_WS_PORT).**
+   Why: obscure ports below 32768 avoid conflicts. The OS auto-assigns ephemeral ports at or above 32768 (Linux default 32768-60999, macOS 49152+), so a fixed server port there can collide. 18846 and 18847 sit below that floor, so the OS never auto-assigns them, and they are uncommon dev ports. A user with a conflict overrides both with one env var. This supersedes the earlier 3846/3847 choice; curl skills that targeted 3846 must update to 18846 (see Phase 10).
 
 4. **eval blocks a Figma Community store listing; ship as dev-install.**
    Why: review rejects arbitrary server-run code. Keep the plugin hybrid-ready: a {type} dispatch table so a community-safe command vocabulary build is additive later with no rework.

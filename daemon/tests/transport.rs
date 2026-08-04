@@ -1,7 +1,7 @@
 //! Integration tests for the MCP streamable-HTTP transport.
 //!
 //! Each test binds an ephemeral port, starts the real daemon router, and
-//! exercises the wire contract with a plain HTTP client.  No port 3846 is
+//! exercises the wire contract with a plain HTTP client.  No port 18846 is
 //! ever hardcoded here.
 
 use serde_json::{json, Value};
@@ -67,7 +67,7 @@ fn parse_sse_data(body: &str) -> Value {
             continue;
         };
         if data.is_empty() {
-            // Skip priming events — the server sends empty data lines to
+            // Skip priming events: the server sends empty data lines to
             // prime the SSE stream before the first real event.
             continue;
         }
@@ -203,7 +203,7 @@ async fn test_mcp_handshake_and_turbofig_status() {
         "turbofig_status must return {{\"ok\":true}}"
     );
 
-    // ── step 4: statefulness — no session ID must be rejected ─────────────────
+    // ── step 4: statefulness: no session ID must be rejected ──────────────────
     // With legacy_session_mode: true, every non-initialize request must carry
     // a valid mcp-session-id.  A missing header causes the server to treat the
     // request as a new session attempt; only initialize is accepted in that

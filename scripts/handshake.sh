@@ -14,8 +14,8 @@
 set -euo pipefail
 
 # Use a dedicated test port so the script never clashes with a real daemon on
-# the default 3846. Override with TURBOFIG_MCP_PORT if needed.
-PORT="${TURBOFIG_MCP_PORT:-38460}"
+# the default 18846. Override with TURBOFIG_MCP_PORT if needed.
+PORT="${TURBOFIG_MCP_PORT:-18860}"
 BASE="http://127.0.0.1:${PORT}/mcp"
 ACCEPT="application/json, text/event-stream"
 

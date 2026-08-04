@@ -6,8 +6,8 @@
   "ui": "src/ui.html",
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["ws://localhost:3847"],
+    "allowedDomains": ["ws://localhost:18847"],
     "reasoning": "Connects to the local Turbofig daemon",
-    "devAllowedDomains": ["ws://localhost:3847"]
+    "devAllowedDomains": ["ws://localhost:18847"]
   }
 }

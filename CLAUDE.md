@@ -10,7 +10,7 @@ The always-on Figma design agent: blazing fast, token-light, never re-pair a plu
 
 ```
 Claude/AI  --curl or native MCP-->  Rust daemon  --WebSocket-->  Figma plugin  -->  Figma
-             POST /mcp :3846                      :3847            (eval)
+             POST /mcp :18846                     :18847           (eval)
 ```
 
 - **Daemon (Rust, `daemon/`):** serves the MCP HTTP endpoint (`rmcp`, streamable-http, `legacy_session_mode`, stateful `mcp-session-id`) AND a WebSocket server for the plugin, in one always-on process. Routes each MCP session to the right file by `fileKey`.
@@ -41,7 +41,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 - **Rust** (daemon): Cargo, clippy, rustfmt. Crates: `rmcp`, `axum`, `tokio`, `tokio-tungstenite`, `serde_json`, `image`, `rustls`.
 - **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
-- **Ports** are a product contract, not dev servers: HTTP `3846`, WS `3847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`).
+- **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`).
 
 ## Branches (read on demand)
 

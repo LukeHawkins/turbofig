@@ -9,14 +9,14 @@ use rmcp::{
 use serde_json::json;
 
 /// Parse a port number from an optional string value.
-/// Returns 3846 when the input is None, cannot be parsed as u16, or is zero.
+/// Returns 18846 when the input is None, cannot be parsed as u16, or is zero.
 fn port_from_str(s: Option<&str>) -> u16 {
     s.and_then(|v| v.parse::<u16>().ok())
         .filter(|&p| p != 0)
-        .unwrap_or(3846)
+        .unwrap_or(18846)
 }
 
-/// Read the MCP port from TURBOFIG_MCP_PORT. Default is 3846.
+/// Read the MCP port from TURBOFIG_MCP_PORT. Default is 18846.
 pub fn port_from_env() -> u16 {
     port_from_str(std::env::var("TURBOFIG_MCP_PORT").ok().as_deref())
 }
@@ -24,7 +24,7 @@ pub fn port_from_env() -> u16 {
 /// MCP handler that exposes the turbofig_status tool.
 ///
 /// The #[tool_router] macro generates a static tool_router() constructor.
-/// No instance field is needed: #[tool_handler] calls Self::tool_router()
+/// This handler needs no instance field: #[tool_handler] calls Self::tool_router()
 /// on each dispatch.
 #[derive(Clone)]
 pub struct StatusHandler;
@@ -83,8 +83,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn port_defaults_to_3846_when_unset() {
-        assert_eq!(port_from_str(None), 3846);
+    fn port_defaults_to_18846_when_unset() {
+        assert_eq!(port_from_str(None), 18846);
     }
 
     #[test]
@@ -94,13 +94,13 @@ mod tests {
 
     #[test]
     fn port_falls_back_on_garbage_input() {
-        assert_eq!(port_from_str(Some("notaport")), 3846);
+        assert_eq!(port_from_str(Some("notaport")), 18846);
     }
 
     #[test]
     fn port_rejects_zero_and_falls_back() {
         // Port 0 means an OS-assigned ephemeral port, never a meaningful daemon port.
-        // Reject it and fall back to 3846.
-        assert_eq!(port_from_str(Some("0")), 3846);
+        // Reject it and fall back to 18846.
+        assert_eq!(port_from_str(Some("0")), 18846);
     }
 }
