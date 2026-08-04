@@ -30,6 +30,9 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+      - name: Run curl handshake script
+        run: bash scripts/handshake.sh
+
   typescript:
     name: TypeScript
     runs-on: ubuntu-latest
@@ -47,3 +50,6 @@ jobs:
 
       - name: Lint
         run: bunx @biomejs/biome check .
+
+      - name: Test
+        run: bun test --pass-with-no-tests
