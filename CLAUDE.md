@@ -1,0 +1,52 @@
+# Turbofig
+
+The always-on Figma design agent: blazing fast, token-light, never re-pair a plugin. One Rust daemon + a thin eval-first Figma plugin. An AI acts as a senior designer that builds real Figma work from a brief or a moodboard.
+
+**This file is the hub.** Read a branch only when the task needs it. Build order and tasks live in `PLAN.md`. The *why* behind choices lives in `DECISIONS.md`.
+
+---
+
+## Architecture (one screen)
+
+```
+Claude/AI  --curl or native MCP-->  Rust daemon  --WebSocket-->  Figma plugin  -->  Figma
+             POST /mcp :3846                      :3847            (eval)
+```
+
+- **Daemon (Rust, `daemon/`):** serves the MCP HTTP endpoint (`rmcp`, streamable-http, `legacy_session_mode`, stateful `mcp-session-id`) AND a WebSocket server for the plugin, in one always-on process. Routes each MCP session to the right file by `fileKey`.
+- **Plugin (TypeScript, `plugin/`):** thin. UI iframe holds the WebSocket + infinite-backoff reconnect; main thread runs the Figma API. Dispatches on a `{type}` message: `EXECUTE` (eval), `GET_SELECTION`, `SCREENSHOT`, `FILE_INFO`.
+- **Helpers (JS, `helpers/`):** compact craft library injected into the eval context (auto-layout, decks, components, variables, perf rules).
+- **Skills (`skills/`):** the design-worker recipes + the generic taste baseline. User brand packs load on top.
+
+Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. All capability flows through `execute`. Never grow this.
+
+## Always-on rules
+
+- **STE.** Simplified Technical English in all prose. Active voice, short sentences, one idea each. No em dashes. No hedging.
+- **Commits.** One commit per PLAN.md item. Imperative message, no `feat:`/`chore:` prefixes. **Never** add Co-Authored-By, Signed-off-by, or any AI attribution. Author is the git config only (Luke Hawkins <hi@lukehawkins.eu>).
+- **Verify before commit.** Rust: `cargo build` + `cargo test` + `cargo clippy`. TS: `bun run typecheck` + `bun test`. The `lint` script must pass.
+- **Tests with every change.** Every item that adds behaviour ships with tests in the same commit. Tests are never deferred to a later phase. Untested behaviour is not done.
+- **Read before you write.** Always read a file before modifying it.
+- **Keep this file current.** Any commit that changes architecture, ports, the tool surface, files, or data flow updates this file in the same commit.
+- **Subagents, parallel by default.** `/phase` delegates each item to a Sonnet subagent; the main session orchestrates, verifies, and commits. Dispatch independent items as parallel workers in one batch; go sequential only for real dependencies or shared files. Use Haiku/Explore for search. Reserve Opus for the transport/routing design. Give each worker only the context it needs (paths, not file contents).
+
+## Token discipline (the product's whole point)
+
+- Shaped returns: ids-first, opt-in `fields`, `depth` limit. Never dump a full node tree by default.
+- Screenshots: downscaled + file-mode by default; inline high-res only on request; milestone-only, never per-step.
+- Subagent firewall: anything that looks at Figma runs in a disposable subagent; images never reach the main context.
+- Batch: many node ops per `execute` call.
+
+## Tooling
+
+- **Rust** (daemon): Cargo, clippy, rustfmt. Crates: `rmcp`, `axum`, `tokio`, `tokio-tungstenite`, `serde_json`, `image`, `rustls`.
+- **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
+- **Ports** are a product contract, not dev servers: HTTP `3846`, WS `3847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`).
+
+## Branches (read on demand)
+
+- `PLAN.md` — phased build plan. Run with `/phase N`.
+- `DECISIONS.md` — the why behind big choices (eval-first, Rust, ports, distribution).
+- `ARCHITECTURE.md` — deeper architecture + data flow.
+- `STACK.md` — the exact stack + versions.
+- `.claude/commands/` — `phase`, `plan`, `kickoff`, `audit`, `harden`, `goodbye`, `design`.

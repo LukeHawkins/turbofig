@@ -1,0 +1,13 @@
+{
+  "name": "Turbofig",
+  "id": "PLACEHOLDER_ID",
+  "api": "1.0.0",
+  "main": "src/code.ts",
+  "ui": "src/ui.html",
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["ws://localhost:3847"],
+    "reasoning": "Connects to the local Turbofig daemon",
+    "devAllowedDomains": ["ws://localhost:3847"]
+  }
+}

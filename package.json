@@ -1,0 +1,21 @@
+{
+  "name": "turbofig-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "plugin"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p plugin/tsconfig.json --noEmit",
+    "test": "bun test",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "build": "cargo build --release"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4",
+    "typescript": "^5.6"
+  }
+}
