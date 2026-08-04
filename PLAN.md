@@ -57,10 +57,10 @@ Goal: a green, committable skeleton. Rust daemon crate + TS plugin package in on
 
 Goal: prove the exact curl contract works in Rust before building on it. Kills the one rmcp unknown (#1108).
 
-- [ ] Daemon serves `POST /mcp` via `rmcp` streamable-http + `legacy_session_mode`
-- [ ] `initialize` returns an `mcp-session-id` response header; subsequent calls require + reuse it (stateful)
-- [ ] Responses are SSE `data:` lines with body `{result:{content:[{text}]}}`
-- [ ] One tool `turbofig_status` returns `{ok:true}` via `tools/call`
+- [x] Daemon serves `POST /mcp` via `rmcp` streamable-http + `legacy_session_mode`
+- [x] `initialize` returns an `mcp-session-id` response header; subsequent calls require + reuse it (stateful)
+- [x] Responses are SSE `data:` lines with body `{result:{content:[{text}]}}`
+- [x] One tool `turbofig_status` returns `{ok:true}` via `tools/call`
 - [ ] Test script reproduces the exact curl handshake from the current skills and passes
 - [ ] Fallback documented: if `legacy_session_mode` fails, switch to hand-rolled axum SSE (record in DECISIONS.md)
 
