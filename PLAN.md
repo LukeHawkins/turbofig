@@ -68,7 +68,7 @@ Goal: prove the exact curl contract works in Rust before building on it. Kills t
 
 Goal: end the handshake permanently and make the daemon independent of any client session. It holds the WebSocket beside HTTP, re-pairs on its own, and survives client teardown and its own crashes.
 
-- [ ] Daemon hosts a WebSocket server on `TURBOFIG_WS_PORT` beside the HTTP MCP endpoint (two `tokio::spawn`s, one process)
+- [x] Daemon hosts a WebSocket server on `TURBOFIG_WS_PORT` beside the HTTP MCP endpoint (two `tokio::spawn`s, one process)
 - [ ] Daemon runs as an independent service decoupled from any Claude session; a client disconnect or session end never stops it (the direct fix for the current supergateway SIGTERM-mid-job crash)
 - [x] launchd `KeepAlive` restarts the daemon automatically on crash
 - [ ] Daemon-side request timeout: if the plugin does not reply within N seconds, return a clean error, never hang the call
