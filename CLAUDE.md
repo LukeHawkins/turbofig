@@ -28,7 +28,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 - **Tests with every change.** Every item that adds behaviour ships with tests in the same commit. Tests are never deferred to a later phase. Untested behaviour is not done.
 - **Read before you write.** Always read a file before modifying it.
 - **Keep this file current.** Any commit that changes architecture, ports, the tool surface, files, or data flow updates this file in the same commit.
-- **Subagents, parallel by default.** `/phase` delegates each item to a Sonnet subagent; the main session orchestrates, verifies, and commits. Dispatch independent items as parallel workers in one batch; go sequential only for real dependencies or shared files. Use Haiku/Explore for search. Reserve Opus for the transport/routing design. Give each worker only the context it needs (paths, not file contents).
+- **Subagents, parallel by default.** Run the top-level session on **Opus** as the orchestrator: it reasons, plans, verifies, and commits. `/phase` delegates each item to a **Sonnet** subagent for the bulk implementation. Dispatch independent items as parallel workers in one batch; go sequential only for real dependencies or shared files. Use Haiku/Explore for search. Reserve Opus itself only for the transport/session and routing design (Phase 1 and Phase 4 tricky bits). Give each worker only the context it needs (paths, not file contents).
 
 ## Token discipline (the product's whole point)
 
