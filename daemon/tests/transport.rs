@@ -122,8 +122,13 @@ async fn test_mcp_handshake_and_turbofig_status() {
         .to_owned();
     assert!(!session_id.is_empty(), "mcp-session-id must not be empty");
 
-    // Drain the response body before reusing the connection.
-    let _init_body = init_res.text().await.expect("read init body");
+    // Parse the init body and assert the server advertises the tools capability.
+    let init_body = init_res.text().await.expect("read init body");
+    let init_msg = parse_sse_data(&init_body);
+    assert!(
+        !init_msg["result"]["capabilities"]["tools"].is_null(),
+        "initialize result must advertise the tools capability, got: {init_msg}"
+    );
 
     // ── step 2: notifications/initialized ────────────────────────────────────
     // The server acknowledges the handshake.  A 200 or 202 is both acceptable.
@@ -223,6 +228,112 @@ async fn test_mcp_handshake_and_turbofig_status() {
         !no_session_res.status().is_success(),
         "tools/call without mcp-session-id must be rejected, got HTTP {}",
         no_session_res.status()
+    );
+}
+
+/// tools/list must return exactly one tool named turbofig_status.
+///
+/// This guards the locked 4-tool surface defined in CLAUDE.md.
+/// The surface currently has one implemented tool; the count must not grow
+/// without a deliberate PLAN.md update.
+#[tokio::test]
+async fn test_tools_list_has_exactly_turbofig_status() {
+    let base_url = start_server().await;
+    let client = make_client();
+
+    // Step 1: initialize to get a session ID.
+    let init_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+        None,
+    )
+    .await;
+
+    assert!(
+        init_res.status().is_success(),
+        "initialize should succeed, got HTTP {}",
+        init_res.status()
+    );
+
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must carry mcp-session-id header")
+        .to_str()
+        .expect("mcp-session-id header is valid UTF-8")
+        .to_owned();
+
+    let init_body = init_res.text().await.expect("read init body");
+    let _ = parse_sse_data(&init_body); // drain SSE
+
+    // Step 2: notifications/initialized.
+    let notif_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+        Some(&session_id),
+    )
+    .await;
+    assert!(
+        notif_res.status().is_success(),
+        "notifications/initialized should succeed, got HTTP {}",
+        notif_res.status()
+    );
+    let _ = notif_res.text().await.expect("drain notif body");
+
+    // Step 3: tools/list — must return exactly one tool named turbofig_status.
+    let list_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+        Some(&session_id),
+    )
+    .await;
+
+    assert!(
+        list_res.status().is_success(),
+        "tools/list should succeed, got HTTP {}",
+        list_res.status()
+    );
+
+    let list_body = list_res.text().await.expect("read tools/list body");
+    let msg = parse_sse_data(&list_body);
+    let tools = &msg["result"]["tools"];
+    assert!(
+        tools.is_array(),
+        "result.tools must be an array, got: {msg}"
+    );
+    let tools_arr = tools.as_array().unwrap();
+    assert_eq!(
+        tools_arr.len(),
+        1,
+        "tool surface must be exactly 1 tool, got {}: {:?}",
+        tools_arr.len(),
+        tools_arr
+    );
+    assert_eq!(
+        tools_arr[0]["name"], "turbofig_status",
+        "the only tool must be turbofig_status, got: {}",
+        tools_arr[0]["name"]
     );
 }
 
