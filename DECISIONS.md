@@ -1,10 +1,10 @@
 # Decisions
 
-1. **Eval-first, ~4 tools (turbofig_execute / get_selection / screenshot / status).**
+1. **Eval-first, ~4 tools (turbofig_execute / turbofig_get_selection / turbofig_screenshot / turbofig_status).**
    Why: token economy (~96% less tool-def load), resilience (new Figma APIs work same-day), full capability through one tool. Baseline competitor figma-console-mcp already has eval + multi-file; we win on DX, performance, Rust single-binary, and true always-on.
 
 2. **Rust daemon via rmcp 3.1.0 (transport-streamable-http-server) + legacy_session_mode.**
-   Why: client uses 2025-03-26 spec with mcp-session-id; rmcp defaults to the session-less 2026-07-28 spec. Watch rmcp issue #1108; prove the initialize + mcp-session-id round-trip on day one. Fallback: hand-roll with axum SSE + WS.
+   Why: client uses 2025-03-26 spec with mcp-session-id; rmcp defaults to the session-less 2026-07-28 spec. Watch rmcp issue #1108 (https://github.com/modelcontextprotocol/rust-sdk/issues/1108, confirm exact issue); prove the initialize + mcp-session-id round-trip on day one. Fallback: hand-roll with axum SSE + WS.
 
 3. **Ports are a product contract: default HTTP 3846, WS 3847, env-overridable (TURBOFIG_MCP_PORT / TURBOFIG_WS_PORT).**
    Why: intentionally overrides ai-boilerplate's "randomised high ports" rule because 3846 is a drop-in for existing curl-based skills.
@@ -23,3 +23,21 @@
 
 8. **Multi-file: true routing by fileKey (N independent sessions <-> N files), stronger than console-mcp's broadcast execute_across_files.**
    Why: per-session isolation is a hard requirement for concurrent multi-file design work.
+
+9. **Ship gate placement: Phase 5 is a provisional baseline only. The binding "far better than console-mcp" gate runs after Phase 7.**
+   Why: the token and speed wins come from the helper library, the design-worker orchestration, and the subagent firewall added in Phases 6 and 7. Gating at Phase 5 would measure the system without its main levers.
+
+10. **Context firewall is enforced, not just convention. Inline screenshots need an explicit opt-in and warn past a budget. File-mode plus subagent-read is the default path. Large reads without depth or fields are capped or warned.**
+    Why: for a redistributed product the token promise cannot depend on client prompt discipline alone.
+
+11. **Brand packs bind per session, keyed like the routing registry.**
+    Why: concurrent multi-file sessions may need different brands at once, so a single global active pack would break isolation.
+
+12. **Daemon lifecycle: launchd KeepAlive restarts the daemon on crash. Every call has a daemon-side timeout so a silent plugin never hangs a request. On restart the in-memory session registry is lost, so clients get a clear reinitialize signal rather than a silent error.**
+    Why: always-on reliability requires automatic restart and clean failure signalling.
+
+13. **eval security for redistribution: the daemon binds to 127.0.0.1 only. eval has resource guards beyond the timeout (runaway loop and memory). The prompt-injection and file-exfiltration risk is documented, because arbitrary eval on a user's open file is powerful. Acceptable for local use, called out for redistributed use.**
+    Why: local-only binding limits the attack surface; documented risk keeps redistributors informed.
+
+14. **Long-job durability: the daemon runs decoupled from any client session, so a session end or client crash never kills an in-flight job. Long design jobs checkpoint the plan spec and per-section progress to disk, and resume from the last completed section. Operations are idempotent, keyed by stable node id, so a resume never duplicates.**
+    Why: the current supergateway stack dies with the session (SIGTERM), leaving big jobs half done. Decoupling plus checkpoint and resume lets a huge job survive a restart with completed work intact.
