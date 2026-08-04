@@ -12,10 +12,10 @@ name = "turbofig_mcp"
 path = "src/lib.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 rmcp = { version = "3.1.0", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = "0.8"
 serde_json = "1"
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json"] }
