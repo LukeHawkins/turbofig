@@ -21,6 +21,44 @@
   </head>
   <body>
     <h1>Turbofig</h1>
-    <p id="status">Status: disconnected</p>
+    <p id="status">Status: connecting</p>
+    <script>
+      (function () {
+        var WS_URL = "ws://localhost:18847";
+        var statusEl = document.getElementById("status");
+
+        function setStatus(text) {
+          if (statusEl) statusEl.textContent = "Status: " + text;
+        }
+
+        setStatus("connecting");
+        var ws = new WebSocket(WS_URL);
+
+        ws.onopen = function () {
+          setStatus("connected");
+        };
+
+        ws.onclose = function () {
+          setStatus("disconnected");
+        };
+
+        ws.onerror = function () {
+          setStatus("disconnected");
+        };
+
+        /* Forward WS messages to the main thread. */
+        ws.onmessage = function (event) {
+          parent.postMessage({ pluginMessage: event.data }, "*");
+        };
+
+        /* Forward main-thread messages over the WS. */
+        window.onmessage = function (event) {
+          var msg = event.data && event.data.pluginMessage;
+          if (msg !== undefined && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(msg));
+          }
+        };
+      })();
+    </script>
   </body>
 </html>

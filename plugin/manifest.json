@@ -2,7 +2,7 @@
   "name": "Turbofig",
   "id": "turbofig-dev",
   "api": "1.0.0",
-  "main": "src/code.ts",
+  "main": "dist/code.js",
   "ui": "src/ui.html",
   "documentAccess": "dynamic-page",
   "networkAccess": {

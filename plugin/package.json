@@ -2,6 +2,9 @@
   "name": "turbofig-plugin",
   "version": "0.1.0",
   "private": true,
+  "scripts": {
+    "build": "bun build src/code.ts --outfile dist/code.js --target=browser"
+  },
   "devDependencies": {
     "@figma/plugin-typings": "*"
   }

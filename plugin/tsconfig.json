@@ -7,5 +7,6 @@
     "lib": ["es2020"],
     "typeRoots": ["node_modules/@types", "node_modules/@figma"]
   },
-  "include": ["src/**/*", "node_modules/@figma/plugin-typings"]
+  "include": ["src/**/*", "node_modules/@figma/plugin-typings"],
+  "exclude": ["src/**/*.test.ts"]
 }
