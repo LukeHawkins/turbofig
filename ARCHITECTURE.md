@@ -5,11 +5,11 @@
 ```
 Claude / AI client
     |
-    | HTTP POST /mcp  (port 3846, MCP streamable-http, SSE response)
+    | HTTP POST /mcp  (port 18846, MCP streamable-http, SSE response)
     |
 Rust daemon  (daemon/)
     |
-    | WebSocket  (port 3847)
+    | WebSocket  (port 18847)
     |
 Figma plugin main thread  (plugin/src/code.ts)
     |
@@ -24,10 +24,10 @@ Figma document
 
 ## Daemon
 
-The daemon is a single Rust process. It runs two servers concurrently via `tokio::spawn`:
+The daemon is a single Rust process. It runs the MCP HTTP server today. The WebSocket server arrives in Phase 2.
 
-- **MCP HTTP server** (port 3846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful; the daemon maps the session ID to a plugin connection by `fileKey`.
-- **WebSocket server** (port 3847): holds persistent connections from the Figma plugin. Each connection carries a `fileKey` sent in a `FILE_INFO` message on connect. The daemon routes tool calls to the right plugin connection.
+- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful; the daemon maps the session ID to a plugin connection by `fileKey`.
+- **WebSocket server** (port 18847, Phase 2, not yet built): holds persistent connections from the Figma plugin. Each connection carries a `fileKey` sent in a `FILE_INFO` message on connect. The daemon routes tool calls to the right plugin connection.
 
 The daemon is always-on. It starts at login via a launchd service (Phase 2) and never exits on reconnect.
 
@@ -49,7 +49,7 @@ The plugin dispatches on a `{type}` field in each message:
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
-## Routing registry
+## Routing registry (Phase 4, not yet built)
 
 The daemon keeps a session registry keyed by two dimensions:
 
@@ -72,7 +72,7 @@ Both ports are product contracts, not dev-server conventions. See `DECISIONS.md`
 
 | Port | Protocol | Purpose |
 |---|---|---|
-| 3846 | HTTP (SSE) | MCP endpoint for Claude / AI clients |
-| 3847 | WebSocket | Daemon-to-plugin persistent connection |
+| 18846 | HTTP (SSE) | MCP endpoint for Claude / AI clients |
+| 18847 | WebSocket | Daemon-to-plugin persistent connection |
 
 Both are overridable via `TURBOFIG_MCP_PORT` and `TURBOFIG_WS_PORT` environment variables.
