@@ -27,37 +27,87 @@
         var WS_URL = "ws://localhost:18847";
         var statusEl = document.getElementById("status");
 
+        /** Latest FILE_INFO received from the main thread. Sent to daemon on each connect. */
+        var latestFileInfo = null;
+
+        /** Current reconnect attempt count. Reset to 0 on a successful open. */
+        var attempt = 0;
+
+        /** Active WebSocket instance. */
+        var ws = null;
+
         function setStatus(text) {
           if (statusEl) statusEl.textContent = "Status: " + text;
         }
 
-        setStatus("connecting");
-        var ws = new WebSocket(WS_URL);
+        /**
+         * Exponential backoff capped at 30s. Mirrors protocol.ts backoffDelayMs.
+         * Base 500ms, factor 2.
+         */
+        function backoffDelayMs(n) {
+          return Math.min(500 * Math.pow(2, n < 0 ? 0 : n), 30000);
+        }
 
-        ws.onopen = function () {
-          setStatus("connected");
-        };
+        function connect() {
+          setStatus("connecting");
+          ws = new WebSocket(WS_URL);
 
-        ws.onclose = function () {
-          setStatus("disconnected");
-        };
+          ws.onopen = function () {
+            attempt = 0;
+            setStatus("connected");
+            /* Re-identify the file to the daemon on every successful connect. */
+            if (latestFileInfo) {
+              ws.send(JSON.stringify(latestFileInfo));
+            }
+          };
 
-        ws.onerror = function () {
-          setStatus("disconnected");
-        };
+          ws.onclose = function () {
+            scheduleReconnect();
+          };
 
-        /* Forward WS messages to the main thread. */
-        ws.onmessage = function (event) {
-          parent.postMessage({ pluginMessage: event.data }, "*");
-        };
+          ws.onerror = function () {
+            /* onclose fires after onerror; let onclose drive the reconnect. */
+            setStatus("disconnected");
+          };
 
-        /* Forward main-thread messages over the WS. */
+          /* Forward WS messages to the main thread. */
+          ws.onmessage = function (event) {
+            var parsed;
+            try {
+              parsed = JSON.parse(event.data);
+            } catch (_) {
+              return;
+            }
+            parent.postMessage({ pluginMessage: parsed }, "*");
+          };
+        }
+
+        function scheduleReconnect() {
+          var delay = backoffDelayMs(attempt);
+          attempt += 1;
+          setStatus("reconnecting");
+          setTimeout(connect, delay);
+        }
+
+        /* Forward main-thread messages over the WS. FILE_INFO is stored, not forwarded immediately. */
         window.onmessage = function (event) {
           var msg = event.data && event.data.pluginMessage;
-          if (msg !== undefined && ws.readyState === WebSocket.OPEN) {
+          if (!msg) return;
+          if (msg.type === "FILE_INFO") {
+            latestFileInfo = msg;
+            /* If already connected, send FILE_INFO now so it reaches the daemon. */
+            if (ws && ws.readyState === 1 /* OPEN */) {
+              ws.send(JSON.stringify(msg));
+            }
+            return;
+          }
+          /* Relay RESULT and all other main-thread messages over the WS. */
+          if (ws && ws.readyState === 1 /* OPEN */) {
             ws.send(JSON.stringify(msg));
           }
         };
+
+        connect();
       })();
     </script>
   </body>

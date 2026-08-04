@@ -10,16 +10,19 @@ export interface FileInfoMessage {
   name: string;
 }
 
-/** Sent by the daemon to the plugin to request a status ping. */
+/** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */
 export interface StatusMessage {
   type: "STATUS";
-  requestId: string;
+  requestId: number;
 }
 
-/** Sent by the plugin to the daemon in reply to a command. */
+/** Sent by the plugin to the daemon in reply to a command. requestId echoes the request. */
 export interface ResultMessage {
   type: "RESULT";
-  requestId: string;
+  requestId: number;
+  ok?: boolean;
+  fileKey?: string;
+  name?: string;
 }
 
 /** Union of all messages on the daemon <-> plugin WebSocket. */
@@ -37,10 +40,18 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
     case "FILE_INFO":
       return typeof msg.fileKey === "string" && typeof msg.name === "string";
     case "STATUS":
-      return typeof msg.requestId === "string";
+      return typeof msg.requestId === "number";
     case "RESULT":
-      return typeof msg.requestId === "string";
+      return typeof msg.requestId === "number";
     default:
       return false;
   }
+}
+
+/**
+ * Returns the reconnect delay in milliseconds for the given attempt count.
+ * Base: 500ms. Factor: 2 (exponential). Cap: 30000ms. Attempt 0 returns the base.
+ */
+export function backoffDelayMs(attempt: number): number {
+  return Math.min(500 * 2 ** Math.max(0, attempt), 30000);
 }
