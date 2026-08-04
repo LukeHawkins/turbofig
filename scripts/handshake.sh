@@ -27,6 +27,16 @@ fail() {
   exit 1
 }
 
+# Create the headers temp file early so cleanup can always remove it.
+HEADERS="$(mktemp)"
+
+cleanup() {
+  kill "${DAEMON_PID:-}" 2>/dev/null || true
+  wait "${DAEMON_PID:-}" 2>/dev/null || true
+  [ -n "${HEADERS:-}" ] && rm -f "${HEADERS}"
+}
+trap cleanup EXIT
+
 # Build the daemon if the binary is missing.
 if [ ! -x "${BIN}" ]; then
   echo "Building the daemon..."
@@ -37,23 +47,19 @@ fi
 TURBOFIG_MCP_PORT="${PORT}" "${BIN}" &
 DAEMON_PID=$!
 
-# Always stop the daemon on exit.
-cleanup() {
-  kill "${DAEMON_PID}" 2>/dev/null || true
-  wait "${DAEMON_PID}" 2>/dev/null || true
-}
-trap cleanup EXIT
-
 # Wait for the daemon to accept connections (up to 5 seconds).
+READY=0
 for _ in $(seq 1 50); do
   if curl -s -o /dev/null "http://127.0.0.1:${PORT}/mcp" 2>/dev/null; then
+    READY=1
     break
   fi
   sleep 0.1
 done
 
-HEADERS="$(mktemp)"
-trap 'rm -f "${HEADERS}"; cleanup' EXIT
+if [ "${READY}" -eq 0 ]; then
+  fail "daemon did not become ready within 5 seconds"
+fi
 
 # Step 1: initialize. Capture the response headers to read mcp-session-id.
 INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"curl-skill","version":"0.1.0"},"capabilities":{}}}'
