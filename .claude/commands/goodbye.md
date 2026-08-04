@@ -5,11 +5,11 @@ Instructions:
 1. **Scan the conversation** for decisions, patterns, fixes, or architectural knowledge that a future session would need.
 
 2. **Categorise** each item:
-   - **Architectural or product decision** — append to `DECISIONS.md`
-   - **Architecture or data-flow change** — update `ARCHITECTURE.md`
-   - **Stack change** — update `STACK.md`
-   - **Build rules, commit rules, or always-on conventions** — update `CLAUDE.md`
-   - **Scope or plan change** — update `PLAN.md`
+   - **Architectural or product decision:** append to `DECISIONS.md`
+   - **Architecture or data-flow change:** update `ARCHITECTURE.md`
+   - **Stack change:** update `STACK.md`
+   - **Build rules, commit rules, or always-on conventions:** update `CLAUDE.md`
+   - **Scope or plan change:** update `PLAN.md`
 
 3. **Skip** anything already captured by the code diff itself or already documented.
 
@@ -20,5 +20,5 @@ Instructions:
 Important:
 - Save to **repo files only** (not `~/.claude/` device memory). The goal is full context portability across machines.
 - Do NOT create new standalone files unless the information genuinely fits no existing doc. Prefer appending to existing sections.
-- Do NOT pad entries — if nothing worth saving happened, say "Nothing to persist" and stop.
+- Do NOT pad entries. If nothing worth saving happened, say "Nothing to persist" and stop.
 - This repo does not use a DEVOPS.md or DESIGN.md. Route infrastructure decisions to DECISIONS.md and visual/UI decisions to ARCHITECTURE.md.

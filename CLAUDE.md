@@ -45,8 +45,8 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Branches (read on demand)
 
-- `PLAN.md` — phased build plan. Run with `/phase N`.
-- `DECISIONS.md` — the why behind big choices (eval-first, Rust, ports, distribution).
-- `ARCHITECTURE.md` — deeper architecture + data flow.
-- `STACK.md` — the exact stack + versions.
-- `.claude/commands/` — `phase`, `plan`, `kickoff`, `audit`, `harden`, `goodbye`, `design`.
+- `PLAN.md`: phased build plan. Run with `/phase N`.
+- `DECISIONS.md`: the why behind big choices (eval-first, Rust, ports, distribution).
+- `ARCHITECTURE.md`: deeper architecture and data flow.
+- `STACK.md`: the exact stack and versions.
+- `.claude/commands/`: `phase`, `plan`, `kickoff`, `audit`, `harden`, `goodbye` (and `design`, added in Phase 7).

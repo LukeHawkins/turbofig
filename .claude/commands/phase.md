@@ -17,7 +17,7 @@ Instructions:
       VERIFICATION: <cargo build+test+clippy pass | bun typecheck+test pass | FAILED: reason>
       BLOCKERS: <none | description>
       ```
-   c. **Verify in the main session.** Do not trust the worker's word alone. Run the real gate: Rust items → `cargo build` + `cargo test` + `cargo clippy -- -D warnings`; TS items → `bun run typecheck` + `bun test`; always the `lint` script. Confirm the new tests exist, run, and actually exercise the item's behaviour (not empty stubs). Fix or re-dispatch until it passes. Never mark an item done on an unverified or untested change.
+   c. **Verify in the main session.** Do not trust the worker's word alone. Run the real gate: for Rust items `cargo build` + `cargo test` + `cargo clippy -- -D warnings` + `cargo fmt --check`; for TS items `bun run typecheck` + `bun test`; always the `lint` script. Confirm the new tests exist, run, and actually exercise the item's behaviour (not empty stubs). Fix or re-dispatch until it passes. Never mark an item done on an unverified or untested change.
    d. Stage the relevant files, including PLAN.md with the checkbox flipped to `[x]`.
    e. Commit with a clear imperative message describing what was done. Do NOT add any Co-Authored-By lines or AI attribution.
    f. Announce the item is complete, show the commit hash.
