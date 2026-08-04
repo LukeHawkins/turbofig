@@ -9,9 +9,11 @@ use rmcp::{
 use serde_json::json;
 
 /// Parse a port number from an optional string value.
-/// Returns 3846 when the input is None or cannot be parsed as u16.
+/// Returns 3846 when the input is None, cannot be parsed as u16, or is zero.
 fn port_from_str(s: Option<&str>) -> u16 {
-    s.and_then(|v| v.parse::<u16>().ok()).unwrap_or(3846)
+    s.and_then(|v| v.parse::<u16>().ok())
+        .filter(|&p| p != 0)
+        .unwrap_or(3846)
 }
 
 /// Read the MCP port from TURBOFIG_MCP_PORT. Default is 3846.
@@ -96,11 +98,9 @@ mod tests {
     }
 
     #[test]
-    fn port_falls_back_on_zero() {
-        // 0 is technically valid for TcpListener::bind but not a meaningful
-        // user-configured daemon port.  The current implementation accepts it.
-        // This test documents the actual behaviour rather than asserting a
-        // policy, so future changes are visible.
-        assert_eq!(port_from_str(Some("0")), 0);
+    fn port_rejects_zero_and_falls_back() {
+        // Port 0 means an OS-assigned ephemeral port, never a meaningful daemon port.
+        // Reject it and fall back to 3846.
+        assert_eq!(port_from_str(Some("0")), 3846);
     }
 }
