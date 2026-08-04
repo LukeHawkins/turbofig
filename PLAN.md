@@ -70,7 +70,7 @@ Goal: end the handshake permanently and make the daemon independent of any clien
 
 - [ ] Daemon hosts a WebSocket server on `TURBOFIG_WS_PORT` beside the HTTP MCP endpoint (two `tokio::spawn`s, one process)
 - [ ] Daemon runs as an independent service decoupled from any Claude session; a client disconnect or session end never stops it (the direct fix for the current supergateway SIGTERM-mid-job crash)
-- [ ] launchd `KeepAlive` restarts the daemon automatically on crash
+- [x] launchd `KeepAlive` restarts the daemon automatically on crash
 - [ ] Daemon-side request timeout: if the plugin does not reply within N seconds, return a clean error, never hang the call
 - [ ] Session reinit: on daemon restart the in-memory registry is lost, so a client with a stale `mcp-session-id` gets a clear reinitialize signal, not a silent failure
 - [x] Minimal Figma plugin: `manifest.json` (`documentAccess: dynamic-page`, `api` pinned), WS client
