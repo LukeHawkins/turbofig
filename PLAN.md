@@ -61,7 +61,7 @@ Goal: prove the exact curl contract works in Rust before building on it. Kills t
 - [x] `initialize` returns an `mcp-session-id` response header; subsequent calls require + reuse it (stateful)
 - [x] Responses are SSE `data:` lines with body `{result:{content:[{text}]}}`
 - [x] One tool `turbofig_status` returns `{ok:true}` via `tools/call`
-- [ ] Test script reproduces the exact curl handshake from the current skills and passes
+- [x] Test script reproduces the exact curl handshake from the current skills and passes
 - [ ] Fallback documented: if `legacy_session_mode` fails, switch to hand-rolled axum SSE (record in DECISIONS.md)
 
 ## Phase 2: Always-on, robust daemon + silent plugin pairing (pain #1)
