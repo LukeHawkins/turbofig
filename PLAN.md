@@ -31,6 +31,14 @@ Run a phase with `/phase N`. Each `- [ ]` item is one commit, independently veri
 
 Turbofig serves a user-facing protocol, not a dev server. Default HTTP MCP port **3846** (drop-in for existing curl skills), default WebSocket port **3847**. Both overridable by env (`TURBOFIG_MCP_PORT`, `TURBOFIG_WS_PORT`). See `DECISIONS.md`.
 
+## Testing policy
+
+Tests ship with every item, in the same commit. Never defer tests to a later phase. An item is done only when its new behaviour has a test that runs and passes: Rust via `cargo test` (`#[test]` / `#[tokio::test]`), plugin/JS logic via `bun test`. `/phase` verifies the tests exist and are real (not empty stubs) before it commits. The Phase 12 hardening pass raises coverage; it does not introduce the first tests.
+
+## Commit hygiene (enforced)
+
+Author is the git config only: Luke Hawkins <hi@lukehawkins.eu>. A committed `commit-msg` hook (`.githooks/commit-msg`) rejects any `Co-Authored-By` / `Signed-off-by` trailer. Enable it once per clone: `git config core.hooksPath .githooks`.
+
 ---
 
 ## Phase 0 — Scaffolding & toolchain
