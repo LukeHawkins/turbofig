@@ -1,0 +1,8 @@
+#!/bin/sh
+# Reject AI/tool attribution trailers. Enforces the repo's no-attribution rule.
+if grep -iqE '^(co-authored-by|signed-off-by):' "$1"; then
+  echo "commit-msg hook: Co-Authored-By / Signed-off-by trailers are not allowed in this repo." >&2
+  echo "Remove the trailer and commit again." >&2
+  exit 1
+fi
+exit 0
