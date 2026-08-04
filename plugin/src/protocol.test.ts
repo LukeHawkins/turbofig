@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { backoffDelayMs, isDaemonMessage } from "./protocol";
+import { backoffDelayMs, buildResult, isDaemonMessage } from "./protocol";
 
 describe("isDaemonMessage", () => {
   test("accepts a valid FILE_INFO message", () => {
@@ -50,6 +50,34 @@ describe("isDaemonMessage", () => {
 
   test("rejects an empty object", () => {
     expect(isDaemonMessage({})).toBe(false);
+  });
+});
+
+describe("buildResult", () => {
+  test("echoes the requestId from the STATUS message", () => {
+    const status = { type: "STATUS" as const, requestId: 42 };
+    const result = buildResult(status, "key1", "My File");
+    expect(result.requestId).toBe(42);
+  });
+
+  test("sets type to RESULT and ok to true", () => {
+    const status = { type: "STATUS" as const, requestId: 7 };
+    const result = buildResult(status, "key2", "Other File");
+    expect(result.type).toBe("RESULT");
+    expect(result.ok).toBe(true);
+  });
+
+  test("includes the supplied fileKey and name", () => {
+    const status = { type: "STATUS" as const, requestId: 1 };
+    const result = buildResult(status, "abc", "Design System");
+    expect(result.fileKey).toBe("abc");
+    expect(result.name).toBe("Design System");
+  });
+
+  test("result passes the isDaemonMessage guard", () => {
+    const status = { type: "STATUS" as const, requestId: 99 };
+    const result = buildResult(status, "f", "n");
+    expect(isDaemonMessage(result)).toBe(true);
   });
 });
 

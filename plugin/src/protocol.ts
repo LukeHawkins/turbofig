@@ -49,6 +49,14 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
 }
 
 /**
+ * Builds the RESULT reply for a STATUS request.
+ * Echoes requestId and includes the current file identity.
+ */
+export function buildResult(status: StatusMessage, fileKey: string, name: string): ResultMessage {
+  return { type: "RESULT", requestId: status.requestId, ok: true, fileKey, name };
+}
+
+/**
  * Returns the reconnect delay in milliseconds for the given attempt count.
  * Base: 500ms. Factor: 2 (exponential). Cap: 30000ms. Attempt 0 returns the base.
  */
