@@ -1,12 +1,36 @@
 //! Integration tests for the WebSocket plugin transport.
 //!
 //! Each test binds an ephemeral port, starts serve_ws with a fresh AppState,
-//! and exercises the FILE_INFO registration and socket-close cleanup.
+//! and exercises the FILE_INFO registration, socket-close cleanup, and the
+//! full turbofig_status round-trip through a mock plugin.
 //! No port 18847 is ever hardcoded here.
 
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Find the first non-empty `data:` line in an SSE body and parse it as JSON.
+fn parse_sse_data(body: &str) -> serde_json::Value {
+    for line in body.lines() {
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d
+        } else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        return serde_json::from_str(data)
+            .unwrap_or_else(|e| panic!("SSE data line is not valid JSON ({e}):\n{data}"));
+    }
+    panic!("No non-empty 'data:' line found in SSE body:\n{body}");
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
 
 /// FILE_INFO registers the plugin; dropping the client clears it.
 #[tokio::test]
@@ -105,5 +129,188 @@ async fn test_ws_unknown_message_type_is_ignored() {
         state.plugin_snapshot(),
         Some(("xyz789".to_owned(), "Other File".to_owned())),
         "plugin must register after an unknown message type was received"
+    );
+}
+
+/// turbofig_status routes a STATUS request to the mock plugin and returns
+/// the RESULT as `{"ok":true,"plugin":{"connected":true,"fileKey":...,"name":...}}`.
+#[tokio::test]
+async fn test_turbofig_status_routes_through_plugin() {
+    let state = Arc::new(turbofig_mcp::AppState::new());
+
+    // Bind ephemeral listeners for both servers.
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+
+    // Spawn the WS server.
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    // Spawn the MCP HTTP server.
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_with_state(http_listener, http_state)
+            .await
+            .expect("serve_with_state error in test");
+    });
+
+    // Connect the mock plugin over WebSocket.
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect failed");
+
+    // Register the plugin.
+    let fi = serde_json::json!({
+        "type": "FILE_INFO",
+        "fileKey": "abc123",
+        "name": "My Design File"
+    });
+    plugin_ws
+        .send(TtMessage::Text(fi.to_string()))
+        .await
+        .expect("send FILE_INFO");
+
+    // Allow the WS server to process FILE_INFO.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Spawn the mock plugin responder: reply to every STATUS frame with RESULT.
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("STATUS") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let reply = serde_json::json!({
+                                "type": "RESULT",
+                                "requestId": id,
+                                "ok": true,
+                                "fileKey": "abc123",
+                                "name": "My Design File"
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Drive the MCP handshake over HTTP.
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+
+    // Step 1: initialize.
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize request");
+
+    assert!(
+        init_res.status().is_success(),
+        "initialize must succeed, got HTTP {}",
+        init_res.status()
+    );
+
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must carry mcp-session-id")
+        .to_str()
+        .expect("mcp-session-id is valid UTF-8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    // Step 2: notifications/initialized.
+    let notif_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("notifications/initialized request");
+    let _ = notif_res.text().await.expect("drain notif body");
+
+    // Step 3: tools/call turbofig_status.
+    let tools_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "turbofig_status", "arguments": {}}
+        }))
+        .send()
+        .await
+        .expect("tools/call request");
+
+    assert!(
+        tools_res.status().is_success(),
+        "tools/call must succeed, got HTTP {}",
+        tools_res.status()
+    );
+
+    let tools_body = tools_res.text().await.expect("read tools/call body");
+    let msg = parse_sse_data(&tools_body);
+
+    let text_str = msg["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content[0].text must be a string");
+    let payload: serde_json::Value =
+        serde_json::from_str(text_str).expect("content[0].text must be valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(true),
+        "ok must be true when plugin is connected, got: {payload}"
+    );
+    assert_eq!(
+        payload["plugin"]["connected"],
+        serde_json::json!(true),
+        "plugin.connected must be true, got: {payload}"
+    );
+    assert_eq!(
+        payload["plugin"]["fileKey"],
+        serde_json::json!("abc123"),
+        "plugin.fileKey must match, got: {payload}"
+    );
+    assert_eq!(
+        payload["plugin"]["name"],
+        serde_json::json!("My Design File"),
+        "plugin.name must match, got: {payload}"
     );
 }

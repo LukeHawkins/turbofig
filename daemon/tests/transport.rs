@@ -197,10 +197,18 @@ async fn test_mcp_handshake_and_turbofig_status() {
         .as_str()
         .expect("content[0].text must be a string");
     let text: Value = serde_json::from_str(text_str).expect("content[0].text must be valid JSON");
+    // "ok":true is the daemon-liveness contract. The response also carries a
+    // "plugin" object, but we only assert the liveness field here so this test
+    // remains valid with or without a live plugin.
     assert_eq!(
-        text,
-        json!({"ok": true}),
-        "turbofig_status must return {{\"ok\":true}}"
+        text["ok"],
+        json!(true),
+        "turbofig_status must have ok:true, got: {text}"
+    );
+    assert_eq!(
+        text["plugin"]["connected"],
+        json!(false),
+        "turbofig_status must report plugin.connected:false when no plugin is attached, got: {text}"
     );
 
     // ── step 4: statefulness: no session ID must be rejected ──────────────────

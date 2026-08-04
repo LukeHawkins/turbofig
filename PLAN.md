@@ -76,7 +76,7 @@ Goal: end the handshake permanently and make the daemon independent of any clien
 - [x] Minimal Figma plugin: `manifest.json` (`documentAccess: dynamic-page`, `api` pinned), WS client
 - [x] Plugin auto-reconnects with infinite exponential backoff (cap ~30s); no 5-retry cap
 - [x] Plugin sends `FILE_INFO` (`fileKey` + `root.name`) on connect
-- [ ] Daemon routes `turbofig_status` through to the live plugin and back
+- [x] Daemon routes `turbofig_status` through to the live plugin and back
 - [x] Always-on install: a launchd/login-item service starts the daemon at login
 - [ ] Verify: restart the daemon AND restart Figma; the plugin re-pairs with zero manual steps
 

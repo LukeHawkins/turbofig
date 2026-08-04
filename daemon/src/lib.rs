@@ -124,6 +124,15 @@ impl AppState {
             let _ = tx.send(value);
         }
     }
+
+    /// Return the plugin's outbound sender and identity, if a plugin is registered.
+    /// Returns `(tx, file_key, name)`. The caller may send JSON strings via `tx`.
+    pub fn plugin_tx(&self) -> Option<(mpsc::UnboundedSender<String>, String, String)> {
+        let guard = self.plugin.lock().expect("plugin lock");
+        guard
+            .as_ref()
+            .map(|c| (c.tx.clone(), c.file_key.clone(), c.name.clone()))
+    }
 }
 
 impl Default for AppState {
@@ -137,12 +146,10 @@ impl Default for AppState {
 /// MCP handler that exposes the turbofig_status tool.
 ///
 /// The #[tool_router] macro generates a static tool_router() constructor.
-/// This handler needs no instance field: #[tool_handler] calls Self::tool_router()
-/// on each dispatch.
+/// The handler holds the shared AppState so a tool call can route a request
+/// to the live plugin and await its reply.
 #[derive(Clone)]
 pub struct StatusHandler {
-    // Held for future tool items that route through the plugin.
-    #[allow(dead_code)]
     state: Arc<AppState>,
 }
 
@@ -159,11 +166,59 @@ impl StatusHandler {
     }
 
     /// Return daemon liveness status as JSON.
+    ///
+    /// No plugin connected: `{"ok":true,"plugin":{"connected":false}}`.
+    /// Plugin connected: send a STATUS request over the WS channel and await
+    /// the RESULT, then return `{"ok":true,"plugin":{"connected":true,...}}`.
+    /// `"ok":true` always means the daemon is alive regardless of plugin state.
     #[tool(description = "Return daemon status")]
-    fn turbofig_status(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(
-            json!({"ok": true}).to_string(),
-        )]))
+    async fn turbofig_status(&self) -> Result<CallToolResult, McpError> {
+        // Disconnected path: no plugin registered.
+        let Some((tx, file_key, name)) = self.state.plugin_tx() else {
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                json!({"ok": true, "plugin": {"connected": false}}).to_string(),
+            )]));
+        };
+
+        // Connected path: round-trip to the plugin.
+        let id = self.state.next_request_id();
+        let rx = self.state.register_pending(id);
+        let request = json!({"type": "STATUS", "requestId": id});
+
+        if tx.send(request.to_string()).is_err() {
+            // Channel closed between snapshot and send; treat as disconnected.
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                json!({"ok": true, "plugin": {"connected": false}}).to_string(),
+            )]));
+        }
+
+        match rx.await {
+            Ok(result) => {
+                let fk = result
+                    .get("fileKey")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&file_key)
+                    .to_owned();
+                let nm = result
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&name)
+                    .to_owned();
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    json!({
+                        "ok": true,
+                        "plugin": {"connected": true, "fileKey": fk, "name": nm}
+                    })
+                    .to_string(),
+                )]))
+            }
+            Err(_) => {
+                // Sender was dropped before the reply arrived; treat as disconnected.
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    json!({"ok": true, "plugin": {"connected": false}}).to_string(),
+                )]))
+            }
+        }
     }
 }
 
