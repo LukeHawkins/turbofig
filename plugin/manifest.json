@@ -1,6 +1,6 @@
 {
   "name": "Turbofig",
-  "id": "PLACEHOLDER_ID",
+  "id": "turbofig-dev",
   "api": "1.0.0",
   "main": "src/code.ts",
   "ui": "src/ui.html",
