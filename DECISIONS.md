@@ -4,7 +4,9 @@
    Why: token economy (~96% less tool-def load), resilience (new Figma APIs work same-day), full capability through one tool. Baseline competitor figma-console-mcp already has eval + multi-file; we win on DX, performance, Rust single-binary, and true always-on.
 
 2. **Rust daemon via rmcp 3.1.0 (transport-streamable-http-server) + legacy_session_mode.**
-   Why: client uses 2025-03-26 spec with mcp-session-id; rmcp defaults to the session-less 2026-07-28 spec. Watch rmcp issue #1108 (https://github.com/modelcontextprotocol/rust-sdk/issues/1108, confirm exact issue); prove the initialize + mcp-session-id round-trip on day one. Fallback: hand-roll with axum SSE + WS.
+   Why: client uses 2025-03-26 spec with mcp-session-id; rmcp defaults to the session-less 2026-07-28 spec. `legacy_session_mode: true` on `StreamableHttpServerConfig` with `LocalSessionManager` makes rmcp issue the `mcp-session-id` header on `initialize` and require it on subsequent calls.
+   Phase 1 result: CONFIRMED. `initialize` returns `mcp-session-id`; subsequent calls reuse it; responses are SSE `data:` lines. A Rust integration test (`daemon/tests/transport.rs`) and a curl script (`scripts/handshake.sh`) both pass. The rmcp #1108 risk is retired.
+   Fallback (retained, not needed now): if a future rmcp release breaks `legacy_session_mode`, hand-roll the transport with axum. Add a POST `/mcp` handler that assigns an `mcp-session-id` on `initialize`, stores session state in an in-memory map, and streams SSE `data:` responses. The WebSocket connection to the plugin stays on axum regardless. This is a drop-in replacement because the daemon already owns the axum `Router`.
 
 3. **Ports are a product contract: default HTTP 3846, WS 3847, env-overridable (TURBOFIG_MCP_PORT / TURBOFIG_WS_PORT).**
    Why: intentionally overrides ai-boilerplate's "randomised high ports" rule because 3846 is a drop-in for existing curl-based skills.
