@@ -29,7 +29,7 @@ Run a phase with `/phase N`. Each `- [ ]` item is one commit, independently veri
 
 ## Port contract (deliberate deviation from boilerplate)
 
-Turbofig serves a user-facing protocol, not a dev server. Default HTTP MCP port **3846** (drop-in for existing curl skills), default WebSocket port **3847**. Both overridable by env (`TURBOFIG_MCP_PORT`, `TURBOFIG_WS_PORT`). See `DECISIONS.md`.
+Turbofig serves a user-facing protocol, not a dev server. Default HTTP MCP port **18846**, default WebSocket port **18847**. Both overridable by env (`TURBOFIG_MCP_PORT`, `TURBOFIG_WS_PORT`). See `DECISIONS.md`.
 
 ## Testing policy
 
@@ -158,6 +158,7 @@ Goal: a clean, good-looking plugin panel. Clear connection state.
 - [ ] Pairing view (which Claude session is bound to this file)
 - [ ] Live activity log + a plugin-version / stale-warning indicator
 - [ ] Visual polish: on-brand, tidy, no clutter
+- [ ] Configurable daemon port: a port field in the plugin UI so the plugin connects to whatever `TURBOFIG_WS_PORT` the daemon uses (default 18847). Widen the manifest `allowedDomains` to cover localhost on the configured port, within Figma's static-whitelist constraint.
 
 ## Phase 10: Packaging & distribution (pure export, easy updates)
 
@@ -169,7 +170,7 @@ Goal: users install a compiled binary with no source and no compiler; updates ar
 - [ ] Secondary channels: `cargo install turbofig-mcp`, a Homebrew tap, raw GitHub Release binaries + `curl | sh` installer
 - [ ] Auto-update nudge: daemon checks for a newer version on startup; plugin warns on version mismatch on connect
 - [ ] Plugin delivery: `npx turbofig-mcp plugin` prints/opens the dev-install steps and the manifest path
-- [ ] Play nice with Luke's setup: keep curl-on-3846 working AND register cleanly as a native `mcpServers` entry
+- [ ] Play nice with Luke's setup: keep curl-on-18846 working AND register cleanly as a native `mcpServers` entry
 - [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs
 
 ## Phase 11: Presentation (README-first)
