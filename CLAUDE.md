@@ -39,7 +39,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Tooling
 
-- **Rust** (daemon): Cargo, clippy, rustfmt. Crates: `rmcp`, `axum`, `tokio`, `tokio-tungstenite`, `serde_json`, `image`, `rustls`.
+- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum`, `tokio`, `serde_json`. Phase 2+ crates: `tokio-tungstenite`, `image`, `rustls`.
 - **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
 - **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`).
 

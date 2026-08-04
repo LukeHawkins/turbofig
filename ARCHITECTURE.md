@@ -26,10 +26,10 @@ Figma document
 
 The daemon is a single Rust process. It runs the MCP HTTP server today. The WebSocket server arrives in Phase 2.
 
-- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful; the daemon maps the session ID to a plugin connection by `fileKey`.
+- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. The daemon maps the session ID to a plugin connection by `fileKey` in Phase 4.
 - **WebSocket server** (port 18847, Phase 2, not yet built): holds persistent connections from the Figma plugin. Each connection carries a `fileKey` sent in a `FILE_INFO` message on connect. The daemon routes tool calls to the right plugin connection.
 
-The daemon is always-on. It starts at login via a launchd service (Phase 2) and never exits on reconnect.
+The daemon becomes always-on in Phase 2. It starts at login via a launchd service and never exits on reconnect.
 
 ## Plugin
 
@@ -42,7 +42,7 @@ The plugin dispatches on a `{type}` field in each message:
 
 | Type | Description |
 |---|---|
-| `FILE_INFO` | Sent on connect: fileKey + root name |
+| `FILE_INFO` | Sent on connect: fileKey + root name (Phase 2) |
 | `EXECUTE` | Run arbitrary Figma Plugin API JS (Phase 3) |
 | `GET_SELECTION` | Return compact selection info (Phase 3) |
 | `SCREENSHOT` | Export PNG (Phase 3) |
