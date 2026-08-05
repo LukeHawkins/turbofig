@@ -4,6 +4,7 @@ import {
   buildExecuteError,
   buildExecuteSuccess,
   buildResult,
+  buildScreenshot,
   buildSelection,
   DEPRECATION_PREAMBLE,
   isDaemonMessage,
@@ -308,5 +309,46 @@ describe("backoffDelayMs", () => {
     for (let i = 0; i <= 50; i++) {
       expect(backoffDelayMs(i)).toBeLessThanOrEqual(30000);
     }
+  });
+});
+
+describe("isDaemonMessage — SCREENSHOT branch", () => {
+  test("accepts a valid SCREENSHOT message with only requestId", () => {
+    expect(isDaemonMessage({ type: "SCREENSHOT", requestId: 1 })).toBe(true);
+  });
+
+  test("accepts a valid SCREENSHOT message with scale and nodeId", () => {
+    expect(isDaemonMessage({ type: "SCREENSHOT", requestId: 2, scale: 2, nodeId: "1:2" })).toBe(
+      true,
+    );
+  });
+
+  test("rejects SCREENSHOT missing requestId", () => {
+    expect(isDaemonMessage({ type: "SCREENSHOT" })).toBe(false);
+  });
+
+  test("rejects SCREENSHOT with a string requestId", () => {
+    expect(isDaemonMessage({ type: "SCREENSHOT", requestId: "req-1" })).toBe(false);
+  });
+});
+
+describe("buildScreenshot", () => {
+  test("returns a RESULT with ok true, png, w, and h", () => {
+    const msg = buildScreenshot(5, "aGVsbG8=", 100, 50);
+    expect(msg.type).toBe("RESULT");
+    expect(msg.requestId).toBe(5);
+    expect(msg.ok).toBe(true);
+    expect(msg.png).toBe("aGVsbG8=");
+    expect(msg.w).toBe(100);
+    expect(msg.h).toBe(50);
+  });
+
+  test("echoes the requestId", () => {
+    const msg = buildScreenshot(42, "abc", 10, 20);
+    expect(msg.requestId).toBe(42);
+  });
+
+  test("result passes the isDaemonMessage guard", () => {
+    expect(isDaemonMessage(buildScreenshot(1, "abc", 100, 50))).toBe(true);
   });
 });

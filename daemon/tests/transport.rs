@@ -340,8 +340,8 @@ async fn test_tools_list_has_exactly_turbofig_status() {
 
     assert_eq!(
         tools_arr.len(),
-        3,
-        "tool surface must be exactly 3 tools, got {}: {:?}",
+        4,
+        "tool surface must be exactly 4 tools, got {}: {:?}",
         tools_arr.len(),
         tools_arr
     );
@@ -356,6 +356,10 @@ async fn test_tools_list_has_exactly_turbofig_status() {
     assert!(
         names.contains(&"turbofig_get_selection"),
         "turbofig_get_selection must be present, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"turbofig_screenshot"),
+        "turbofig_screenshot must be present, got: {names:?}"
     );
 }
 

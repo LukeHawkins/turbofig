@@ -903,6 +903,248 @@ async fn test_turbofig_get_selection_routes_through_plugin() {
     );
 }
 
+/// turbofig_screenshot routes a SCREENSHOT request to the mock plugin and returns
+/// the RESULT as `{"ok":true,"w":100,"h":50,"png":"aGVsbG8="}` in inline mode.
+#[tokio::test]
+async fn test_turbofig_screenshot_inline_routes_through_plugin() {
+    let state = Arc::new(turbofig::AppState::new());
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_with_state(http_listener, http_state)
+            .await
+            .expect("serve_with_state error in test");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect failed");
+
+    let fi = serde_json::json!({
+        "type": "FILE_INFO",
+        "fileKey": "abc123",
+        "name": "My Design File"
+    });
+    plugin_ws
+        .send(TtMessage::Text(fi.to_string()))
+        .await
+        .expect("send FILE_INFO");
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Spawn the mock plugin: reply to every SCREENSHOT frame with a fixed RESULT.
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("SCREENSHOT") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let reply = serde_json::json!({
+                                "type": "RESULT",
+                                "requestId": id,
+                                "ok": true,
+                                "png": "aGVsbG8=",
+                                "w": 100,
+                                "h": 50
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize request");
+
+    assert!(init_res.status().is_success());
+
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("mcp-session-id header")
+        .to_str()
+        .expect("valid utf8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    let notif_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("notifications/initialized request");
+    let _ = notif_res.text().await.expect("drain notif body");
+
+    let tools_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "turbofig_screenshot", "arguments": {"return": "inline"}}
+        }))
+        .send()
+        .await
+        .expect("tools/call request");
+
+    assert!(tools_res.status().is_success());
+
+    let tools_body = tools_res.text().await.expect("read tools/call body");
+    let msg = parse_sse_data(&tools_body);
+
+    let text_str = msg["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content[0].text must be a string");
+    let payload: serde_json::Value =
+        serde_json::from_str(text_str).expect("content[0].text must be valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(true),
+        "ok must be true in inline mode, got: {payload}"
+    );
+    assert_eq!(
+        payload["png"],
+        serde_json::json!("aGVsbG8="),
+        "png must echo the plugin reply, got: {payload}"
+    );
+    assert_eq!(
+        payload["w"],
+        serde_json::json!(100),
+        "w must be 100, got: {payload}"
+    );
+}
+
+/// run_screenshot in file mode connects to a mock plugin, receives a RESULT, decodes
+/// the base64 PNG, writes it to a temp dir, and returns ok:true with a path field.
+/// The file at the returned path must contain the decoded bytes.
+#[tokio::test]
+async fn test_run_screenshot_file_mode_writes_png() {
+    let state = Arc::new(turbofig::AppState::new());
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect");
+
+    let fi = serde_json::json!({
+        "type": "FILE_INFO",
+        "fileKey": "abc123",
+        "name": "My Design File"
+    });
+    plugin_ws
+        .send(TtMessage::Text(fi.to_string()))
+        .await
+        .expect("send FILE_INFO");
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Spawn the mock plugin: reply to SCREENSHOT frames with a fixed base64 payload.
+    // "aGVsbG8=" is the base64 encoding of b"hello".
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("SCREENSHOT") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let reply = serde_json::json!({
+                                "type": "RESULT",
+                                "requestId": id,
+                                "ok": true,
+                                "png": "aGVsbG8=",
+                                "w": 100,
+                                "h": 50
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let result = turbofig::run_screenshot(&state, 1.0, None, "file", Some(tmp.path())).await;
+
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "ok must be true in file mode, got: {result}"
+    );
+
+    let path_str = result["path"]
+        .as_str()
+        .expect("result must have a path string field");
+    let path = std::path::Path::new(path_str);
+    assert!(path.exists(), "PNG file must exist at {path_str}");
+
+    let contents = std::fs::read(path).expect("read PNG file");
+    assert_eq!(
+        contents, b"hello",
+        "file contents must be the decoded base64 bytes"
+    );
+}
+
 /// run_execute returns `{"ok":false,"error":"no plugin connected"}` when no
 /// plugin is registered. Tested directly without HTTP overhead.
 #[tokio::test]

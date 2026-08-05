@@ -2,6 +2,7 @@ import {
   buildExecuteError,
   buildExecuteSuccess,
   buildResult,
+  buildScreenshot,
   buildSelection,
   isDaemonMessage,
   safeResult,
@@ -60,6 +61,48 @@ figma.ui.onmessage = (msg: unknown) => {
             : String(err);
         figma.ui.postMessage(buildExecuteError(requestId, message));
       }
+      break;
+    }
+    case "SCREENSHOT": {
+      const { requestId } = msg;
+      void (async () => {
+        try {
+          // Resolve the target node: prefer nodeId, then selection, else error.
+          let node: BaseNode | null = null;
+          if (msg.nodeId) {
+            node = await figma.getNodeByIdAsync(msg.nodeId);
+          } else if (figma.currentPage.selection.length > 0) {
+            node = figma.currentPage.selection[0] as unknown as BaseNode;
+          } else {
+            figma.ui.postMessage(
+              buildExecuteError(requestId, "no node to screenshot: select a node or pass nodeId"),
+            );
+            return;
+          }
+          // Guard: node must exist and support exportAsync.
+          if (node === null || !("exportAsync" in node)) {
+            figma.ui.postMessage(buildExecuteError(requestId, "node is not exportable"));
+            return;
+          }
+          // Safe cast: node has exportAsync, width, height after the guard above.
+          const exportable = node as unknown as SceneNode & ExportMixin;
+          const scale = typeof msg.scale === "number" && msg.scale > 0 ? msg.scale : 1;
+          const bytes = await exportable.exportAsync({
+            format: "PNG",
+            constraint: { type: "SCALE", value: scale },
+          });
+          const png = figma.base64Encode(bytes);
+          figma.ui.postMessage(
+            buildScreenshot(requestId, png, exportable.width, exportable.height),
+          );
+        } catch (err) {
+          const message =
+            err != null && typeof err === "object" && "message" in err
+              ? String((err as { message: unknown }).message)
+              : String(err);
+          figma.ui.postMessage(buildExecuteError(requestId, message));
+        }
+      })();
       break;
     }
     default:

@@ -29,6 +29,14 @@ export interface GetSelectionMessage {
   requestId: number;
 }
 
+/** Sent by the daemon to the plugin to request a PNG screenshot of a node. */
+export interface ScreenshotMessage {
+  type: "SCREENSHOT";
+  requestId: number;
+  scale?: number;
+  nodeId?: string;
+}
+
 /** A single selected Figma node, serialised for the selection response. */
 export interface SelectionItem {
   id: string;
@@ -50,6 +58,9 @@ export interface ResultMessage {
   result?: unknown;
   error?: string;
   selection?: SelectionItem[];
+  png?: string;
+  w?: number;
+  h?: number;
 }
 
 /** Union of all messages on the daemon <-> plugin WebSocket. */
@@ -58,6 +69,7 @@ export type DaemonMessage =
   | StatusMessage
   | ExecuteMessage
   | GetSelectionMessage
+  | ScreenshotMessage
   | ResultMessage;
 
 /**
@@ -76,6 +88,8 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
     case "EXECUTE":
       return typeof msg.requestId === "number" && typeof msg.code === "string";
     case "GET_SELECTION":
+      return typeof msg.requestId === "number";
+    case "SCREENSHOT":
       return typeof msg.requestId === "number";
     case "RESULT":
       return typeof msg.requestId === "number";
@@ -142,6 +156,19 @@ export function toSelectionItem(node: Record<string, unknown>): SelectionItem {
  */
 export function buildSelection(requestId: number, selection: SelectionItem[]): ResultMessage {
   return { type: "RESULT", requestId, ok: true, selection };
+}
+
+/**
+ * Builds a success RESULT reply for a SCREENSHOT request.
+ * Echoes requestId and carries the PNG as a base64 string with dimensions.
+ */
+export function buildScreenshot(
+  requestId: number,
+  png: string,
+  w: number,
+  h: number,
+): ResultMessage {
+  return { type: "RESULT", requestId, ok: true, png, w, h };
 }
 
 /**

@@ -1,6 +1,8 @@
 mod bridge;
 pub use bridge::{bridge_dir_from_env, serve_bridge};
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use rmcp::{
     handler::server::wrapper::Parameters,
     model::*,
@@ -91,23 +93,41 @@ pub struct AppState {
     counter: AtomicU64,
     /// How long to wait for a plugin reply before returning a timeout response.
     pub request_timeout: Duration,
+    /// Directory where screenshot PNGs are written in file mode, if configured.
+    screenshot_dir: Option<std::path::PathBuf>,
 }
 
 impl AppState {
-    /// Create a new AppState. Reads the timeout from TURBOFIG_REQUEST_TIMEOUT_MS.
-    pub fn new() -> Self {
-        Self::with_timeout(request_timeout_from_env())
-    }
-
-    /// Create a new AppState with an explicit request timeout.
-    /// Use this in tests to set a short timeout without touching global env.
-    pub fn with_timeout(d: Duration) -> Self {
+    /// Private constructor. Both public constructors delegate here.
+    fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>) -> Self {
         Self {
             plugin: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(1),
-            request_timeout: d,
+            request_timeout: timeout,
+            screenshot_dir,
         }
+    }
+
+    /// Create a new AppState. Reads the timeout from TURBOFIG_REQUEST_TIMEOUT_MS.
+    /// Sets screenshot_dir to `~/.turbofig/outbox`.
+    pub fn new() -> Self {
+        Self::build(
+            request_timeout_from_env(),
+            Some(bridge_dir_from_env().join("outbox")),
+        )
+    }
+
+    /// Create a new AppState with an explicit request timeout.
+    /// Use this in tests to set a short timeout without touching global env.
+    /// Sets screenshot_dir to None; tests supply their own output dir.
+    pub fn with_timeout(d: Duration) -> Self {
+        Self::build(d, None)
+    }
+
+    /// Return a clone of the screenshot output directory, if configured.
+    pub fn screenshot_dir(&self) -> Option<std::path::PathBuf> {
+        self.screenshot_dir.clone()
     }
 
     /// Register the connected plugin. Overwrites any prior registration.
@@ -334,6 +354,90 @@ pub async fn run_get_selection(state: &Arc<AppState>) -> Value {
     }
 }
 
+// ── Shared screenshot logic ───────────────────────────────────────────────────
+
+/// Capture a PNG screenshot of a Figma node and return a JSON value.
+///
+/// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
+/// Plugin replies with ok:false -> `{"ok":false,"error":"..."}`.
+/// Timeout -> cancel_pending then `{"ok":false,"error":"plugin timed out"}`.
+/// On success with return_mode "inline": returns `{"ok":true,"w":w,"h":h,"png":<base64>}`.
+/// On success with return_mode "file": decodes base64, writes to output_dir/<requestId>.png,
+///   returns `{"ok":true,"path":"...","w":w,"h":h}`.
+///
+/// Reused by both `turbofig_screenshot` (MCP) and the filesystem bridge.
+pub async fn run_screenshot(
+    state: &Arc<AppState>,
+    scale: f64,
+    node_id: Option<&str>,
+    return_mode: &str,
+    output_dir: Option<&std::path::Path>,
+) -> Value {
+    let Some((tx, _, _)) = state.plugin_tx() else {
+        return json!({"ok": false, "error": "no plugin connected"});
+    };
+
+    let id = state.next_request_id();
+    let rx = state.register_pending(id);
+    let request = json!({
+        "type": "SCREENSHOT",
+        "requestId": id,
+        "scale": scale,
+        "nodeId": node_id
+    });
+
+    if tx.send(request.to_string()).is_err() {
+        return json!({"ok": false, "error": "plugin send failed"});
+    }
+
+    match tokio::time::timeout(state.request_timeout, rx).await {
+        Ok(Ok(reply)) => {
+            if !reply.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let error = reply
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("screenshot failed")
+                    .to_owned();
+                return json!({"ok": false, "error": error});
+            }
+            let png = match reply.get("png").and_then(|v| v.as_str()) {
+                Some(s) => s.to_owned(),
+                None => return json!({"ok": false, "error": "screenshot failed"}),
+            };
+            let w = reply.get("w").and_then(|v| v.as_u64()).unwrap_or(0);
+            let h = reply.get("h").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            if return_mode == "inline" {
+                json!({"ok": true, "w": w, "h": h, "png": png})
+            } else {
+                // File mode: decode base64 and write to disk.
+                let Some(dir) = output_dir else {
+                    return json!({"ok": false, "error": "file mode needs an output dir"});
+                };
+                let bytes = match B64.decode(&png) {
+                    Ok(b) => b,
+                    Err(_) => return json!({"ok": false, "error": "invalid base64 png"}),
+                };
+                if let Err(e) = tokio::fs::create_dir_all(dir).await {
+                    return json!({"ok": false, "error": format!("write failed: {e}")});
+                }
+                let path = dir.join(format!("{id}.png"));
+                if let Err(e) = tokio::fs::write(&path, &bytes).await {
+                    return json!({"ok": false, "error": format!("write failed: {e}")});
+                }
+                json!({"ok": true, "path": path.to_string_lossy(), "w": w, "h": h})
+            }
+        }
+        Ok(Err(_)) => {
+            json!({"ok": false, "error": "plugin disconnected"})
+        }
+        Err(_elapsed) => {
+            state.cancel_pending(id);
+            json!({"ok": false, "error": "plugin timed out"})
+        }
+    }
+}
+
 // ── MCP handler ───────────────────────────────────────────────────────────────
 
 /// Parameters for the turbofig_execute tool.
@@ -341,6 +445,30 @@ pub async fn run_get_selection(state: &Arc<AppState>) -> Value {
 struct ExecuteParams {
     #[schemars(description = "JavaScript code to execute in the Figma plugin context")]
     code: String,
+}
+
+/// Parameters for the turbofig_screenshot tool.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ScreenshotParams {
+    #[serde(default = "default_screenshot_scale")]
+    #[schemars(description = "Export scale factor (default 1.0)")]
+    scale: f64,
+    #[serde(rename = "nodeId", default)]
+    #[schemars(description = "Figma node ID to screenshot; uses current selection if omitted")]
+    node_id: Option<String>,
+    #[serde(rename = "return", default = "default_return_mode")]
+    #[schemars(
+        description = "Return mode: 'file' (default) writes a PNG to disk; 'inline' returns base64"
+    )]
+    return_mode: String,
+}
+
+fn default_screenshot_scale() -> f64 {
+    1.0
+}
+
+fn default_return_mode() -> String {
+    "file".to_owned()
 }
 
 /// MCP handler that exposes the turbofig_status tool.
@@ -400,6 +528,32 @@ impl StatusHandler {
     #[tool(description = "Return the current Figma selection")]
     async fn turbofig_get_selection(&self) -> Result<CallToolResult, McpError> {
         let value = run_get_selection(&self.state).await;
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            value.to_string(),
+        )]))
+    }
+
+    /// Capture a PNG screenshot of a Figma node and return the path or inline base64.
+    ///
+    /// Delegates to `run_screenshot` for the shared logic; wraps the result in a
+    /// `CallToolResult` for the MCP wire format.
+    #[tool(description = "Capture a PNG screenshot of a Figma node")]
+    async fn turbofig_screenshot(
+        &self,
+        Parameters(ScreenshotParams {
+            scale,
+            node_id,
+            return_mode,
+        }): Parameters<ScreenshotParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let value = run_screenshot(
+            &self.state,
+            scale,
+            node_id.as_deref(),
+            &return_mode,
+            self.state.screenshot_dir().as_deref(),
+        )
+        .await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
