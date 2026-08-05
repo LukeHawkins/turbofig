@@ -242,17 +242,26 @@ async fn process_job(
     output_dir: &Path,
 ) -> serde_json::Value {
     match job.get("op").and_then(|v| v.as_str()) {
-        Some("status") => crate::run_status(state).await,
+        Some("status") => crate::run_status(state, None, None).await,
         Some("execute") => match job.get("code").and_then(|v| v.as_str()) {
-            Some(code) => crate::run_execute(state, code).await,
+            Some(code) => crate::run_execute(state, None, None, code).await,
             None => serde_json::json!({"ok": false, "error": "execute op needs a code field"}),
         },
-        Some("get_selection") => crate::run_get_selection(state).await,
+        Some("get_selection") => crate::run_get_selection(state, None, None).await,
         Some("screenshot") => {
             let scale = job.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
             let node_id = job.get("nodeId").and_then(|v| v.as_str());
             let return_mode = job.get("return").and_then(|v| v.as_str()).unwrap_or("file");
-            crate::run_screenshot(state, scale, node_id, return_mode, Some(output_dir)).await
+            crate::run_screenshot(
+                state,
+                None,
+                None,
+                scale,
+                node_id,
+                return_mode,
+                Some(output_dir),
+            )
+            .await
         }
         Some(op) => serde_json::json!({"ok": false, "error": format!("unknown op: {op}")}),
         None => serde_json::json!({"ok": false, "error": "missing op field"}),

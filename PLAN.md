@@ -111,7 +111,7 @@ Goal: cut a big design job from about an hour to a few minutes with far fewer to
 
 Goal: N independent Claude sessions to N files at once. Stronger than console-mcp's broadcast.
 
-- [ ] Daemon session registry keyed by `mcp-session-id` and plugin connection `fileKey`. Replace the single `Mutex<Option<PluginConn>>` from Phase 2 with a multi-connection map.
+- [x] Daemon session registry keyed by `mcp-session-id` and plugin connection `fileKey`. Replace the single `Mutex<Option<PluginConn>>` from Phase 2 with a multi-connection map.
 - [ ] Pair a session to a file (by `fileKey` or an explicit pick); route every call to the right plugin
 - [ ] File-bridge routing: a bridge job may carry a target `fileKey`. With none, default to the single connected plugin and error clearly when the target is ambiguous. The bridge has no `mcp-session-id`, so the job field is how it selects a file.
 - [ ] Handle multiple plugin connections (one per open file) simultaneously

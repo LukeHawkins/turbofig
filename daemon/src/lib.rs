@@ -82,13 +82,47 @@ pub struct PluginConn {
     pub tx: mpsc::UnboundedSender<String>,
 }
 
+/// Routing error returned by resolve_route.
+#[derive(Debug)]
+pub enum RouteError {
+    /// No plugin is connected.
+    NoPlugin,
+    /// More than one file is connected and no explicit target was given.
+    Ambiguous(Vec<String>),
+    /// The requested file key is not connected.
+    NotFound(String, Vec<String>),
+}
+
+/// Convert a RouteError into the caller-facing JSON shape.
+fn route_error_to_json(e: RouteError) -> Value {
+    match e {
+        RouteError::NoPlugin => json!({"ok": false, "error": "no plugin connected"}),
+        RouteError::Ambiguous(fks) => json!({
+            "ok": false,
+            "error": "multiple files connected; specify fileKey",
+            "files": fks
+        }),
+        RouteError::NotFound(fk, available) => json!({
+            "ok": false,
+            "error": format!("file not connected: {fk}"),
+            "files": available
+        }),
+    }
+}
+
 /// Shared daemon state passed to both the MCP HTTP server and the WS server.
 pub struct AppState {
-    /// The currently connected plugin, if any.
-    /// Phase 2 supports one live plugin. Phase 4 will extend to multi-file.
-    plugin: Mutex<Option<PluginConn>>,
+    /// Registry of all active WebSocket connections.
+    /// One entry per connected plugin. The file_key is empty until FILE_INFO arrives.
+    connections: Mutex<HashMap<u64, PluginConn>>,
+    /// Allocates stable connection IDs.
+    conn_counter: AtomicU64,
+    /// MCP session -> file_key pairing recorded by resolve_route.
+    sessions: Mutex<HashMap<String, String>>,
     /// Pending tool-call requests waiting for a RESULT frame from the plugin.
-    pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
+    /// Value is (conn_id, oneshot sender). The conn_id lets one file closing cancel
+    /// only its own in-flight requests without touching other files.
+    pending: Mutex<HashMap<u64, (u64, oneshot::Sender<Value>)>>,
     /// Monotonically increasing request-ID counter.
     counter: AtomicU64,
     /// How long to wait for a plugin reply before returning a timeout response.
@@ -101,7 +135,9 @@ impl AppState {
     /// Private constructor. Both public constructors delegate here.
     fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>) -> Self {
         Self {
-            plugin: Mutex::new(None),
+            connections: Mutex::new(HashMap::new()),
+            conn_counter: AtomicU64::new(1),
+            sessions: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(1),
             request_timeout: timeout,
@@ -130,27 +166,60 @@ impl AppState {
         self.screenshot_dir.clone()
     }
 
-    /// Register the connected plugin. Overwrites any prior registration.
-    pub fn register_plugin(
-        &self,
-        file_key: String,
-        name: String,
-        tx: mpsc::UnboundedSender<String>,
-    ) {
-        let mut guard = self.plugin.lock().expect("plugin lock");
-        *guard = Some(PluginConn { file_key, name, tx });
+    /// Register a new WebSocket connection. Returns a stable connection ID.
+    /// The file_key and name start empty and are set when FILE_INFO arrives.
+    pub fn add_connection(&self, tx: mpsc::UnboundedSender<String>) -> u64 {
+        let conn_id = self.conn_counter.fetch_add(1, Ordering::Relaxed);
+        let mut guard = self.connections.lock().expect("connections lock");
+        guard.insert(
+            conn_id,
+            PluginConn {
+                file_key: String::new(),
+                name: String::new(),
+                tx,
+            },
+        );
+        conn_id
     }
 
-    /// Remove the plugin registration. Call this when the WS connection closes.
-    pub fn clear_plugin(&self) {
-        let mut guard = self.plugin.lock().expect("plugin lock");
-        *guard = None;
+    /// Update the file_key and name for an existing connection.
+    /// Call this when FILE_INFO arrives.
+    pub fn set_connection_info(&self, conn_id: u64, file_key: String, name: String) {
+        let mut guard = self.connections.lock().expect("connections lock");
+        if let Some(conn) = guard.get_mut(&conn_id) {
+            conn.file_key = file_key;
+            conn.name = name;
+        }
     }
 
-    /// Return a copy of the file key and name of the connected plugin, if any.
+    /// Remove a connection from the registry. Call this when the socket closes.
+    pub fn remove_connection(&self, conn_id: u64) {
+        let mut guard = self.connections.lock().expect("connections lock");
+        guard.remove(&conn_id);
+    }
+
+    /// Return all connections as (conn_id, file_key, name) tuples.
+    pub fn list_connections(&self) -> Vec<(u64, String, String)> {
+        let guard = self.connections.lock().expect("connections lock");
+        guard
+            .iter()
+            .map(|(id, c)| (*id, c.file_key.clone(), c.name.clone()))
+            .collect()
+    }
+
+    /// Return the sole connection's (file_key, name) when exactly one exists.
+    /// Returns None when there are zero or more than one connections.
+    /// Kept for existing single-plugin WebSocket tests.
     pub fn plugin_snapshot(&self) -> Option<(String, String)> {
-        let guard = self.plugin.lock().expect("plugin lock");
-        guard.as_ref().map(|c| (c.file_key.clone(), c.name.clone()))
+        let guard = self.connections.lock().expect("connections lock");
+        if guard.len() == 1 {
+            guard
+                .values()
+                .next()
+                .map(|c| (c.file_key.clone(), c.name.clone()))
+        } else {
+            None
+        }
     }
 
     /// Allocate a unique request ID.
@@ -158,11 +227,12 @@ impl AppState {
         self.counter.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Register a pending request. Returns a receiver that resolves when the plugin replies.
-    pub fn register_pending(&self, id: u64) -> oneshot::Receiver<Value> {
+    /// Register a pending request tagged with the owning connection.
+    /// Returns a receiver that resolves when the plugin replies.
+    pub fn register_pending(&self, id: u64, conn_id: u64) -> oneshot::Receiver<Value> {
         let (tx, rx) = oneshot::channel();
         let mut guard = self.pending.lock().expect("pending lock");
-        guard.insert(id, tx);
+        guard.insert(id, (conn_id, tx));
         rx
     }
 
@@ -170,7 +240,7 @@ impl AppState {
     /// Silently ignores unknown request IDs.
     pub fn resolve(&self, id: u64, value: Value) {
         let mut guard = self.pending.lock().expect("pending lock");
-        if let Some(tx) = guard.remove(&id) {
+        if let Some((_, tx)) = guard.remove(&id) {
             let _ = tx.send(value);
         }
     }
@@ -181,24 +251,104 @@ impl AppState {
     pub fn cancel_pending(&self, id: u64) {
         let mut guard = self.pending.lock().expect("pending lock");
         guard.remove(&id);
-        // Dropping the sender here is safe: the receiver will see RecvError.
     }
 
-    /// Drop every pending sender. Call this when the plugin disconnects.
-    /// Each in-flight receiver sees RecvError at once, so a routed call
-    /// returns immediately instead of waiting for its full timeout.
-    pub fn cancel_all_pending(&self) {
+    /// Drop every pending sender whose conn_id matches.
+    /// Call this when a socket closes so only that file's in-flight requests fail.
+    /// Other files' pending requests are not affected.
+    pub fn cancel_pending_for_conn(&self, conn_id: u64) {
         let mut guard = self.pending.lock().expect("pending lock");
-        guard.clear();
+        guard.retain(|_, (cid, _)| *cid != conn_id);
     }
 
-    /// Return the plugin's outbound sender and identity, if a plugin is registered.
-    /// Returns `(tx, file_key, name)`. The caller may send JSON strings via `tx`.
-    pub fn plugin_tx(&self) -> Option<(mpsc::UnboundedSender<String>, String, String)> {
-        let guard = self.plugin.lock().expect("plugin lock");
+    /// Resolve which connection a call targets.
+    ///
+    /// session_id: the mcp-session-id (None for the bridge or when absent).
+    /// explicit:   an explicit target fileKey from a tool param or bridge job.
+    ///
+    /// Returns the resolved connection details or a RouteError.
+    /// Only connections whose file_key is non-empty count as valid targets.
+    /// A just-connected socket with no FILE_INFO is not a valid target.
+    fn resolve_route(
+        &self,
+        session_id: Option<&str>,
+        explicit: Option<&str>,
+    ) -> Result<(u64, mpsc::UnboundedSender<String>, String, String), RouteError> {
+        // Step 1: Determine the desired file_key.
+        let desired: Option<String> = if let Some(fk) = explicit {
+            // Explicit target given. Record pairing for this session.
+            if let Some(sid) = session_id {
+                let mut sessions = self.sessions.lock().expect("sessions lock");
+                sessions.insert(sid.to_owned(), fk.to_owned());
+            }
+            Some(fk.to_owned())
+        } else if let Some(sid) = session_id {
+            // No explicit target. Check for an existing session pairing.
+            let sessions = self.sessions.lock().expect("sessions lock");
+            sessions.get(sid).cloned()
+        } else {
+            None
+        };
+        // Sessions lock is released here.
+
+        // Step 2: Collect named connections (non-empty file_key only).
+        let named: Vec<(u64, mpsc::UnboundedSender<String>, String, String)> = {
+            let connections = self.connections.lock().expect("connections lock");
+            connections
+                .iter()
+                .filter(|(_, c)| !c.file_key.is_empty())
+                .map(|(id, c)| (*id, c.tx.clone(), c.file_key.clone(), c.name.clone()))
+                .collect()
+        };
+        // Connections lock is released here.
+
+        if let Some(ref fk) = desired {
+            // Find the connection with this file_key.
+            let found = named
+                .iter()
+                .find(|(_, _, fk2, _)| fk2 == fk)
+                .map(|(id, tx, fk2, nm)| (*id, tx.clone(), fk2.clone(), nm.clone()));
+
+            if let Some(result) = found {
+                return Ok(result);
+            }
+
+            // Not found: clear any stale pairing for this session.
+            if let Some(sid) = session_id {
+                let mut sessions = self.sessions.lock().expect("sessions lock");
+                sessions.remove(sid);
+            }
+            let available: Vec<String> = named.into_iter().map(|(_, _, fk2, _)| fk2).collect();
+            return Err(RouteError::NotFound(fk.clone(), available));
+        }
+
+        // No desired file_key: auto-pick from named connections.
+        match named.len() {
+            0 => Err(RouteError::NoPlugin),
+            1 => {
+                let (conn_id, tx, fk, nm) = named.into_iter().next().unwrap();
+                // Record pairing so subsequent calls on this session go to same file.
+                if let Some(sid) = session_id {
+                    let mut sessions = self.sessions.lock().expect("sessions lock");
+                    sessions.insert(sid.to_owned(), fk.clone());
+                }
+                Ok((conn_id, tx, fk, nm))
+            }
+            _ => {
+                let fks: Vec<String> = named.into_iter().map(|(_, _, fk, _)| fk).collect();
+                Err(RouteError::Ambiguous(fks))
+            }
+        }
+    }
+
+    /// Return all named connections as JSON objects for status and error responses.
+    fn named_connections_json(&self) -> Vec<Value> {
+        let guard = self.connections.lock().expect("connections lock");
         guard
-            .as_ref()
-            .map(|c| (c.tx.clone(), c.file_key.clone(), c.name.clone()))
+            .values()
+            .filter(|c| !c.file_key.is_empty())
+            .map(|c| json!({"fileKey": c.file_key, "name": c.name}))
+            .collect()
     }
 }
 
@@ -210,27 +360,46 @@ impl Default for AppState {
 
 // ── Shared status logic ───────────────────────────────────────────────────────
 
-/// Run the status check against the live plugin and return a JSON value.
+/// Run the status check and return a JSON value.
 ///
-/// No plugin -> `{"ok":true,"plugin":{"connected":false}}`.
-/// Plugin connected -> sends STATUS, awaits RESULT within the configured
-/// timeout, and returns the connected shape or `responsive:false` on timeout.
+/// Resolves the target connection via session_id and file_key.
+/// - Resolved -> sends STATUS, awaits RESULT, returns the connected shape with
+///   a `"plugins"` list. Returns `responsive:false` on timeout.
+/// - NoPlugin -> `{"ok":true,"plugin":{"connected":false},"plugins":[]}`.
+/// - Ambiguous -> `{"ok":true,"plugin":{"connected":true},"plugins":[...]}`.
+/// - NotFound -> `{"ok":true,"plugin":{"connected":false},"plugins":[...]}`.
 ///
+/// `"ok":true` always means the daemon is alive regardless of plugin state.
 /// Reused by both `turbofig_status` (MCP) and the filesystem bridge.
-pub async fn run_status(state: &Arc<AppState>) -> Value {
-    let Some((tx, file_key, name)) = state.plugin_tx() else {
-        return json!({"ok": true, "plugin": {"connected": false}});
+pub async fn run_status(
+    state: &Arc<AppState>,
+    session_id: Option<&str>,
+    file_key: Option<&str>,
+) -> Value {
+    let (conn_id, tx, fk, name) = match state.resolve_route(session_id, file_key) {
+        Ok(r) => r,
+        Err(RouteError::NoPlugin) => {
+            return json!({"ok": true, "plugin": {"connected": false}, "plugins": []});
+        }
+        Err(RouteError::Ambiguous(_)) => {
+            let plugins = state.named_connections_json();
+            return json!({"ok": true, "plugin": {"connected": true}, "plugins": plugins});
+        }
+        Err(RouteError::NotFound(_, _)) => {
+            let plugins = state.named_connections_json();
+            return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
+        }
     };
 
     let id = state.next_request_id();
-    let rx = state.register_pending(id);
+    let rx = state.register_pending(id, conn_id);
     let request = json!({"type": "STATUS", "requestId": id});
 
     if tx.send(request.to_string()).is_err() {
-        // The receiver dropped between the snapshot and the send. Remove the
-        // pending entry so it does not linger until the next disconnect.
+        // The receiver dropped between the snapshot and the send.
         state.cancel_pending(id);
-        return json!({"ok": true, "plugin": {"connected": false}});
+        let plugins = state.named_connections_json();
+        return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
     }
 
     match tokio::time::timeout(state.request_timeout, rx).await {
@@ -238,49 +407,61 @@ pub async fn run_status(state: &Arc<AppState>) -> Value {
             let fk = result
                 .get("fileKey")
                 .and_then(|v| v.as_str())
-                .unwrap_or(&file_key)
+                .unwrap_or(&fk)
                 .to_owned();
             let nm = result
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or(&name)
                 .to_owned();
+            let plugins = state.named_connections_json();
             json!({
                 "ok": true,
-                "plugin": {"connected": true, "fileKey": fk, "name": nm}
+                "plugin": {"connected": true, "fileKey": fk, "name": nm},
+                "plugins": plugins
             })
         }
         Ok(Err(_)) => {
-            json!({"ok": true, "plugin": {"connected": false}})
+            let plugins = state.named_connections_json();
+            json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins})
         }
         Err(_elapsed) => {
             state.cancel_pending(id);
-            json!({"ok": true, "plugin": {"connected": true, "responsive": false}})
+            let plugins = state.named_connections_json();
+            json!({
+                "ok": true,
+                "plugin": {"connected": true, "responsive": false},
+                "plugins": plugins
+            })
         }
     }
 }
 
 // ── Shared execute logic ──────────────────────────────────────────────────────
 
-/// Send `code` to the live plugin and return the result as a JSON value.
+/// Send `code` to the target plugin and return the result as a JSON value.
 ///
 /// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
 /// Plugin replies -> pass the RESULT through.
 /// Timeout -> `{"ok":false,"error":"plugin timed out"}`.
 ///
 /// Reused by both `turbofig_execute` (MCP) and the filesystem bridge.
-pub async fn run_execute(state: &Arc<AppState>, code: &str) -> Value {
-    let Some((tx, _, _)) = state.plugin_tx() else {
-        return json!({"ok": false, "error": "no plugin connected"});
+pub async fn run_execute(
+    state: &Arc<AppState>,
+    session_id: Option<&str>,
+    file_key: Option<&str>,
+    code: &str,
+) -> Value {
+    let (conn_id, tx, _, _) = match state.resolve_route(session_id, file_key) {
+        Ok(r) => r,
+        Err(e) => return route_error_to_json(e),
     };
 
     let id = state.next_request_id();
-    let rx = state.register_pending(id);
+    let rx = state.register_pending(id, conn_id);
     let request = json!({"type": "EXECUTE", "requestId": id, "code": code});
 
     if tx.send(request.to_string()).is_err() {
-        // The receiver dropped between the snapshot and the send. Remove the
-        // pending entry so it does not linger until the next disconnect.
         state.cancel_pending(id);
         return json!({"ok": false, "error": "plugin send failed"});
     }
@@ -311,7 +492,7 @@ pub async fn run_execute(state: &Arc<AppState>, code: &str) -> Value {
 
 // ── Shared get_selection logic ────────────────────────────────────────────────
 
-/// Send GET_SELECTION to the live plugin and return the result as a JSON value.
+/// Send GET_SELECTION to the target plugin and return the result as a JSON value.
 ///
 /// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
 /// Plugin replies with ok:true -> `{"ok":true,"selection":[...]}`.
@@ -320,18 +501,21 @@ pub async fn run_execute(state: &Arc<AppState>, code: &str) -> Value {
 /// Timeout -> cancel_pending then `{"ok":false,"error":"plugin timed out"}`.
 ///
 /// Reused by both `turbofig_get_selection` (MCP) and the filesystem bridge.
-pub async fn run_get_selection(state: &Arc<AppState>) -> Value {
-    let Some((tx, _, _)) = state.plugin_tx() else {
-        return json!({"ok": false, "error": "no plugin connected"});
+pub async fn run_get_selection(
+    state: &Arc<AppState>,
+    session_id: Option<&str>,
+    file_key: Option<&str>,
+) -> Value {
+    let (conn_id, tx, _, _) = match state.resolve_route(session_id, file_key) {
+        Ok(r) => r,
+        Err(e) => return route_error_to_json(e),
     };
 
     let id = state.next_request_id();
-    let rx = state.register_pending(id);
+    let rx = state.register_pending(id, conn_id);
     let request = json!({"type": "GET_SELECTION", "requestId": id});
 
     if tx.send(request.to_string()).is_err() {
-        // The receiver dropped between the snapshot and the send. Remove the
-        // pending entry so it does not linger until the next disconnect.
         state.cancel_pending(id);
         return json!({"ok": false, "error": "plugin send failed"});
     }
@@ -377,17 +561,20 @@ pub async fn run_get_selection(state: &Arc<AppState>) -> Value {
 /// Reused by both `turbofig_screenshot` (MCP) and the filesystem bridge.
 pub async fn run_screenshot(
     state: &Arc<AppState>,
+    session_id: Option<&str>,
+    file_key: Option<&str>,
     scale: f64,
     node_id: Option<&str>,
     return_mode: &str,
     output_dir: Option<&std::path::Path>,
 ) -> Value {
-    let Some((tx, _, _)) = state.plugin_tx() else {
-        return json!({"ok": false, "error": "no plugin connected"});
+    let (conn_id, tx, _, _) = match state.resolve_route(session_id, file_key) {
+        Ok(r) => r,
+        Err(e) => return route_error_to_json(e),
     };
 
     let id = state.next_request_id();
-    let rx = state.register_pending(id);
+    let rx = state.register_pending(id, conn_id);
     let request = json!({
         "type": "SCREENSHOT",
         "requestId": id,
@@ -396,8 +583,6 @@ pub async fn run_screenshot(
     });
 
     if tx.send(request.to_string()).is_err() {
-        // The receiver dropped between the snapshot and the send. Remove the
-        // pending entry so it does not linger until the next disconnect.
         state.cancel_pending(id);
         return json!({"ok": false, "error": "plugin send failed"});
     }
@@ -485,7 +670,7 @@ fn default_return_mode() -> String {
     "file".to_owned()
 }
 
-/// MCP handler that exposes the turbofig_status tool.
+/// MCP handler that exposes the four turbofig tools.
 ///
 /// The #[tool_router] macro generates a static tool_router() constructor.
 /// The handler holds the shared AppState so a tool call can route a request
@@ -514,7 +699,7 @@ impl StatusHandler {
     /// `"ok":true` always means the daemon is alive regardless of plugin state.
     #[tool(description = "Return daemon status")]
     async fn turbofig_status(&self) -> Result<CallToolResult, McpError> {
-        let value = run_status(&self.state).await;
+        let value = run_status(&self.state, None, None).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
@@ -529,7 +714,7 @@ impl StatusHandler {
         &self,
         Parameters(ExecuteParams { code }): Parameters<ExecuteParams>,
     ) -> Result<CallToolResult, McpError> {
-        let value = run_execute(&self.state, &code).await;
+        let value = run_execute(&self.state, None, None, &code).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
@@ -541,7 +726,7 @@ impl StatusHandler {
     /// in a `CallToolResult` for the MCP wire format.
     #[tool(description = "Return the current Figma selection")]
     async fn turbofig_get_selection(&self) -> Result<CallToolResult, McpError> {
-        let value = run_get_selection(&self.state).await;
+        let value = run_get_selection(&self.state, None, None).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
@@ -562,6 +747,8 @@ impl StatusHandler {
     ) -> Result<CallToolResult, McpError> {
         let value = run_screenshot(
             &self.state,
+            None,
+            None,
             scale,
             node_id.as_deref(),
             &return_mode,
@@ -621,6 +808,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
 
+    // Allocate a stable conn_id for this connection immediately.
+    let conn_id = state.add_connection(tx.clone());
+
     // Write task: drain the mpsc receiver and forward each message to the socket.
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -647,7 +837,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_owned();
-                            state.register_plugin(file_key, name, tx.clone());
+                            state.set_connection_info(conn_id, file_key, name);
                         }
                         Some("RESULT") => {
                             if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
@@ -664,10 +854,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    // Socket closed: remove the plugin registration and fail any in-flight
-    // requests at once, so a routed call does not wait for its full timeout.
-    state.clear_plugin();
-    state.cancel_all_pending();
+    // Socket closed: remove the connection and fail only its in-flight requests.
+    // Other files' in-flight requests are unaffected.
+    state.remove_connection(conn_id);
+    state.cancel_pending_for_conn(conn_id);
 }
 
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
@@ -772,5 +962,170 @@ mod tests {
     fn ws_port_rejects_zero_and_falls_back() {
         // Port 0 is an OS-assigned ephemeral port; reject it and fall back to 18847.
         assert_eq!(ws_port_from_str(Some("0")), 18847);
+    }
+
+    // resolve_route unit tests
+
+    #[test]
+    fn resolve_route_no_connections_returns_no_plugin() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        assert!(matches!(
+            state.resolve_route(None, None),
+            Err(RouteError::NoPlugin)
+        ));
+    }
+
+    #[test]
+    fn resolve_route_one_named_no_session_returns_it() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx);
+        state.set_connection_info(conn_id, "fk1".to_owned(), "File 1".to_owned());
+
+        let result = state.resolve_route(None, None);
+        assert!(result.is_ok(), "expected Ok");
+        let (got_conn, _, got_fk, got_name) = result.unwrap();
+        assert_eq!(got_conn, conn_id);
+        assert_eq!(got_fk, "fk1");
+        assert_eq!(got_name, "File 1");
+    }
+
+    #[test]
+    fn resolve_route_one_named_session_records_pairing_and_re_routes() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx);
+        state.set_connection_info(conn_id, "fk1".to_owned(), "File 1".to_owned());
+
+        // First call with session: auto-pick and record pairing.
+        let result = state.resolve_route(Some("session-a"), None);
+        assert!(result.is_ok(), "first call must succeed");
+        let (_, _, fk, _) = result.unwrap();
+        assert_eq!(fk, "fk1");
+
+        // Second call: session is now paired to fk1. Returns same file.
+        let result2 = state.resolve_route(Some("session-a"), None);
+        assert!(result2.is_ok(), "second call must succeed via pairing");
+        let (_, _, fk2, _) = result2.unwrap();
+        assert_eq!(fk2, "fk1");
+    }
+
+    #[test]
+    fn resolve_route_two_named_no_session_returns_ambiguous() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+
+        match state.resolve_route(None, None) {
+            Err(RouteError::Ambiguous(fks)) => {
+                assert!(fks.contains(&"fk1".to_owned()), "fk1 must be in the list");
+                assert!(fks.contains(&"fk2".to_owned()), "fk2 must be in the list");
+            }
+            other => panic!("expected Ambiguous, got ok={}", other.is_ok()),
+        }
+    }
+
+    #[test]
+    fn resolve_route_explicit_fk2_returns_fk2_and_records_session_pairing() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+
+        // Explicit fk2 with a session: must return fk2 and record pairing.
+        let result = state.resolve_route(Some("session-x"), Some("fk2"));
+        assert!(result.is_ok(), "explicit fk2 must resolve");
+        let (_, _, got_fk, _) = result.unwrap();
+        assert_eq!(got_fk, "fk2");
+
+        // Session should now be paired to fk2. Next call with no explicit returns fk2.
+        let result2 = state.resolve_route(Some("session-x"), None);
+        assert!(result2.is_ok(), "paired session must resolve to fk2");
+        let (_, _, got_fk2, _) = result2.unwrap();
+        assert_eq!(got_fk2, "fk2");
+    }
+
+    #[test]
+    fn resolve_route_explicit_unknown_returns_not_found_and_clears_stale_pairing() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned());
+
+        // Establish a pairing first.
+        let _ = state.resolve_route(Some("session-y"), Some("fk1"));
+
+        // Request an unknown fk: must return NotFound and clear the pairing.
+        match state.resolve_route(Some("session-y"), Some("ghost")) {
+            Err(RouteError::NotFound(fk, avail)) => {
+                assert_eq!(fk, "ghost");
+                assert!(avail.contains(&"fk1".to_owned()), "available must list fk1");
+            }
+            other => panic!("expected NotFound, got ok={}", other.is_ok()),
+        }
+
+        // Pairing is cleared: next call with no explicit auto-picks fk1.
+        let result = state.resolve_route(Some("session-y"), None);
+        assert!(
+            result.is_ok(),
+            "after clearing stale pairing must auto-pick fk1"
+        );
+        let (_, _, fk, _) = result.unwrap();
+        assert_eq!(fk, "fk1");
+    }
+
+    #[test]
+    fn resolve_route_unnamed_connection_not_counted_for_auto_pick() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        // add_connection gives empty file_key; no FILE_INFO sent.
+        let _conn = state.add_connection(tx);
+
+        // An unnamed connection must not count as a valid target.
+        assert!(matches!(
+            state.resolve_route(None, None),
+            Err(RouteError::NoPlugin)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancel_pending_for_conn_drops_only_that_conns_entries() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let id1 = state.next_request_id();
+        let id2 = state.next_request_id();
+        let rx1 = state.register_pending(id1, 10u64);
+        let rx2 = state.register_pending(id2, 20u64);
+
+        // Cancel conn 10. Only rx1 must fail; rx2 must still be resolvable.
+        state.cancel_pending_for_conn(10u64);
+
+        assert!(rx1.await.is_err(), "rx1 must be cancelled");
+
+        state.resolve(id2, json!({"ok": true}));
+        let val = rx2.await.expect("rx2 must still resolve");
+        assert_eq!(val["ok"], json!(true));
+    }
+
+    #[test]
+    fn two_connections_coexist_in_registry() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+
+        let connections = state.list_connections();
+        assert_eq!(connections.len(), 2, "both connections must be listed");
+        let fks: Vec<&str> = connections.iter().map(|(_, fk, _)| fk.as_str()).collect();
+        assert!(fks.contains(&"fk1") && fks.contains(&"fk2"));
     }
 }

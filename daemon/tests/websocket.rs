@@ -1125,7 +1125,8 @@ async fn test_run_screenshot_file_mode_writes_png() {
     });
 
     let tmp = tempfile::tempdir().expect("create tempdir");
-    let result = turbofig::run_screenshot(&state, 1.0, None, "file", Some(tmp.path())).await;
+    let result =
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "file", Some(tmp.path())).await;
 
     assert_eq!(
         result["ok"],
@@ -1151,7 +1152,7 @@ async fn test_run_screenshot_file_mode_writes_png() {
 #[tokio::test]
 async fn test_turbofig_execute_no_plugin_returns_error() {
     let state = Arc::new(turbofig::AppState::new());
-    let value = turbofig::run_execute(&state, "return 1+1;").await;
+    let value = turbofig::run_execute(&state, None, None, "return 1+1;").await;
 
     assert_eq!(
         value["ok"],
@@ -1169,7 +1170,7 @@ async fn test_turbofig_execute_no_plugin_returns_error() {
 #[tokio::test]
 async fn test_run_get_selection_no_plugin_returns_error() {
     let state = Arc::new(turbofig::AppState::new());
-    let value = turbofig::run_get_selection(&state).await;
+    let value = turbofig::run_get_selection(&state, None, None).await;
     assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
     assert_eq!(
         value["error"],
@@ -1182,7 +1183,7 @@ async fn test_run_get_selection_no_plugin_returns_error() {
 #[tokio::test]
 async fn test_run_screenshot_no_plugin_returns_error() {
     let state = Arc::new(turbofig::AppState::new());
-    let value = turbofig::run_screenshot(&state, 1.0, None, "file", None).await;
+    let value = turbofig::run_screenshot(&state, None, None, 1.0, None, "file", None).await;
     assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
     assert_eq!(
         value["error"],
@@ -1242,7 +1243,8 @@ async fn test_run_screenshot_invalid_base64_returns_error() {
     spawn_screenshot_plugin(state.clone(), "!!! not base64 !!!").await;
 
     let tmp = tempfile::tempdir().expect("tempdir");
-    let value = turbofig::run_screenshot(&state, 1.0, None, "file", Some(tmp.path())).await;
+    let value =
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "file", Some(tmp.path())).await;
     assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
     assert_eq!(
         value["error"],
@@ -1257,7 +1259,7 @@ async fn test_run_screenshot_file_mode_without_output_dir_returns_error() {
     let state = Arc::new(turbofig::AppState::new());
     spawn_screenshot_plugin(state.clone(), "aGVsbG8=").await;
 
-    let value = turbofig::run_screenshot(&state, 1.0, None, "file", None).await;
+    let value = turbofig::run_screenshot(&state, None, None, 1.0, None, "file", None).await;
     assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
     assert_eq!(
         value["error"],
