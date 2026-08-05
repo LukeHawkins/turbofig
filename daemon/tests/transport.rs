@@ -487,3 +487,71 @@ async fn test_client_disconnect_does_not_stop_daemon() {
         "daemon must be alive after the disconnect, got: {text}"
     );
 }
+
+/// A session ID from a prior daemon instance must get a clear reinitialize
+/// signal after a restart, not a silent failure.
+///
+/// The session registry lives in memory. A daemon restart loses it. A client
+/// that reuses an old, well-formed `mcp-session-id` must receive HTTP 404, the
+/// MCP reinitialize signal: the client must start a fresh session with
+/// `initialize`. This differs from `test_bogus_session_id_is_rejected` because
+/// the session ID here was legitimately issued by a real daemon instance.
+#[tokio::test]
+async fn test_stale_session_after_restart_signals_reinit() {
+    // Instance A: initialize and capture a real, valid session ID.
+    let base_a = start_server().await;
+    let client = make_client();
+    let init_res = post_mcp(
+        &client,
+        &base_a,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+        None,
+    )
+    .await;
+    assert!(
+        init_res.status().is_success(),
+        "initialize on A should succeed"
+    );
+    let stale_session = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must carry mcp-session-id header")
+        .to_str()
+        .expect("mcp-session-id header is valid UTF-8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    // Instance B: a fresh daemon on a new port. This models a restart: the new
+    // instance has an empty session registry and never saw the stale session.
+    let base_b = start_server().await;
+    assert_ne!(base_a, base_b, "the two instances must be distinct");
+
+    // Present the stale session to instance B. It must reply 404 (reinit signal).
+    let res = post_mcp(
+        &client,
+        &base_b,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "turbofig_status", "arguments": {}}
+        }),
+        Some(&stale_session),
+    )
+    .await;
+
+    assert_eq!(
+        res.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "a stale session after restart must return 404, the reinitialize signal"
+    );
+}
