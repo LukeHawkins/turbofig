@@ -2,15 +2,15 @@
 //!
 //! Clients write a job file to `<bridge_dir>/inbox/<id>.json` and read the
 //! result from `<bridge_dir>/outbox/<id>.json`.  The bridge polls `inbox/`
-//! on a 50 ms interval, services each job via the shared AppState, and writes
+//! on a 5 ms interval, services each job via the shared AppState, and writes
 //! results atomically (write `<id>.json.tmp` then rename).
 //!
 //! This transport lets a client drive the daemon using only local file writes
 //! and reads.  It fires no curl requests and opens no MCP connection, so it
 //! bypasses enterprise policies that gate network tool confirmations.
 //!
-//! NOTE: polling with a tokio interval is intentional for this spike.
-//!       Replacing it with the `notify` crate is a future upgrade.
+//! NOTE: the tokio-interval poll is the fallback path. An event-driven upgrade
+//!       with the `notify` crate lands next.
 
 use crate::AppState;
 use std::path::{Path, PathBuf};
@@ -47,7 +47,7 @@ pub fn bridge_dir_from_env() -> PathBuf {
 /// Serve the filesystem bridge.
 ///
 /// Creates `<dir>/inbox/` and `<dir>/outbox/` on startup.
-/// Every 50 ms, scans inbox for `*.json` files.  For each file:
+/// Every 5 ms, scans inbox for `*.json` files.  For each file:
 ///   1. Reads and parses the job JSON.
 ///   2. Dispatches on the `"op"` field.
 ///   3. Writes the result to `outbox/<id>.json` atomically.
@@ -62,7 +62,7 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
     tokio::fs::create_dir_all(&inbox).await?;
     tokio::fs::create_dir_all(&outbox).await?;
 
-    let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(50));
+    let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(5));
 
     loop {
         ticker.tick().await;
