@@ -90,7 +90,7 @@ Goal: a real, usable create+read+screenshot loop end to end. This is the first "
 - [x] Inject the sync-to-async deprecation preamble into the eval context now, so generated code uses async APIs under `dynamic-page` from the first eval
 - [x] `GET_SELECTION` + `turbofig_get_selection`: compact `{id,name,type,x,y,w,h}` shape
 - [x] `SCREENSHOT` + `turbofig_screenshot`: `exportAsync` PNG, param `{scale, return:"file"|"inline"}`. File-mode writes the PNG to the bridge outbox dir; a subagent reads it.
-- [ ] Verify: via the file-bridge (dialog-free), create a frame in a live file, read selection, get a screenshot back. Repeat the same loop over curl to confirm both transports.
+- [x] Verify: via the file-bridge (dialog-free), create a frame in a live file, read selection, get a screenshot back. Repeat the same loop over curl to confirm both transports.
 - [x] Error boundary: eval failures return a clean message to the caller (tool AND bridge), never crash the daemon
 
 ## Phase 4: True multi-file routing

@@ -1,0 +1,331 @@
+//! End-to-end tests for the Phase 3 design loop over both transports.
+//!
+//! The loop is: create a frame (execute), read the selection (get_selection),
+//! then export a screenshot. These tests run the whole loop over the file
+//! bridge and again over the MCP HTTP endpoint (the curl transport), against
+//! one stateful mock plugin. They prove both transports reach the same shared
+//! `run_*` functions and return the same shaped results.
+//!
+//! The live-file check is manual: run the daemon, import the plugin into a real
+//! Figma file, then drive the same three ops. These tests cover the routing and
+//! the result shapes without a live Figma.
+
+use futures_util::{SinkExt, StreamExt};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Find the first non-empty `data:` line in an SSE body and parse it as JSON.
+fn parse_sse_data(body: &str) -> serde_json::Value {
+    for line in body.lines() {
+        let data = if let Some(d) = line.strip_prefix("data: ") {
+            d
+        } else if let Some(d) = line.strip_prefix("data:") {
+            d
+        } else {
+            continue;
+        };
+        if data.is_empty() {
+            continue;
+        }
+        return serde_json::from_str(data)
+            .unwrap_or_else(|e| panic!("SSE data line is not valid JSON ({e}):\n{data}"));
+    }
+    panic!("No non-empty 'data:' line found in SSE body:\n{body}");
+}
+
+/// Poll for a file to appear, up to `deadline_ms` milliseconds.
+async fn poll_file(path: &PathBuf, deadline_ms: u64) -> String {
+    let deadline = Instant::now() + Duration::from_millis(deadline_ms);
+    loop {
+        if Instant::now() >= deadline {
+            panic!("Timed out waiting for {}", path.display());
+        }
+        match tokio::fs::read_to_string(path).await {
+            Ok(contents) => return contents,
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+}
+
+/// Write a job file to inbox and return the expected outbox path.
+async fn write_job(dir: &tempfile::TempDir, id: &str, body: serde_json::Value) -> PathBuf {
+    let inbox = dir.path().join("inbox");
+    tokio::fs::create_dir_all(&inbox)
+        .await
+        .expect("create inbox");
+    tokio::fs::write(inbox.join(format!("{id}.json")), body.to_string())
+        .await
+        .expect("write job");
+    dir.path().join("outbox").join(format!("{id}.json"))
+}
+
+/// Bind an ephemeral WS listener, spawn serve_ws, and return its address.
+async fn spawn_ws(state: Arc<turbofig::AppState>) -> SocketAddr {
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, state)
+            .await
+            .expect("serve_ws error");
+    });
+    ws_addr
+}
+
+/// Connect a stateful mock plugin. It models the design loop:
+///   EXECUTE        -> creates a frame, returns `{id:"1:5", type:"FRAME"}`.
+///   GET_SELECTION  -> returns that frame as the one selected node.
+///   SCREENSHOT     -> returns a base64 PNG (bytes "hello").
+async fn spawn_design_plugin(ws_addr: SocketAddr) {
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "F1", "name": "Design File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let ty = json.get("type").and_then(|t| t.as_str());
+                    let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) else {
+                        continue;
+                    };
+                    let reply = match ty {
+                        Some("EXECUTE") => serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "result": {"id": "1:5", "type": "FRAME"}
+                        }),
+                        Some("GET_SELECTION") => serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "selection": [{"id": "1:5", "name": "Frame 1", "type": "FRAME",
+                                           "x": 0, "y": 0, "w": 100, "h": 100}]
+                        }),
+                        Some("SCREENSHOT") => serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "png": "aGVsbG8=", "w": 100, "h": 100
+                        }),
+                        _ => continue,
+                    };
+                    let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                }
+            }
+        }
+    });
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+/// The full create -> select -> screenshot loop works over the file bridge.
+#[tokio::test]
+async fn test_full_loop_over_bridge() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_design_plugin(ws_addr).await;
+    tokio::spawn({
+        let state = state.clone();
+        let dir = tmp.path().to_path_buf();
+        async move {
+            turbofig::serve_bridge(state, dir)
+                .await
+                .expect("serve_bridge error");
+        }
+    });
+
+    // 1. Create a frame.
+    let out = write_job(
+        &tmp,
+        "loop_exec",
+        serde_json::json!({"op": "execute", "code": "return figma.createFrame().id;"}),
+    )
+    .await;
+    let exec: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+    assert_eq!(exec["ok"], serde_json::json!(true), "execute must succeed");
+    assert_eq!(
+        exec["result"]["id"],
+        serde_json::json!("1:5"),
+        "execute must return the new frame id, got: {exec}"
+    );
+
+    // 2. Read the selection.
+    let out = write_job(&tmp, "loop_sel", serde_json::json!({"op": "get_selection"})).await;
+    let sel: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+    assert_eq!(
+        sel["ok"],
+        serde_json::json!(true),
+        "get_selection must succeed"
+    );
+    assert_eq!(
+        sel["selection"][0]["id"],
+        serde_json::json!("1:5"),
+        "selection must carry the created frame, got: {sel}"
+    );
+
+    // 3. Get a screenshot back (file mode writes a PNG to the outbox).
+    let out = write_job(&tmp, "loop_shot", serde_json::json!({"op": "screenshot"})).await;
+    let shot: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+    assert_eq!(
+        shot["ok"],
+        serde_json::json!(true),
+        "screenshot must succeed"
+    );
+    let path = shot["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("screenshot must carry a path, got: {shot}"));
+    let bytes = tokio::fs::read(path).await.expect("read screenshot png");
+    assert_eq!(bytes, b"hello", "the PNG file must hold the decoded bytes");
+}
+
+/// The same loop works over the MCP HTTP endpoint (the curl transport).
+#[tokio::test]
+async fn test_full_loop_over_http_mcp() {
+    let state = Arc::new(turbofig::AppState::new());
+
+    let ws_addr = spawn_ws(state.clone()).await;
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+    tokio::spawn({
+        let state = state.clone();
+        async move {
+            turbofig::serve_with_state(http_listener, state)
+                .await
+                .expect("serve_with_state error");
+        }
+    });
+    spawn_design_plugin(ws_addr).await;
+
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+
+    // Handshake: initialize then notifications/initialized.
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize");
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("mcp-session-id header")
+        .to_str()
+        .expect("valid utf8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+    let _ = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
+        .send()
+        .await
+        .expect("notifications/initialized")
+        .text()
+        .await
+        .expect("drain notif");
+
+    // A small helper to call a tool and return the parsed tool payload.
+    let call_tool = |name: &'static str, args: serde_json::Value, id: u64| {
+        let client = client.clone();
+        let base_url = base_url.clone();
+        let session_id = session_id.clone();
+        async move {
+            let res = client
+                .post(format!("{base_url}/mcp"))
+                .header("Accept", "application/json, text/event-stream")
+                .header("Content-Type", "application/json")
+                .header("mcp-session-id", &session_id)
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": {"name": name, "arguments": args}
+                }))
+                .send()
+                .await
+                .expect("tools/call");
+            assert!(res.status().is_success(), "tools/call must return HTTP 200");
+            let body = res.text().await.expect("read tool body");
+            let text = parse_sse_data(&body)["result"]["content"][0]["text"]
+                .as_str()
+                .expect("tool text is a string")
+                .to_owned();
+            serde_json::from_str::<serde_json::Value>(&text).expect("tool text is JSON")
+        }
+    };
+
+    // 1. Create a frame.
+    let exec = call_tool(
+        "turbofig_execute",
+        serde_json::json!({"code": "return figma.createFrame().id;"}),
+        2,
+    )
+    .await;
+    assert_eq!(exec["ok"], serde_json::json!(true), "execute must succeed");
+    assert_eq!(
+        exec["result"]["id"],
+        serde_json::json!("1:5"),
+        "execute must return the new frame id, got: {exec}"
+    );
+
+    // 2. Read the selection.
+    let sel = call_tool("turbofig_get_selection", serde_json::json!({}), 3).await;
+    assert_eq!(
+        sel["ok"],
+        serde_json::json!(true),
+        "get_selection must succeed"
+    );
+    assert_eq!(
+        sel["selection"][0]["id"],
+        serde_json::json!("1:5"),
+        "selection must carry the created frame, got: {sel}"
+    );
+
+    // 3. Get a screenshot back inline (no outbox dir in this MCP-only test).
+    let shot = call_tool(
+        "turbofig_screenshot",
+        serde_json::json!({"return": "inline"}),
+        4,
+    )
+    .await;
+    assert_eq!(
+        shot["ok"],
+        serde_json::json!(true),
+        "screenshot must succeed"
+    );
+    assert_eq!(
+        shot["png"],
+        serde_json::json!("aGVsbG8="),
+        "inline screenshot must carry the base64 PNG, got: {shot}"
+    );
+}
