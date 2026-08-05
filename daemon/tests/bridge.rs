@@ -446,3 +446,55 @@ async fn test_bridge_screenshot_file_mode_op() {
     let bytes = tokio::fs::read(path).await.expect("read screenshot png");
     assert_eq!(bytes, b"hello", "file must hold the decoded PNG bytes");
 }
+
+/// An eval that throws in the plugin returns a clean error over the bridge and
+/// never stalls the watcher. A second execute job is still serviced.
+#[tokio::test]
+async fn test_bridge_execute_eval_error() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    // The mock plugin models a thrown eval: every EXECUTE gets ok:false.
+    spawn_mock_plugin(
+        state.clone(),
+        "EXECUTE",
+        serde_json::json!({"ok": false, "error": "TypeError: bad access"}),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    // First job: the eval error must surface as a clean message.
+    let out1 = write_job(
+        &tmp,
+        "job_err1",
+        serde_json::json!({"op": "execute", "code": "throw new Error();"}),
+    )
+    .await;
+    let payload1: serde_json::Value =
+        serde_json::from_str(&poll_file(&out1, 2000).await).expect("valid JSON");
+    assert_eq!(
+        payload1["ok"],
+        serde_json::json!(false),
+        "must return ok:false"
+    );
+    assert_eq!(
+        payload1["error"],
+        serde_json::json!("TypeError: bad access"),
+        "the plugin error must pass through verbatim, got: {payload1}"
+    );
+
+    // Second job: proves the watcher kept running after the error.
+    let out2 = write_job(
+        &tmp,
+        "job_err2",
+        serde_json::json!({"op": "execute", "code": "throw new Error();"}),
+    )
+    .await;
+    let payload2: serde_json::Value =
+        serde_json::from_str(&poll_file(&out2, 2000).await).expect("valid JSON");
+    assert_eq!(
+        payload2["ok"],
+        serde_json::json!(false),
+        "the watcher must keep serving after an eval error, got: {payload2}"
+    );
+}

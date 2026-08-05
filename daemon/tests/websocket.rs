@@ -1299,3 +1299,176 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
         "a mid-request disconnect must return plugin.connected:false, got: {payload}"
     );
 }
+
+/// An eval that throws in the plugin returns a clean error to the tool caller
+/// and never crashes the daemon. A follow-up status call still succeeds.
+#[tokio::test]
+async fn test_turbofig_execute_eval_error_returns_clean_message() {
+    let state = Arc::new(turbofig::AppState::new());
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_with_state(http_listener, http_state)
+            .await
+            .expect("serve_with_state error in test");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "abc123", "name": "My Design File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The mock plugin models a thrown eval: EXECUTE gets ok:false with an error.
+    // STATUS still replies normally so the follow-up liveness check passes.
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let ty = json.get("type").and_then(|t| t.as_str());
+                    let id = json.get("requestId").and_then(|v| v.as_u64());
+                    if let Some(id) = id {
+                        let reply = match ty {
+                            Some("EXECUTE") => serde_json::json!({
+                                "type": "RESULT", "requestId": id, "ok": false,
+                                "error": "ReferenceError: foo is not defined"
+                            }),
+                            Some("STATUS") => serde_json::json!({
+                                "type": "RESULT", "requestId": id, "ok": true,
+                                "fileKey": "abc123", "name": "My Design File"
+                            }),
+                            _ => continue,
+                        };
+                        let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                    }
+                }
+            }
+        }
+    });
+
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize");
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("mcp-session-id header")
+        .to_str()
+        .expect("valid utf8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    let _ = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
+        .send()
+        .await
+        .expect("notifications/initialized")
+        .text()
+        .await
+        .expect("drain notif");
+
+    // Call execute. The eval throws in the plugin. The tool must return a clean
+    // error over HTTP 200, not crash.
+    let exec_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "turbofig_execute", "arguments": {"code": "return foo;"}}
+        }))
+        .send()
+        .await
+        .expect("tools/call execute");
+    assert!(
+        exec_res.status().is_success(),
+        "tool must return HTTP 200 even on eval error, got HTTP {}",
+        exec_res.status()
+    );
+    let exec_payload: serde_json::Value = serde_json::from_str(
+        parse_sse_data(&exec_res.text().await.expect("exec body"))["result"]["content"][0]["text"]
+            .as_str()
+            .expect("exec text is a string"),
+    )
+    .expect("exec text is JSON");
+    assert_eq!(
+        exec_payload["ok"],
+        serde_json::json!(false),
+        "eval error must return ok:false, got: {exec_payload}"
+    );
+    assert_eq!(
+        exec_payload["error"],
+        serde_json::json!("ReferenceError: foo is not defined"),
+        "the plugin error message must pass through verbatim, got: {exec_payload}"
+    );
+
+    // The daemon must still serve. A follow-up status call succeeds.
+    let status_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "turbofig_status", "arguments": {}}
+        }))
+        .send()
+        .await
+        .expect("tools/call status after error");
+    let status_payload: serde_json::Value = serde_json::from_str(
+        parse_sse_data(&status_res.text().await.expect("status body"))["result"]["content"][0]
+            ["text"]
+            .as_str()
+            .expect("status text is a string"),
+    )
+    .expect("status text is JSON");
+    assert_eq!(
+        status_payload["ok"],
+        serde_json::json!(true),
+        "daemon must stay alive and answer status after an eval error, got: {status_payload}"
+    );
+}
