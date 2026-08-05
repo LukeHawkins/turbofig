@@ -102,9 +102,9 @@ Goal: cut a big design job from about an hour to a few minutes with far fewer to
 - [x] Minimal helper library: a compact `tf` craft namespace for the eval context (auto-layout frame, text with font-load, color, rect, `findOrCreate` for idempotency) with perf rules baked in (fonts via `Promise.all`, chunk, `commitUndo`). Pure logic unit-tested; figma glue smoke-tested. (from Phase 6)
 - [x] Inject the helper namespace into every eval, beside the deprecation preamble, so generated code calls `tf.*`. (from Phase 6)
 - [x] Compact helper API reference (one short doc) so the model learns the helpers cheaply. (from Phase 6)
-- [ ] Shaped returns + firewall defaults: ids-first, opt-in `fields`/`depth`; screenshots file-mode by default; images live and die in subagents. (from Phase 5)
-- [ ] Checkpoint + idempotency: persist the plan spec and per-section status to disk via the file-bridge; ops are idempotent by stable node ids (`findOrCreate`), so a re-run never duplicates and can resume. (from Phase 7)
-- [ ] `.claude/commands/design.md`: brief -> plan-first spec -> parallel firewalled builder subagents (each batches via `tf.*`) -> milestone screenshot per section in a subagent -> QA critic subagent (text critique) -> refine. Runs long jobs and resumes from the last completed section. (from Phase 7)
+- [x] Shaped returns + firewall defaults: ids-first, opt-in `fields`/`depth`; screenshots file-mode by default; images live and die in subagents. (from Phase 5)
+- [x] Checkpoint + idempotency: persist the plan spec and per-section status to disk via the file-bridge; ops are idempotent by stable node ids (`findOrCreate`), so a re-run never duplicates and can resume. (from Phase 7)
+- [x] `.claude/commands/design.md`: brief -> plan-first spec -> parallel firewalled builder subagents (each batches via `tf.*`) -> milestone screenshot per section in a subagent -> QA critic subagent (text critique) -> refine. Runs long jobs and resumes from the last completed section. (from Phase 7)
 - [ ] Verify live: hand it a brief; it builds a complex page in minutes, main-context tokens stay low, and a mid-run interruption resumes cleanly.
 
 ## Phase 4: True multi-file routing (deferred: see Active priority above)
@@ -145,7 +145,7 @@ Goal: reliable, fast Figma craft as a compact JS namespace injected into the eva
 
 Goal: the agent workflow that turns a brief into real design, cheaply and durably. Then the binding ship gate.
 
-- [ ] `.claude/commands/design.md`: plan-first spec, then parallel builder subagents, then a QA critic subagent, then refine
+- [x] `.claude/commands/design.md`: plan-first spec, then parallel builder subagents, then a QA critic subagent, then refine
 - [ ] Context intake: accept a moodboard image, brand docs, and reference URLs as inputs
 - [ ] QA critic runs in a subagent (context firewall); returns a text critique, never raw images to the parent
 - [ ] Rubric-driven critique (hierarchy, spacing scale, contrast/AA, alignment, restraint)
