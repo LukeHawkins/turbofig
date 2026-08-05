@@ -39,7 +39,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Tooling
 
-- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`. Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Phase 3+ crates: `image`, `rustls`.
+- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`, `base64` (decode screenshot PNG). Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Later crates: `image` (Phase 5), `rustls` (Phase 10).
 - **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
 - **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`). Two more env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default 30000) and `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`).
 
