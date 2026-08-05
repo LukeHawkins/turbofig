@@ -102,3 +102,39 @@ export function safeResult(value: unknown): unknown {
     return String(value);
   }
 }
+
+/**
+ * Sync-to-async deprecation preamble for the eval context.
+ *
+ * The manifest sets `documentAccess: dynamic-page`. Under that mode Figma
+ * rejects the old synchronous API calls. This preamble runs first in every
+ * eval. It sets strict mode and lists the async replacements, so generated
+ * code uses the async APIs from the first eval.
+ *
+ * Keep this table current. Phase 12 owns the monthly upkeep note.
+ */
+export const DEPRECATION_PREAMBLE = `"use strict";
+/* Turbofig eval runs under documentAccess: dynamic-page. Use the async APIs.
+   Do not use the deprecated synchronous calls on the left.
+     figma.getNodeById(id)              -> await figma.getNodeByIdAsync(id)
+     figma.getStyleById(id)             -> await figma.getStyleByIdAsync(id)
+     figma.getLocalPaintStyles()        -> await figma.getLocalPaintStylesAsync()
+     figma.getLocalTextStyles()         -> await figma.getLocalTextStylesAsync()
+     figma.getLocalEffectStyles()       -> await figma.getLocalEffectStylesAsync()
+     figma.getLocalGridStyles()         -> await figma.getLocalGridStylesAsync()
+     figma.importComponentByKey(k)      -> await figma.importComponentByKeyAsync(k)
+     figma.importComponentSetByKey(k)   -> await figma.importComponentSetByKeyAsync(k)
+     figma.importStyleByKey(k)          -> await figma.importStyleByKeyAsync(k)
+     instance.getMainComponent()        -> await instance.getMainComponentAsync()
+     figma.variables.getVariableById(i) -> await figma.variables.getVariableByIdAsync(i)
+     figma.variables.getLocalVariables()-> await figma.variables.getLocalVariablesAsync()
+     figma.currentPage = page           -> await figma.setCurrentPageAsync(page)
+   Load pages before you read them: await figma.loadAllPagesAsync(). */`;
+
+/**
+ * Wraps user code with the deprecation preamble for the eval context.
+ * The preamble runs first, then the user code, in one async function body.
+ */
+export function wrapUserCode(code: string): string {
+  return `${DEPRECATION_PREAMBLE}\n${code}`;
+}

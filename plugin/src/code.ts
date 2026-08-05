@@ -4,6 +4,7 @@ import {
   buildResult,
   isDaemonMessage,
   safeResult,
+  wrapUserCode,
 } from "./protocol";
 
 figma.showUI(__html__, { width: 320, height: 240 });
@@ -23,13 +24,13 @@ figma.ui.onmessage = (msg: unknown) => {
       break;
     case "EXECUTE": {
       const { requestId, code } = msg;
-      // TODO: inject deprecation preamble here before evaluating user code.
       const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
         ...args: string[]
       ) => (...args: unknown[]) => Promise<unknown>;
       void (async () => {
         try {
-          const fn = new AsyncFunction("figma", code);
+          // The preamble runs first. It sets async APIs under dynamic-page.
+          const fn = new AsyncFunction("figma", wrapUserCode(code));
           const result = await fn(figma);
           figma.ui.postMessage(buildExecuteSuccess(requestId, safeResult(result)));
         } catch (err) {

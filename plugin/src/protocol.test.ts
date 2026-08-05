@@ -4,8 +4,10 @@ import {
   buildExecuteError,
   buildExecuteSuccess,
   buildResult,
+  DEPRECATION_PREAMBLE,
   isDaemonMessage,
   safeResult,
+  wrapUserCode,
 } from "./protocol";
 
 describe("isDaemonMessage", () => {
@@ -161,6 +163,30 @@ describe("safeResult", () => {
     expect(safeResult(42)).toBe(42);
     expect(safeResult("hello")).toBe("hello");
     expect(safeResult(null)).toBe(null);
+  });
+});
+
+describe("deprecation preamble", () => {
+  test("preamble sets strict mode first", () => {
+    expect(DEPRECATION_PREAMBLE.startsWith('"use strict";')).toBe(true);
+  });
+
+  test("preamble lists key async replacements", () => {
+    expect(DEPRECATION_PREAMBLE).toContain("getNodeByIdAsync");
+    expect(DEPRECATION_PREAMBLE).toContain("getLocalPaintStylesAsync");
+    expect(DEPRECATION_PREAMBLE).toContain("setCurrentPageAsync");
+  });
+
+  test("wrapUserCode puts the preamble before the user code", () => {
+    const wrapped = wrapUserCode("return 1;");
+    expect(wrapped.startsWith(DEPRECATION_PREAMBLE)).toBe(true);
+    expect(wrapped.endsWith("return 1;")).toBe(true);
+    expect(wrapped.indexOf(DEPRECATION_PREAMBLE)).toBeLessThan(wrapped.indexOf("return 1;"));
+  });
+
+  test("wrapUserCode keeps the user code intact", () => {
+    const code = "const x = await figma.getNodeByIdAsync('1');\nreturn x;";
+    expect(wrapUserCode(code)).toContain(code);
   });
 });
 
