@@ -518,11 +518,18 @@ pub async fn run_execute(
 /// Recv error -> `{"ok":false,"error":"plugin disconnected"}`.
 /// Timeout -> cancel_pending then `{"ok":false,"error":"plugin timed out"}`.
 ///
+/// `fields` adds named node properties to each item beyond the base seven.
+/// `depth` controls child traversal (0 = top-level only, clamped to 5).
+/// Omit both for the compact default shape. Depth is clamped daemon-side
+/// before the request reaches the plugin.
+///
 /// Reused by both `turbofig_get_selection` (MCP) and the filesystem bridge.
 pub async fn run_get_selection(
     state: &Arc<AppState>,
     session_id: Option<&str>,
     file_key: Option<&str>,
+    fields: Option<&[String]>,
+    depth: Option<u32>,
 ) -> Value {
     let (conn_id, tx, _, _) = match state.resolve_route(session_id, file_key) {
         Ok(r) => r,
@@ -531,7 +538,13 @@ pub async fn run_get_selection(
 
     let id = state.next_request_id();
     let rx = state.register_pending(id, conn_id);
-    let request = json!({"type": "GET_SELECTION", "requestId": id});
+    let mut request = json!({"type": "GET_SELECTION", "requestId": id});
+    if let Some(f) = fields {
+        request["fields"] = json!(f);
+    }
+    if let Some(d) = depth {
+        request["depth"] = json!(d.min(5));
+    }
 
     if tx.send(request.to_string()).is_err() {
         state.cancel_pending(id);
@@ -669,7 +682,7 @@ fn session_id_from_parts(parts: &http::request::Parts) -> Option<&str> {
 }
 
 /// Parameters for tools that take only an optional target file key.
-/// Used by turbofig_status and turbofig_get_selection.
+/// Used by turbofig_status only. turbofig_get_selection uses SelectionParams.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct FileTargetParams {
     #[serde(rename = "fileKey", default)]
@@ -677,6 +690,30 @@ struct FileTargetParams {
         description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
     )]
     file_key: Option<String>,
+}
+
+/// Parameters for turbofig_get_selection.
+///
+/// Extends the base file-key routing with optional field selection and
+/// child-traversal depth. Omit fields and depth to get the compact default
+/// (seven base fields, top-level nodes only).
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SelectionParams {
+    #[serde(rename = "fileKey", default)]
+    #[schemars(
+        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
+    )]
+    file_key: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Extra node property names to include alongside the base seven fields"
+    )]
+    fields: Option<Vec<String>>,
+    #[serde(default)]
+    #[schemars(
+        description = "Child traversal depth (0 = top-level only, max 5). Omit for the default compact shape"
+    )]
+    depth: Option<u32>,
 }
 
 /// Parameters for the turbofig_execute tool.
@@ -781,14 +818,27 @@ impl StatusHandler {
     ///
     /// Delegates to `run_get_selection` for the shared logic; wraps the result
     /// in a `CallToolResult` for the MCP wire format.
+    /// Pass `fields` to include extra node properties beyond the base seven.
+    /// Pass `depth` (max 5) to traverse child nodes.
     #[tool(description = "Return the current Figma selection")]
     async fn turbofig_get_selection(
         &self,
-        Parameters(FileTargetParams { file_key }): Parameters<FileTargetParams>,
+        Parameters(SelectionParams {
+            file_key,
+            fields,
+            depth,
+        }): Parameters<SelectionParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
         let session_id = session_id_from_parts(&parts);
-        let value = run_get_selection(&self.state, session_id, file_key.as_deref()).await;
+        let value = run_get_selection(
+            &self.state,
+            session_id,
+            file_key.as_deref(),
+            fields.as_deref(),
+            depth,
+        )
+        .await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))

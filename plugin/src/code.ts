@@ -7,7 +7,7 @@ import {
   buildSelection,
   isDaemonMessage,
   safeResult,
-  toSelectionItem,
+  serializeNode,
   wrapUserCode,
 } from "./protocol";
 
@@ -50,13 +50,15 @@ figma.ui.onmessage = (msg: unknown) => {
       break;
     }
     case "GET_SELECTION": {
-      const { requestId } = msg;
+      const { requestId, fields, depth } = msg;
       try {
-        // Map each selected node to a plain SelectionItem for serialisation.
+        // Map each selected node with the caller's field/depth options.
         const items = figma.currentPage.selection.map((n) =>
-          toSelectionItem(n as unknown as Record<string, unknown>),
+          serializeNode(n as unknown as Record<string, unknown>, fields, depth ?? 0),
         );
-        figma.ui.postMessage(buildSelection(requestId, items));
+        figma.ui.postMessage(
+          buildSelection(requestId, items as Parameters<typeof buildSelection>[1]),
+        );
       } catch (err) {
         const message =
           err != null && typeof err === "object" && "message" in err

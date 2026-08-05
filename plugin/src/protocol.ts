@@ -27,6 +27,10 @@ export interface ExecuteMessage {
 export interface GetSelectionMessage {
   type: "GET_SELECTION";
   requestId: number;
+  /** Extra node properties to include alongside the base seven fields. */
+  fields?: string[];
+  /** How many child levels to traverse. 0 (default) returns the top-level nodes only. */
+  depth?: number;
 }
 
 /** Sent by the daemon to the plugin to request a PNG screenshot of a node. */
@@ -148,6 +152,52 @@ export function toSelectionItem(node: Record<string, unknown>): SelectionItem {
     w: num("width"),
     h: num("height"),
   };
+}
+
+/**
+ * Maximum child levels `serializeNode` will traverse.
+ * Callers that pass a higher depth receive exactly this many levels.
+ */
+export const MAX_SELECTION_DEPTH = 5;
+
+/**
+ * Serialises a loosely-typed node object into a SelectionItem extended with
+ * caller-requested extra fields and optional child traversal.
+ *
+ * Always includes the base seven fields (id first) via `toSelectionItem`.
+ * For each name in `fields`, copies the property from `node` if present and
+ * JSON-safe (skips functions and undefined values).
+ * When `depth > 0` and the node has a `children` array, adds a `children`
+ * array where each child is serialised with `depth - 1`.
+ * Clamps `depth` to `MAX_SELECTION_DEPTH` so callers cannot force a huge tree.
+ */
+export function serializeNode(
+  node: Record<string, unknown>,
+  fields: string[] | undefined,
+  depth: number,
+): SelectionItem & Record<string, unknown> {
+  const clampedDepth = Math.min(depth, MAX_SELECTION_DEPTH);
+  const result: SelectionItem & Record<string, unknown> = { ...toSelectionItem(node) };
+
+  // Copy requested extra fields. Skip functions and undefined values.
+  if (fields) {
+    for (const field of fields) {
+      // A missing field reads as undefined, so the guard below skips it.
+      const val = node[field];
+      if (val !== undefined && typeof val !== "function") {
+        result[field] = val;
+      }
+    }
+  }
+
+  // Recurse into children when depth allows.
+  if (clampedDepth > 0 && Array.isArray(node.children)) {
+    result.children = (node.children as Record<string, unknown>[]).map((child) =>
+      serializeNode(child, fields, clampedDepth - 1),
+    );
+  }
+
+  return result;
 }
 
 /**

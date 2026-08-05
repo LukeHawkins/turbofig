@@ -831,3 +831,90 @@ async fn test_bridge_execute_eval_error() {
         "the watcher must keep serving after an eval error, got: {payload2}"
     );
 }
+
+/// A get_selection bridge job that carries `fields` and `depth` forwards them
+/// to the plugin. A mock plugin echoes the received values back in the result.
+#[tokio::test]
+async fn test_bridge_get_selection_fields_and_depth_forwarded() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    // Spawn a WS server and a plugin that echoes fields/depth back.
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "echo", "name": "Echo"}).to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("GET_SELECTION") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let received_fields = json
+                                .get("fields")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            let received_depth = json
+                                .get("depth")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            let reply = serde_json::json!({
+                                "type": "RESULT",
+                                "requestId": id,
+                                "ok": true,
+                                "selection": [{"id": "echo", "received_fields": received_fields, "received_depth": received_depth}]
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    // Send a job with fields and depth.
+    let out = write_job(
+        &tmp,
+        "job_sel_shaped",
+        serde_json::json!({
+            "op": "get_selection",
+            "fields": ["opacity", "visible"],
+            "depth": 3
+        }),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
+    assert_eq!(
+        payload["selection"][0]["received_fields"],
+        serde_json::json!(["opacity", "visible"]),
+        "bridge must forward fields to the plugin: {payload}"
+    );
+    assert_eq!(
+        payload["selection"][0]["received_depth"],
+        serde_json::json!(3),
+        "bridge must forward depth to the plugin: {payload}"
+    );
+}

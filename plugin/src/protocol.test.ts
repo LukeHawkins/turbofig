@@ -8,7 +8,9 @@ import {
   buildSelection,
   DEPRECATION_PREAMBLE,
   isDaemonMessage,
+  MAX_SELECTION_DEPTH,
   safeResult,
+  serializeNode,
   toSelectionItem,
   wrapUserCode,
 } from "./protocol";
@@ -329,6 +331,89 @@ describe("isDaemonMessage: SCREENSHOT branch", () => {
 
   test("rejects SCREENSHOT with a string requestId", () => {
     expect(isDaemonMessage({ type: "SCREENSHOT", requestId: "req-1" })).toBe(false);
+  });
+});
+
+describe("serializeNode", () => {
+  const baseNode = {
+    id: "1:1",
+    name: "Frame",
+    type: "FRAME",
+    x: 10,
+    y: 20,
+    width: 100,
+    height: 50,
+  };
+
+  test("base shape equals the seven fields with no fields/depth", () => {
+    const result = serializeNode(baseNode, undefined, 0);
+    expect(result.id).toBe("1:1");
+    expect(result.name).toBe("Frame");
+    expect(result.type).toBe("FRAME");
+    expect(result.x).toBe(10);
+    expect(result.y).toBe(20);
+    expect(result.w).toBe(100);
+    expect(result.h).toBe(50);
+    expect(Object.keys(result)).toHaveLength(7);
+  });
+
+  test("fields adds requested extra props and ignores missing ones", () => {
+    const node = { ...baseNode, visible: true, opacity: 0.5 };
+    const result = serializeNode(node, ["visible", "opacity", "notPresent"], 0);
+    expect(result.visible).toBe(true);
+    expect(result.opacity).toBe(0.5);
+    expect("notPresent" in result).toBe(false);
+  });
+
+  test("depth 1 includes a children array one level deep", () => {
+    const child = { id: "1:2", name: "Child", type: "TEXT", x: 0, y: 0, width: 10, height: 10 };
+    const node = { ...baseNode, children: [child] };
+    const result = serializeNode(node, undefined, 1);
+    expect(Array.isArray(result.children)).toBe(true);
+    const kids = result.children as (typeof result)[];
+    expect(kids).toHaveLength(1);
+    expect(kids[0].id).toBe("1:2");
+  });
+
+  test("depth 0 omits children entirely", () => {
+    const child = { id: "1:2", name: "Child", type: "TEXT", x: 0, y: 0, width: 10, height: 10 };
+    const node = { ...baseNode, children: [child] };
+    const result = serializeNode(node, undefined, 0);
+    expect("children" in result).toBe(false);
+  });
+
+  test("depth clamps at MAX_SELECTION_DEPTH (pass 99, assert it stops at the cap)", () => {
+    // Build a node tree that is MAX_SELECTION_DEPTH + 2 levels deep.
+    let deepest: Record<string, unknown> = {
+      id: "leaf",
+      name: "Leaf",
+      type: "RECTANGLE",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+    };
+    for (let i = 0; i < MAX_SELECTION_DEPTH + 1; i++) {
+      deepest = {
+        id: `n${i}`,
+        name: `Level ${i}`,
+        type: "FRAME",
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        children: [deepest],
+      };
+    }
+    const result = serializeNode(deepest, undefined, 99);
+    // Traverse the result and count actual depth.
+    let current: Record<string, unknown> = result;
+    let actualDepth = 0;
+    while (Array.isArray(current.children) && current.children.length > 0) {
+      current = (current.children as Record<string, unknown>[])[0];
+      actualDepth++;
+    }
+    expect(actualDepth).toBe(MAX_SELECTION_DEPTH);
   });
 });
 

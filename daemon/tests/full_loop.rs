@@ -329,3 +329,126 @@ async fn test_full_loop_over_http_mcp() {
         "inline screenshot must carry the base64 PNG, got: {shot}"
     );
 }
+
+// ── fields/depth forwarding tests ────────────────────────────────────────────
+
+/// Spawn a mock plugin that, on GET_SELECTION, echoes the fields and depth it
+/// received back inside the result so the test can assert the daemon forwarded them.
+async fn spawn_echo_plugin(ws_addr: SocketAddr) {
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock echo plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "Echo", "name": "Echo File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) else {
+                        continue;
+                    };
+                    if json.get("type").and_then(|t| t.as_str()) == Some("GET_SELECTION") {
+                        // Echo back the fields and depth the daemon sent.
+                        let received_fields = json
+                            .get("fields")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        let received_depth = json
+                            .get("depth")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        let reply = serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "selection": [{
+                                "id": "echo",
+                                "received_fields": received_fields,
+                                "received_depth": received_depth
+                            }]
+                        });
+                        let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// GET_SELECTION with no fields/depth: the daemon sends neither key to the plugin.
+/// The default path (compact shape) must still succeed.
+#[tokio::test]
+async fn test_get_selection_default_no_fields_no_depth() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_echo_plugin(ws_addr).await;
+
+    let result = turbofig::run_get_selection(&state, None, None, None, None).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    // Neither field was sent, so the plugin echoed null for both.
+    assert_eq!(
+        result["selection"][0]["received_fields"],
+        serde_json::json!(null),
+        "no fields forwarded when None: {result}"
+    );
+    assert_eq!(
+        result["selection"][0]["received_depth"],
+        serde_json::json!(null),
+        "no depth forwarded when None: {result}"
+    );
+}
+
+/// GET_SELECTION with fields and depth: the daemon forwards both to the plugin.
+#[tokio::test]
+async fn test_get_selection_fields_and_depth_forwarded() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_echo_plugin(ws_addr).await;
+
+    let fields = vec!["opacity".to_owned(), "visible".to_owned()];
+    let result = turbofig::run_get_selection(&state, None, None, Some(&fields), Some(2)).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert_eq!(
+        result["selection"][0]["received_fields"],
+        serde_json::json!(["opacity", "visible"]),
+        "fields must be forwarded to the plugin: {result}"
+    );
+    assert_eq!(
+        result["selection"][0]["received_depth"],
+        serde_json::json!(2),
+        "depth must be forwarded to the plugin: {result}"
+    );
+}
+
+/// Depth clamps to 5 at the daemon before reaching the plugin.
+#[tokio::test]
+async fn test_get_selection_depth_clamps_at_daemon() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_echo_plugin(ws_addr).await;
+
+    let result = turbofig::run_get_selection(&state, None, None, None, Some(99)).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert_eq!(
+        result["selection"][0]["received_depth"],
+        serde_json::json!(5),
+        "daemon must clamp depth 99 to 5: {result}"
+    );
+}

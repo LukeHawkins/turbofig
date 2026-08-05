@@ -1175,7 +1175,7 @@ async fn test_turbofig_execute_no_plugin_returns_error() {
 #[tokio::test]
 async fn test_run_get_selection_no_plugin_returns_error() {
     let state = Arc::new(turbofig::AppState::new());
-    let value = turbofig::run_get_selection(&state, None, None).await;
+    let value = turbofig::run_get_selection(&state, None, None, None, None).await;
     assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
     assert_eq!(
         value["error"],

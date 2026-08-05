@@ -257,7 +257,20 @@ async fn process_job(
             Some(code) => crate::run_execute(state, None, file_key, code).await,
             None => serde_json::json!({"ok": false, "error": "execute op needs a code field"}),
         },
-        Some("get_selection") => crate::run_get_selection(state, None, file_key).await,
+        Some("get_selection") => {
+            // Read optional field list and depth for shaped returns.
+            let fields: Option<Vec<String>> =
+                job.get("fields").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                });
+            let depth: Option<u32> = job
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .map(|d| d.min(5) as u32);
+            crate::run_get_selection(state, None, file_key, fields.as_deref(), depth).await
+        }
         Some("screenshot") => {
             let scale = job.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
             let node_id = job.get("nodeId").and_then(|v| v.as_str());
