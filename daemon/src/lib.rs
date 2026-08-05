@@ -4,6 +4,7 @@ pub use bridge::{bridge_dir_from_env, serve_bridge};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use rmcp::{
+    handler::server::tool::Extension,
     handler::server::wrapper::Parameters,
     model::*,
     schemars, tool, tool_handler, tool_router,
@@ -639,11 +640,27 @@ pub async fn run_screenshot(
 
 // ── MCP handler ───────────────────────────────────────────────────────────────
 
+/// Parameters for tools that take only an optional target file key.
+/// Used by turbofig_status and turbofig_get_selection.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct FileTargetParams {
+    #[serde(rename = "fileKey", default)]
+    #[schemars(
+        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
+    )]
+    file_key: Option<String>,
+}
+
 /// Parameters for the turbofig_execute tool.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ExecuteParams {
     #[schemars(description = "JavaScript code to execute in the Figma plugin context")]
     code: String,
+    #[serde(rename = "fileKey", default)]
+    #[schemars(
+        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
+    )]
+    file_key: Option<String>,
 }
 
 /// Parameters for the turbofig_screenshot tool.
@@ -660,6 +677,11 @@ struct ScreenshotParams {
         description = "Return mode: 'file' (default) writes a PNG to disk; 'inline' returns base64"
     )]
     return_mode: String,
+    #[serde(rename = "fileKey", default)]
+    #[schemars(
+        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
+    )]
+    file_key: Option<String>,
 }
 
 fn default_screenshot_scale() -> f64 {
@@ -698,8 +720,16 @@ impl StatusHandler {
     /// `CallToolResult` for the MCP wire format.
     /// `"ok":true` always means the daemon is alive regardless of plugin state.
     #[tool(description = "Return daemon status")]
-    async fn turbofig_status(&self) -> Result<CallToolResult, McpError> {
-        let value = run_status(&self.state, None, None).await;
+    async fn turbofig_status(
+        &self,
+        Parameters(FileTargetParams { file_key }): Parameters<FileTargetParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session_id = parts
+            .headers
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok());
+        let value = run_status(&self.state, session_id, file_key.as_deref()).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
@@ -712,9 +742,14 @@ impl StatusHandler {
     #[tool(description = "Execute JavaScript in the Figma plugin and return the result")]
     async fn turbofig_execute(
         &self,
-        Parameters(ExecuteParams { code }): Parameters<ExecuteParams>,
+        Parameters(ExecuteParams { code, file_key }): Parameters<ExecuteParams>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let value = run_execute(&self.state, None, None, &code).await;
+        let session_id = parts
+            .headers
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok());
+        let value = run_execute(&self.state, session_id, file_key.as_deref(), &code).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
@@ -725,8 +760,16 @@ impl StatusHandler {
     /// Delegates to `run_get_selection` for the shared logic; wraps the result
     /// in a `CallToolResult` for the MCP wire format.
     #[tool(description = "Return the current Figma selection")]
-    async fn turbofig_get_selection(&self) -> Result<CallToolResult, McpError> {
-        let value = run_get_selection(&self.state, None, None).await;
+    async fn turbofig_get_selection(
+        &self,
+        Parameters(FileTargetParams { file_key }): Parameters<FileTargetParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session_id = parts
+            .headers
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok());
+        let value = run_get_selection(&self.state, session_id, file_key.as_deref()).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
@@ -743,12 +786,18 @@ impl StatusHandler {
             scale,
             node_id,
             return_mode,
+            file_key,
         }): Parameters<ScreenshotParams>,
+        Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let session_id = parts
+            .headers
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok());
         let value = run_screenshot(
             &self.state,
-            None,
-            None,
+            session_id,
+            file_key.as_deref(),
             scale,
             node_id.as_deref(),
             &return_mode,

@@ -1931,6 +1931,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "futures-util",
+ "http",
  "notify",
  "reqwest",
  "rmcp",
