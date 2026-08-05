@@ -265,3 +265,82 @@ async fn test_fk2_survives_fk1_close() {
         "fk2 result must come from fk2-reply after fk1 closes, got: {result}"
     );
 }
+
+/// A timeout on one connection does not disturb a concurrent execute on another.
+///
+/// fk1 is SILENT: it registers via FILE_INFO but never replies to EXECUTE.
+/// fk2 answers normally. With a 300 ms timeout, a concurrent tokio::join! must
+/// return fk1 as ok:false (timed out) and fk2 as ok:true, proving timeout
+/// isolation between connections.
+#[tokio::test]
+async fn test_timeout_isolation_two_connections() {
+    // Build state with a short timeout so the fk1 failure surfaces quickly.
+    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_millis(300)));
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let ws_port = ws_listener.local_addr().expect("ws local addr").port();
+
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    // Connect fk1 as a silent plugin. It registers but never sends EXECUTE replies.
+    let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
+        .await
+        .expect("fk1 connect");
+    fk1_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "fk1", "name": "fk1"}).to_string(),
+        ))
+        .await
+        .expect("send fk1 FILE_INFO");
+    // Keep fk1's socket open. Never reply to EXECUTE.
+    tokio::spawn(async move { while let Some(Ok(_)) = fk1_ws.next().await {} });
+
+    // Connect fk2 as a normal replying plugin.
+    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+
+    // Wait until both plugins are registered in observable state.
+    let found_fk1 = wait_for_file_key(&state, "fk1").await;
+    assert!(found_fk1, "fk1 must register before routing");
+    let found_fk2 = wait_for_file_key(&state, "fk2").await;
+    assert!(found_fk2, "fk2 must register before routing");
+
+    // Fire both run_execute calls at the same time.
+    let state1 = state.clone();
+    let state2 = state.clone();
+    let (result_fk1, result_fk2) = tokio::join!(
+        async move { turbofig::run_execute(&state1, None, Some("fk1"), "return 1;").await },
+        async move { turbofig::run_execute(&state2, None, Some("fk2"), "return 1;").await },
+    );
+
+    // fk1 must time out.
+    assert_eq!(
+        result_fk1["ok"],
+        serde_json::json!(false),
+        "fk1 must time out (ok:false), got: {result_fk1}"
+    );
+    assert!(
+        result_fk1["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("timed out")),
+        "fk1 error must mention timed out, got: {result_fk1}"
+    );
+
+    // fk2 must succeed despite the concurrent fk1 timeout.
+    assert_eq!(
+        result_fk2["ok"],
+        serde_json::json!(true),
+        "fk2 must succeed after fk1 times out, got: {result_fk2}"
+    );
+    assert_eq!(
+        result_fk2["result"]["from"],
+        serde_json::json!("fk2-reply"),
+        "fk2 result must come from fk2-reply, got: {result_fk2}"
+    );
+}

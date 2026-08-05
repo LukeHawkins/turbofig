@@ -575,6 +575,21 @@ async fn test_bridge_execute_no_file_key_two_plugins_returns_ambiguous() {
         payload["files"].is_array(),
         "result must list available file keys"
     );
+    // Collect the string entries from the files array and check both keys appear.
+    let files: Vec<String> = payload["files"]
+        .as_array()
+        .expect("files must be an array")
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        files.contains(&"fk1".to_owned()),
+        "files must contain fk1, got: {files:?}"
+    );
+    assert!(
+        files.contains(&"fk2".to_owned()),
+        "files must contain fk2, got: {files:?}"
+    );
 }
 
 /// Two plugins connected, job carries fileKey for fk2: only fk2 receives the
@@ -644,6 +659,124 @@ async fn test_bridge_execute_unknown_file_key_returns_not_found() {
     assert!(
         error.contains("not connected"),
         "error must mention not connected, got: {error}"
+    );
+    // The not-found shape includes "files": available. Check fk1 is listed.
+    assert!(
+        payload["files"].is_array(),
+        "not-found result must list available file keys, got: {payload}"
+    );
+    let files: Vec<String> = payload["files"]
+        .as_array()
+        .expect("files must be an array")
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        files.contains(&"fk1".to_owned()),
+        "files must list fk1 as available, got: {files:?}"
+    );
+}
+
+/// Like `spawn_mock_plugin_with_key` but accepts a caller-chosen `frame_type`.
+/// The plugin registers under `file_key` and replies to any frame of `frame_type`
+/// with `reply_body` merged with the RESULT type and the echoed requestId.
+async fn spawn_mock_plugin_keyed(
+    state: Arc<turbofig::AppState>,
+    file_key: &'static str,
+    frame_type: &'static str,
+    reply_body: serde_json::Value,
+) {
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": file_key, "name": file_key})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some(frame_type) {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let mut reply = reply_body.clone();
+                            reply["type"] = serde_json::json!("RESULT");
+                            reply["requestId"] = serde_json::json!(id);
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// A get_selection bridge job with an explicit fileKey routes to the correct plugin.
+/// Two plugins (fk1, fk2) each answer GET_SELECTION with a distinct selection payload.
+/// The job targets fk2; the result must carry fk2's selection, not fk1's.
+/// This proves non-execute ops share the same resolve_route path as execute.
+#[tokio::test]
+async fn test_bridge_get_selection_routes_by_file_key() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    // fk1 answers GET_SELECTION with a node named "fk1-node".
+    spawn_mock_plugin_keyed(
+        state.clone(),
+        "fk1",
+        "GET_SELECTION",
+        serde_json::json!({
+            "ok": true,
+            "selection": [{"id": "1:1", "name": "fk1-node", "type": "FRAME",
+                           "x": 0, "y": 0, "w": 10, "h": 10}]
+        }),
+    )
+    .await;
+    // fk2 answers GET_SELECTION with a node named "fk2-node".
+    spawn_mock_plugin_keyed(
+        state.clone(),
+        "fk2",
+        "GET_SELECTION",
+        serde_json::json!({
+            "ok": true,
+            "selection": [{"id": "2:2", "name": "fk2-node", "type": "FRAME",
+                           "x": 0, "y": 0, "w": 20, "h": 20}]
+        }),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    // Route the job to fk2 explicitly.
+    let out = write_job(
+        &tmp,
+        "job_sel_routed",
+        serde_json::json!({"op": "get_selection", "fileKey": "fk2"}),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
+    assert_eq!(
+        payload["selection"][0]["name"],
+        serde_json::json!("fk2-node"),
+        "selection must come from fk2, not fk1, got: {payload}"
     );
 }
 
