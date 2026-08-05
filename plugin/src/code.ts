@@ -1,4 +1,10 @@
-import { buildResult, isDaemonMessage } from "./protocol";
+import {
+  buildExecuteError,
+  buildExecuteSuccess,
+  buildResult,
+  isDaemonMessage,
+  safeResult,
+} from "./protocol";
 
 figma.showUI(__html__, { width: 320, height: 240 });
 
@@ -11,7 +17,32 @@ figma.ui.postMessage({
 
 figma.ui.onmessage = (msg: unknown) => {
   if (!isDaemonMessage(msg)) return;
-  if (msg.type === "STATUS") {
-    figma.ui.postMessage(buildResult(msg, figma.fileKey ?? "", figma.root.name));
+  switch (msg.type) {
+    case "STATUS":
+      figma.ui.postMessage(buildResult(msg, figma.fileKey ?? "", figma.root.name));
+      break;
+    case "EXECUTE": {
+      const { requestId, code } = msg;
+      // TODO: inject deprecation preamble here before evaluating user code.
+      const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+        ...args: string[]
+      ) => (...args: unknown[]) => Promise<unknown>;
+      void (async () => {
+        try {
+          const fn = new AsyncFunction("figma", code);
+          const result = await fn(figma);
+          figma.ui.postMessage(buildExecuteSuccess(requestId, safeResult(result)));
+        } catch (err) {
+          const message =
+            err != null && typeof err === "object" && "message" in err
+              ? String((err as { message: unknown }).message)
+              : String(err);
+          figma.ui.postMessage(buildExecuteError(requestId, message));
+        }
+      })();
+      break;
+    }
+    default:
+      break;
   }
 };

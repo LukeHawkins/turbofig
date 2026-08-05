@@ -16,6 +16,13 @@ export interface StatusMessage {
   requestId: number;
 }
 
+/** Sent by the daemon to the plugin to evaluate code in the Figma context. */
+export interface ExecuteMessage {
+  type: "EXECUTE";
+  requestId: number;
+  code: string;
+}
+
 /** Sent by the plugin to the daemon in reply to a command. requestId echoes the request. */
 export interface ResultMessage {
   type: "RESULT";
@@ -23,10 +30,12 @@ export interface ResultMessage {
   ok?: boolean;
   fileKey?: string;
   name?: string;
+  result?: unknown;
+  error?: string;
 }
 
 /** Union of all messages on the daemon <-> plugin WebSocket. */
-export type DaemonMessage = FileInfoMessage | StatusMessage | ResultMessage;
+export type DaemonMessage = FileInfoMessage | StatusMessage | ExecuteMessage | ResultMessage;
 
 /**
  * Returns true when `x` is a well-formed DaemonMessage.
@@ -41,6 +50,8 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
       return typeof msg.fileKey === "string" && typeof msg.name === "string";
     case "STATUS":
       return typeof msg.requestId === "number";
+    case "EXECUTE":
+      return typeof msg.requestId === "number" && typeof msg.code === "string";
     case "RESULT":
       return typeof msg.requestId === "number";
     default:
@@ -62,4 +73,32 @@ export function buildResult(status: StatusMessage, fileKey: string, name: string
  */
 export function backoffDelayMs(attempt: number): number {
   return Math.min(500 * 2 ** Math.max(0, attempt), 30000);
+}
+
+/**
+ * Builds a success RESULT reply for an EXECUTE request.
+ * Echoes requestId and carries the return value of the executed code.
+ */
+export function buildExecuteSuccess(requestId: number, result: unknown): ResultMessage {
+  return { type: "RESULT", requestId, ok: true, result };
+}
+
+/**
+ * Builds a failure RESULT reply for an EXECUTE request.
+ * Echoes requestId and carries the error message string.
+ */
+export function buildExecuteError(requestId: number, message: string): ResultMessage {
+  return { type: "RESULT", requestId, ok: false, error: message };
+}
+
+/**
+ * Returns a JSON-serializable form of value.
+ * On failure (e.g. circular reference) it falls back to String(value).
+ */
+export function safeResult(value: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return String(value);
+  }
 }

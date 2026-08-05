@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { backoffDelayMs, buildResult, isDaemonMessage } from "./protocol";
+import {
+  backoffDelayMs,
+  buildExecuteError,
+  buildExecuteSuccess,
+  buildResult,
+  isDaemonMessage,
+  safeResult,
+} from "./protocol";
 
 describe("isDaemonMessage", () => {
   test("accepts a valid FILE_INFO message", () => {
@@ -78,6 +85,82 @@ describe("buildResult", () => {
     const status = { type: "STATUS" as const, requestId: 99 };
     const result = buildResult(status, "f", "n");
     expect(isDaemonMessage(result)).toBe(true);
+  });
+});
+
+describe("isDaemonMessage — EXECUTE branch", () => {
+  test("accepts a valid EXECUTE message", () => {
+    expect(isDaemonMessage({ type: "EXECUTE", requestId: 1, code: "return 42;" })).toBe(true);
+  });
+
+  test("rejects EXECUTE missing code", () => {
+    expect(isDaemonMessage({ type: "EXECUTE", requestId: 1 })).toBe(false);
+  });
+
+  test("rejects EXECUTE with non-string code", () => {
+    expect(isDaemonMessage({ type: "EXECUTE", requestId: 1, code: 99 })).toBe(false);
+  });
+
+  test("rejects EXECUTE missing requestId", () => {
+    expect(isDaemonMessage({ type: "EXECUTE", code: "return 1;" })).toBe(false);
+  });
+});
+
+describe("buildExecuteSuccess", () => {
+  test("returns a RESULT with ok true and the given result", () => {
+    const msg = buildExecuteSuccess(7, { x: 1 });
+    expect(msg.type).toBe("RESULT");
+    expect(msg.requestId).toBe(7);
+    expect(msg.ok).toBe(true);
+    expect(msg.result).toEqual({ x: 1 });
+  });
+
+  test("echoes the requestId", () => {
+    const msg = buildExecuteSuccess(99, null);
+    expect(msg.requestId).toBe(99);
+  });
+
+  test("result passes the isDaemonMessage guard", () => {
+    expect(isDaemonMessage(buildExecuteSuccess(1, "hello"))).toBe(true);
+  });
+});
+
+describe("buildExecuteError", () => {
+  test("returns a RESULT with ok false and the error string", () => {
+    const msg = buildExecuteError(3, "something went wrong");
+    expect(msg.type).toBe("RESULT");
+    expect(msg.requestId).toBe(3);
+    expect(msg.ok).toBe(false);
+    expect(msg.error).toBe("something went wrong");
+  });
+
+  test("echoes the requestId", () => {
+    const msg = buildExecuteError(42, "oops");
+    expect(msg.requestId).toBe(42);
+  });
+
+  test("result passes the isDaemonMessage guard", () => {
+    expect(isDaemonMessage(buildExecuteError(1, "err"))).toBe(true);
+  });
+});
+
+describe("safeResult", () => {
+  test("a plain object round-trips through JSON", () => {
+    const input = { a: 1, b: "hello", c: true };
+    expect(safeResult(input)).toEqual(input);
+  });
+
+  test("a value with a circular reference falls back to String()", () => {
+    const obj: Record<string, unknown> = {};
+    obj.self = obj;
+    const result = safeResult(obj);
+    expect(typeof result).toBe("string");
+  });
+
+  test("a primitive value round-trips", () => {
+    expect(safeResult(42)).toBe(42);
+    expect(safeResult("hello")).toBe("hello");
+    expect(safeResult(null)).toBe(null);
   });
 });
 
