@@ -640,6 +640,17 @@ pub async fn run_screenshot(
 
 // ── MCP handler ───────────────────────────────────────────────────────────────
 
+/// Read the `mcp-session-id` header from the HTTP request parts.
+/// Returns None when the header is absent, is not valid UTF-8, or is empty.
+/// An empty header must map to None so it never records a bogus shared pairing.
+fn session_id_from_parts(parts: &http::request::Parts) -> Option<&str> {
+    parts
+        .headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+}
+
 /// Parameters for tools that take only an optional target file key.
 /// Used by turbofig_status and turbofig_get_selection.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -725,10 +736,7 @@ impl StatusHandler {
         Parameters(FileTargetParams { file_key }): Parameters<FileTargetParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let session_id = parts
-            .headers
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok());
+        let session_id = session_id_from_parts(&parts);
         let value = run_status(&self.state, session_id, file_key.as_deref()).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
@@ -745,10 +753,7 @@ impl StatusHandler {
         Parameters(ExecuteParams { code, file_key }): Parameters<ExecuteParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let session_id = parts
-            .headers
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok());
+        let session_id = session_id_from_parts(&parts);
         let value = run_execute(&self.state, session_id, file_key.as_deref(), &code).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
@@ -765,10 +770,7 @@ impl StatusHandler {
         Parameters(FileTargetParams { file_key }): Parameters<FileTargetParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let session_id = parts
-            .headers
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok());
+        let session_id = session_id_from_parts(&parts);
         let value = run_get_selection(&self.state, session_id, file_key.as_deref()).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
@@ -790,10 +792,7 @@ impl StatusHandler {
         }): Parameters<ScreenshotParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
-        let session_id = parts
-            .headers
-            .get("mcp-session-id")
-            .and_then(|v| v.to_str().ok());
+        let session_id = session_id_from_parts(&parts);
         let value = run_screenshot(
             &self.state,
             session_id,
@@ -930,6 +929,36 @@ pub async fn serve_ws(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Session-id extraction tests
+
+    /// Build request parts with an optional mcp-session-id header value.
+    fn parts_with_session(value: Option<&str>) -> http::request::Parts {
+        let mut builder = http::Request::builder();
+        if let Some(v) = value {
+            builder = builder.header("mcp-session-id", v);
+        }
+        builder.body(()).expect("build request").into_parts().0
+    }
+
+    #[test]
+    fn session_id_absent_header_is_none() {
+        let parts = parts_with_session(None);
+        assert_eq!(session_id_from_parts(&parts), None);
+    }
+
+    #[test]
+    fn session_id_empty_header_is_none() {
+        // A present-but-empty header must not become a real session id.
+        let parts = parts_with_session(Some(""));
+        assert_eq!(session_id_from_parts(&parts), None);
+    }
+
+    #[test]
+    fn session_id_valid_header_is_some() {
+        let parts = parts_with_session(Some("sess-123"));
+        assert_eq!(session_id_from_parts(&parts), Some("sess-123"));
+    }
 
     // MCP port tests
 
