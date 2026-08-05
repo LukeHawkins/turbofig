@@ -110,6 +110,40 @@ export function dedupeFonts(fonts: FontName[]): FontName[] {
   });
 }
 
+/**
+ * Maps an auto-layout direction and the presence of explicit dimensions to
+ * per-axis sizing modes. Use the result to set primaryAxisSizingMode and
+ * counterAxisSizingMode on a FrameNode.
+ *
+ * For direction "NONE" the frame has no auto-layout, so sizing modes are
+ * invalid. Both fields return "AUTO" as a safe sentinel; the caller must not
+ * apply them to the node.
+ *
+ * Axis mapping:
+ *   VERTICAL  — primary axis is height, counter axis is width.
+ *   HORIZONTAL — primary axis is width, counter axis is height.
+ */
+export function axisSizing(
+  direction: "NONE" | "HORIZONTAL" | "VERTICAL",
+  hasWidth: boolean,
+  hasHeight: boolean,
+): { primary: "FIXED" | "AUTO"; counter: "FIXED" | "AUTO" } {
+  if (direction === "VERTICAL") {
+    return {
+      primary: hasHeight ? "FIXED" : "AUTO",
+      counter: hasWidth ? "FIXED" : "AUTO",
+    };
+  }
+  if (direction === "HORIZONTAL") {
+    return {
+      primary: hasWidth ? "FIXED" : "AUTO",
+      counter: hasHeight ? "FIXED" : "AUTO",
+    };
+  }
+  // direction "NONE": auto-layout sizing modes do not apply.
+  return { primary: "AUTO", counter: "AUTO" };
+}
+
 // --- Factory ---
 
 /** Creates and returns the tf namespace bound to a live PluginAPI instance. */
@@ -145,7 +179,8 @@ export function createTf(figma: PluginAPI) {
     /** Creates and configures a FrameNode with auto-layout options. */
     frame(opts: FrameOpts): FrameNode {
       const node = figma.createFrame();
-      node.layoutMode = opts.direction ?? "VERTICAL";
+      const direction = opts.direction ?? "VERTICAL";
+      node.layoutMode = direction;
       if (opts.gap !== undefined) {
         node.itemSpacing = opts.gap;
       }
@@ -160,14 +195,17 @@ export function createTf(figma: PluginAPI) {
         // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
         node.fills = [solidPaint(opts.fill)];
       }
-      if (opts.width !== undefined && opts.height !== undefined) {
-        node.resize(opts.width, opts.height);
-        node.primaryAxisSizingMode = "FIXED";
-        node.counterAxisSizingMode = "FIXED";
-      } else {
-        // No fixed size: hug content on both axes.
-        node.primaryAxisSizingMode = "AUTO";
-        node.counterAxisSizingMode = "AUTO";
+      const hasWidth = opts.width !== undefined;
+      const hasHeight = opts.height !== undefined;
+      // Resize whenever at least one dimension is given.
+      if (hasWidth || hasHeight) {
+        node.resize(opts.width ?? node.width, opts.height ?? node.height);
+      }
+      // Sizing modes are only valid on auto-layout frames.
+      if (direction !== "NONE") {
+        const sizing = axisSizing(direction, hasWidth, hasHeight);
+        node.primaryAxisSizingMode = sizing.primary;
+        node.counterAxisSizingMode = sizing.counter;
       }
       if (opts.primaryAlign !== undefined) {
         node.primaryAxisAlignItems = opts.primaryAlign;

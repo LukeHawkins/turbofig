@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { createTf, dedupeFonts, hexToRgb, normalizePadding, solidPaint } from "./helpers";
+import {
+  axisSizing,
+  createTf,
+  dedupeFonts,
+  hexToRgb,
+  normalizePadding,
+  solidPaint,
+} from "./helpers";
 
 describe("hexToRgb", () => {
   test("parses a full #RRGGBB string", () => {
@@ -116,6 +123,45 @@ describe("normalizePadding", () => {
   test("fills only the missing right and bottom sides", () => {
     const result = normalizePadding({ top: 5, left: 15 });
     expect(result).toEqual({ top: 5, right: 0, bottom: 0, left: 15 });
+  });
+});
+
+describe("axisSizing", () => {
+  describe("direction VERTICAL", () => {
+    test("width only: counter FIXED, primary AUTO", () => {
+      // Counter axis is width; primary axis is height.
+      expect(axisSizing("VERTICAL", true, false)).toEqual({ primary: "AUTO", counter: "FIXED" });
+    });
+
+    test("height only: primary FIXED, counter AUTO", () => {
+      expect(axisSizing("VERTICAL", false, true)).toEqual({ primary: "FIXED", counter: "AUTO" });
+    });
+
+    test("width and height: both FIXED", () => {
+      expect(axisSizing("VERTICAL", true, true)).toEqual({ primary: "FIXED", counter: "FIXED" });
+    });
+
+    test("neither width nor height: both AUTO", () => {
+      expect(axisSizing("VERTICAL", false, false)).toEqual({ primary: "AUTO", counter: "AUTO" });
+    });
+  });
+
+  describe("direction HORIZONTAL", () => {
+    test("width only: primary FIXED, counter AUTO", () => {
+      // Primary axis is width; counter axis is height.
+      expect(axisSizing("HORIZONTAL", true, false)).toEqual({ primary: "FIXED", counter: "AUTO" });
+    });
+
+    test("height only: counter FIXED, primary AUTO", () => {
+      expect(axisSizing("HORIZONTAL", false, true)).toEqual({ primary: "AUTO", counter: "FIXED" });
+    });
+  });
+
+  describe("direction NONE", () => {
+    test("returns both AUTO regardless of dimensions (sizing modes invalid without auto-layout)", () => {
+      expect(axisSizing("NONE", true, true)).toEqual({ primary: "AUTO", counter: "AUTO" });
+      expect(axisSizing("NONE", false, false)).toEqual({ primary: "AUTO", counter: "AUTO" });
+    });
   });
 });
 
