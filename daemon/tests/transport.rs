@@ -304,7 +304,7 @@ async fn test_tools_list_has_exactly_turbofig_status() {
     );
     let _ = notif_res.text().await.expect("drain notif body");
 
-    // Step 3: tools/list — must return exactly one tool named turbofig_status.
+    // Step 3: tools/list — must return exactly the locked tool surface.
     let list_res = post_mcp(
         &client,
         &base_url,
@@ -332,17 +332,27 @@ async fn test_tools_list_has_exactly_turbofig_status() {
         "result.tools must be an array, got: {msg}"
     );
     let tools_arr = tools.as_array().unwrap();
+
+    // Collect tool names for order-independent assertions.
+    let names: Vec<&str> = tools_arr
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+
     assert_eq!(
         tools_arr.len(),
-        1,
-        "tool surface must be exactly 1 tool, got {}: {:?}",
+        2,
+        "tool surface must be exactly 2 tools, got {}: {:?}",
         tools_arr.len(),
         tools_arr
     );
-    assert_eq!(
-        tools_arr[0]["name"], "turbofig_status",
-        "the only tool must be turbofig_status, got: {}",
-        tools_arr[0]["name"]
+    assert!(
+        names.contains(&"turbofig_status"),
+        "turbofig_status must be present, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"turbofig_execute"),
+        "turbofig_execute must be present, got: {names:?}"
     );
 }
 

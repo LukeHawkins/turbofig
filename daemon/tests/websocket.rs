@@ -556,6 +556,197 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     );
 }
 
+/// turbofig_execute routes an EXECUTE request to the mock plugin and returns
+/// the RESULT as `{"ok":true,"result":{"created":"frame-1"}}`.
+#[tokio::test]
+async fn test_turbofig_execute_routes_through_plugin() {
+    let state = Arc::new(turbofig::AppState::new());
+
+    // Bind ephemeral listeners for both servers.
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+
+    // Spawn the WS server.
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    // Spawn the MCP HTTP server.
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_with_state(http_listener, http_state)
+            .await
+            .expect("serve_with_state error in test");
+    });
+
+    // Connect the mock plugin over WebSocket.
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect failed");
+
+    // Register the plugin.
+    let fi = serde_json::json!({
+        "type": "FILE_INFO",
+        "fileKey": "abc123",
+        "name": "My Design File"
+    });
+    plugin_ws
+        .send(TtMessage::Text(fi.to_string()))
+        .await
+        .expect("send FILE_INFO");
+
+    // Allow the WS server to process FILE_INFO.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Spawn the mock plugin responder: reply to every EXECUTE frame with RESULT.
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("EXECUTE") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let reply = serde_json::json!({
+                                "type": "RESULT",
+                                "requestId": id,
+                                "ok": true,
+                                "result": {"created": "frame-1"}
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Drive the MCP handshake over HTTP.
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client");
+
+    // Step 1: initialize.
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize request");
+
+    assert!(
+        init_res.status().is_success(),
+        "initialize must succeed, got HTTP {}",
+        init_res.status()
+    );
+
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must carry mcp-session-id")
+        .to_str()
+        .expect("mcp-session-id is valid UTF-8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    // Step 2: notifications/initialized.
+    let notif_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("notifications/initialized request");
+    let _ = notif_res.text().await.expect("drain notif body");
+
+    // Step 3: tools/call turbofig_execute with JS code.
+    let tools_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "turbofig_execute", "arguments": {"code": "return 1+1;"}}
+        }))
+        .send()
+        .await
+        .expect("tools/call request");
+
+    assert!(
+        tools_res.status().is_success(),
+        "tools/call must succeed, got HTTP {}",
+        tools_res.status()
+    );
+
+    let tools_body = tools_res.text().await.expect("read tools/call body");
+    let msg = parse_sse_data(&tools_body);
+
+    let text_str = msg["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content[0].text must be a string");
+    let payload: serde_json::Value =
+        serde_json::from_str(text_str).expect("content[0].text must be valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(true),
+        "ok must be true when plugin executes successfully, got: {payload}"
+    );
+    assert_eq!(
+        payload["result"]["created"],
+        serde_json::json!("frame-1"),
+        "result.created must match the plugin reply, got: {payload}"
+    );
+}
+
+/// run_execute returns `{"ok":false,"error":"no plugin connected"}` when no
+/// plugin is registered. Tested directly without HTTP overhead.
+#[tokio::test]
+async fn test_turbofig_execute_no_plugin_returns_error() {
+    let state = Arc::new(turbofig::AppState::new());
+    let value = turbofig::run_execute(&state, "return 1+1;").await;
+
+    assert_eq!(
+        value["ok"],
+        serde_json::json!(false),
+        "ok must be false when no plugin is connected, got: {value}"
+    );
+    assert_eq!(
+        value["error"],
+        serde_json::json!("no plugin connected"),
+        "error must be 'no plugin connected', got: {value}"
+    );
+}
+
 /// A plugin that disconnects mid-request must not hang the caller.
 ///
 /// The default request timeout is 30 s. When the plugin drops the socket while

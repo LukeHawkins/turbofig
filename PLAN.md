@@ -85,7 +85,7 @@ Goal: end the handshake permanently and make the daemon independent of any clien
 Goal: a real, usable create+read+screenshot loop end to end. This is the first "actually try it" milestone. It MUST be reachable dialog-free through the file-bridge, because native MCP is admin-blocked and curl is gated on Luke's account (see `DECISIONS.md` #15). Each capability shares one `run_*` function between the MCP tool and the file-bridge op, the pattern Phase 2 set with `run_status`.
 
 - [x] Plugin `{type}` dispatch table; add `EXECUTE` (async IIFE eval, timeout, result via `requestId`)
-- [ ] `turbofig_execute` tool: send JS, run it in the plugin, return the result. Factor `run_execute` so the file-bridge shares it.
+- [x] `turbofig_execute` tool: send JS, run it in the plugin, return the result. Factor `run_execute` so the file-bridge shares it.
 - [ ] File-bridge ops for the full loop: add `execute`, `get_selection`, `screenshot` job ops that call the same `run_*` functions as the tools, so the whole loop works with file writes and reads only (no curl, no MCP).
 - [ ] Inject the sync-to-async deprecation preamble into the eval context now, so generated code uses async APIs under `dynamic-page` from the first eval
 - [ ] `GET_SELECTION` + `turbofig_get_selection`: compact `{id,name,type,x,y,w,h}` shape

@@ -2,8 +2,9 @@ mod bridge;
 pub use bridge::{bridge_dir_from_env, serve_bridge};
 
 use rmcp::{
+    handler::server::wrapper::Parameters,
     model::*,
-    tool, tool_handler, tool_router,
+    schemars, tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     },
@@ -236,7 +237,60 @@ pub async fn run_status(state: &Arc<AppState>) -> Value {
     }
 }
 
+// ── Shared execute logic ──────────────────────────────────────────────────────
+
+/// Send `code` to the live plugin and return the result as a JSON value.
+///
+/// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
+/// Plugin replies -> pass the RESULT through.
+/// Timeout -> `{"ok":false,"error":"plugin timed out"}`.
+///
+/// Reused by both `turbofig_execute` (MCP) and the filesystem bridge.
+pub async fn run_execute(state: &Arc<AppState>, code: &str) -> Value {
+    let Some((tx, _, _)) = state.plugin_tx() else {
+        return json!({"ok": false, "error": "no plugin connected"});
+    };
+
+    let id = state.next_request_id();
+    let rx = state.register_pending(id);
+    let request = json!({"type": "EXECUTE", "requestId": id, "code": code});
+
+    if tx.send(request.to_string()).is_err() {
+        return json!({"ok": false, "error": "plugin send failed"});
+    }
+
+    match tokio::time::timeout(state.request_timeout, rx).await {
+        Ok(Ok(reply)) => {
+            if reply.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let result = reply.get("result").cloned().unwrap_or(Value::Null);
+                json!({"ok": true, "result": result})
+            } else {
+                let error = reply
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("eval failed")
+                    .to_owned();
+                json!({"ok": false, "error": error})
+            }
+        }
+        Ok(Err(_)) => {
+            json!({"ok": false, "error": "plugin disconnected"})
+        }
+        Err(_elapsed) => {
+            state.cancel_pending(id);
+            json!({"ok": false, "error": "plugin timed out"})
+        }
+    }
+}
+
 // ── MCP handler ───────────────────────────────────────────────────────────────
+
+/// Parameters for the turbofig_execute tool.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ExecuteParams {
+    #[schemars(description = "JavaScript code to execute in the Figma plugin context")]
+    code: String,
+}
 
 /// MCP handler that exposes the turbofig_status tool.
 ///
@@ -268,6 +322,21 @@ impl StatusHandler {
     #[tool(description = "Return daemon status")]
     async fn turbofig_status(&self) -> Result<CallToolResult, McpError> {
         let value = run_status(&self.state).await;
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            value.to_string(),
+        )]))
+    }
+
+    /// Execute JavaScript in the Figma plugin and return the result as JSON.
+    ///
+    /// Delegates to `run_execute` for the shared logic; wraps the result in a
+    /// `CallToolResult` for the MCP wire format.
+    #[tool(description = "Execute JavaScript in the Figma plugin and return the result")]
+    async fn turbofig_execute(
+        &self,
+        Parameters(ExecuteParams { code }): Parameters<ExecuteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let value = run_execute(&self.state, &code).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))
