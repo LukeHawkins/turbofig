@@ -40,7 +40,8 @@ For each section, record:
 Persist two files:
 
 1. `~/.turbofig/design/<job-id>/plan.json` — the full plan array.
-2. `~/.turbofig/design/<job-id>/status.json` — one entry per section: `{ "name": "HeroSection", "state": "pending" }`.
+2. `~/.turbofig/design/<job-id>/status.json` — one entry per section:
+   `{ "name": "HeroSection", "state": "pending", "refinePasses": 0 }`.
 
 These two files are the resume checkpoint. A re-run with the same job id loads them and skips completed work.
 
@@ -52,16 +53,24 @@ Give each builder subagent ONLY:
 
 - Its section spec (name, purpose, layout, content, palette tokens, type tokens).
 - A pointer to `helpers/tf-api.md`. Do not paste the file; pass the path.
-- The job id and the file-bridge protocol: write the job to `~/.turbofig/inbox/<id>.json`, read the result from `~/.turbofig/outbox/<id>.json`.
-- The idempotency rule: wrap the root frame in `tf.findOrCreate(figma.currentPage, "<SectionName>", factory)` so a re-run never duplicates the section.
+- The job id and the file-bridge protocol. Each builder must use its OWN unique bridge job id for the inbox/outbox filenames: `<design-job-id>-<SectionName>-<random4>` (for example `20260805-a3f7-HeroSection-b2c9`). Two builders sharing the same id would overwrite each other's inbox file.
+- The idempotency rule: use `tf.findOrCreate` to get or create the root section frame, then call `tf.clear` on it to remove all existing children before rebuilding. `findOrCreate` alone protects only the section frame; `tf.clear` before rebuilding makes a re-run fully safe.
+
+  ```js
+  const s = await tf.findOrCreate(figma.currentPage, 'HeroSection', factory);
+  tf.clear(s);
+  // build all children fresh below
+  ```
 
 Each builder must:
 
 1. Write ONE batched `execute` job to the file-bridge that builds the whole section. Batch all node operations into one `code` string. Prefer fewer jobs over many small ones.
 2. Preload all fonts once with `await tf.loadFonts([...])` at the top of the eval.
-3. Call `tf.commit("<SectionName>")` at the end of the eval.
-4. Read the outbox result once. Parse it for the root node id.
-5. Return a SHORT text status only: section name, root node id, and done or a blocker. Return NO images and NO node trees.
+3. Use `tf.text` with a `width` property for any text node that must wrap.
+4. Call `tf.commit("<SectionName>")` at the end of the eval.
+5. Poll for the outbox file: wait approximately 0.2 s between attempts, retry up to 50 times (approximately 10 s total). A complex section can take several seconds to build. Do not read the outbox only once.
+6. If the outbox result has `ok: false`, return a blocker containing the `error` string. Do NOT record a node id in status.json.
+7. Return a SHORT text status only: section name, root node id, and done or a blocker. Return NO images and NO node trees.
 
 Example builder return format:
 
@@ -73,13 +82,29 @@ Status: done
 
 After each builder returns, update `status.json`: set the section `state` to `"built"` and record the `nodeId`. This checkpoint update happens in the main session.
 
-### 4. Automated visual QA (firewalled)
+### 4. Assembly
 
-Run QA for each section after it is built, and once for the whole page after all sections are built.
+After all builders return their node ids, dispatch ONE batched execute (not one per section) that assembles the page.
+
+This step is mandatory. Parallel-built sections otherwise land at the origin (0, 0) and overlap each other.
+
+The orchestrator dispatches one `execute` job that:
+
+1. Calls `tf.findOrCreate(figma.currentPage, '<job-id>-Root', factory)` to get or create a root container frame.
+2. Sets the root frame to VERTICAL auto-layout at the full page width.
+3. Appends each section frame into the root in the order defined in `plan.json`. Use the node ids recorded in `status.json` after step 3.
+
+Poll for the outbox file using the same polling rule (0.2 s intervals, up to 50 tries). Record the root container node id in `status.json` under the key `"rootNodeId"`.
+
+Whole-page QA in step 5 runs on this assembled root, not on the raw page.
+
+### 5. Automated visual QA (firewalled)
+
+Run QA for each section after it is built, and once for the whole page after all sections are assembled.
 
 Dispatch a QA subagent for each target. Give each QA subagent ONLY:
 
-- The section name and node id (or the page id for the full-page check).
+- The section name and node id (or the root container node id for the full-page check).
 - The job id and the file-bridge protocol.
 - The QA rubric (copy it verbatim into the subagent prompt):
 
@@ -93,7 +118,7 @@ Dispatch a QA subagent for each target. Give each QA subagent ONLY:
 Each QA subagent must:
 
 1. Request a `screenshot` via the file-bridge: `{ "op": "screenshot", "nodeId": "<id>", "scale": 2, "return": "file" }`.
-2. Read the PNG from the path in the outbox result.
+2. Poll for the outbox file (0.2 s intervals, up to 50 tries). Read the PNG from the path in the outbox result.
 3. Score it against all five criteria.
 4. Return a SHORT TEXT verdict only:
    - `pass` if all criteria are met.
@@ -102,37 +127,49 @@ Each QA subagent must:
 
 The main session reads only the text verdict. Update `status.json`: set `state` to `"passed"` or `"qa_failed"` and record the defect list.
 
-### 5. Refine
+### 6. Refine
 
 For each section with `state: "qa_failed"`:
 
-1. Dispatch a fix-builder subagent. Give it the section spec, the defect list, the node id, and the file-bridge protocol.
-2. The fix-builder writes ONE batched `execute` job that applies all fixes. It must use `tf.findOrCreate` so it modifies the existing section in place and does not create a duplicate.
-3. After the fix-builder returns, dispatch a new QA subagent for that section using the same rubric.
-4. If the new verdict is `pass`, update `status.json` to `"passed"`.
-5. Cap the refine loop at **2 passes per section**. If a section still has defects after 2 passes, mark it `"needs_review"` in `status.json` and continue. Do not loop forever.
+1. Read `refinePasses` from `status.json` for that section. Subtract from the 2-pass budget. If the remaining budget is zero, mark the section `"needs_review"` immediately and skip to the next section.
+2. Dispatch a fix-builder subagent. Give it the section spec, the defect list, the node id, and the file-bridge protocol.
+3. The fix-builder applies targeted edits from the saved defect list. It does NOT do a full rebuild. It must use `tf.findOrCreate` to locate the existing section without creating a duplicate. It does NOT call `tf.clear`.
+4. The fix-builder must use its own unique bridge id (same format: `<design-job-id>-<SectionName>-<random4>`).
+5. The fix-builder polls for the outbox file (0.2 s intervals, up to 50 tries).
+6. If the outbox result has `ok: false`, return a blocker containing the `error` string. Do NOT increment `refinePasses`.
+7. After the fix-builder returns successfully, increment `refinePasses` in `status.json` and write the file before dispatching QA.
+8. Dispatch a new QA subagent for that section using the same rubric.
+9. If the new verdict is `pass`, update `status.json` to `"passed"`.
+10. Cap the refine loop at **2 passes per section** (using the `refinePasses` counter). If a section still has defects after 2 passes, mark it `"needs_review"` and continue. Do not loop forever.
 
 Run fix-builders for independent sections in parallel where possible.
 
-### 6. Resume behaviour
+### 7. Resume behaviour
 
 At the start of every run, check for an existing `~/.turbofig/design/<job-id>/status.json`.
 
-- If it exists, load it and skip every section with `state: "passed"`.
-- Build and QA only sections with `state: "pending"`, `"qa_failed"`, or `"needs_review"`.
-- Because builders use `tf.findOrCreate`, re-running a builder for a section that already exists modifies it in place. It does not create a duplicate.
-- The plan.json stays unchanged across a resume. It is the stable spec.
+If it exists, load it. Apply this logic per section:
+
+- `state: "passed"` — skip. No action.
+- `state: "pending"` — run the full builder (findOrCreate + clear + fresh rebuild), then QA.
+- `state: "built"` — skip the builder. Run QA only.
+- `state: "qa_failed"` — run the fix-builder (targeted edits from the saved defect list), then QA. Do NOT run a full rebuild.
+- `state: "needs_review"` — do NOT auto-retry. A `needs_review` section already used its 2-pass budget. List it as outstanding in the final report. Only retry it if the user supplies an explicit override instruction in `$ARGUMENTS`; in that case, pass the override to the fix-builder as an additional directive.
+
+Read `refinePasses` for each section that will enter the refine loop. Subtract from the 2-pass budget before dispatching any fix-builder. This prevents a crash mid-refine from granting extra passes.
+
+The plan.json stays unchanged across a resume. It is the stable spec.
 
 To resume, pass the original job id as part of `$ARGUMENTS`, for example: `resume job-id=20260805-a3f7 brief=...`.
 
-### 7. Finish
+### 8. Finish
 
 Report a short summary to the user:
 
 - Job id and checkpoint location.
 - Sections built, with each section's root node id and QA result.
 - Any sections marked `needs_review` with the outstanding defect list.
-- The Figma page node id.
+- The assembled root container node id and the Figma page node id.
 
 Do not dump node trees, images, or `status.json` contents into the reply. One line per section is enough.
 
