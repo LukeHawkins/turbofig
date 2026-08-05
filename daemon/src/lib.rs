@@ -17,6 +17,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
 };
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 // ── MCP port helpers ──────────────────────────────────────────────────────────
@@ -49,6 +50,22 @@ pub fn ws_port_from_env() -> u16 {
     ws_port_from_str(std::env::var("TURBOFIG_WS_PORT").ok().as_deref())
 }
 
+// ── Request timeout helpers ───────────────────────────────────────────────────
+
+/// Parse a request timeout in milliseconds from an optional string value.
+/// Returns 30000 ms when the input is None, cannot be parsed as u64, or is zero.
+fn request_timeout_from_str(s: Option<&str>) -> Duration {
+    s.and_then(|v| v.parse::<u64>().ok())
+        .filter(|&ms| ms != 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(30_000))
+}
+
+/// Read the request timeout from TURBOFIG_REQUEST_TIMEOUT_MS. Default is 30000 ms.
+pub fn request_timeout_from_env() -> Duration {
+    request_timeout_from_str(std::env::var("TURBOFIG_REQUEST_TIMEOUT_MS").ok().as_deref())
+}
+
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 /// An active plugin connection.
@@ -68,15 +85,24 @@ pub struct AppState {
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     /// Monotonically increasing request-ID counter.
     counter: AtomicU64,
+    /// How long to wait for a plugin reply before returning a timeout response.
+    pub request_timeout: Duration,
 }
 
 impl AppState {
-    /// Create a new, empty AppState.
+    /// Create a new AppState. Reads the timeout from TURBOFIG_REQUEST_TIMEOUT_MS.
     pub fn new() -> Self {
+        Self::with_timeout(request_timeout_from_env())
+    }
+
+    /// Create a new AppState with an explicit request timeout.
+    /// Use this in tests to set a short timeout without touching global env.
+    pub fn with_timeout(d: Duration) -> Self {
         Self {
             plugin: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(1),
+            request_timeout: d,
         }
     }
 
@@ -123,6 +149,15 @@ impl AppState {
         if let Some(tx) = guard.remove(&id) {
             let _ = tx.send(value);
         }
+    }
+
+    /// Remove and drop the oneshot sender for `id`.
+    /// Call this when a request times out to prevent a pending-map leak.
+    /// Silently ignores unknown IDs.
+    pub fn cancel_pending(&self, id: u64) {
+        let mut guard = self.pending.lock().expect("pending lock");
+        guard.remove(&id);
+        // Dropping the sender here is safe: the receiver will see RecvError.
     }
 
     /// Return the plugin's outbound sender and identity, if a plugin is registered.
@@ -192,8 +227,9 @@ impl StatusHandler {
             )]));
         }
 
-        match rx.await {
-            Ok(result) => {
+        match tokio::time::timeout(self.state.request_timeout, rx).await {
+            Ok(Ok(result)) => {
+                // Reply arrived within the timeout.
                 let fk = result
                     .get("fileKey")
                     .and_then(|v| v.as_str())
@@ -212,10 +248,19 @@ impl StatusHandler {
                     .to_string(),
                 )]))
             }
-            Err(_) => {
+            Ok(Err(_)) => {
                 // Sender was dropped before the reply arrived; treat as disconnected.
                 Ok(CallToolResult::success(vec![ContentBlock::text(
                     json!({"ok": true, "plugin": {"connected": false}}).to_string(),
+                )]))
+            }
+            Err(_elapsed) => {
+                // Timeout: plugin did not reply in time.
+                // Remove the pending entry to prevent a map leak.
+                self.state.cancel_pending(id);
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    json!({"ok": true, "plugin": {"connected": true, "responsive": false}})
+                        .to_string(),
                 )]))
             }
         }
@@ -360,6 +405,41 @@ mod tests {
         // Port 0 means an OS-assigned ephemeral port, never a meaningful daemon port.
         // Reject it and fall back to 18846.
         assert_eq!(port_from_str(Some("0")), 18846);
+    }
+
+    // Request timeout tests
+
+    #[test]
+    fn request_timeout_defaults_to_30s_when_unset() {
+        assert_eq!(
+            request_timeout_from_str(None),
+            Duration::from_millis(30_000)
+        );
+    }
+
+    #[test]
+    fn request_timeout_parses_valid_number() {
+        assert_eq!(
+            request_timeout_from_str(Some("5000")),
+            Duration::from_millis(5_000)
+        );
+    }
+
+    #[test]
+    fn request_timeout_falls_back_on_garbage_input() {
+        assert_eq!(
+            request_timeout_from_str(Some("notanumber")),
+            Duration::from_millis(30_000)
+        );
+    }
+
+    #[test]
+    fn request_timeout_rejects_zero_and_falls_back() {
+        // Zero milliseconds is not a valid timeout; fall back to the default.
+        assert_eq!(
+            request_timeout_from_str(Some("0")),
+            Duration::from_millis(30_000)
+        );
     }
 
     // WS port tests

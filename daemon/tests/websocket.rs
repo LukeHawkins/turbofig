@@ -7,6 +7,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -129,6 +130,151 @@ async fn test_ws_unknown_message_type_is_ignored() {
         state.plugin_snapshot(),
         Some(("xyz789".to_owned(), "Other File".to_owned())),
         "plugin must register after an unknown message type was received"
+    );
+}
+
+/// turbofig_status returns plugin.responsive:false when the plugin never replies.
+/// The call must complete (not hang) in well under a few seconds.
+#[tokio::test]
+async fn test_turbofig_status_times_out_when_plugin_silent() {
+    // Short timeout so the test stays fast and non-flaky.
+    let state = Arc::new(turbofig_mcp::AppState::with_timeout(Duration::from_millis(
+        80,
+    )));
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_with_state(http_listener, http_state)
+            .await
+            .expect("serve_with_state error in test");
+    });
+
+    // Connect the mock plugin and register, but never reply to STATUS.
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect");
+
+    let fi = serde_json::json!({
+        "type": "FILE_INFO",
+        "fileKey": "silent-plugin",
+        "name": "Silent Plugin"
+    });
+    plugin_ws
+        .send(TtMessage::Text(fi.to_string()))
+        .await
+        .expect("send FILE_INFO");
+
+    // Allow the WS server to process FILE_INFO.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    // Spawn a task that keeps the connection open but discards all incoming frames.
+    tokio::spawn(async move { while let Some(Ok(_)) = plugin_ws.next().await {} });
+
+    // Drive the MCP handshake over HTTP.
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build reqwest client");
+
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize");
+
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("mcp-session-id header")
+        .to_str()
+        .expect("valid utf8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    let _ = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("notifications/initialized")
+        .text()
+        .await
+        .expect("drain notif");
+
+    // tools/call turbofig_status. Must return before the test's own timeout (5 s).
+    let tools_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "turbofig_status", "arguments": {}}
+        }))
+        .send()
+        .await
+        .expect("tools/call (must not hang)");
+
+    let tools_body = tools_res.text().await.expect("read tools/call body");
+    let msg = parse_sse_data(&tools_body);
+    let text_str = msg["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content[0].text is a string");
+    let payload: serde_json::Value =
+        serde_json::from_str(text_str).expect("content[0].text is valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(true),
+        "ok must be true even on timeout, got: {payload}"
+    );
+    assert_eq!(
+        payload["plugin"]["connected"],
+        serde_json::json!(true),
+        "plugin.connected must be true (plugin was registered), got: {payload}"
+    );
+    assert_eq!(
+        payload["plugin"]["responsive"],
+        serde_json::json!(false),
+        "plugin.responsive must be false when the plugin did not reply, got: {payload}"
     );
 }
 
