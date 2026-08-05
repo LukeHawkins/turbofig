@@ -303,7 +303,7 @@ async fn test_tools_list_has_exactly_turbofig_status() {
     );
     let _ = notif_res.text().await.expect("drain notif body");
 
-    // Step 3: tools/list — must return exactly the locked tool surface.
+    // Step 3: tools/list must return exactly the locked tool surface.
     let list_res = post_mcp(
         &client,
         &base_url,

@@ -93,7 +93,7 @@ describe("buildResult", () => {
   });
 });
 
-describe("isDaemonMessage — EXECUTE branch", () => {
+describe("isDaemonMessage: EXECUTE branch", () => {
   test("accepts a valid EXECUTE message", () => {
     expect(isDaemonMessage({ type: "EXECUTE", requestId: 1, code: "return 42;" })).toBe(true);
   });
@@ -193,7 +193,7 @@ describe("deprecation preamble", () => {
   });
 });
 
-describe("isDaemonMessage — GET_SELECTION branch", () => {
+describe("isDaemonMessage: GET_SELECTION branch", () => {
   test("accepts a valid GET_SELECTION message", () => {
     expect(isDaemonMessage({ type: "GET_SELECTION", requestId: 5 })).toBe(true);
   });
@@ -312,7 +312,7 @@ describe("backoffDelayMs", () => {
   });
 });
 
-describe("isDaemonMessage — SCREENSHOT branch", () => {
+describe("isDaemonMessage: SCREENSHOT branch", () => {
   test("accepts a valid SCREENSHOT message with only requestId", () => {
     expect(isDaemonMessage({ type: "SCREENSHOT", requestId: 1 })).toBe(true);
   });
