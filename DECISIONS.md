@@ -25,6 +25,7 @@
 
 8. **Multi-file: true routing by fileKey (N independent sessions <-> N files), stronger than console-mcp's broadcast execute_across_files.**
    Why: per-session isolation is a hard requirement for concurrent multi-file design work.
+   Phase 4 result: DELIVERED. The daemon holds a `conn_id`-keyed connection registry (one WebSocket per open file) and a `mcp-session-id` -> `fileKey` pairing map. `resolve_route(session_id, file_key)` in `daemon/src/lib.rs` picks the target by explicit `fileKey`, then the session pairing, then the sole named connection, and returns a clear no-plugin, ambiguous, or not-found error. A socket close cancels only that connection's pending requests, so files stay isolated. Two non-obvious mechanism facts: (a) a tool reads the session id via `Extension<http::request::Parts>` (rmcp 3.1.0 injects the HTTP parts into the request context; needs the `http` crate) and reads the `mcp-session-id` header; (b) an empty `mcp-session-id` header or an empty `fileKey` argument is normalized to no-target, so an empty string never records a bogus shared pairing and never forces a spurious not-found. Each of the 4 tools gained an optional `fileKey` argument; the tool surface stays at 4.
 
 9. **Ship gate placement: Phase 5 is a provisional baseline only. The binding "far better than console-mcp" gate runs after Phase 7.**
    Why: the token and speed wins come from the helper library, the design-worker orchestration, and the subagent firewall added in Phases 6 and 7. Gating at Phase 5 would measure the system without its main levers.
