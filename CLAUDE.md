@@ -13,12 +13,12 @@ Claude/AI  --curl / native MCP / file-bridge-->  Rust daemon  --WebSocket-->  Fi
              POST /mcp :18846  |  ~/.turbofig                  :18847           (eval)
 ```
 
-- **Daemon (Rust, `daemon/`):** one always-on process running three servers as three `tokio::spawn`s that share one `Arc<AppState>`: the MCP HTTP endpoint (`rmcp`, streamable-http, `legacy_session_mode`, stateful `mcp-session-id`), a WebSocket server for the plugin, and a file-bridge that watches `~/.turbofig/inbox` and writes `outbox`. The file-bridge lets a locked-down client drive the daemon with file writes and reads only (no curl, no MCP). A per-request timeout stops a silent plugin hanging a call. Routes each MCP session to the right file by `fileKey`.
+- **Daemon (Rust, `daemon/`):** one always-on process running three servers as three `tokio::spawn`s that share one `Arc<AppState>`: the MCP HTTP endpoint (`rmcp`, streamable-http, `legacy_session_mode`, stateful `mcp-session-id`), a WebSocket server for the plugins (one connection per open file), and a file-bridge that watches `~/.turbofig/inbox` and writes `outbox`. The file-bridge lets a locked-down client drive the daemon with file writes and reads only (no curl, no MCP). A per-request timeout stops a silent plugin hanging a call. A `conn_id`-keyed connection registry holds N plugins at once. `resolve_route` sends each call to the right file by explicit `fileKey`, by the session-to-file pairing, or by the sole connected plugin. A socket close cancels only that connection's in-flight requests, so files stay isolated.
 - **Plugin (TypeScript, `plugin/`):** thin. UI iframe holds the WebSocket + infinite-backoff reconnect; main thread runs the Figma API. Dispatches on a `{type}` message: `EXECUTE` (eval), `GET_SELECTION`, `SCREENSHOT`, `FILE_INFO`.
 - **Helpers (JS, `helpers/`):** compact craft library injected into the eval context (auto-layout, decks, components, variables, perf rules).
 - **Skills (`skills/`):** the design-worker recipes + the generic taste baseline. User brand packs load on top.
 
-Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. All capability flows through `execute`. Never grow this.
+Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. All capability flows through `execute`. Never grow this. Each tool takes an optional `fileKey` to target one of several open files; omit it to use the paired or sole file.
 
 ## Always-on rules
 
@@ -39,7 +39,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Tooling
 
-- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`, `base64` (decode screenshot PNG), `notify` (event-driven file-bridge wakes). Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Later crates: `image` (Phase 5), `rustls` (Phase 10).
+- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`, `base64` (decode screenshot PNG), `notify` (event-driven file-bridge wakes), `http` (read the `mcp-session-id` header from the request parts for session routing). Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Later crates: `image` (Phase 5), `rustls` (Phase 10).
 - **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
 - **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`). Two more env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default 30000) and `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`).
 
