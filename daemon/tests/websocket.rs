@@ -1165,6 +1165,107 @@ async fn test_turbofig_execute_no_plugin_returns_error() {
     );
 }
 
+/// run_get_selection returns a clean error when no plugin is connected.
+#[tokio::test]
+async fn test_run_get_selection_no_plugin_returns_error() {
+    let state = Arc::new(turbofig::AppState::new());
+    let value = turbofig::run_get_selection(&state).await;
+    assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
+    assert_eq!(
+        value["error"],
+        serde_json::json!("no plugin connected"),
+        "error must name the missing plugin, got: {value}"
+    );
+}
+
+/// run_screenshot returns a clean error when no plugin is connected.
+#[tokio::test]
+async fn test_run_screenshot_no_plugin_returns_error() {
+    let state = Arc::new(turbofig::AppState::new());
+    let value = turbofig::run_screenshot(&state, 1.0, None, "file", None).await;
+    assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
+    assert_eq!(
+        value["error"],
+        serde_json::json!("no plugin connected"),
+        "error must name the missing plugin, got: {value}"
+    );
+}
+
+/// Spawn a WS server and a mock plugin that replies to each SCREENSHOT frame
+/// with the given `png` string and a 10x10 size.
+async fn spawn_screenshot_plugin(state: Arc<turbofig::AppState>, png: &'static str) {
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "F", "name": "F"}).to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("SCREENSHOT") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let reply = serde_json::json!({
+                                "type": "RESULT", "requestId": id, "ok": true,
+                                "png": png, "w": 10, "h": 10
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// run_screenshot reports a clean error when the plugin sends a bad base64 PNG.
+#[tokio::test]
+async fn test_run_screenshot_invalid_base64_returns_error() {
+    let state = Arc::new(turbofig::AppState::new());
+    spawn_screenshot_plugin(state.clone(), "!!! not base64 !!!").await;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let value = turbofig::run_screenshot(&state, 1.0, None, "file", Some(tmp.path())).await;
+    assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
+    assert_eq!(
+        value["error"],
+        serde_json::json!("invalid base64 png"),
+        "error must name the bad base64, got: {value}"
+    );
+}
+
+/// run_screenshot in file mode reports a clean error when no output dir is set.
+#[tokio::test]
+async fn test_run_screenshot_file_mode_without_output_dir_returns_error() {
+    let state = Arc::new(turbofig::AppState::new());
+    spawn_screenshot_plugin(state.clone(), "aGVsbG8=").await;
+
+    let value = turbofig::run_screenshot(&state, 1.0, None, "file", None).await;
+    assert_eq!(value["ok"], serde_json::json!(false), "must be ok:false");
+    assert_eq!(
+        value["error"],
+        serde_json::json!("file mode needs an output dir"),
+        "error must name the missing output dir, got: {value}"
+    );
+}
+
 /// A plugin that disconnects mid-request must not hang the caller.
 ///
 /// The default request timeout is 30 s. When the plugin drops the socket while
