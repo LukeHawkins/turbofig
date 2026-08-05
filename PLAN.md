@@ -105,7 +105,7 @@ Goal: cut a big design job from about an hour to a few minutes with far fewer to
 - [x] Shaped returns + firewall defaults: ids-first, opt-in `fields`/`depth`; screenshots file-mode by default; images live and die in subagents. (from Phase 5)
 - [x] Checkpoint + idempotency: persist the plan spec and per-section status to disk via the file-bridge; ops are idempotent by stable node ids (`findOrCreate`), so a re-run never duplicates and can resume. (from Phase 7)
 - [x] `.claude/commands/design.md`: brief -> plan-first spec -> parallel firewalled builder subagents (each batches via `tf.*`) -> milestone screenshot per section in a subagent -> QA critic subagent (text critique) -> refine. Runs long jobs and resumes from the last completed section. (from Phase 7)
-- [ ] Verify live: hand it a brief; it builds a complex page in minutes, main-context tokens stay low, and a mid-run interruption resumes cleanly.
+- [x] Verify live: hand it a brief; it builds a complex page in minutes, main-context tokens stay low, and a mid-run interruption resumes cleanly.
 
 ## Phase 4: True multi-file routing (deferred: see Active priority above)
 
