@@ -557,3 +557,139 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
         "plugin must re-pair after a daemon restart"
     );
 }
+
+/// A plugin that disconnects mid-request must not hang the caller.
+///
+/// The default request timeout is 30 s. When the plugin drops the socket while
+/// a routed status call waits, the daemon drains the pending map, so the call
+/// returns `plugin.connected:false` at once rather than after the timeout.
+#[tokio::test]
+async fn test_disconnect_mid_request_does_not_hang_caller() {
+    // Default (30 s) timeout: a fast return proves the drain path, not a timeout.
+    let state = Arc::new(turbofig_mcp::AppState::new());
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let http_addr = http_listener.local_addr().expect("http local addr");
+
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+    let http_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_with_state(http_listener, http_state)
+            .await
+            .expect("serve_with_state error in test");
+    });
+
+    // Connect the mock plugin and register.
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin WS connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "F1", "name": "Deck File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The plugin waits for one STATUS frame, then drops the socket (no reply).
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if text.contains("STATUS") {
+                    break; // drop plugin_ws here: simulate an abrupt disconnect.
+                }
+            }
+        }
+    });
+
+    // Drive the handshake and the routed status call, measuring wall time.
+    let base_url = format!("http://{http_addr}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build reqwest client");
+
+    let init_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("initialize");
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("mcp-session-id header")
+        .to_str()
+        .expect("valid utf8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    let _ = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
+        .send()
+        .await
+        .expect("notifications/initialized")
+        .text()
+        .await
+        .expect("drain notif");
+
+    let start = std::time::Instant::now();
+    let tools_res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("mcp-session-id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "turbofig_status", "arguments": {}}
+        }))
+        .send()
+        .await
+        .expect("tools/call (must not hang)");
+    let elapsed = start.elapsed();
+
+    // The call must return well before the 30 s request timeout.
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "call must return promptly on disconnect, took {elapsed:?}"
+    );
+
+    let body = tools_res.text().await.expect("read tools body");
+    let msg = parse_sse_data(&body);
+    let payload: serde_json::Value = serde_json::from_str(
+        msg["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text is a string"),
+    )
+    .expect("tool text is JSON");
+    assert_eq!(
+        payload["plugin"]["connected"],
+        serde_json::json!(false),
+        "a mid-request disconnect must return plugin.connected:false, got: {payload}"
+    );
+}

@@ -163,6 +163,14 @@ impl AppState {
         // Dropping the sender here is safe: the receiver will see RecvError.
     }
 
+    /// Drop every pending sender. Call this when the plugin disconnects.
+    /// Each in-flight receiver sees RecvError at once, so a routed call
+    /// returns immediately instead of waiting for its full timeout.
+    pub fn cancel_all_pending(&self) {
+        let mut guard = self.pending.lock().expect("pending lock");
+        guard.clear();
+    }
+
     /// Return the plugin's outbound sender and identity, if a plugin is registered.
     /// Returns `(tx, file_key, name)`. The caller may send JSON strings via `tx`.
     pub fn plugin_tx(&self) -> Option<(mpsc::UnboundedSender<String>, String, String)> {
@@ -356,8 +364,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    // Socket closed: remove the plugin registration.
+    // Socket closed: remove the plugin registration and fail any in-flight
+    // requests at once, so a routed call does not wait for its full timeout.
     state.clear_plugin();
+    state.cancel_all_pending();
 }
 
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
