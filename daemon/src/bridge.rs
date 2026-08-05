@@ -71,6 +71,10 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
 }
 
 /// Scan inbox/ once and service all *.json files found.
+///
+/// Each job is claimed (the inbox file is removed) before it runs, so a job is
+/// never processed twice.  Each job then runs in its own task, so one slow job
+/// (for example a status call to a silent plugin) never blocks the others.
 async fn scan_and_service(inbox: &Path, outbox: &Path, state: &Arc<AppState>) {
     let mut entries = match tokio::fs::read_dir(inbox).await {
         Ok(e) => e,
@@ -91,48 +95,62 @@ async fn scan_and_service(inbox: &Path, outbox: &Path, state: &Arc<AppState>) {
             None => continue,
         };
 
-        let result = process_job(&path, state).await;
-
-        // Write atomically: write to .tmp, then rename.
-        let out_tmp = outbox.join(format!("{job_id}.json.tmp"));
-        let out_final = outbox.join(format!("{job_id}.json"));
-
-        match tokio::fs::write(&out_tmp, result.to_string()).await {
-            Ok(()) => {
-                if let Err(e) = tokio::fs::rename(&out_tmp, &out_final).await {
-                    eprintln!("Turbofig bridge: rename failed for {job_id}: {e}");
-                }
-            }
+        // Read the job, then claim it by removing the inbox file. A claim
+        // failure means we skip the job rather than risk reprocessing it on
+        // the next tick.
+        let contents = match tokio::fs::read_to_string(&path).await {
+            Ok(s) => s,
             Err(e) => {
-                eprintln!("Turbofig bridge: write failed for {job_id}: {e}");
+                eprintln!("Turbofig bridge: read failed for {job_id}: {e}");
+                continue;
             }
+        };
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            eprintln!("Turbofig bridge: claim (remove) failed for {job_id}: {e}");
+            continue;
         }
 
-        // Remove the processed inbox file.
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            eprintln!("Turbofig bridge: remove inbox failed for {job_id}: {e}");
-        }
+        // Run the claimed job in its own task so a slow job does not stall the
+        // bridge loop.
+        let outbox = outbox.to_path_buf();
+        let state = state.clone();
+        tokio::spawn(async move {
+            let result = process_contents(&contents, &state).await;
+            write_result(&outbox, &job_id, result).await;
+        });
     }
 }
 
-/// Read a job file, parse it, and dispatch by op.  Never panics.
-async fn process_job(path: &std::path::Path, state: &Arc<AppState>) -> serde_json::Value {
-    let contents = match tokio::fs::read_to_string(path).await {
-        Ok(s) => s,
-        Err(e) => return serde_json::json!({"ok": false, "error": format!("unreadable: {e}")}),
-    };
-
-    let job: serde_json::Value = match serde_json::from_str(&contents) {
+/// Parse a job body and dispatch by op.  Never panics.
+async fn process_contents(contents: &str, state: &Arc<AppState>) -> serde_json::Value {
+    let job: serde_json::Value = match serde_json::from_str(contents) {
         Ok(v) => v,
         Err(e) => return serde_json::json!({"ok": false, "error": format!("malformed JSON: {e}")}),
     };
 
     match job.get("op").and_then(|v| v.as_str()) {
         Some("status") => crate::run_status(state).await,
-        Some(op) => {
-            serde_json::json!({"ok": false, "error": format!("unknown op: {op}")})
-        }
+        Some(op) => serde_json::json!({"ok": false, "error": format!("unknown op: {op}")}),
         None => serde_json::json!({"ok": false, "error": "missing op field"}),
+    }
+}
+
+/// Write a result to outbox/<id>.json atomically: write .tmp then rename.
+/// A rename failure removes the leftover .tmp so it does not accumulate.
+async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
+    let out_tmp = outbox.join(format!("{job_id}.json.tmp"));
+    let out_final = outbox.join(format!("{job_id}.json"));
+
+    match tokio::fs::write(&out_tmp, result.to_string()).await {
+        Ok(()) => {
+            if let Err(e) = tokio::fs::rename(&out_tmp, &out_final).await {
+                eprintln!("Turbofig bridge: rename failed for {job_id}: {e}");
+                let _ = tokio::fs::remove_file(&out_tmp).await;
+            }
+        }
+        Err(e) => {
+            eprintln!("Turbofig bridge: write failed for {job_id}: {e}");
+        }
     }
 }
 

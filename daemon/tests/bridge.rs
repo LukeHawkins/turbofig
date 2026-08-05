@@ -198,3 +198,93 @@ async fn test_bridge_unknown_op() {
         "follow-up status job must succeed, proving the watcher kept running"
     );
 }
+
+/// A malformed job file returns an error result and does not stall the watcher.
+#[tokio::test]
+async fn test_bridge_malformed_json() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig_mcp::AppState::new());
+
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    // Write raw invalid JSON directly to the inbox.
+    let inbox = tmp.path().join("inbox");
+    tokio::fs::create_dir_all(&inbox)
+        .await
+        .expect("create inbox");
+    tokio::fs::write(inbox.join("job_malformed.json"), "{ this is not json")
+        .await
+        .expect("write malformed job");
+
+    let out_path = tmp.path().join("outbox").join("job_malformed.json");
+    let contents = poll_file(&out_path, 2000).await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&contents).expect("outbox file is valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(false),
+        "malformed job must return ok:false"
+    );
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("malformed")),
+        "error must mention malformed JSON, got: {payload}"
+    );
+}
+
+/// One slow job (a status call to a silent plugin) must not block another job.
+///
+/// The bridge claims and spawns each job, so two jobs run concurrently. With a
+/// per-request timeout of 400 ms, two jobs finish together in about 400 ms, not
+/// the ~800 ms a sequential loop would take. This test is timing-sensitive by
+/// nature; the threshold keeps a wide margin.
+#[tokio::test]
+async fn test_bridge_services_jobs_concurrently() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig_mcp::AppState::with_timeout(Duration::from_millis(
+        400,
+    )));
+
+    // Bind and spawn the WS server, then connect a plugin that never replies.
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "s", "name": "Silent"}).to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Keep the socket open but never reply to STATUS.
+    tokio::spawn(async move { while let Some(Ok(_)) = plugin_ws.next().await {} });
+
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    // Submit two status jobs at once.
+    let out_a = write_job(&tmp, "job_a", serde_json::json!({"op": "status"})).await;
+    let out_b = write_job(&tmp, "job_b", serde_json::json!({"op": "status"})).await;
+
+    let start = Instant::now();
+    let _ = poll_file(&out_a, 3000).await;
+    let _ = poll_file(&out_b, 3000).await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "two jobs must run concurrently (about one timeout), took {elapsed:?}"
+    );
+}
