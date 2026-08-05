@@ -1,3 +1,4 @@
+import { createTf } from "./helpers";
 import {
   buildExecuteError,
   buildExecuteSuccess,
@@ -32,9 +33,11 @@ figma.ui.onmessage = (msg: unknown) => {
       ) => (...args: unknown[]) => Promise<unknown>;
       void (async () => {
         try {
+          // Build the tf namespace bound to this live PluginAPI instance.
+          const tf = createTf(figma);
           // The preamble runs first. It sets async APIs under dynamic-page.
-          const fn = new AsyncFunction("figma", wrapUserCode(code));
-          const result = await fn(figma);
+          const fn = new AsyncFunction("figma", "tf", wrapUserCode(code));
+          const result = await fn(figma, tf);
           figma.ui.postMessage(buildExecuteSuccess(requestId, safeResult(result)));
         } catch (err) {
           const message =

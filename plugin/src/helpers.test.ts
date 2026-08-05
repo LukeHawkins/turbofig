@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { dedupeFonts, hexToRgb, normalizePadding, solidPaint } from "./helpers";
+import { createTf, dedupeFonts, hexToRgb, normalizePadding, solidPaint } from "./helpers";
 
 describe("hexToRgb", () => {
   test("parses a full #RRGGBB string", () => {
@@ -116,6 +116,36 @@ describe("normalizePadding", () => {
   test("fills only the missing right and bottom sides", () => {
     const result = normalizePadding({ top: 5, left: 15 });
     expect(result).toEqual({ top: 5, right: 0, bottom: 0, left: 15 });
+  });
+});
+
+describe("createTf", () => {
+  // Cast through unknown so the test does not require a real PluginAPI instance.
+  // createTf reads figma only inside its methods, so an empty object is safe here.
+  const tf = createTf({} as unknown as PluginAPI);
+
+  test("exposes all expected methods on the namespace", () => {
+    const methods = [
+      "color",
+      "solid",
+      "loadFonts",
+      "text",
+      "frame",
+      "rect",
+      "append",
+      "findOrCreate",
+      "commit",
+    ] as const;
+    for (const name of methods) {
+      expect(typeof tf[name]).toBe("function");
+    }
+  });
+
+  test("tf.color parses #3366CC to approximately r=0.2, g=0.4, b=0.8", () => {
+    const result = tf.color("#3366CC");
+    expect(result.r).toBeCloseTo(0.2, 3);
+    expect(result.g).toBeCloseTo(0.4, 3);
+    expect(result.b).toBeCloseTo(0.8, 3);
   });
 });
 

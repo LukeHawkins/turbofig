@@ -100,7 +100,7 @@ Goal: cut a big design job from about an hour to a few minutes with far fewer to
 **Execution rule (enforced):** the main session orchestrates, holds the shared contracts, verifies, and commits. Every code change is delegated to a subagent. Independent items run as parallel workers in one batch. The main context stays lean.
 
 - [x] Minimal helper library: a compact `tf` craft namespace for the eval context (auto-layout frame, text with font-load, color, rect, `findOrCreate` for idempotency) with perf rules baked in (fonts via `Promise.all`, chunk, `commitUndo`). Pure logic unit-tested; figma glue smoke-tested. (from Phase 6)
-- [ ] Inject the helper namespace into every eval, beside the deprecation preamble, so generated code calls `tf.*`. (from Phase 6)
+- [x] Inject the helper namespace into every eval, beside the deprecation preamble, so generated code calls `tf.*`. (from Phase 6)
 - [ ] Compact helper API reference (one short doc) so the model learns the helpers cheaply. (from Phase 6)
 - [ ] Shaped returns + firewall defaults: ids-first, opt-in `fields`/`depth`; screenshots file-mode by default; images live and die in subagents. (from Phase 5)
 - [ ] Checkpoint + idempotency: persist the plan spec and per-section status to disk via the file-bridge; ops are idempotent by stable node ids (`findOrCreate`), so a re-run never duplicates and can resume. (from Phase 7)
