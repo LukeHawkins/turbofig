@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "turbofig-mcp",
+      "name": "turbofig",
       "devDependencies": {
         "@biomejs/biome": "^2.4",
         "typescript": "^5.6",

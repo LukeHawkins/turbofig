@@ -14,7 +14,7 @@
 4. **eval blocks a Figma Community store listing; ship as dev-install.**
    Why: review rejects arbitrary server-run code. Keep the plugin hybrid-ready: a {type} dispatch table so a community-safe command vocabulary build is additive later with no rework.
 
-5. **Distribution: primary `npx turbofig-mcp` using per-platform binary packages as optionalDependencies (the esbuild/Biome pattern).**
+5. **Distribution: primary `npx turbofig` using per-platform binary packages as optionalDependencies (the esbuild/Biome pattern).**
    Why: no postinstall network fetch, works on locked-down corporate networks. Secondary: cargo install, Homebrew tap, GitHub Release binaries + curl|sh. Daemon nudges on a newer version; plugin warns on version mismatch.
 
 6. **Trainability: ship a generic good-designer taste baseline; user brand/project packs load on top and switch at runtime.**

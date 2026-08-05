@@ -40,11 +40,11 @@ async fn test_ws_file_info_registers_plugin() {
         .await
         .expect("bind ephemeral WS port");
     let addr = listener.local_addr().expect("read local addr");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
     let state_srv = state.clone();
 
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(listener, state_srv)
+        turbofig::serve_ws(listener, state_srv)
             .await
             .expect("serve_ws error in test");
     });
@@ -95,11 +95,11 @@ async fn test_ws_unknown_message_type_is_ignored() {
         .await
         .expect("bind ephemeral WS port");
     let addr = listener.local_addr().expect("read local addr");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
     let state_srv = state.clone();
 
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(listener, state_srv)
+        turbofig::serve_ws(listener, state_srv)
             .await
             .expect("serve_ws error in test");
     });
@@ -138,9 +138,7 @@ async fn test_ws_unknown_message_type_is_ignored() {
 #[tokio::test]
 async fn test_turbofig_status_times_out_when_plugin_silent() {
     // Short timeout so the test stays fast and non-flaky.
-    let state = Arc::new(turbofig_mcp::AppState::with_timeout(Duration::from_millis(
-        80,
-    )));
+    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_millis(80)));
 
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -153,14 +151,14 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
 
     let ws_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(ws_listener, ws_state)
+        turbofig::serve_ws(ws_listener, ws_state)
             .await
             .expect("serve_ws error in test");
     });
 
     let http_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_with_state(http_listener, http_state)
+        turbofig::serve_with_state(http_listener, http_state)
             .await
             .expect("serve_with_state error in test");
     });
@@ -282,7 +280,7 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
 /// the RESULT as `{"ok":true,"plugin":{"connected":true,"fileKey":...,"name":...}}`.
 #[tokio::test]
 async fn test_turbofig_status_routes_through_plugin() {
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
 
     // Bind ephemeral listeners for both servers.
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -297,7 +295,7 @@ async fn test_turbofig_status_routes_through_plugin() {
     // Spawn the WS server.
     let ws_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(ws_listener, ws_state)
+        turbofig::serve_ws(ws_listener, ws_state)
             .await
             .expect("serve_ws error in test");
     });
@@ -305,7 +303,7 @@ async fn test_turbofig_status_routes_through_plugin() {
     // Spawn the MCP HTTP server.
     let http_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_with_state(http_listener, http_state)
+        turbofig::serve_with_state(http_listener, http_state)
             .await
             .expect("serve_with_state error in test");
     });
@@ -485,10 +483,10 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
         .await
         .expect("bind ephemeral WS port");
     let addr = listener.local_addr().expect("read local addr");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
     let state_srv = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(listener, state_srv)
+        turbofig::serve_ws(listener, state_srv)
             .await
             .expect("serve_ws error in test");
     });
@@ -535,10 +533,10 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
         .await
         .expect("bind ephemeral WS port B");
     let addr_b = listener_b.local_addr().expect("read local addr B");
-    let state_b = Arc::new(turbofig_mcp::AppState::new());
+    let state_b = Arc::new(turbofig::AppState::new());
     let state_b_srv = state_b.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(listener_b, state_b_srv)
+        turbofig::serve_ws(listener_b, state_b_srv)
             .await
             .expect("serve_ws B error in test");
     });
@@ -566,7 +564,7 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
 #[tokio::test]
 async fn test_disconnect_mid_request_does_not_hang_caller() {
     // Default (30 s) timeout: a fast return proves the drain path, not a timeout.
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
 
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -579,13 +577,13 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
 
     let ws_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(ws_listener, ws_state)
+        turbofig::serve_ws(ws_listener, ws_state)
             .await
             .expect("serve_ws error in test");
     });
     let http_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_with_state(http_listener, http_state)
+        turbofig::serve_with_state(http_listener, http_state)
             .await
             .expect("serve_with_state error in test");
     });

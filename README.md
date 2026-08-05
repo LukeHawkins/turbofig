@@ -1,4 +1,4 @@
-# turbofig-mcp
+# turbofig
 
 Always-on Figma MCP bridge: Rust daemon + eval-first design.
 

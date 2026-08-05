@@ -40,7 +40,7 @@ else
     # Resolve the repo root relative to this script.
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-    RELEASE_BIN="${REPO_ROOT}/target/release/turbofig-mcp"
+    RELEASE_BIN="${REPO_ROOT}/target/release/turbofig"
 
     if [[ -x "${RELEASE_BIN}" ]]; then
         DAEMON_BIN="${RELEASE_BIN}"

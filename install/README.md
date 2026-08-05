@@ -5,7 +5,7 @@ These files install the turbofig daemon as a macOS LaunchAgent. The daemon start
 ## Requirements
 
 - macOS (tested on macOS 14+)
-- A built `turbofig-mcp` binary, OR `cargo` in `PATH` (the script builds it)
+- A built `turbofig` binary, OR `cargo` in `PATH` (the script builds it)
 
 ## Install
 
@@ -17,7 +17,7 @@ Run the install script from the repository root or any directory:
 
 The script does the following:
 
-1. Finds or builds the `turbofig-mcp` release binary.
+1. Finds or builds the `turbofig` release binary.
 2. Creates `~/Library/Logs/turbofig/` for log files.
 3. Writes the LaunchAgent plist to `~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`.
 4. Loads the service with `launchctl load -w`.
@@ -29,7 +29,7 @@ The install is idempotent. Run it again to reinstall or to pick up a new binary 
 Set `TURBOFIG_BIN` to use a specific binary:
 
 ```sh
-TURBOFIG_BIN=/usr/local/bin/turbofig-mcp ./install/install-macos.sh
+TURBOFIG_BIN=/usr/local/bin/turbofig ./install/install-macos.sh
 ```
 
 ## Check status

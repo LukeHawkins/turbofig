@@ -166,12 +166,12 @@ Goal: a clean, good-looking plugin panel. Clear connection state.
 
 Goal: users install a compiled binary with no source and no compiler; updates are trivial. Ship macOS + npx first, then widen.
 
-- [ ] npm publish: thin JS launcher `turbofig-mcp` + a macOS arm64 binary package as an `optionalDependency` (esbuild/Biome pattern; no postinstall network fetch, works on locked-down networks)
-- [ ] `npx turbofig-mcp` starts the daemon on macOS arm64 with no Rust toolchain
+- [ ] npm publish: thin JS launcher `turbofig` + a macOS arm64 binary package as an `optionalDependency` (esbuild/Biome pattern; no postinstall network fetch, works on locked-down networks)
+- [ ] `npx turbofig` starts the daemon on macOS arm64 with no Rust toolchain
 - [ ] Widen the CI build matrix to macOS x64, Linux x64 (musl, rustls), Windows x64; publish their binary packages
-- [ ] Secondary channels: `cargo install turbofig-mcp`, a Homebrew tap, raw GitHub Release binaries + `curl | sh` installer
+- [ ] Secondary channels: `cargo install turbofig`, a Homebrew tap, raw GitHub Release binaries + `curl | sh` installer
 - [ ] Auto-update nudge: daemon checks for a newer version on startup; plugin warns on version mismatch on connect
-- [ ] Plugin delivery: `npx turbofig-mcp plugin` prints/opens the dev-install steps and the manifest path
+- [ ] Plugin delivery: `npx turbofig plugin` prints/opens the dev-install steps and the manifest path
 - [ ] Play nice with Luke's setup: the file-bridge is the primary dialog-free path (native MCP is admin-blocked on his account, tested). Keep curl-on-18846 working as a fallback. Register a native `mcpServers` entry for users whose admin allowlists it.
 - [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs over the file-bridge
 - [ ] Productionize the file-bridge (spike landed; the `execute` op arrives in Phase 3): make client writes race-safe (two-phase `.ready` sentinel or file-stability check) and switch polling to the `notify` crate for sub-millisecond, zero-idle-CPU wakes. See `DECISIONS.md` #15 and `skills/file-bridge.md`.

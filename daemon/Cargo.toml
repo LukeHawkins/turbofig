@@ -1,14 +1,14 @@
 [package]
-name = "turbofig-mcp"
+name = "turbofig"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "turbofig-mcp"
+name = "turbofig"
 path = "src/main.rs"
 
 [lib]
-name = "turbofig_mcp"
+name = "turbofig"
 path = "src/lib.rs"
 
 [dependencies]

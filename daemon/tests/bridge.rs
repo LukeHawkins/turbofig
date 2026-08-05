@@ -39,9 +39,9 @@ async fn write_job(dir: &tempfile::TempDir, id: &str, body: serde_json::Value) -
 }
 
 /// Spawn the bridge server in the background.
-fn spawn_bridge(state: Arc<turbofig_mcp::AppState>, dir: PathBuf) {
+fn spawn_bridge(state: Arc<turbofig::AppState>, dir: PathBuf) {
     tokio::spawn(async move {
-        turbofig_mcp::serve_bridge(state, dir)
+        turbofig::serve_bridge(state, dir)
             .await
             .expect("serve_bridge error in test");
     });
@@ -53,7 +53,7 @@ fn spawn_bridge(state: Arc<turbofig_mcp::AppState>, dir: PathBuf) {
 #[tokio::test]
 async fn test_bridge_status_roundtrip_with_plugin() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
 
     // Bind an ephemeral WS listener and spawn the WS server.
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -62,7 +62,7 @@ async fn test_bridge_status_roundtrip_with_plugin() {
     let ws_addr = ws_listener.local_addr().expect("ws local addr");
     let ws_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(ws_listener, ws_state)
+        turbofig::serve_ws(ws_listener, ws_state)
             .await
             .expect("serve_ws error");
     });
@@ -144,7 +144,7 @@ async fn test_bridge_status_roundtrip_with_plugin() {
 #[tokio::test]
 async fn test_bridge_status_no_plugin() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
 
     spawn_bridge(state.clone(), tmp.path().to_path_buf());
 
@@ -166,7 +166,7 @@ async fn test_bridge_status_no_plugin() {
 #[tokio::test]
 async fn test_bridge_unknown_op() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
 
     spawn_bridge(state.clone(), tmp.path().to_path_buf());
 
@@ -203,7 +203,7 @@ async fn test_bridge_unknown_op() {
 #[tokio::test]
 async fn test_bridge_malformed_json() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state = Arc::new(turbofig::AppState::new());
 
     spawn_bridge(state.clone(), tmp.path().to_path_buf());
 
@@ -243,9 +243,7 @@ async fn test_bridge_malformed_json() {
 #[tokio::test]
 async fn test_bridge_services_jobs_concurrently() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(turbofig_mcp::AppState::with_timeout(Duration::from_millis(
-        400,
-    )));
+    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_millis(400)));
 
     // Bind and spawn the WS server, then connect a plugin that never replies.
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -254,7 +252,7 @@ async fn test_bridge_services_jobs_concurrently() {
     let ws_addr = ws_listener.local_addr().expect("ws local addr");
     let ws_state = state.clone();
     tokio::spawn(async move {
-        turbofig_mcp::serve_ws(ws_listener, ws_state)
+        turbofig::serve_ws(ws_listener, ws_state)
             .await
             .expect("serve_ws error");
     });

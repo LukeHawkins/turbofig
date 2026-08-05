@@ -20,7 +20,7 @@ BASE="http://127.0.0.1:${PORT}/mcp"
 ACCEPT="application/json, text/event-stream"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${ROOT}/target/debug/turbofig-mcp"
+BIN="${ROOT}/target/debug/turbofig"
 
 fail() {
   echo "FAIL: $1" >&2

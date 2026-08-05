@@ -1,11 +1,11 @@
 use std::sync::Arc;
-use turbofig_mcp::AppState;
+use turbofig::AppState;
 
 #[tokio::main]
 async fn main() {
-    let mcp_port = turbofig_mcp::port_from_env();
-    let ws_port = turbofig_mcp::ws_port_from_env();
-    let bridge_dir = turbofig_mcp::bridge_dir_from_env();
+    let mcp_port = turbofig::port_from_env();
+    let ws_port = turbofig::ws_port_from_env();
+    let bridge_dir = turbofig::bridge_dir_from_env();
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
     let ws_addr = format!("127.0.0.1:{ws_port}");
@@ -40,7 +40,7 @@ async fn main() {
 
     let mcp_state = state.clone();
     let mcp_handle = tokio::spawn(async move {
-        if let Err(e) = turbofig_mcp::serve_with_state(mcp_listener, mcp_state).await {
+        if let Err(e) = turbofig::serve_with_state(mcp_listener, mcp_state).await {
             eprintln!("Turbofig daemon: MCP server error: {e}");
             std::process::exit(1);
         }
@@ -48,7 +48,7 @@ async fn main() {
 
     let ws_state = state.clone();
     let ws_handle = tokio::spawn(async move {
-        if let Err(e) = turbofig_mcp::serve_ws(ws_listener, ws_state).await {
+        if let Err(e) = turbofig::serve_ws(ws_listener, ws_state).await {
             eprintln!("Turbofig daemon: WS server error: {e}");
             std::process::exit(1);
         }
@@ -56,7 +56,7 @@ async fn main() {
 
     let bridge_state = state.clone();
     let bridge_handle = tokio::spawn(async move {
-        if let Err(e) = turbofig_mcp::serve_bridge(bridge_state, bridge_dir).await {
+        if let Err(e) = turbofig::serve_bridge(bridge_state, bridge_dir).await {
             eprintln!("Turbofig daemon: bridge error: {e}");
             std::process::exit(1);
         }

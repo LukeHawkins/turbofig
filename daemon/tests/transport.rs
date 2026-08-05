@@ -16,7 +16,7 @@ async fn start_server() -> String {
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("read local addr");
     tokio::spawn(async move {
-        turbofig_mcp::serve(listener)
+        turbofig::serve(listener)
             .await
             .expect("server error in test");
     });
