@@ -460,3 +460,100 @@ async fn test_turbofig_status_routes_through_plugin() {
         "plugin.name must match, got: {payload}"
     );
 }
+
+/// The plugin re-pairs with zero manual steps after a Figma restart and after
+/// a daemon restart.
+///
+/// The plugin reconnects on its own with infinite backoff and sends FILE_INFO
+/// on every connect (see the plugin UI client and code.ts). This test models
+/// both restart cases on the daemon side:
+///   Part A: the socket drops (Figma closed) and a new socket re-registers.
+///   Part B: a fresh AppState on a new listener (daemon restarted) registers
+///           the reconnecting plugin.
+/// In both cases the only client action is reconnect + FILE_INFO, which the
+/// real plugin performs automatically.
+#[tokio::test]
+async fn test_plugin_repairs_after_figma_and_daemon_restart() {
+    let file_info = serde_json::json!({
+        "type": "FILE_INFO",
+        "fileKey": "F1",
+        "name": "Deck File"
+    });
+
+    // ── Part A: Figma restart (socket drops, new socket re-registers) ──────────
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig_mcp::AppState::new());
+    let state_srv = state.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_ws(listener, state_srv)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    // First connect: the plugin registers.
+    let (mut ws1, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
+        .await
+        .expect("first WS connect failed");
+    ws1.send(TtMessage::Text(file_info.to_string()))
+        .await
+        .expect("send FILE_INFO (1)");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        state.plugin_snapshot(),
+        Some(("F1".to_owned(), "Deck File".to_owned())),
+        "plugin must register on first connect"
+    );
+
+    // Figma closes: drop the socket. The registry clears.
+    drop(ws1);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        state.plugin_snapshot(),
+        None,
+        "plugin must clear when the socket drops"
+    );
+
+    // Figma reopens: a new socket re-registers with no manual steps.
+    let (mut ws2, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
+        .await
+        .expect("reconnect WS failed");
+    ws2.send(TtMessage::Text(file_info.to_string()))
+        .await
+        .expect("send FILE_INFO (2)");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        state.plugin_snapshot(),
+        Some(("F1".to_owned(), "Deck File".to_owned())),
+        "plugin must re-pair after a Figma restart"
+    );
+
+    // ── Part B: daemon restart (fresh state on a new listener) ─────────────────
+    let listener_b = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port B");
+    let addr_b = listener_b.local_addr().expect("read local addr B");
+    let state_b = Arc::new(turbofig_mcp::AppState::new());
+    let state_b_srv = state_b.clone();
+    tokio::spawn(async move {
+        turbofig_mcp::serve_ws(listener_b, state_b_srv)
+            .await
+            .expect("serve_ws B error in test");
+    });
+
+    // The plugin reconnects to the restarted daemon and re-registers.
+    let (mut ws3, _) = connect_async(format!("ws://127.0.0.1:{}/", addr_b.port()))
+        .await
+        .expect("connect to restarted daemon failed");
+    ws3.send(TtMessage::Text(file_info.to_string()))
+        .await
+        .expect("send FILE_INFO (3)");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        state_b.plugin_snapshot(),
+        Some(("F1".to_owned(), "Deck File".to_owned())),
+        "plugin must re-pair after a daemon restart"
+    );
+}

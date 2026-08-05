@@ -70,6 +70,20 @@ launchctl unload ~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist
 launchctl load -w ~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist
 ```
 
+## Verify re-pair
+
+The plugin re-pairs with no manual steps after a restart. Verify it:
+
+1. Confirm the plugin shows "connected".
+2. Restart the daemon: `launchctl kickstart -k gui/$(id -u)/eu.lukehawkins.turbofig`.
+3. Watch the plugin. It shows "reconnecting", then "connected" on its own.
+4. Close and reopen the Figma file (or reload the plugin).
+5. Watch the plugin. It reconnects and re-sends the file identity on its own.
+
+The daemon side of this behaviour has an automated test:
+`test_plugin_repairs_after_figma_and_daemon_restart` in
+`daemon/tests/websocket.rs`.
+
 ## Uninstall
 
 ```sh
