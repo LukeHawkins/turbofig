@@ -21,6 +21,17 @@ export interface TextOpts {
   family?: string;
   style?: string;
   color?: string;
+  /**
+   * Controls how the node resizes when its text content changes.
+   * Default is "WIDTH_AND_HEIGHT" (the node grows on both axes).
+   * Pass "HEIGHT" together with `width` to wrap text at a fixed width.
+   */
+  autoResize?: "WIDTH_AND_HEIGHT" | "HEIGHT" | "NONE" | "TRUNCATE";
+  /**
+   * When set, the node is resized to this pixel width before text is applied.
+   * `autoResize` defaults to "HEIGHT" so the node wraps within the fixed width.
+   */
+  width?: number;
 }
 
 /** Options for the frame factory. */
@@ -115,19 +126,18 @@ export function dedupeFonts(fonts: FontName[]): FontName[] {
  * per-axis sizing modes. Use the result to set primaryAxisSizingMode and
  * counterAxisSizingMode on a FrameNode.
  *
- * For direction "NONE" the frame has no auto-layout, so sizing modes are
- * invalid. Both fields return "AUTO" as a safe sentinel; the caller must not
- * apply them to the node.
+ * Returns null for direction "NONE". The frame has no auto-layout, so sizing
+ * modes are invalid. The caller must not apply them to the node.
  *
  * Axis mapping:
- *   VERTICAL  — primary axis is height, counter axis is width.
+ *   VERTICAL   — primary axis is height, counter axis is width.
  *   HORIZONTAL — primary axis is width, counter axis is height.
  */
 export function axisSizing(
   direction: "NONE" | "HORIZONTAL" | "VERTICAL",
   hasWidth: boolean,
   hasHeight: boolean,
-): { primary: "FIXED" | "AUTO"; counter: "FIXED" | "AUTO" } {
+): { primary: "FIXED" | "AUTO"; counter: "FIXED" | "AUTO" } | null {
   if (direction === "VERTICAL") {
     return {
       primary: hasHeight ? "FIXED" : "AUTO",
@@ -141,7 +151,7 @@ export function axisSizing(
     };
   }
   // direction "NONE": auto-layout sizing modes do not apply.
-  return { primary: "AUTO", counter: "AUTO" };
+  return null;
 }
 
 // --- Factory ---
@@ -169,10 +179,18 @@ export function createTf(figma: PluginAPI) {
       await figma.loadFontAsync({ family, style });
       const node = figma.createText();
       node.fontName = { family, style };
-      node.characters = opts.text;
       node.fontSize = size;
       // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
       node.fills = [solidPaint(color)];
+      if (opts.width !== undefined) {
+        // Fixed-width wrapping: resize to the given width, then wrap within it.
+        // Set textAutoResize before characters so wrapping applies immediately.
+        node.resize(opts.width, node.height);
+        node.textAutoResize = opts.autoResize ?? "HEIGHT";
+      } else {
+        node.textAutoResize = opts.autoResize ?? "WIDTH_AND_HEIGHT";
+      }
+      node.characters = opts.text;
       return node;
     },
 
@@ -200,11 +218,13 @@ export function createTf(figma: PluginAPI) {
       if (hasWidth || hasHeight) {
         node.resize(opts.width ?? node.width, opts.height ?? node.height);
       }
-      // Sizing modes are only valid on auto-layout frames.
+      // Sizing modes are only valid on auto-layout frames. axisSizing returns null for "NONE".
       if (direction !== "NONE") {
         const sizing = axisSizing(direction, hasWidth, hasHeight);
-        node.primaryAxisSizingMode = sizing.primary;
-        node.counterAxisSizingMode = sizing.counter;
+        if (sizing !== null) {
+          node.primaryAxisSizingMode = sizing.primary;
+          node.counterAxisSizingMode = sizing.counter;
+        }
       }
       if (opts.primaryAlign !== undefined) {
         node.primaryAxisAlignItems = opts.primaryAlign;
@@ -218,18 +238,28 @@ export function createTf(figma: PluginAPI) {
       return node;
     },
 
-    /** Creates and configures a RectangleNode with optional fill and corner radius. */
+    /** Creates and configures a RectangleNode with optional fill and corner radius. Transparent by default. */
     rect(opts: RectOpts): RectangleNode {
       const node = figma.createRectangle();
       node.resize(opts.width, opts.height);
-      if (opts.fill !== undefined) {
-        // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
-        node.fills = [solidPaint(opts.fill)];
-      }
+      // Always set fills explicitly. An empty array makes the rect transparent.
+      // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
+      node.fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
       if (opts.corner !== undefined) {
         node.cornerRadius = opts.corner;
       }
       return node;
+    },
+
+    /**
+     * Removes all children from a node.
+     * Use with findOrCreate to make a re-run idempotent: find or create the section,
+     * clear it, then rebuild its children from scratch.
+     */
+    clear(node: BaseNode & ChildrenMixin): void {
+      for (const c of [...node.children]) {
+        c.remove();
+      }
     },
 
     /** Appends each child to the parent node and returns the parent for chaining. */

@@ -158,9 +158,9 @@ describe("axisSizing", () => {
   });
 
   describe("direction NONE", () => {
-    test("returns both AUTO regardless of dimensions (sizing modes invalid without auto-layout)", () => {
-      expect(axisSizing("NONE", true, true)).toEqual({ primary: "AUTO", counter: "AUTO" });
-      expect(axisSizing("NONE", false, false)).toEqual({ primary: "AUTO", counter: "AUTO" });
+    test("returns null regardless of dimensions (sizing modes invalid without auto-layout)", () => {
+      expect(axisSizing("NONE", true, true)).toBeNull();
+      expect(axisSizing("NONE", false, false)).toBeNull();
     });
   });
 });
@@ -178,6 +178,7 @@ describe("createTf", () => {
       "text",
       "frame",
       "rect",
+      "clear",
       "append",
       "findOrCreate",
       "commit",
