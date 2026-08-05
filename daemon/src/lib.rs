@@ -275,6 +275,11 @@ impl AppState {
         session_id: Option<&str>,
         explicit: Option<&str>,
     ) -> Result<(u64, mpsc::UnboundedSender<String>, String, String), RouteError> {
+        // Normalize an empty explicit fileKey to no target, the same as an
+        // empty session id. An empty string can never name a real file, so it
+        // must fall through to the session pairing or the sole connection
+        // instead of always failing with "file not connected".
+        let explicit = explicit.filter(|s| !s.is_empty());
         // Step 1: Determine the desired file_key.
         let desired: Option<String> = if let Some(fk) = explicit {
             // Explicit target given. Record pairing for this session.
@@ -1116,6 +1121,22 @@ mod tests {
             }
             other => panic!("expected Ambiguous, got ok={}", other.is_ok()),
         }
+    }
+
+    #[test]
+    fn resolve_route_empty_explicit_file_key_falls_through_to_auto_pick() {
+        // An empty explicit fileKey must behave like no target, so a single
+        // connected plugin is still auto-picked instead of a NotFound error.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+
+        let (conn_id, _tx, fk, _nm) = state
+            .resolve_route(None, Some(""))
+            .expect("empty explicit fileKey must auto-pick the sole plugin");
+        assert_eq!(conn_id, conn1);
+        assert_eq!(fk, "fk1");
     }
 
     #[test]
