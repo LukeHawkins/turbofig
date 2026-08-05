@@ -172,6 +172,7 @@ Goal: users install a compiled binary with no source and no compiler; updates ar
 - [ ] Plugin delivery: `npx turbofig-mcp plugin` prints/opens the dev-install steps and the manifest path
 - [ ] Play nice with Luke's setup: keep curl-on-18846 working AND register cleanly as a native `mcpServers` entry
 - [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs
+- [ ] Productionize the file-bridge (spike landed): add the `execute` op, make client writes race-safe (two-phase `.ready` sentinel or file-stability check), and switch polling to the `notify` crate. This is the primary transport for locked-down Claude Enterprise accounts where curl is gated and native MCP is blocked. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
 
 ## Phase 11: Presentation (README-first)
 

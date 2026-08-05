@@ -1,3 +1,6 @@
+mod bridge;
+pub use bridge::{bridge_dir_from_env, serve_bridge};
+
 use rmcp::{
     model::*,
     tool, tool_handler, tool_router,
@@ -176,6 +179,55 @@ impl Default for AppState {
     }
 }
 
+// ── Shared status logic ───────────────────────────────────────────────────────
+
+/// Run the status check against the live plugin and return a JSON value.
+///
+/// No plugin -> `{"ok":true,"plugin":{"connected":false}}`.
+/// Plugin connected -> sends STATUS, awaits RESULT within the configured
+/// timeout, and returns the connected shape or `responsive:false` on timeout.
+///
+/// Reused by both `turbofig_status` (MCP) and the filesystem bridge.
+pub async fn run_status(state: &Arc<AppState>) -> Value {
+    let Some((tx, file_key, name)) = state.plugin_tx() else {
+        return json!({"ok": true, "plugin": {"connected": false}});
+    };
+
+    let id = state.next_request_id();
+    let rx = state.register_pending(id);
+    let request = json!({"type": "STATUS", "requestId": id});
+
+    if tx.send(request.to_string()).is_err() {
+        return json!({"ok": true, "plugin": {"connected": false}});
+    }
+
+    match tokio::time::timeout(state.request_timeout, rx).await {
+        Ok(Ok(result)) => {
+            let fk = result
+                .get("fileKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&file_key)
+                .to_owned();
+            let nm = result
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&name)
+                .to_owned();
+            json!({
+                "ok": true,
+                "plugin": {"connected": true, "fileKey": fk, "name": nm}
+            })
+        }
+        Ok(Err(_)) => {
+            json!({"ok": true, "plugin": {"connected": false}})
+        }
+        Err(_elapsed) => {
+            state.cancel_pending(id);
+            json!({"ok": true, "plugin": {"connected": true, "responsive": false}})
+        }
+    }
+}
+
 // ── MCP handler ───────────────────────────────────────────────────────────────
 
 /// MCP handler that exposes the turbofig_status tool.
@@ -202,68 +254,15 @@ impl StatusHandler {
 
     /// Return daemon liveness status as JSON.
     ///
-    /// No plugin connected: `{"ok":true,"plugin":{"connected":false}}`.
-    /// Plugin connected: send a STATUS request over the WS channel and await
-    /// the RESULT, then return `{"ok":true,"plugin":{"connected":true,...}}`.
+    /// Delegates to `run_status` for the shared logic; wraps the result in a
+    /// `CallToolResult` for the MCP wire format.
     /// `"ok":true` always means the daemon is alive regardless of plugin state.
     #[tool(description = "Return daemon status")]
     async fn turbofig_status(&self) -> Result<CallToolResult, McpError> {
-        // Disconnected path: no plugin registered.
-        let Some((tx, file_key, name)) = self.state.plugin_tx() else {
-            return Ok(CallToolResult::success(vec![ContentBlock::text(
-                json!({"ok": true, "plugin": {"connected": false}}).to_string(),
-            )]));
-        };
-
-        // Connected path: round-trip to the plugin.
-        let id = self.state.next_request_id();
-        let rx = self.state.register_pending(id);
-        let request = json!({"type": "STATUS", "requestId": id});
-
-        if tx.send(request.to_string()).is_err() {
-            // Channel closed between snapshot and send; treat as disconnected.
-            return Ok(CallToolResult::success(vec![ContentBlock::text(
-                json!({"ok": true, "plugin": {"connected": false}}).to_string(),
-            )]));
-        }
-
-        match tokio::time::timeout(self.state.request_timeout, rx).await {
-            Ok(Ok(result)) => {
-                // Reply arrived within the timeout.
-                let fk = result
-                    .get("fileKey")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&file_key)
-                    .to_owned();
-                let nm = result
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&name)
-                    .to_owned();
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    json!({
-                        "ok": true,
-                        "plugin": {"connected": true, "fileKey": fk, "name": nm}
-                    })
-                    .to_string(),
-                )]))
-            }
-            Ok(Err(_)) => {
-                // Sender was dropped before the reply arrived; treat as disconnected.
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    json!({"ok": true, "plugin": {"connected": false}}).to_string(),
-                )]))
-            }
-            Err(_elapsed) => {
-                // Timeout: plugin did not reply in time.
-                // Remove the pending entry to prevent a map leak.
-                self.state.cancel_pending(id);
-                Ok(CallToolResult::success(vec![ContentBlock::text(
-                    json!({"ok": true, "plugin": {"connected": true, "responsive": false}})
-                        .to_string(),
-                )]))
-            }
-        }
+        let value = run_status(&self.state).await;
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            value.to_string(),
+        )]))
     }
 }
 
