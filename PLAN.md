@@ -122,10 +122,12 @@ Goal: N independent Claude sessions to N files at once. Stronger than console-mc
 
 Goal: build the token and speed levers and take a PROVISIONAL measurement. The binding far-better gate is Phase 7, once helpers + orchestration + firewall exist.
 
+**Reconciled 2026-08-05:** the Active-priority slice delivered the batching helper and the file-mode + ids-first + subagent-firewall defaults (via `tf` and `design.md`). The unchecked items below are the genuine remaining work: coded `fields`/`depth` read shaping, downscaled screenshots (needs the `image` crate), read-size caps, and the benchmark harness + baseline + provisional read (the measurement, skipped by choice).
+
 - [ ] Shaped returns: ids-first, opt-in `fields`, `depth` limit, never a full-tree dump by default
 - [ ] Screenshots default to downscaled + file-mode; inline high-res only on explicit request
 - [ ] Enforce the context firewall: inline screenshots need an explicit opt-in and warn past a budget; large reads without `depth`/`fields` are capped or warned; file-mode plus subagent-read is the default path
-- [ ] Batching helper: many node ops in one `execute` round-trip
+- [x] Batching helper: many node ops in one `execute` round-trip
 - [ ] Benchmark harness: measure tokens + wall-time for "design a webpage" and "20-slide deck"
 - [ ] Run the harness against the current console-mcp stack and record baseline numbers
 - [ ] Provisional read: record turbofig-so-far vs baseline; note the binding gate is Phase 7
@@ -134,23 +136,27 @@ Goal: build the token and speed levers and take a PROVISIONAL measurement. The b
 
 Goal: reliable, fast Figma craft as a compact JS namespace injected into the eval context.
 
+**Reconciled 2026-08-05:** the Active-priority slice delivered the `tf` layout primitives, text and font handling, the async-only surface, the core perf rules (Promise.all fonts, chunk, commitUndo), and the compact API reference. The unchecked items below are still open: the extra perf helpers (`skipInvisibleInstanceChildren`, `findAllWithCriteria`), deck and slide scaffolds, component instantiation, variable read and write, export helpers, and the multi-slide-deck verify.
+
 - [ ] Perf rules baked in: fonts via `Promise.all`, `skipInvisibleInstanceChildren`, `findAllWithCriteria`, `commitUndo`, chunk 50-100 nodes
-- [ ] Layout primitives: auto-layout builders (vertical/horizontal, sizing, spacing, padding)
+- [x] Layout primitives: auto-layout builders (vertical/horizontal, sizing, spacing, padding)
 - [ ] Deck/slide scaffolds; component instantiation; variable read/write; text + font handling; export
-- [ ] Async-only API surface (all `*Async` variants) for `documentAccess: dynamic-page`
-- [ ] Compact API reference doc (one file) so the model learns the helpers cheaply
+- [x] Async-only API surface (all `*Async` variants) for `documentAccess: dynamic-page`
+- [x] Compact API reference doc (one file) so the model learns the helpers cheaply
 - [ ] Verify: build a multi-slide deck in a few batched calls using only helpers
 
 ## Phase 7: Design-worker orchestration + the binding gate (the senior designer)
 
 Goal: the agent workflow that turns a brief into real design, cheaply and durably. Then the binding ship gate.
 
+**Reconciled 2026-08-05:** the Active-priority slice delivered `design.md`, the firewalled QA critic, the rubric, checkpoint, resume, context intake, and a live landing-page verify. The unchecked items below are still open: a moodboard-driven website verify, the measured low-token verify, and the binding far-better gate. All three need the Phase 5 benchmark harness first.
+
 - [x] `.claude/commands/design.md`: plan-first spec, then parallel builder subagents, then a QA critic subagent, then refine
-- [ ] Context intake: accept a moodboard image, brand docs, and reference URLs as inputs
-- [ ] QA critic runs in a subagent (context firewall); returns a text critique, never raw images to the parent
-- [ ] Rubric-driven critique (hierarchy, spacing scale, contrast/AA, alignment, restraint)
-- [ ] Checkpoint long jobs: persist the plan spec + per-section progress to disk; operations are idempotent (keyed by stable node ids) so re-running never duplicates
-- [ ] Resume path: a crashed or interrupted job continues from the last completed section, with completed work intact in the Figma file, instead of restarting
+- [x] Context intake: accept a moodboard image, brand docs, and reference URLs as inputs
+- [x] QA critic runs in a subagent (context firewall); returns a text critique, never raw images to the parent
+- [x] Rubric-driven critique (hierarchy, spacing scale, contrast/AA, alignment, restraint)
+- [x] Checkpoint long jobs: persist the plan spec + per-section progress to disk; operations are idempotent (keyed by stable node ids) so re-running never duplicates
+- [x] Resume path: a crashed or interrupted job continues from the last completed section, with completed work intact in the Figma file, instead of restarting
 - [ ] Verify: hand it a moodboard + brief; it produces a coherent website design
 - [ ] Verify: main-context token use for the run stays low (measured against the Phase 5 harness)
 - [ ] Binding gate: re-run the harness on the FULL pipeline (helpers + orchestration + firewall); confirm far better than console-mcp (~10x+ tokens; deck under ~8 min); record in DECISIONS.md. This is the ship or no-ship decision.
