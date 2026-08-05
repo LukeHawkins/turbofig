@@ -62,6 +62,8 @@ The plugin dispatches on a `{type}` field in each message:
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
+`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope: the sync-to-async deprecation preamble (runs first) and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message and never crash the plugin.
+
 ## Routing registry (Phase 4, not yet built)
 
 The daemon keeps a session registry keyed by two dimensions:
@@ -73,7 +75,13 @@ Each MCP session is paired to a `fileKey` (by explicit pick or first-connected d
 
 ## Helper layer
 
-`helpers/` (Phase 6): a compact JS namespace injected into the eval context. Provides auto-layout builders, deck/slide scaffolds, component instantiation, variable read/write, text and font handling, and export utilities. All functions use the async Figma API surface required by `documentAccess: dynamic-page`.
+The `tf` namespace is a compact JS craft library injected into every eval. Source lives in `plugin/src/helpers.ts` (pure logic unit-tested; figma glue smoke-tested), exposed via `createTf(figma)` and passed into the eval as `tf`. The compact API reference is `helpers/tf-api.md` (this is what the model reads to learn the helpers cheaply). Built so far: auto-layout `frame` (per-axis sizing, transparent by default), `text` (font-load, optional `width` for wrapping), `rect`, `color`/`solid`, `loadFonts`, `append`, `clear`, `findOrCreate` (idempotent-by-name), `commit`. Still to build (Phase 6 tail): deck/slide scaffolds, component instantiation, variable read/write, export. All functions use the async Figma API surface required by `documentAccess: dynamic-page`.
+
+Idempotency pattern for re-runnable sections: `findOrCreate(parent, name, factory)` then `clear(node)` then rebuild. `findOrCreate` protects only the named node, so `clear` before rebuilding prevents duplicated children on a resume.
+
+## Design orchestration
+
+`.claude/commands/design.md` is the `/design` command: a brief becomes a full page via plan-first spec (persisted to `~/.turbofig/design/<job-id>/plan.json` + `status.json` as the checkpoint) -> parallel firewalled builder subagents (each one batched `tf.*` call, unique per-request bridge id) -> an assembly step that stacks sections in order (parallel builds otherwise overlap at 0,0) -> a QA critic subagent that reads the screenshot and returns text only -> a capped refine loop -> resume from the last completed section. Images live and die in subagents; the orchestrator never holds a screenshot.
 
 ## Skill layer
 
