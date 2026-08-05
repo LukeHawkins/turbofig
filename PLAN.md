@@ -174,7 +174,7 @@ Goal: users install a compiled binary with no source and no compiler; updates ar
 - [ ] Plugin delivery: `npx turbofig plugin` prints/opens the dev-install steps and the manifest path
 - [ ] Play nice with Luke's setup: the file-bridge is the primary dialog-free path (native MCP is admin-blocked on his account, tested). Keep curl-on-18846 working as a fallback. Register a native `mcpServers` entry for users whose admin allowlists it.
 - [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs over the file-bridge
-- [ ] Productionize the file-bridge (spike landed; the `execute` op arrives in Phase 3): make client writes race-safe (two-phase `.ready` sentinel or file-stability check) and switch polling to the `notify` crate for sub-millisecond, zero-idle-CPU wakes. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
+- [x] Productionize the file-bridge (pulled forward after Phase 3 for speed): client writes are race-safe by a file-stability check (a half-written file fails to parse and is retried, so no second sentinel file is needed) and the daemon now wakes on `notify` filesystem events with a 50 ms backstop poll for near-zero idle CPU. On macOS FSEvents delivery bounds latency at about 10-15 ms; on Linux inotify it is sub-millisecond. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
 
 ## Phase 11: Presentation (README-first)
 

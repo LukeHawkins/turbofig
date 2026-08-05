@@ -27,15 +27,13 @@ The daemon removes the inbox file after it runs. It writes the outbox file atomi
 
 ## Reliability
 
-Write the whole job file in one operation. The daemon reads the inbox file, then parses it. A half-written file fails to parse and returns an error result. Retry with a new job id if you see a parse error.
-
-Note: this is a spike. A future version will add a two-phase write (a `.ready` sentinel) so a slow write can never be read early. Until then, one complete write per job is the contract.
+Write the whole job file in one operation. The daemon wakes on a filesystem event and reads the inbox file. If a wake catches a half-written file, the JSON does not parse yet, so the daemon leaves the file and retries on the next wake. So one complete write per job is the contract, and you do not write a second sentinel file.
 
 ## Token efficiency
 
 The file-bridge is the most token-light transport. It loads no MCP tool definitions and adds no JSON-RPC or SSE envelope. Each call costs only the raw job you write plus the raw result you read. The daemon writes shaped JSON straight to the file.
 
-The 50ms inbox poll runs in the daemon. It costs no client tokens. Poll rate changes latency and CPU, never tokens.
+The inbox watch runs in the daemon. It wakes on a filesystem event, not a busy poll, so it costs no client tokens and almost no idle CPU. Wake latency changes speed, never tokens.
 
 Rules for a token-light run:
 

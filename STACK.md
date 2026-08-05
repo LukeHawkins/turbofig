@@ -10,6 +10,7 @@ In Cargo.toml now (through Phase 3):
 - `serde` 1 (features = ["derive"])
 - `futures-util` 0.3: WebSocket sink/stream split
 - `base64` 0.22: decode the plugin's PNG screenshot bytes (Phase 3)
+- `notify` 6: event-driven file-bridge wakes (FSEvents / inotify), no busy polling
 - `reqwest` 0.12 (features = ["json"]): dev-dependency, transport integration test
 - `tokio-tungstenite` 0.24: dev-dependency, a WebSocket client for tests
 - `tempfile` 3: dev-dependency, temp dirs for the file-bridge tests
