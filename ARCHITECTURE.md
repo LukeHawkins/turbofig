@@ -64,14 +64,14 @@ This dispatch table is hybrid-ready. A community-safe command vocabulary is addi
 
 `EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope: the sync-to-async deprecation preamble (runs first) and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message and never crash the plugin.
 
-## Routing registry (Phase 4, not yet built)
+## Routing registry (Phase 4)
 
-The daemon keeps a session registry keyed by two dimensions:
+The daemon keeps a connection registry keyed by two dimensions:
 
 - `mcp-session-id`: assigned at the MCP `initialize` call; identifies a Claude session.
 - `fileKey`: sent by the plugin on connect; identifies an open Figma file.
 
-Each MCP session is paired to a `fileKey` (by explicit pick or first-connected default). All tool calls route to the plugin holding that `fileKey`. The registry handles N sessions and N files concurrently, fully isolated.
+Each MCP session is paired to a `fileKey` by an explicit pick or the sole connected plugin. `resolve_route` picks the target connection by explicit `fileKey`, then the session pairing, then the sole named connection. It returns a clear error for no plugin, ambiguous target, or a not-connected file. A socket close cancels only that connection's in-flight requests. The registry handles N sessions and N files concurrently, fully isolated.
 
 ## Helper layer
 
