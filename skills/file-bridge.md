@@ -31,6 +31,19 @@ Write the whole job file in one operation. The daemon reads the inbox file, then
 
 Note: this is a spike. A future version will add a two-phase write (a `.ready` sentinel) so a slow write can never be read early. Until then, one complete write per job is the contract.
 
+## Token efficiency
+
+The file-bridge is the most token-light transport. It loads no MCP tool definitions and adds no JSON-RPC or SSE envelope. Each call costs only the raw job you write plus the raw result you read. The daemon writes shaped JSON straight to the file.
+
+The 50ms inbox poll runs in the daemon. It costs no client tokens. Poll rate changes latency and CPU, never tokens.
+
+Rules for a token-light run:
+
+- **Batch.** Put many operations in one job file and read one result file. One write plus one read beats ten.
+- **Read once.** Write the job, then read the result one time. The round-trip is tens of milliseconds, so the result is ready. Never loop reads. A read loop is the only place client tokens leak.
+- **Shape the result.** Ask for ids first, opt-in fields, and a depth limit. The result file enters context verbatim, so keep it small. Never return a full node tree by default.
+- **Send screenshots to a file.** The daemon writes a PNG to the outbox. A disposable subagent reads it and returns a short text note. The image bytes never reach the main context.
+
 ## Job shape
 
 ```json
