@@ -295,11 +295,16 @@ impl AppState {
         // Step 2: Collect named connections (non-empty file_key only).
         let named: Vec<(u64, mpsc::UnboundedSender<String>, String, String)> = {
             let connections = self.connections.lock().expect("connections lock");
-            connections
+            let mut v: Vec<_> = connections
                 .iter()
                 .filter(|(_, c)| !c.file_key.is_empty())
                 .map(|(id, c)| (*id, c.tx.clone(), c.file_key.clone(), c.name.clone()))
-                .collect()
+                .collect();
+            // Sort by file_key so the pick, the ambiguous list, and the
+            // available list are deterministic across runs. A tie on file_key
+            // (the same file open twice) breaks by conn_id for a stable pick.
+            v.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
+            v
         };
         // Connections lock is released here.
 
@@ -345,10 +350,16 @@ impl AppState {
     /// Return all named connections as JSON objects for status and error responses.
     fn named_connections_json(&self) -> Vec<Value> {
         let guard = self.connections.lock().expect("connections lock");
-        guard
+        let mut named: Vec<(&str, &str)> = guard
             .values()
             .filter(|c| !c.file_key.is_empty())
-            .map(|c| json!({"fileKey": c.file_key, "name": c.name}))
+            .map(|c| (c.file_key.as_str(), c.name.as_str()))
+            .collect();
+        // Sort by file_key so status output is deterministic across runs.
+        named.sort_by(|a, b| a.0.cmp(b.0));
+        named
+            .into_iter()
+            .map(|(fk, name)| json!({"fileKey": fk, "name": name}))
             .collect()
     }
 }
@@ -1105,6 +1116,34 @@ mod tests {
             }
             other => panic!("expected Ambiguous, got ok={}", other.is_ok()),
         }
+    }
+
+    #[test]
+    fn resolve_route_duplicate_file_key_is_ambiguous_and_pick_is_deterministic() {
+        // The same file open twice: two connections share one non-empty fileKey.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+
+        // No target: two named connections means ambiguous, never a panic.
+        match state.resolve_route(None, None) {
+            Err(RouteError::Ambiguous(fks)) => assert_eq!(fks, vec!["dup", "dup"]),
+            other => panic!("expected Ambiguous, got ok={}", other.is_ok()),
+        }
+
+        // Explicit target matches both. The pick must be stable across calls:
+        // the lowest conn_id (conn1) wins by the file_key-then-conn_id sort.
+        let first = state.resolve_route(None, Some("dup")).expect("route ok");
+        let again = state.resolve_route(None, Some("dup")).expect("route ok");
+        assert_eq!(first.0, conn1, "explicit pick must be the lowest conn_id");
+        assert_eq!(
+            first.0, again.0,
+            "the pick must be deterministic across calls"
+        );
     }
 
     #[test]
