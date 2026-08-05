@@ -5,6 +5,7 @@
 //! ever hardcoded here.
 
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -378,5 +379,111 @@ async fn test_bogus_session_id_is_rejected() {
         res.status(),
         reqwest::StatusCode::NOT_FOUND,
         "server must return 404 for unknown session IDs per MCP spec"
+    );
+}
+
+/// A client that disconnects mid-request must not stop the daemon.
+///
+/// The daemon is an independent service. A client teardown or a session end
+/// must never take it down. This is the direct fix for the old supergateway
+/// SIGTERM-mid-job crash: the daemon owns its own lifecycle, decoupled from
+/// any client connection.
+#[tokio::test]
+async fn test_client_disconnect_does_not_stop_daemon() {
+    let base_url = start_server().await;
+    let addr = base_url
+        .strip_prefix("http://")
+        .expect("base_url has http prefix")
+        .to_owned();
+
+    // Simulate an abrupt client disconnect mid-request: open a TCP connection,
+    // write a partial HTTP request, then drop it without finishing or reading.
+    {
+        let mut stream = tokio::net::TcpStream::connect(&addr)
+            .await
+            .expect("connect raw TCP");
+        stream
+            .write_all(b"POST /mcp HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .expect("write partial request");
+        // Drop the stream here without completing the request.
+    }
+
+    // The daemon must still serve. A fresh client completes a full handshake
+    // and a tools/call that returns ok:true.
+    let client = make_client();
+    let init_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+        None,
+    )
+    .await;
+    assert!(
+        init_res.status().is_success(),
+        "daemon must still serve after a client disconnect, got HTTP {}",
+        init_res.status()
+    );
+
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize response must carry mcp-session-id header")
+        .to_str()
+        .expect("mcp-session-id header is valid UTF-8")
+        .to_owned();
+    let _ = init_res.text().await.expect("drain init body");
+
+    let notif_res = post_mcp(
+        &client,
+        &base_url,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
+        Some(&session_id),
+    )
+    .await;
+    assert!(
+        notif_res.status().is_success(),
+        "initialized should succeed"
+    );
+    let _ = notif_res.text().await.expect("drain notif body");
+
+    let tools_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "turbofig_status", "arguments": {}}
+        }),
+        Some(&session_id),
+    )
+    .await;
+    assert!(
+        tools_res.status().is_success(),
+        "tools/call must succeed after a prior client disconnect, got HTTP {}",
+        tools_res.status()
+    );
+    let body = tools_res.text().await.expect("read tools body");
+    let msg = parse_sse_data(&body);
+    let text: Value = serde_json::from_str(
+        msg["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text is a string"),
+    )
+    .expect("tool text is JSON");
+    assert_eq!(
+        text["ok"],
+        json!(true),
+        "daemon must be alive after the disconnect, got: {text}"
     );
 }
