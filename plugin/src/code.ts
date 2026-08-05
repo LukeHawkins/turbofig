@@ -2,8 +2,10 @@ import {
   buildExecuteError,
   buildExecuteSuccess,
   buildResult,
+  buildSelection,
   isDaemonMessage,
   safeResult,
+  toSelectionItem,
   wrapUserCode,
 } from "./protocol";
 
@@ -41,6 +43,23 @@ figma.ui.onmessage = (msg: unknown) => {
           figma.ui.postMessage(buildExecuteError(requestId, message));
         }
       })();
+      break;
+    }
+    case "GET_SELECTION": {
+      const { requestId } = msg;
+      try {
+        // Map each selected node to a plain SelectionItem for serialisation.
+        const items = figma.currentPage.selection.map((n) =>
+          toSelectionItem(n as unknown as Record<string, unknown>),
+        );
+        figma.ui.postMessage(buildSelection(requestId, items));
+      } catch (err) {
+        const message =
+          err != null && typeof err === "object" && "message" in err
+            ? String((err as { message: unknown }).message)
+            : String(err);
+        figma.ui.postMessage(buildExecuteError(requestId, message));
+      }
       break;
     }
     default:

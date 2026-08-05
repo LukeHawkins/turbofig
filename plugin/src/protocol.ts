@@ -23,6 +23,23 @@ export interface ExecuteMessage {
   code: string;
 }
 
+/** Sent by the daemon to the plugin to request the current Figma selection. */
+export interface GetSelectionMessage {
+  type: "GET_SELECTION";
+  requestId: number;
+}
+
+/** A single selected Figma node, serialised for the selection response. */
+export interface SelectionItem {
+  id: string;
+  name: string;
+  type: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /** Sent by the plugin to the daemon in reply to a command. requestId echoes the request. */
 export interface ResultMessage {
   type: "RESULT";
@@ -32,10 +49,16 @@ export interface ResultMessage {
   name?: string;
   result?: unknown;
   error?: string;
+  selection?: SelectionItem[];
 }
 
 /** Union of all messages on the daemon <-> plugin WebSocket. */
-export type DaemonMessage = FileInfoMessage | StatusMessage | ExecuteMessage | ResultMessage;
+export type DaemonMessage =
+  | FileInfoMessage
+  | StatusMessage
+  | ExecuteMessage
+  | GetSelectionMessage
+  | ResultMessage;
 
 /**
  * Returns true when `x` is a well-formed DaemonMessage.
@@ -52,6 +75,8 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
       return typeof msg.requestId === "number";
     case "EXECUTE":
       return typeof msg.requestId === "number" && typeof msg.code === "string";
+    case "GET_SELECTION":
+      return typeof msg.requestId === "number";
     case "RESULT":
       return typeof msg.requestId === "number";
     default:
@@ -89,6 +114,34 @@ export function buildExecuteSuccess(requestId: number, result: unknown): ResultM
  */
 export function buildExecuteError(requestId: number, message: string): ResultMessage {
   return { type: "RESULT", requestId, ok: false, error: message };
+}
+
+/**
+ * Maps a loosely-typed node object to a SelectionItem.
+ * Reads id, name, type (strings) and x, y, width->w, height->h (numbers).
+ * Each missing or wrong-type field falls back to "" (strings) or 0 (numbers).
+ * Accepts Record<string, unknown> so it is unit-testable with plain objects.
+ */
+export function toSelectionItem(node: Record<string, unknown>): SelectionItem {
+  const str = (key: string): string => (typeof node[key] === "string" ? (node[key] as string) : "");
+  const num = (key: string): number => (typeof node[key] === "number" ? (node[key] as number) : 0);
+  return {
+    id: str("id"),
+    name: str("name"),
+    type: str("type"),
+    x: num("x"),
+    y: num("y"),
+    w: num("width"),
+    h: num("height"),
+  };
+}
+
+/**
+ * Builds a success RESULT reply for a GET_SELECTION request.
+ * Echoes requestId and carries the selection array.
+ */
+export function buildSelection(requestId: number, selection: SelectionItem[]): ResultMessage {
+  return { type: "RESULT", requestId, ok: true, selection };
 }
 
 /**

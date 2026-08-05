@@ -283,6 +283,57 @@ pub async fn run_execute(state: &Arc<AppState>, code: &str) -> Value {
     }
 }
 
+// ── Shared get_selection logic ────────────────────────────────────────────────
+
+/// Send GET_SELECTION to the live plugin and return the result as a JSON value.
+///
+/// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
+/// Plugin replies with ok:true -> `{"ok":true,"selection":[...]}`.
+/// Plugin replies with ok:false -> `{"ok":false,"error":"..."}`.
+/// Recv error -> `{"ok":false,"error":"plugin disconnected"}`.
+/// Timeout -> cancel_pending then `{"ok":false,"error":"plugin timed out"}`.
+///
+/// Reused by both `turbofig_get_selection` (MCP) and the filesystem bridge.
+pub async fn run_get_selection(state: &Arc<AppState>) -> Value {
+    let Some((tx, _, _)) = state.plugin_tx() else {
+        return json!({"ok": false, "error": "no plugin connected"});
+    };
+
+    let id = state.next_request_id();
+    let rx = state.register_pending(id);
+    let request = json!({"type": "GET_SELECTION", "requestId": id});
+
+    if tx.send(request.to_string()).is_err() {
+        return json!({"ok": false, "error": "plugin send failed"});
+    }
+
+    match tokio::time::timeout(state.request_timeout, rx).await {
+        Ok(Ok(reply)) => {
+            if reply.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let selection = reply
+                    .get("selection")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(vec![]));
+                json!({"ok": true, "selection": selection})
+            } else {
+                let error = reply
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("get_selection failed")
+                    .to_owned();
+                json!({"ok": false, "error": error})
+            }
+        }
+        Ok(Err(_)) => {
+            json!({"ok": false, "error": "plugin disconnected"})
+        }
+        Err(_elapsed) => {
+            state.cancel_pending(id);
+            json!({"ok": false, "error": "plugin timed out"})
+        }
+    }
+}
+
 // ── MCP handler ───────────────────────────────────────────────────────────────
 
 /// Parameters for the turbofig_execute tool.
@@ -337,6 +388,18 @@ impl StatusHandler {
         Parameters(ExecuteParams { code }): Parameters<ExecuteParams>,
     ) -> Result<CallToolResult, McpError> {
         let value = run_execute(&self.state, &code).await;
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            value.to_string(),
+        )]))
+    }
+
+    /// Return the current Figma selection as a JSON array.
+    ///
+    /// Delegates to `run_get_selection` for the shared logic; wraps the result
+    /// in a `CallToolResult` for the MCP wire format.
+    #[tool(description = "Return the current Figma selection")]
+    async fn turbofig_get_selection(&self) -> Result<CallToolResult, McpError> {
+        let value = run_get_selection(&self.state).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
             value.to_string(),
         )]))

@@ -240,11 +240,10 @@ async fn test_mcp_handshake_and_turbofig_status() {
     );
 }
 
-/// tools/list must return exactly one tool named turbofig_status.
+/// tools/list must return exactly the three implemented tools.
 ///
 /// This guards the locked 4-tool surface defined in CLAUDE.md.
-/// The surface currently has one implemented tool; the count must not grow
-/// without a deliberate PLAN.md update.
+/// The count must not grow without a deliberate PLAN.md update.
 #[tokio::test]
 async fn test_tools_list_has_exactly_turbofig_status() {
     let base_url = start_server().await;
@@ -341,8 +340,8 @@ async fn test_tools_list_has_exactly_turbofig_status() {
 
     assert_eq!(
         tools_arr.len(),
-        2,
-        "tool surface must be exactly 2 tools, got {}: {:?}",
+        3,
+        "tool surface must be exactly 3 tools, got {}: {:?}",
         tools_arr.len(),
         tools_arr
     );
@@ -353,6 +352,10 @@ async fn test_tools_list_has_exactly_turbofig_status() {
     assert!(
         names.contains(&"turbofig_execute"),
         "turbofig_execute must be present, got: {names:?}"
+    );
+    assert!(
+        names.contains(&"turbofig_get_selection"),
+        "turbofig_get_selection must be present, got: {names:?}"
     );
 }
 

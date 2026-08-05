@@ -4,9 +4,11 @@ import {
   buildExecuteError,
   buildExecuteSuccess,
   buildResult,
+  buildSelection,
   DEPRECATION_PREAMBLE,
   isDaemonMessage,
   safeResult,
+  toSelectionItem,
   wrapUserCode,
 } from "./protocol";
 
@@ -187,6 +189,90 @@ describe("deprecation preamble", () => {
   test("wrapUserCode keeps the user code intact", () => {
     const code = "const x = await figma.getNodeByIdAsync('1');\nreturn x;";
     expect(wrapUserCode(code)).toContain(code);
+  });
+});
+
+describe("isDaemonMessage — GET_SELECTION branch", () => {
+  test("accepts a valid GET_SELECTION message", () => {
+    expect(isDaemonMessage({ type: "GET_SELECTION", requestId: 5 })).toBe(true);
+  });
+
+  test("rejects GET_SELECTION missing requestId", () => {
+    expect(isDaemonMessage({ type: "GET_SELECTION" })).toBe(false);
+  });
+
+  test("rejects GET_SELECTION with a string requestId", () => {
+    expect(isDaemonMessage({ type: "GET_SELECTION", requestId: "req-1" })).toBe(false);
+  });
+});
+
+describe("toSelectionItem", () => {
+  test("maps a full node object correctly", () => {
+    const node = {
+      id: "1:2",
+      name: "Frame 1",
+      type: "FRAME",
+      x: 10,
+      y: 20,
+      width: 100,
+      height: 50,
+    };
+    const item = toSelectionItem(node);
+    expect(item.id).toBe("1:2");
+    expect(item.name).toBe("Frame 1");
+    expect(item.type).toBe("FRAME");
+    expect(item.x).toBe(10);
+    expect(item.y).toBe(20);
+    expect(item.w).toBe(100);
+    expect(item.h).toBe(50);
+  });
+
+  test("falls back to 0 when width, height, x, y are missing", () => {
+    const node = { id: "1:3", name: "Box", type: "RECTANGLE" };
+    const item = toSelectionItem(node);
+    expect(item.x).toBe(0);
+    expect(item.y).toBe(0);
+    expect(item.w).toBe(0);
+    expect(item.h).toBe(0);
+  });
+
+  test("falls back to empty string when name and type are missing", () => {
+    const node = { id: "1:4" };
+    const item = toSelectionItem(node);
+    expect(item.name).toBe("");
+    expect(item.type).toBe("");
+  });
+
+  test("falls back to empty string when id is missing", () => {
+    const node = { name: "No ID" };
+    const item = toSelectionItem(node);
+    expect(item.id).toBe("");
+  });
+});
+
+describe("buildSelection", () => {
+  test("returns a RESULT with ok true and the selection array", () => {
+    const items = [{ id: "1:1", name: "A", type: "FRAME", x: 0, y: 0, w: 10, h: 10 }];
+    const msg = buildSelection(7, items);
+    expect(msg.type).toBe("RESULT");
+    expect(msg.requestId).toBe(7);
+    expect(msg.ok).toBe(true);
+    expect(msg.selection).toEqual(items);
+  });
+
+  test("echoes the requestId", () => {
+    const msg = buildSelection(42, []);
+    expect(msg.requestId).toBe(42);
+  });
+
+  test("result passes the isDaemonMessage guard", () => {
+    const msg = buildSelection(1, []);
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("an empty selection produces an empty array", () => {
+    const msg = buildSelection(3, []);
+    expect(msg.selection).toEqual([]);
   });
 });
 
