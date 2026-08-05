@@ -9,7 +9,7 @@
 //! and reads.  It fires no curl requests and opens no MCP connection, so it
 //! bypasses enterprise policies that gate network tool confirmations.
 //!
-//! Wakes are event-driven for sub-millisecond notice and near-zero idle CPU.
+//! Wakes are event-driven for sub-millisecond notice.
 //! A slow backstop poll runs beside the watcher as a safety net for any missed
 //! event.
 //!
@@ -23,17 +23,16 @@ use crate::AppState;
 use notify::{RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant};
 
 /// Grace window for a job file that does not yet parse as JSON.
 /// Younger than this: assume a write still in flight and retry.
 /// Older than this: treat as genuinely malformed and return an error.
 const PARSE_GRACE: Duration = Duration::from_millis(200);
 
-/// Backstop poll interval. The `notify` watcher drives the fast path with a
-/// sub-millisecond wake; this only catches an event the OS delayed or dropped,
-/// so it bounds the worst-case pickup without busy polling. 50 ms scans an
-/// empty inbox 20 times a second, which costs almost nothing.
+/// Backstop poll interval. The `notify` watcher drives the fast path.
+/// The backstop does a directory read about 20 times a second as a cheap
+/// safety net for a dropped or delayed event.
 const BACKSTOP: Duration = Duration::from_millis(50);
 
 // ── Bridge dir helpers ────────────────────────────────────────────────────────
@@ -97,20 +96,28 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
         .map_err(watcher_io_error)?;
 
     let mut backstop = tokio::time::interval(BACKSTOP);
+    let mut first_seen: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
 
     // Scan once at startup for any job left in inbox before the watch began.
-    scan_and_service(&inbox, &outbox, &state).await;
+    scan_and_service(&inbox, &outbox, &state, &mut first_seen).await;
 
     loop {
         // Wake on a filesystem event or the backstop tick, whichever is first.
         tokio::select! {
-            _ = rx.recv() => {}
+            msg = rx.recv() => {
+                if msg.is_none() {
+                    eprintln!("Turbofig bridge: watcher channel closed");
+                    break;
+                }
+            }
             _ = backstop.tick() => {}
         }
         // Coalesce a burst of events into one scan.
         while rx.try_recv().is_ok() {}
-        scan_and_service(&inbox, &outbox, &state).await;
+        scan_and_service(&inbox, &outbox, &state, &mut first_seen).await;
     }
+    Ok(())
 }
 
 /// Convert a `notify` error into an `io::Error` so `serve_bridge` can use `?`.
@@ -118,26 +125,20 @@ fn watcher_io_error(e: notify::Error) -> std::io::Error {
     std::io::Error::other(format!("bridge watcher: {e}"))
 }
 
-/// Return the age of a file from its modified time.
-/// If the age cannot be read, return a large value so the file counts as old.
-async fn file_age(path: &Path) -> Duration {
-    match tokio::fs::metadata(path).await.and_then(|m| m.modified()) {
-        Ok(t) => SystemTime::now()
-            .duration_since(t)
-            .unwrap_or(Duration::ZERO),
-        Err(_) => Duration::from_secs(3600),
-    }
-}
-
 /// Scan inbox/ once and service all *.json files found.
 ///
 /// A file that parses as JSON is a complete job: claim it (remove the inbox
 /// file) and run it in its own task, so one slow job never blocks the others.
-/// A file that does not parse yet may be a write in flight: leave it and retry
-/// on the next wake, unless it is older than `PARSE_GRACE`, in which case it is
-/// genuinely malformed and gets an error result.  This scan runs serially, so a
-/// job is claimed by exactly one pass and never processed twice.
-async fn scan_and_service(inbox: &Path, outbox: &Path, state: &Arc<AppState>) {
+/// A file that does not parse yet may be a write in flight: leave it for the
+/// next wake. After `PARSE_GRACE` elapses since first-seen, treat it as
+/// genuinely malformed and return an error result. This scan runs serially, so
+/// a job is claimed by exactly one pass and never processed twice.
+async fn scan_and_service(
+    inbox: &Path,
+    outbox: &Path,
+    state: &Arc<AppState>,
+    first_seen: &mut std::collections::HashMap<String, Instant>,
+) {
     let mut entries = match tokio::fs::read_dir(inbox).await {
         Ok(e) => e,
         Err(e) => {
@@ -146,58 +147,90 @@ async fn scan_and_service(inbox: &Path, outbox: &Path, state: &Arc<AppState>) {
         }
     };
 
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
+    let mut seen_this_scan: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        let job_id = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s.to_owned(),
-            None => continue,
-        };
-
-        let contents = match tokio::fs::read_to_string(&path).await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Turbofig bridge: read failed for {job_id}: {e}");
-                continue;
-            }
-        };
-
-        // Parse first to decide whether the job is complete.
-        let job: serde_json::Value = match serde_json::from_str(&contents) {
-            Ok(v) => v,
-            Err(e) => {
-                // A young unparseable file is likely still being written; leave
-                // it for the next wake. An old one is genuinely malformed.
-                if file_age(&path).await < PARSE_GRACE {
+    loop {
+        match entries.next_entry().await {
+            Ok(Some(entry)) => {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let _ = tokio::fs::remove_file(&path).await;
-                let result =
-                    serde_json::json!({"ok": false, "error": format!("malformed JSON: {e}")});
-                write_result(outbox, &job_id, result).await;
-                continue;
+
+                let job_id = match path.file_stem().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_owned(),
+                    None => continue,
+                };
+
+                seen_this_scan.insert(job_id.clone());
+
+                let contents = match tokio::fs::read_to_string(&path).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Turbofig bridge: read failed for {job_id}: {e}");
+                        continue;
+                    }
+                };
+
+                // Parse first to decide whether the job is complete.
+                let job: serde_json::Value = match serde_json::from_str(&contents) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        // Use the first-seen map to decide whether to wait or
+                        // treat the file as genuinely malformed.
+                        if let Some(seen_at) = first_seen.get(&job_id) {
+                            if seen_at.elapsed() >= PARSE_GRACE {
+                                // Grace window expired. Report the error.
+                                first_seen.remove(&job_id);
+                                let _ = tokio::fs::remove_file(&path).await;
+                                let result = serde_json::json!({"ok": false, "error": format!("malformed JSON: {e}")});
+                                write_result(outbox, &job_id, result).await;
+                            }
+                            // Still within grace window or already handled.
+                        } else {
+                            // First time seeing this file. Record it and retry.
+                            first_seen.insert(job_id.clone(), Instant::now());
+                        }
+                        continue;
+                    }
+                };
+
+                // Remove the first-seen entry now that the file parsed.
+                first_seen.remove(&job_id);
+
+                // Claim the complete job by removing the inbox file.
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        // Another actor removed it. Skip silently.
+                        first_seen.remove(&job_id);
+                        continue;
+                    }
+                    // Claim failed for another reason. Unblock the client with an error result.
+                    first_seen.remove(&job_id);
+                    let result = serde_json::json!({"ok": false, "error": format!("bridge could not claim job: {e}")});
+                    write_result(outbox, &job_id, result).await;
+                    continue;
+                }
+
+                // Run the claimed job in its own task so a slow job does not
+                // stall the scan.
+                let outbox = outbox.to_path_buf();
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let result = process_job(job, &state, &outbox).await;
+                    write_result(&outbox, &job_id, result).await;
+                });
             }
-        };
-
-        // Claim the complete job by removing the inbox file. A claim failure
-        // means we skip it rather than risk reprocessing it on the next wake.
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            eprintln!("Turbofig bridge: claim (remove) failed for {job_id}: {e}");
-            continue;
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("Turbofig bridge: read_dir entry error: {e}");
+                break;
+            }
         }
-
-        // Run the claimed job in its own task so a slow job does not stall the
-        // scan.
-        let outbox = outbox.to_path_buf();
-        let state = state.clone();
-        tokio::spawn(async move {
-            let result = process_job(job, &state, &outbox).await;
-            write_result(&outbox, &job_id, result).await;
-        });
     }
+
+    // Prune entries for files that disappeared between scans.
+    first_seen.retain(|k, _| seen_this_scan.contains(k));
 }
 
 /// Dispatch a parsed job by op.  Never panics.

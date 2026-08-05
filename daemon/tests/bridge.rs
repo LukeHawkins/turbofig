@@ -447,6 +447,46 @@ async fn test_bridge_screenshot_file_mode_op() {
     assert_eq!(bytes, b"hello", "file must hold the decoded PNG bytes");
 }
 
+/// A malformed job file causes an error result after the grace window.
+/// This proves the first-seen map expires bad files correctly.
+#[tokio::test]
+async fn test_bridge_malformed_json_errors_after_grace() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    // Write raw invalid JSON directly to the inbox.
+    let inbox = tmp.path().join("inbox");
+    tokio::fs::create_dir_all(&inbox)
+        .await
+        .expect("create inbox");
+    tokio::fs::write(inbox.join("job_grace.json"), b"{ not json at all }")
+        .await
+        .expect("write malformed job");
+
+    // Wait longer than PARSE_GRACE (200 ms) so the first-seen map expires.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let out_path = tmp.path().join("outbox").join("job_grace.json");
+    // Allow up to 2 s for the bridge to write the error result.
+    let contents = poll_file(&out_path, 2000).await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&contents).expect("outbox file is valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(false),
+        "expired malformed job must return ok:false"
+    );
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("malformed")),
+        "error must mention malformed JSON, got: {payload}"
+    );
+}
+
 /// An eval that throws in the plugin returns a clean error over the bridge and
 /// never stalls the watcher. A second execute job is still serviced.
 #[tokio::test]
