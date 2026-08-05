@@ -12,7 +12,7 @@
 | `tf.solid` | `(hex: string, opacity?: number)` | `SolidPaint` | no | Build a `SolidPaint` from a hex string and an optional opacity (default 1). |
 | `tf.loadFonts` | `(fonts: FontName[])` | `Promise<void>` | **yes** | Deduplicate and load all fonts in parallel. Call once before creating text nodes. |
 | `tf.text` | `(opts: TextOpts)` | `Promise<TextNode>` | **yes** | Load the font, create a `TextNode`, and set characters, size, and fill. |
-| `tf.frame` | `(opts: FrameOpts)` | `FrameNode` | no | Create a `FrameNode` with auto-layout. Each axis sizes independently: a provided dimension is fixed on that axis; an omitted dimension hugs content on that axis. |
+| `tf.frame` | `(opts: FrameOpts)` | `FrameNode` | no | Create a `FrameNode` with auto-layout. Transparent by default; provide `fill` to colour it. Each axis sizes independently: a provided dimension is fixed on that axis; an omitted dimension hugs content on that axis. |
 | `tf.rect` | `(opts: RectOpts)` | `RectangleNode` | no | Create a `RectangleNode` with a fixed size, optional fill, and optional corner radius. |
 | `tf.append` | `(parent, ...children)` | `parent` (chainable) | no | Append one or more `SceneNode`s to a parent. Returns the parent for chaining. |
 | `tf.findOrCreate` | `(parent, name, factory)` | `Promise<SceneNode>` | **yes** | Return an existing direct child named `name`, or call `factory`, name it, append it, and return it. |
@@ -34,7 +34,7 @@ Defaults: `size=16`, `family="Inter"`, `style="Regular"`, `color="#000000"`.
   direction?: "NONE" | "HORIZONTAL" | "VERTICAL"; // default "VERTICAL"
   gap?: number;
   padding?: number | { top?:number; right?:number; bottom?:number; left?:number };
-  fill?: string;
+  fill?: string;   // omit for a transparent frame; provide a hex string to fill
   width?: number;  // fixed on the width axis; omit to hug content on that axis
   height?: number; // fixed on the height axis; omit to hug content on that axis
   primaryAlign?: "MIN" | "CENTER" | "MAX" | "SPACE_BETWEEN";

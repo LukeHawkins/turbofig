@@ -191,10 +191,9 @@ export function createTf(figma: PluginAPI) {
         node.paddingBottom = pad.bottom;
         node.paddingLeft = pad.left;
       }
-      if (opts.fill !== undefined) {
-        // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
-        node.fills = [solidPaint(opts.fill)];
-      }
+      // Always set fills explicitly. An empty array makes the frame transparent.
+      // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
+      node.fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
       const hasWidth = opts.width !== undefined;
       const hasHeight = opts.height !== undefined;
       // Resize whenever at least one dimension is given.
