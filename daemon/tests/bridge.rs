@@ -487,6 +487,166 @@ async fn test_bridge_malformed_json_errors_after_grace() {
     );
 }
 
+/// Like `spawn_mock_plugin` but registers the plugin under a caller-chosen fileKey.
+/// Each EXECUTE request receives the given `reply_body`.
+async fn spawn_mock_plugin_with_key(
+    state: Arc<turbofig::AppState>,
+    file_key: &'static str,
+    reply_body: serde_json::Value,
+) {
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": file_key, "name": file_key})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("EXECUTE") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let mut reply = reply_body.clone();
+                            reply["type"] = serde_json::json!("RESULT");
+                            reply["requestId"] = serde_json::json!(id);
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Two plugins connected, no fileKey in the job: the route resolver returns an
+/// ambiguous error listing both file keys.
+#[tokio::test]
+async fn test_bridge_execute_no_file_key_two_plugins_returns_ambiguous() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    spawn_mock_plugin_with_key(
+        state.clone(),
+        "fk1",
+        serde_json::json!({"ok": true, "result": {"from": "fk1"}}),
+    )
+    .await;
+    spawn_mock_plugin_with_key(
+        state.clone(),
+        "fk2",
+        serde_json::json!({"ok": true, "result": {"from": "fk2"}}),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(
+        &tmp,
+        "job_ambig",
+        serde_json::json!({"op": "execute", "code": "return 1;"}),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(false), "must fail");
+    let error = payload["error"].as_str().unwrap_or("");
+    assert!(
+        error.contains("multiple"),
+        "error must mention multiple files, got: {error}"
+    );
+    assert!(
+        payload["files"].is_array(),
+        "result must list available file keys"
+    );
+}
+
+/// Two plugins connected, job carries fileKey for fk2: only fk2 receives the
+/// request. The reply carries a distinct marker to confirm correct routing.
+#[tokio::test]
+async fn test_bridge_execute_explicit_file_key_routes_to_correct_plugin() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    spawn_mock_plugin_with_key(
+        state.clone(),
+        "fk1",
+        serde_json::json!({"ok": true, "result": {"from": "fk1"}}),
+    )
+    .await;
+    spawn_mock_plugin_with_key(
+        state.clone(),
+        "fk2",
+        serde_json::json!({"ok": true, "result": {"from": "fk2"}}),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(
+        &tmp,
+        "job_routed",
+        serde_json::json!({"op": "execute", "code": "return 2;", "fileKey": "fk2"}),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
+    assert_eq!(
+        payload["result"]["from"],
+        serde_json::json!("fk2"),
+        "reply must come from fk2, got: {payload}"
+    );
+}
+
+/// Job carries a fileKey that has no connected plugin: the route resolver
+/// returns a clear not-found error.
+#[tokio::test]
+async fn test_bridge_execute_unknown_file_key_returns_not_found() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    spawn_mock_plugin_with_key(
+        state.clone(),
+        "fk1",
+        serde_json::json!({"ok": true, "result": {}}),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(
+        &tmp,
+        "job_notfound",
+        serde_json::json!({"op": "execute", "code": "return 3;", "fileKey": "missing_key"}),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(false), "must fail");
+    let error = payload["error"].as_str().unwrap_or("");
+    assert!(
+        error.contains("not connected"),
+        "error must mention not connected, got: {error}"
+    );
+}
+
 /// An eval that throws in the plugin returns a clean error over the bridge and
 /// never stalls the watcher. A second execute job is still serviced.
 #[tokio::test]

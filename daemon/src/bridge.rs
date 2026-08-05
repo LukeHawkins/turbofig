@@ -9,6 +9,12 @@
 //! and reads.  It fires no curl requests and opens no MCP connection, so it
 //! bypasses enterprise policies that gate network tool confirmations.
 //!
+//! A job may carry an optional `"fileKey"` field to target a specific open
+//! Figma file.  When `fileKey` is omitted and exactly one plugin is connected,
+//! the bridge selects that sole connection automatically.  When multiple plugins
+//! are connected and no `fileKey` is given, the route resolver returns a clear
+//! error listing the available file keys.
+//!
 //! Wakes are event-driven for sub-millisecond notice.
 //! A slow backstop poll runs beside the watcher as a safety net for any missed
 //! event.
@@ -236,18 +242,22 @@ async fn scan_and_service(
 /// Dispatch a parsed job by op.  Never panics.
 ///
 /// `output_dir` is the bridge outbox. Screenshot file-mode writes its PNG there.
+///
+/// Read the optional `fileKey` from the job and pass it to each run_* call.
+/// The bridge has no MCP session id, so session_id is always None.
 async fn process_job(
     job: serde_json::Value,
     state: &Arc<AppState>,
     output_dir: &Path,
 ) -> serde_json::Value {
+    let file_key = job.get("fileKey").and_then(|v| v.as_str());
     match job.get("op").and_then(|v| v.as_str()) {
-        Some("status") => crate::run_status(state, None, None).await,
+        Some("status") => crate::run_status(state, None, file_key).await,
         Some("execute") => match job.get("code").and_then(|v| v.as_str()) {
-            Some(code) => crate::run_execute(state, None, None, code).await,
+            Some(code) => crate::run_execute(state, None, file_key, code).await,
             None => serde_json::json!({"ok": false, "error": "execute op needs a code field"}),
         },
-        Some("get_selection") => crate::run_get_selection(state, None, None).await,
+        Some("get_selection") => crate::run_get_selection(state, None, file_key).await,
         Some("screenshot") => {
             let scale = job.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
             let node_id = job.get("nodeId").and_then(|v| v.as_str());
@@ -255,7 +265,7 @@ async fn process_job(
             crate::run_screenshot(
                 state,
                 None,
-                None,
+                file_key,
                 scale,
                 node_id,
                 return_mode,
