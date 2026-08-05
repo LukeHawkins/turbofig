@@ -53,8 +53,9 @@ Rules for a token-light run:
 Supported ops:
 
 - `status`: return daemon and plugin liveness.
-
-More ops arrive in later phases (for example `execute`).
+- `execute`: run JS in the plugin. The job carries a `code` string. Example: `{ "op": "execute", "code": "const f = figma.createFrame(); return f.id;" }`.
+- `get_selection`: return the current selection as a compact `{id,name,type,x,y,w,h}` list. Example: `{ "op": "get_selection" }`.
+- `screenshot`: export a PNG. The job carries optional `scale` (default 1), `nodeId` (default the first selected node), and `return` (`"file"` default, or `"inline"`). File mode writes the PNG to the outbox and returns its `path`. Example: `{ "op": "screenshot", "scale": 2 }`.
 
 ## Result shape
 

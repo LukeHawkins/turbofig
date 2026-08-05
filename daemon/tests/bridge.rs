@@ -47,6 +47,54 @@ fn spawn_bridge(state: Arc<turbofig::AppState>, dir: PathBuf) {
     });
 }
 
+/// Spawn a WS server on the state, connect a mock plugin, register it, and
+/// auto-reply to each `frame_type` frame with `reply_body`. The reply gets the
+/// echoed `requestId` and a `RESULT` type merged in.
+async fn spawn_mock_plugin(
+    state: Arc<turbofig::AppState>,
+    frame_type: &'static str,
+    reply_body: serde_json::Value,
+) {
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "abc", "name": "F"}).to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some(frame_type) {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let mut reply = reply_body.clone();
+                            reply["type"] = serde_json::json!("RESULT");
+                            reply["requestId"] = serde_json::json!(id);
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 /// Full round-trip: mock plugin replies to STATUS; bridge returns connected shape.
@@ -285,4 +333,116 @@ async fn test_bridge_services_jobs_concurrently() {
         elapsed < Duration::from_millis(700),
         "two jobs must run concurrently (about one timeout), took {elapsed:?}"
     );
+}
+
+/// The execute op routes JS through the plugin and returns the result.
+#[tokio::test]
+async fn test_bridge_execute_op() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    spawn_mock_plugin(
+        state.clone(),
+        "EXECUTE",
+        serde_json::json!({"ok": true, "result": {"n": 42}}),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(
+        &tmp,
+        "job_exec",
+        serde_json::json!({"op": "execute", "code": "return 42;"}),
+    )
+    .await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(
+        payload["ok"],
+        serde_json::json!(true),
+        "execute must succeed"
+    );
+    assert_eq!(
+        payload["result"]["n"],
+        serde_json::json!(42),
+        "execute must return the plugin result"
+    );
+}
+
+/// The execute op reports a clear error when the job omits the code field.
+#[tokio::test]
+async fn test_bridge_execute_missing_code() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(&tmp, "job_nocode", serde_json::json!({"op": "execute"})).await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(false), "must fail");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("code")),
+        "error must mention the missing code field, got: {payload}"
+    );
+}
+
+/// The get_selection op returns the compact selection shape from the plugin.
+#[tokio::test]
+async fn test_bridge_get_selection_op() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    spawn_mock_plugin(
+        state.clone(),
+        "GET_SELECTION",
+        serde_json::json!({
+            "ok": true,
+            "selection": [{"id": "1:2", "name": "F", "type": "FRAME", "x": 0, "y": 0, "w": 10, "h": 10}]
+        }),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(&tmp, "job_sel", serde_json::json!({"op": "get_selection"})).await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
+    assert_eq!(
+        payload["selection"][0]["name"],
+        serde_json::json!("F"),
+        "selection must carry the node name"
+    );
+}
+
+/// The screenshot op in file mode writes the decoded PNG to the outbox and
+/// returns its path.
+#[tokio::test]
+async fn test_bridge_screenshot_file_mode_op() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+
+    // "aGVsbG8=" is base64 for the bytes "hello".
+    spawn_mock_plugin(
+        state.clone(),
+        "SCREENSHOT",
+        serde_json::json!({"ok": true, "png": "aGVsbG8=", "w": 10, "h": 10}),
+    )
+    .await;
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+
+    let out = write_job(&tmp, "job_shot", serde_json::json!({"op": "screenshot"})).await;
+    let payload: serde_json::Value =
+        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+
+    assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
+    let path = payload["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("screenshot result must carry a path, got: {payload}"));
+    let bytes = tokio::fs::read(path).await.expect("read screenshot png");
+    assert_eq!(bytes, b"hello", "file must hold the decoded PNG bytes");
 }

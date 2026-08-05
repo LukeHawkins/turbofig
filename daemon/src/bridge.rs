@@ -115,14 +115,20 @@ async fn scan_and_service(inbox: &Path, outbox: &Path, state: &Arc<AppState>) {
         let outbox = outbox.to_path_buf();
         let state = state.clone();
         tokio::spawn(async move {
-            let result = process_contents(&contents, &state).await;
+            let result = process_contents(&contents, &state, &outbox).await;
             write_result(&outbox, &job_id, result).await;
         });
     }
 }
 
 /// Parse a job body and dispatch by op.  Never panics.
-async fn process_contents(contents: &str, state: &Arc<AppState>) -> serde_json::Value {
+///
+/// `output_dir` is the bridge outbox. Screenshot file-mode writes its PNG there.
+async fn process_contents(
+    contents: &str,
+    state: &Arc<AppState>,
+    output_dir: &Path,
+) -> serde_json::Value {
     let job: serde_json::Value = match serde_json::from_str(contents) {
         Ok(v) => v,
         Err(e) => return serde_json::json!({"ok": false, "error": format!("malformed JSON: {e}")}),
@@ -130,6 +136,17 @@ async fn process_contents(contents: &str, state: &Arc<AppState>) -> serde_json::
 
     match job.get("op").and_then(|v| v.as_str()) {
         Some("status") => crate::run_status(state).await,
+        Some("execute") => match job.get("code").and_then(|v| v.as_str()) {
+            Some(code) => crate::run_execute(state, code).await,
+            None => serde_json::json!({"ok": false, "error": "execute op needs a code field"}),
+        },
+        Some("get_selection") => crate::run_get_selection(state).await,
+        Some("screenshot") => {
+            let scale = job.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            let node_id = job.get("nodeId").and_then(|v| v.as_str());
+            let return_mode = job.get("return").and_then(|v| v.as_str()).unwrap_or("file");
+            crate::run_screenshot(state, scale, node_id, return_mode, Some(output_dir)).await
+        }
         Some(op) => serde_json::json!({"ok": false, "error": format!("unknown op: {op}")}),
         None => serde_json::json!({"ok": false, "error": "missing op field"}),
     }

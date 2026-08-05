@@ -86,7 +86,7 @@ Goal: a real, usable create+read+screenshot loop end to end. This is the first "
 
 - [x] Plugin `{type}` dispatch table; add `EXECUTE` (async IIFE eval, timeout, result via `requestId`)
 - [x] `turbofig_execute` tool: send JS, run it in the plugin, return the result. Factor `run_execute` so the file-bridge shares it.
-- [ ] File-bridge ops for the full loop: add `execute`, `get_selection`, `screenshot` job ops that call the same `run_*` functions as the tools, so the whole loop works with file writes and reads only (no curl, no MCP).
+- [x] File-bridge ops for the full loop: add `execute`, `get_selection`, `screenshot` job ops that call the same `run_*` functions as the tools, so the whole loop works with file writes and reads only (no curl, no MCP).
 - [x] Inject the sync-to-async deprecation preamble into the eval context now, so generated code uses async APIs under `dynamic-page` from the first eval
 - [x] `GET_SELECTION` + `turbofig_get_selection`: compact `{id,name,type,x,y,w,h}` shape
 - [x] `SCREENSHOT` + `turbofig_screenshot`: `exportAsync` PNG, param `{scale, return:"file"|"inline"}`. File-mode writes the PNG to the bridge outbox dir; a subagent reads it.
