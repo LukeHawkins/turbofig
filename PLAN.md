@@ -115,7 +115,7 @@ Goal: N independent Claude sessions to N files at once. Stronger than console-mc
 - [x] Pair a session to a file (by `fileKey` or an explicit pick); route every call to the right plugin
 - [x] File-bridge routing: a bridge job may carry a target `fileKey`. With none, default to the single connected plugin and error clearly when the target is ambiguous. The bridge has no `mcp-session-id`, so the job field is how it selects a file.
 - [x] Handle multiple plugin connections (one per open file) simultaneously
-- [ ] Graceful handling when a target file closes mid-session (clear error, no cross-talk)
+- [x] Graceful handling when a target file closes mid-session (clear error, no cross-talk)
 - [ ] Verify: two files + two Claude sessions operate concurrently, fully isolated
 
 ## Phase 5: Token & speed engine (build the levers, provisional baseline)
