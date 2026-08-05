@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-macos.sh — Install or uninstall the turbofig LaunchAgent on macOS.
+# install-macos.sh: install or uninstall the turbofig LaunchAgent on macOS.
 # Usage:
 #   ./install/install-macos.sh           # install
 #   ./install/install-macos.sh --uninstall  # uninstall

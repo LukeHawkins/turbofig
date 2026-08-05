@@ -2,15 +2,18 @@
 
 ## Rust (daemon/)
 
-In Cargo.toml now (Phase 0 and Phase 1):
-- `tokio` 1 (features = ["rt-multi-thread", "net", "macros"])
+In Cargo.toml now (through Phase 2):
+- `tokio` 1 (features = ["rt-multi-thread", "net", "macros", "sync", "time", "fs"])
 - `rmcp` 3.1.0 (features = ["server", "macros", "transport-streamable-http-server"]; `legacy_session_mode` is a config field, not a feature)
-- `axum` 0.8
+- `axum` 0.8 (features = ["ws"]) — the ws feature serves the plugin WebSocket
 - `serde_json` 1
-- `reqwest` 0.12 (features = ["json"]) — dev-dependency, for the transport integration test
+- `serde` 1 (features = ["derive"])
+- `futures-util` 0.3 — WebSocket sink/stream split
+- `reqwest` 0.12 (features = ["json"]) — dev-dependency, transport integration test
+- `tokio-tungstenite` 0.24 — dev-dependency, a WebSocket client for tests
+- `tempfile` 3 — dev-dependency, temp dirs for the file-bridge tests
 
-Phase 2+ (not yet added):
-- `tokio-tungstenite` 0.29
+Phase 3+ (not yet added):
 - `image` 0.25
 - `rustls`
 
@@ -26,5 +29,6 @@ Phase 2+ (not yet added):
 
 ## Notes
 
-- rmcp 3.1.0, axum 0.8, and serde_json are in Cargo.toml (Phase 1, done). tokio-tungstenite, image, and rustls are not yet added (Phase 2+).
+- The WebSocket server (Phase 2) uses the axum `ws` feature, not a `tokio-tungstenite` server dep. `tokio-tungstenite` is a dev-dependency: a WebSocket client for the integration tests.
+- `image` and `rustls` are not yet added (Phase 3+).
 - Never use npm, pnpm, or yarn. Bun only.

@@ -5,31 +5,42 @@
 ```
 Claude / AI client
     |
-    | HTTP POST /mcp  (port 18846, MCP streamable-http, SSE response)
+    |  one of three inbound transports to the daemon:
+    |   1. HTTP POST /mcp   (port 18846, MCP streamable-http, SSE response)
+    |   2. file-bridge      (~/.turbofig/inbox -> outbox; write and read files)
+    |   3. curl on 18846    (the same HTTP endpoint, as a fallback)
     |
 Rust daemon  (daemon/)
     |
     | WebSocket  (port 18847)
     |
-Figma plugin main thread  (plugin/src/code.ts)
+Figma plugin UI thread  (plugin/src/ui.html)   holds the socket
     |
     | postMessage / onmessage
     |
-Figma plugin UI thread  (plugin/src/ui.html)
+Figma plugin main thread  (plugin/src/code.ts)   runs the Figma API
     |
     | Figma Plugin API
     v
 Figma document
 ```
 
+The three inbound transports converge on one shared `AppState`, so a call from
+any of them routes to the plugin the same way. The file-bridge exists for
+locked-down clients that cannot use curl or a native MCP server. See
+`DECISIONS.md` item 15 and `skills/file-bridge.md`.
+
 ## Daemon
 
-The daemon is a single Rust process. It runs the MCP HTTP server today. The WebSocket server arrives in Phase 2.
+The daemon is a single Rust process. It runs three servers as three `tokio::spawn` tasks that share one `Arc<AppState>`:
 
 - **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. The daemon maps the session ID to a plugin connection by `fileKey` in Phase 4.
-- **WebSocket server** (port 18847, Phase 2, not yet built): holds persistent connections from the Figma plugin. Each connection carries a `fileKey` sent in a `FILE_INFO` message on connect. The daemon routes tool calls to the right plugin connection.
+- **WebSocket server** (port 18847): holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect. The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000) stops a silent plugin from hanging a call. On socket close the daemon drops the registration and fails any in-flight request at once.
+- **File-bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It claims each job (removes the inbox file) before running it, and runs each job in its own task so one slow job never blocks the loop.
 
-The daemon becomes always-on in Phase 2. It starts at login via a launchd service and never exits on reconnect.
+`run_status` is the shared status routine. Both the MCP `turbofig_status` tool and the file-bridge `status` op call it.
+
+The daemon is always-on. A launchd service starts it at login and `KeepAlive` restarts it on crash. It is decoupled from any client session, so a client disconnect or session end never stops it.
 
 ## Plugin
 
@@ -40,12 +51,14 @@ The plugin has two threads, as required by the Figma plugin model:
 
 The plugin dispatches on a `{type}` field in each message:
 
-| Type | Description |
-|---|---|
-| `FILE_INFO` | Sent on connect: fileKey + root name (Phase 2) |
-| `EXECUTE` | Run arbitrary Figma Plugin API JS (Phase 3) |
-| `GET_SELECTION` | Return compact selection info (Phase 3) |
-| `SCREENSHOT` | Export PNG (Phase 3) |
+| Type | Direction | Description |
+|---|---|---|
+| `FILE_INFO` | plugin to daemon | Sent on connect: fileKey + root name (Phase 2) |
+| `STATUS` | daemon to plugin | Liveness ping carrying a `requestId` (Phase 2) |
+| `RESULT` | plugin to daemon | Reply carrying the matching `requestId` (Phase 2) |
+| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS (Phase 3) |
+| `GET_SELECTION` | daemon to plugin | Return compact selection info (Phase 3) |
+| `SCREENSHOT` | daemon to plugin | Export PNG (Phase 3) |
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
@@ -76,3 +89,12 @@ Both ports are product contracts, not dev-server conventions. See `DECISIONS.md`
 | 18847 | WebSocket | Daemon-to-plugin persistent connection |
 
 Both are overridable via `TURBOFIG_MCP_PORT` and `TURBOFIG_WS_PORT` environment variables.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TURBOFIG_MCP_PORT` | 18846 | HTTP MCP port |
+| `TURBOFIG_WS_PORT` | 18847 | Plugin WebSocket port |
+| `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result |
+| `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |

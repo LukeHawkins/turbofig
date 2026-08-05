@@ -25,6 +25,12 @@ Default bridge folder: `~/.turbofig`. Override with `TURBOFIG_BRIDGE_DIR`.
 
 The daemon removes the inbox file after it runs. It writes the outbox file atomically, so a read never sees a partial file.
 
+## Reliability
+
+Write the whole job file in one operation. The daemon reads the inbox file, then parses it. A half-written file fails to parse and returns an error result. Retry with a new job id if you see a parse error.
+
+Note: this is a spike. A future version will add a two-phase write (a `.ready` sentinel) so a slow write can never be read early. Until then, one complete write per job is the contract.
+
 ## Job shape
 
 ```json

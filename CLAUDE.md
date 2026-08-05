@@ -9,11 +9,11 @@ The always-on Figma design agent: blazing fast, token-light, never re-pair a plu
 ## Architecture (one screen)
 
 ```
-Claude/AI  --curl or native MCP-->  Rust daemon  --WebSocket-->  Figma plugin  -->  Figma
-             POST /mcp :18846                     :18847           (eval)
+Claude/AI  --curl / native MCP / file-bridge-->  Rust daemon  --WebSocket-->  Figma plugin  -->  Figma
+             POST /mcp :18846  |  ~/.turbofig                  :18847           (eval)
 ```
 
-- **Daemon (Rust, `daemon/`):** serves the MCP HTTP endpoint (`rmcp`, streamable-http, `legacy_session_mode`, stateful `mcp-session-id`) AND a WebSocket server for the plugin, in one always-on process. Routes each MCP session to the right file by `fileKey`.
+- **Daemon (Rust, `daemon/`):** one always-on process running three servers as three `tokio::spawn`s that share one `Arc<AppState>`: the MCP HTTP endpoint (`rmcp`, streamable-http, `legacy_session_mode`, stateful `mcp-session-id`), a WebSocket server for the plugin, and a file-bridge that watches `~/.turbofig/inbox` and writes `outbox`. The file-bridge lets a locked-down client drive the daemon with file writes and reads only (no curl, no MCP). A per-request timeout stops a silent plugin hanging a call. Routes each MCP session to the right file by `fileKey`.
 - **Plugin (TypeScript, `plugin/`):** thin. UI iframe holds the WebSocket + infinite-backoff reconnect; main thread runs the Figma API. Dispatches on a `{type}` message: `EXECUTE` (eval), `GET_SELECTION`, `SCREENSHOT`, `FILE_INFO`.
 - **Helpers (JS, `helpers/`):** compact craft library injected into the eval context (auto-layout, decks, components, variables, perf rules).
 - **Skills (`skills/`):** the design-worker recipes + the generic taste baseline. User brand packs load on top.
@@ -39,9 +39,9 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Tooling
 
-- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum`, `tokio`, `serde_json`. Phase 2+ crates: `tokio-tungstenite`, `image`, `rustls`.
+- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`. Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Phase 3+ crates: `image`, `rustls`.
 - **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
-- **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`).
+- **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`). Two more env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default 30000) and `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`).
 
 ## Branches (read on demand)
 
