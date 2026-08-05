@@ -1057,9 +1057,10 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
         serde_json::json!("aGVsbG8="),
         "png must echo the plugin reply, got: {payload}"
     );
+    // w and h are floats: a node's width and height can be fractional.
     assert_eq!(
         payload["w"],
-        serde_json::json!(100),
+        serde_json::json!(100.0),
         "w must be 100, got: {payload}"
     );
 }

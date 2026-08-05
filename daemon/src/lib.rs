@@ -227,6 +227,9 @@ pub async fn run_status(state: &Arc<AppState>) -> Value {
     let request = json!({"type": "STATUS", "requestId": id});
 
     if tx.send(request.to_string()).is_err() {
+        // The receiver dropped between the snapshot and the send. Remove the
+        // pending entry so it does not linger until the next disconnect.
+        state.cancel_pending(id);
         return json!({"ok": true, "plugin": {"connected": false}});
     }
 
@@ -276,6 +279,9 @@ pub async fn run_execute(state: &Arc<AppState>, code: &str) -> Value {
     let request = json!({"type": "EXECUTE", "requestId": id, "code": code});
 
     if tx.send(request.to_string()).is_err() {
+        // The receiver dropped between the snapshot and the send. Remove the
+        // pending entry so it does not linger until the next disconnect.
+        state.cancel_pending(id);
         return json!({"ok": false, "error": "plugin send failed"});
     }
 
@@ -324,6 +330,9 @@ pub async fn run_get_selection(state: &Arc<AppState>) -> Value {
     let request = json!({"type": "GET_SELECTION", "requestId": id});
 
     if tx.send(request.to_string()).is_err() {
+        // The receiver dropped between the snapshot and the send. Remove the
+        // pending entry so it does not linger until the next disconnect.
+        state.cancel_pending(id);
         return json!({"ok": false, "error": "plugin send failed"});
     }
 
@@ -387,6 +396,9 @@ pub async fn run_screenshot(
     });
 
     if tx.send(request.to_string()).is_err() {
+        // The receiver dropped between the snapshot and the send. Remove the
+        // pending entry so it does not linger until the next disconnect.
+        state.cancel_pending(id);
         return json!({"ok": false, "error": "plugin send failed"});
     }
 
@@ -404,8 +416,10 @@ pub async fn run_screenshot(
                 Some(s) => s.to_owned(),
                 None => return json!({"ok": false, "error": "screenshot failed"}),
             };
-            let w = reply.get("w").and_then(|v| v.as_u64()).unwrap_or(0);
-            let h = reply.get("h").and_then(|v| v.as_u64()).unwrap_or(0);
+            // Read as f64: a node's width and height can be fractional, and
+            // as_u64 would silently drop a fractional value to 0.
+            let w = reply.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let h = reply.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
             if return_mode == "inline" {
                 json!({"ok": true, "w": w, "h": h, "png": png})
