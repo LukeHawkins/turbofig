@@ -445,9 +445,10 @@ pub async fn run_status(
         Err(_elapsed) => {
             state.cancel_pending(id);
             let plugins = state.named_connections_json();
+            // Name the unresponsive file so the caller knows which one is silent.
             json!({
                 "ok": true,
-                "plugin": {"connected": true, "responsive": false},
+                "plugin": {"connected": true, "responsive": false, "fileKey": fk, "name": name},
                 "plugins": plugins
             })
         }

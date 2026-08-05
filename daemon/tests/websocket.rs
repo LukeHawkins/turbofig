@@ -274,6 +274,11 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
         serde_json::json!(false),
         "plugin.responsive must be false when the plugin did not reply, got: {payload}"
     );
+    assert_eq!(
+        payload["plugin"]["fileKey"],
+        serde_json::json!("silent-plugin"),
+        "the timeout shape must name the unresponsive file, got: {payload}"
+    );
 }
 
 /// turbofig_status routes a STATUS request to the mock plugin and returns
