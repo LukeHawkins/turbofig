@@ -82,22 +82,24 @@ Goal: end the handshake permanently and make the daemon independent of any clien
 
 ## Phase 3: Eval-first vertical slice (usable daily)
 
-Goal: a real, usable create+read+screenshot loop end to end.
+Goal: a real, usable create+read+screenshot loop end to end. This is the first "actually try it" milestone. It MUST be reachable dialog-free through the file-bridge, because native MCP is admin-blocked and curl is gated on Luke's account (see `DECISIONS.md` #15). Each capability shares one `run_*` function between the MCP tool and the file-bridge op, the pattern Phase 2 set with `run_status`.
 
 - [ ] Plugin `{type}` dispatch table; add `EXECUTE` (async IIFE eval, timeout, result via `requestId`)
-- [ ] `turbofig_execute` tool: send JS, run it in the plugin, return the result
+- [ ] `turbofig_execute` tool: send JS, run it in the plugin, return the result. Factor `run_execute` so the file-bridge shares it.
+- [ ] File-bridge ops for the full loop: add `execute`, `get_selection`, `screenshot` job ops that call the same `run_*` functions as the tools, so the whole loop works with file writes and reads only (no curl, no MCP).
 - [ ] Inject the sync-to-async deprecation preamble into the eval context now, so generated code uses async APIs under `dynamic-page` from the first eval
 - [ ] `GET_SELECTION` + `turbofig_get_selection`: compact `{id,name,type,x,y,w,h}` shape
-- [ ] `SCREENSHOT` + `turbofig_screenshot`: `exportAsync` PNG, param `{scale, return:"file"|"inline"}`
-- [ ] Verify: from Claude via curl, create a frame in a live file, read selection, get a screenshot back
-- [ ] Error boundary: eval failures return a clean message to the caller, never crash the daemon
+- [ ] `SCREENSHOT` + `turbofig_screenshot`: `exportAsync` PNG, param `{scale, return:"file"|"inline"}`. File-mode writes the PNG to the bridge outbox dir; a subagent reads it.
+- [ ] Verify: via the file-bridge (dialog-free), create a frame in a live file, read selection, get a screenshot back. Repeat the same loop over curl to confirm both transports.
+- [ ] Error boundary: eval failures return a clean message to the caller (tool AND bridge), never crash the daemon
 
 ## Phase 4: True multi-file routing
 
 Goal: N independent Claude sessions to N files at once. Stronger than console-mcp's broadcast.
 
-- [ ] Daemon session registry keyed by `mcp-session-id` and plugin connection `fileKey`
+- [ ] Daemon session registry keyed by `mcp-session-id` and plugin connection `fileKey`. Replace the single `Mutex<Option<PluginConn>>` from Phase 2 with a multi-connection map.
 - [ ] Pair a session to a file (by `fileKey` or an explicit pick); route every call to the right plugin
+- [ ] File-bridge routing: a bridge job may carry a target `fileKey`. With none, default to the single connected plugin and error clearly when the target is ambiguous. The bridge has no `mcp-session-id`, so the job field is how it selects a file.
 - [ ] Handle multiple plugin connections (one per open file) simultaneously
 - [ ] Graceful handling when a target file closes mid-session (clear error, no cross-talk)
 - [ ] Verify: two files + two Claude sessions operate concurrently, fully isolated
@@ -170,9 +172,9 @@ Goal: users install a compiled binary with no source and no compiler; updates ar
 - [ ] Secondary channels: `cargo install turbofig-mcp`, a Homebrew tap, raw GitHub Release binaries + `curl | sh` installer
 - [ ] Auto-update nudge: daemon checks for a newer version on startup; plugin warns on version mismatch on connect
 - [ ] Plugin delivery: `npx turbofig-mcp plugin` prints/opens the dev-install steps and the manifest path
-- [ ] Play nice with Luke's setup: keep curl-on-18846 working AND register cleanly as a native `mcpServers` entry
-- [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs
-- [ ] Productionize the file-bridge (spike landed): add the `execute` op, make client writes race-safe (two-phase `.ready` sentinel or file-stability check), and switch polling to the `notify` crate. This is the primary transport for locked-down Claude Enterprise accounts where curl is gated and native MCP is blocked. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
+- [ ] Play nice with Luke's setup: the file-bridge is the primary dialog-free path (native MCP is admin-blocked on his account, tested). Keep curl-on-18846 working as a fallback. Register a native `mcpServers` entry for users whose admin allowlists it.
+- [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs over the file-bridge
+- [ ] Productionize the file-bridge (spike landed; the `execute` op arrives in Phase 3): make client writes race-safe (two-phase `.ready` sentinel or file-stability check) and switch polling to the `notify` crate for sub-millisecond, zero-idle-CPU wakes. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
 
 ## Phase 11: Presentation (README-first)
 
