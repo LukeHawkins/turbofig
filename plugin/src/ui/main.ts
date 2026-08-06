@@ -202,8 +202,10 @@ function connect(): void {
       }
       return;
     }
-    /* Read the active session id from any request message that carries it. */
-    if (typeof parsed.sessionId === "string") {
+    /* Read the active session id from a request that carries a real one.
+       A file-bridge call sends an empty session id. Keep the last real
+       session so a bridge call does not clear the pairing display. */
+    if (typeof parsed.sessionId === "string" && parsed.sessionId !== "") {
       activeSessionId = parsed.sessionId;
       updateSessionDisplay();
       updatePairingDisplay();
