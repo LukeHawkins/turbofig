@@ -280,7 +280,10 @@ impl AppState {
     /// The file_key and name start empty and are set when FILE_INFO arrives.
     pub fn add_connection(&self, tx: mpsc::UnboundedSender<String>) -> u64 {
         let conn_id = self.conn_counter.fetch_add(1, Ordering::Relaxed);
-        let mut guard = self.connections.lock().expect("connections lock");
+        // Recover the guard when a previous holder panicked. The map is still
+        // usable. A poisoned mutex must not cascade into routing failures for
+        // all connected files.
+        let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         guard.insert(
             conn_id,
             PluginConn {
@@ -302,7 +305,7 @@ impl AppState {
         name: String,
         profile_id: String,
     ) {
-        let mut guard = self.connections.lock().expect("connections lock");
+        let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = guard.get_mut(&conn_id) {
             conn.file_key = file_key;
             conn.name = name;
@@ -313,7 +316,7 @@ impl AppState {
     /// Return the profile_id for the given connection.
     /// Returns an empty string when the connection is gone or has no profile set.
     pub fn connection_profile(&self, conn_id: u64) -> String {
-        let guard = self.connections.lock().expect("connections lock");
+        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .get(&conn_id)
             .map(|c| c.profile_id.clone())
@@ -349,13 +352,13 @@ impl AppState {
 
     /// Remove a connection from the registry. Call this when the socket closes.
     pub fn remove_connection(&self, conn_id: u64) {
-        let mut guard = self.connections.lock().expect("connections lock");
+        let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&conn_id);
     }
 
     /// Return all connections as (conn_id, file_key, name) tuples.
     pub fn list_connections(&self) -> Vec<(u64, String, String)> {
-        let guard = self.connections.lock().expect("connections lock");
+        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         guard
             .iter()
             .map(|(id, c)| (*id, c.file_key.clone(), c.name.clone()))
@@ -366,7 +369,7 @@ impl AppState {
     /// Returns None when there are zero or more than one connections.
     /// Kept for existing single-plugin WebSocket tests.
     pub fn plugin_snapshot(&self) -> Option<(String, String)> {
-        let guard = self.connections.lock().expect("connections lock");
+        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if guard.len() == 1 {
             guard
                 .values()
@@ -386,7 +389,7 @@ impl AppState {
     /// Returns a receiver that resolves when the plugin replies.
     pub fn register_pending(&self, id: u64, conn_id: u64) -> oneshot::Receiver<Value> {
         let (tx, rx) = oneshot::channel();
-        let mut guard = self.pending.lock().expect("pending lock");
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         guard.insert(id, (conn_id, tx));
         rx
     }
@@ -394,7 +397,7 @@ impl AppState {
     /// Resolve a pending request with the plugin's response value.
     /// Silently ignores unknown request IDs.
     pub fn resolve(&self, id: u64, value: Value) {
-        let mut guard = self.pending.lock().expect("pending lock");
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, tx)) = guard.remove(&id) {
             let _ = tx.send(value);
         }
@@ -404,7 +407,7 @@ impl AppState {
     /// Call this when a request times out to prevent a pending-map leak.
     /// Silently ignores unknown IDs.
     pub fn cancel_pending(&self, id: u64) {
-        let mut guard = self.pending.lock().expect("pending lock");
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&id);
     }
 
@@ -412,7 +415,7 @@ impl AppState {
     /// Call this when a socket closes so only that file's in-flight requests fail.
     /// Other files' pending requests are not affected.
     pub fn cancel_pending_for_conn(&self, conn_id: u64) {
-        let mut guard = self.pending.lock().expect("pending lock");
+        let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|_, (cid, _)| *cid != conn_id);
     }
 
@@ -438,13 +441,13 @@ impl AppState {
         let desired: Option<String> = if let Some(fk) = explicit {
             // Explicit target given. Record pairing for this session.
             if let Some(sid) = session_id {
-                let mut sessions = self.sessions.lock().expect("sessions lock");
+                let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 sessions.insert(sid.to_owned(), fk.to_owned());
             }
             Some(fk.to_owned())
         } else if let Some(sid) = session_id {
             // No explicit target. Check for an existing session pairing.
-            let sessions = self.sessions.lock().expect("sessions lock");
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             sessions.get(sid).cloned()
         } else {
             None
@@ -453,7 +456,7 @@ impl AppState {
 
         // Step 2: Collect named connections (non-empty file_key only).
         let named: Vec<(u64, mpsc::UnboundedSender<String>, String, String)> = {
-            let connections = self.connections.lock().expect("connections lock");
+            let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
             let mut v: Vec<_> = connections
                 .iter()
                 .filter(|(_, c)| !c.file_key.is_empty())
@@ -480,7 +483,7 @@ impl AppState {
 
             // Not found: clear any stale pairing for this session.
             if let Some(sid) = session_id {
-                let mut sessions = self.sessions.lock().expect("sessions lock");
+                let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 sessions.remove(sid);
             }
             let available: Vec<String> = named.into_iter().map(|(_, _, fk2, _)| fk2).collect();
@@ -494,7 +497,7 @@ impl AppState {
                 let (conn_id, tx, fk, nm) = named.into_iter().next().unwrap();
                 // Record pairing so subsequent calls on this session go to same file.
                 if let Some(sid) = session_id {
-                    let mut sessions = self.sessions.lock().expect("sessions lock");
+                    let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
                     sessions.insert(sid.to_owned(), fk.clone());
                 }
                 Ok((conn_id, tx, fk, nm))
@@ -508,7 +511,7 @@ impl AppState {
 
     /// Return all named connections as JSON objects for status and error responses.
     fn named_connections_json(&self) -> Vec<Value> {
-        let guard = self.connections.lock().expect("connections lock");
+        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         let mut named: Vec<(&str, &str)> = guard
             .values()
             .filter(|c| !c.file_key.is_empty())
@@ -2567,6 +2570,41 @@ mod tests {
         assert!(
             warning.contains("impeccable"),
             "disconnected warning must mention impeccable; got: {warning:?}"
+        );
+    }
+
+    // Mutex poison-recovery test.
+
+    /// Poison the `connections` mutex by spawning a thread that panics while
+    /// holding the lock. Then assert that `add_connection` and `list_connections`
+    /// both succeed instead of panicking.
+    #[test]
+    fn connections_lock_recovers_from_poison() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let state_for_thread = state.clone();
+
+        // Spawn a thread that takes the connections lock and panics.
+        let handle = std::thread::spawn(move || {
+            let _guard = state_for_thread
+                .connections
+                .lock()
+                .expect("initial lock in poison thread");
+            panic!("intentional poison for test");
+        });
+        // Join and discard the expected panic JoinError.
+        let _ = handle.join();
+
+        // The mutex is now poisoned. Operations that use the lock must still
+        // succeed because they recover via unwrap_or_else(|e| e.into_inner()).
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx);
+        assert!(conn_id > 0, "add_connection must succeed after poison");
+
+        let conns = state.list_connections();
+        assert_eq!(
+            conns.len(),
+            1,
+            "list_connections must see the added connection"
         );
     }
 }
