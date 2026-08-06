@@ -579,39 +579,19 @@ describe("buildSetProfile", () => {
     };
   }
 
-  test("returns a SET_PROFILE message with profileId 'impeccable'", () => {
-    const msg = buildSetProfile("impeccable");
-    expect(msg.type).toBe("SET_PROFILE");
-    expect(msg.profileId).toBe("impeccable");
-    expect(isDaemonMessage(msg)).toBe(true);
-  });
+  // One parameterised test covers all known profile ids including a custom one.
+  for (const id of ["impeccable", "editorial", "minimal", "none", "my-brand"]) {
+    test(`returns { type: "SET_PROFILE", profileId: "${id}" } and passes isDaemonMessage`, () => {
+      const msg = buildSetProfile(id);
+      expect(msg).toEqual({ type: "SET_PROFILE", profileId: id });
+      expect(isDaemonMessage(msg)).toBe(true);
+    });
+  }
 
-  test("returns a SET_PROFILE message with profileId 'editorial'", () => {
-    const msg = buildSetProfile("editorial");
-    expect(msg.type).toBe("SET_PROFILE");
-    expect(msg.profileId).toBe("editorial");
-    expect(isDaemonMessage(msg)).toBe(true);
-  });
-
-  test("returns a SET_PROFILE message with profileId 'minimal'", () => {
-    const msg = buildSetProfile("minimal");
-    expect(msg.type).toBe("SET_PROFILE");
-    expect(msg.profileId).toBe("minimal");
-    expect(isDaemonMessage(msg)).toBe(true);
-  });
-
-  test("returns a SET_PROFILE message with profileId 'none'", () => {
-    const msg = buildSetProfile("none");
-    expect(msg.type).toBe("SET_PROFILE");
-    expect(msg.profileId).toBe("none");
-    expect(isDaemonMessage(msg)).toBe(true);
-  });
-
-  test("returns a SET_PROFILE message with a custom profile id", () => {
-    const msg = buildSetProfile("my-brand");
-    expect(msg.type).toBe("SET_PROFILE");
-    expect(msg.profileId).toBe("my-brand");
-    expect(isDaemonMessage(msg)).toBe(true);
+  test("applySetProfile does not write when profileId is an empty string", () => {
+    const store = makeMockStore();
+    applySetProfile(store, "");
+    expect(readProfileId(store)).toBe("");
   });
 
   test("value-flow: buildSetProfile -> applySetProfile -> readProfileId -> buildFileInfo carries profileId", () => {

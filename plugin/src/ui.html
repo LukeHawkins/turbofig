@@ -148,6 +148,10 @@
             } catch (_) {
               return;
             }
+            /* The daemon must not drive the profile. Only the UI selector sends SET_PROFILE. */
+            if (parsed.type === "SET_PROFILE") {
+              return;
+            }
             parent.postMessage({ pluginMessage: parsed }, "*");
           };
         }

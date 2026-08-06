@@ -57,4 +57,13 @@ describe("profile injection reaches user code", () => {
     const result = await runInjected("impeccable", "const taste = 123; return tf.taste.id;");
     expect(result).toBe("impeccable");
   });
+
+  test("isolation: sequential invocations do not bleed profile state", async () => {
+    // Each call to runInjected passes a fresh tf object. The profile must not
+    // persist from one invocation to the next through shared state.
+    const first = await runInjected("editorial", "return tf.taste.id;");
+    const second = await runInjected("minimal", "return tf.taste.id;");
+    expect(first).toBe("editorial");
+    expect(second).toBe("minimal");
+  });
 });

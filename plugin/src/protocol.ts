@@ -148,8 +148,11 @@ export function readProfileId(root: PluginDataStore): string {
 /**
  * Writes the given profile id to the Figma document root.
  * Pass figma.root directly; it satisfies the PluginDataStore shape.
+ * An empty string is rejected: the function returns without writing.
+ * "none" is a valid non-empty id and is written normally.
  */
 export function applySetProfile(root: PluginDataStore, profileId: string): void {
+  if (profileId === "") return;
   root.setPluginData(PROFILE_KEY, profileId);
 }
 
