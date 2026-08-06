@@ -39,7 +39,7 @@ function makeBmp24(
   view.setUint32(6, 0, true); // reserved
   view.setUint32(10, 54, true); // pixel data offset
 
-  // DIB header — BITMAPINFOHEADER (40 bytes).
+  // DIB header: BITMAPINFOHEADER (40 bytes).
   view.setUint32(14, 40, true); // header size
   view.setInt32(18, width, true); // width
   // Negative height signals top-down storage.
@@ -112,12 +112,12 @@ describe("parseBmp", () => {
   test("parses a 2x2 top-down 24-bit BMP (negative height) correctly", () => {
     const pixels = [
       [
-        { r: 0, g: 0, b: 255 }, // blue — top-left
-        { r: 255, g: 255, b: 255 }, // white — top-right
+        { r: 0, g: 0, b: 255 }, // blue: top-left
+        { r: 255, g: 255, b: 255 }, // white: top-right
       ],
       [
-        { r: 255, g: 0, b: 0 }, // red — bottom-left
-        { r: 0, g: 255, b: 0 }, // green — bottom-right
+        { r: 255, g: 0, b: 0 }, // red: bottom-left
+        { r: 0, g: 255, b: 0 }, // green: bottom-right
       ],
     ];
 

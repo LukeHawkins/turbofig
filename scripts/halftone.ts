@@ -30,7 +30,7 @@ function readI32LE(buf: Uint8Array, offset: number): number {
 export interface BmpData {
   width: number;
   height: number;
-  /** lum[row][col] — luminance value 0..255. lum[0] is the top row. */
+  /** lum[row][col]: luminance value 0..255. lum[0] is the top row. */
   lum: number[][];
 }
 

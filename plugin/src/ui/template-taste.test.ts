@@ -12,7 +12,7 @@ const template = readFileSync(join(import.meta.dir, "template.html"), "utf-8");
 /** Font sizes from the impeccable type scale (px). */
 const VALID_TYPE_SCALE = new Set([12, 14, 16, 20, 25, 31, 39, 49, 61]);
 
-describe("template.html — impeccable taste compliance", () => {
+describe("template.html: impeccable taste compliance", () => {
   test("declares an Inter font-family", () => {
     expect(template).toContain("Inter");
   });
