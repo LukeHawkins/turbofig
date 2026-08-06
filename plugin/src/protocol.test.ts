@@ -8,6 +8,7 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  buildSetProfile,
   DEPRECATION_PREAMBLE,
   isDaemonMessage,
   MAX_SELECTION_DEPTH,
@@ -558,5 +559,68 @@ describe("profile store helpers", () => {
     applySetProfile(store, "minimal");
     applySetProfile(store, "vibrant");
     expect(readProfileId(store)).toBe("vibrant");
+  });
+});
+
+describe("buildSetProfile", () => {
+  /** Minimal in-memory PluginDataStore for testing. */
+  function makeMockStore(): {
+    getPluginData(key: string): string;
+    setPluginData(key: string, value: string): void;
+  } {
+    const data: Record<string, string> = {};
+    return {
+      getPluginData(key: string): string {
+        return key in data ? data[key] : "";
+      },
+      setPluginData(key: string, value: string): void {
+        data[key] = value;
+      },
+    };
+  }
+
+  test("returns a SET_PROFILE message with profileId 'impeccable'", () => {
+    const msg = buildSetProfile("impeccable");
+    expect(msg.type).toBe("SET_PROFILE");
+    expect(msg.profileId).toBe("impeccable");
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("returns a SET_PROFILE message with profileId 'editorial'", () => {
+    const msg = buildSetProfile("editorial");
+    expect(msg.type).toBe("SET_PROFILE");
+    expect(msg.profileId).toBe("editorial");
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("returns a SET_PROFILE message with profileId 'minimal'", () => {
+    const msg = buildSetProfile("minimal");
+    expect(msg.type).toBe("SET_PROFILE");
+    expect(msg.profileId).toBe("minimal");
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("returns a SET_PROFILE message with profileId 'none'", () => {
+    const msg = buildSetProfile("none");
+    expect(msg.type).toBe("SET_PROFILE");
+    expect(msg.profileId).toBe("none");
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("returns a SET_PROFILE message with a custom profile id", () => {
+    const msg = buildSetProfile("my-brand");
+    expect(msg.type).toBe("SET_PROFILE");
+    expect(msg.profileId).toBe("my-brand");
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("value-flow: buildSetProfile -> applySetProfile -> readProfileId -> buildFileInfo carries profileId", () => {
+    const store = makeMockStore();
+    const profileId = buildSetProfile("minimal").profileId;
+    applySetProfile(store, profileId);
+    expect(readProfileId(store)).toBe("minimal");
+    const fileInfo = buildFileInfo("k", "n", readProfileId(store));
+    expect(fileInfo.profileId).toBe("minimal");
+    expect(isDaemonMessage(fileInfo)).toBe(true);
   });
 });

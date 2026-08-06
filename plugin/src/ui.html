@@ -17,15 +17,79 @@
       #status {
         color: #666;
       }
+      #profile-row {
+        margin-top: 10px;
+      }
+      #profile-row label {
+        display: block;
+        margin-bottom: 4px;
+        color: #333;
+      }
+      #profile {
+        width: 100%;
+        font-size: 13px;
+        box-sizing: border-box;
+      }
+      #customProfile {
+        width: 100%;
+        font-size: 13px;
+        box-sizing: border-box;
+        margin-top: 4px;
+        display: none;
+      }
     </style>
   </head>
   <body>
     <h1>Turbofig</h1>
     <p id="status">Status: connecting</p>
+    <div id="profile-row">
+      <label for="profile">Taste profile</label>
+      <select id="profile">
+        <option value="impeccable">Impeccable</option>
+        <option value="editorial">Editorial</option>
+        <option value="minimal">Minimal</option>
+        <option value="none">None</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input id="customProfile" type="text" placeholder="Enter profile id" />
+    </div>
     <script>
       (function () {
         var WS_URL = "ws://localhost:18847";
         var statusEl = document.getElementById("status");
+        var profileSel = document.getElementById("profile");
+        var customInput = document.getElementById("customProfile");
+
+        /** Known profile ids that map to named select options. */
+        var KNOWN_PROFILES = ["impeccable", "editorial", "minimal", "none"];
+
+        /** Returns the current profile id from the selector. */
+        function getSelectedProfileId() {
+          if (profileSel.value === "custom") {
+            return customInput.value.trim();
+          }
+          return profileSel.value;
+        }
+
+        /** Posts SET_PROFILE to the main thread with the current selector value. */
+        function postSetProfile() {
+          parent.postMessage({ pluginMessage: { type: "SET_PROFILE", profileId: getSelectedProfileId() } }, "*");
+        }
+
+        profileSel.onchange = function () {
+          if (profileSel.value === "custom") {
+            customInput.style.display = "block";
+          } else {
+            customInput.style.display = "none";
+          }
+          postSetProfile();
+        };
+
+        customInput.oninput = function () {
+          if (profileSel.value === "custom") {
+            postSetProfile();
+          }
+        };
 
         /** Latest FILE_INFO received from the main thread. Sent to daemon on each connect. */
         var latestFileInfo = null;
@@ -95,6 +159,17 @@
           if (!msg) return;
           if (msg.type === "FILE_INFO") {
             latestFileInfo = msg;
+            /* Reflect the current profile in the selector.
+               Empty profileId defaults to impeccable (the daemon default). */
+            var pid = msg.profileId || "impeccable";
+            if (KNOWN_PROFILES.indexOf(pid) !== -1) {
+              profileSel.value = pid;
+              customInput.style.display = "none";
+            } else {
+              profileSel.value = "custom";
+              customInput.value = msg.profileId;
+              customInput.style.display = "block";
+            }
             /* If already connected, send FILE_INFO now so it reaches the daemon. */
             if (ws && ws.readyState === 1 /* OPEN */) {
               ws.send(JSON.stringify(msg));

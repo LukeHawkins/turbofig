@@ -171,6 +171,15 @@ export function backoffDelayMs(attempt: number): number {
 }
 
 /**
+ * Builds a SET_PROFILE message for the given profile id.
+ * Post this to the plugin main thread to change the active taste profile.
+ * Do not send it over the WebSocket.
+ */
+export function buildSetProfile(profileId: string): SetProfileMessage {
+  return { type: "SET_PROFILE", profileId };
+}
+
+/**
  * Builds a success RESULT reply for an EXECUTE request.
  * Echoes requestId and carries the return value of the executed code.
  */
