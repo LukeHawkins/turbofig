@@ -18,6 +18,7 @@ Parse `$ARGUMENTS` and extract:
 - **Palette.** Hex values if provided; otherwise derive a 4-colour palette (brand, accent, surface, text) from the tone.
 - **Type.** Font family and weight choices if provided; otherwise default to Inter with Bold headings and Regular body.
 - **Reference material.** Moodboard image paths and reference URLs. Delegate reading of any moodboard image to a subagent that returns only a compact colour and mood summary. Do not load images into the main context.
+- **Profile.** Call `turbofig_status` and read `plugin.profileId`. Record the profile id for the whole job. Then run one `turbofig_execute` eval to read the active profile's `taste` constants: `spacing`, `type`, `grid`, `contrast`, and `blocklist`. Persist these to `~/.turbofig/design/<job-id>/profile.json`. If `profileId` is `none`, write `{ "profileId": "none" }` and skip all profile constraints. If the profile id is not a known value, the daemon uses `impeccable` as the fallback.
 
 If the brief is too vague to infer key sections, derive a sensible default structure (for example: Nav, Hero, Features, Footer) and proceed.
 
@@ -39,8 +40,8 @@ For each section, record:
 
 Persist two files:
 
-1. `~/.turbofig/design/<job-id>/plan.json` — the full plan array.
-2. `~/.turbofig/design/<job-id>/status.json` — one entry per section:
+1. `~/.turbofig/design/<job-id>/plan.json`: the full plan array.
+2. `~/.turbofig/design/<job-id>/status.json`: one entry per section:
    `{ "name": "HeroSection", "state": "pending", "refinePasses": 0 }`.
 
 These two files are the resume checkpoint. A re-run with the same job id loads them and skips completed work.
@@ -55,6 +56,7 @@ Give each builder subagent ONLY:
 - A pointer to `helpers/tf-api.md`. Do not paste the file; pass the path.
 - The job id and the file-bridge protocol. Each builder must use its OWN unique bridge job id for the inbox/outbox filenames: `<design-job-id>-<SectionName>-<random4>` (for example `20260805-a3f7-HeroSection-b2c9`). Two builders sharing the same id would overwrite each other's inbox file.
 - The idempotency rule: use `tf.findOrCreate` to get or create the root section frame, then call `tf.clear` on it to remove all existing children before rebuilding. `findOrCreate` alone protects only the section frame; `tf.clear` before rebuilding makes a re-run fully safe.
+- A pointer to `~/.turbofig/design/<job-id>/profile.json`. Each builder must read this file and use its `spacing` scale, `type` scale, and `grid` values when placing and sizing nodes. When `profile.json` contains `{ "profileId": "none" }`, skip profile constraints.
 
   ```js
   const s = await tf.findOrCreate(figma.currentPage, 'HeroSection', factory);
@@ -106,23 +108,32 @@ Dispatch a QA subagent for each target. Give each QA subagent ONLY:
 
 - The section name and node id (or the root container node id for the full-page check).
 - The job id and the file-bridge protocol.
+- A pointer to `~/.turbofig/design/<job-id>/profile.json`.
 - The QA rubric (copy it verbatim into the subagent prompt):
 
-  > Score the screenshot against these criteria:
-  > 1. Visual hierarchy: headings are clearly larger than body text; the eye has a clear entry point.
-  > 2. Spacing rhythm: gaps and padding follow a consistent scale (for example 8px increments). No collapsed or exploded gaps.
-  > 3. Contrast: body text and interactive labels meet WCAG AA (4.5:1 for normal text, 3:1 for large text).
-  > 4. Alignment and grid: elements align on a shared axis. No stray offsets.
-  > 5. Restraint: no clutter, no element overlap, no text hidden behind other elements, no dead whitespace larger than the design intent.
+  > Score the design against these criteria. Read profile.json before scoring. Report each objective check as pass or fail with the measured value.
+  >
+  > **Objective checks (profile-driven):**
+  > 1. Grid adherence: element x positions and widths align to the profile `grid.columns`, `grid.gutter`, and `grid.margin`. Measure at least five elements. Report as: `pass` or `fail: <element> at x=<n>px, expected <m>px`.
+  > 2. Type-scale conformance: all text node sizes come from the profile `type.scale`. Report each text node using a size not in the scale as: `fail: <element> uses <n>px, not in scale`.
+  > 3. Contrast/AA: text-on-background contrast meets `contrast.bodyMin` for body text and `contrast.largeMin` for large text. Report each failing pair as: `fail: <element> measured <ratio>:1, required <min>:1`.
+  > 4. Spacing rhythm: all gaps and padding values come from the profile `spacing` scale. Report each value not in the scale.
+  > 5. Blocklist: none of the profile `blocklist` anti-slop patterns appear. Report each pattern found.
+  >
+  > When profile.json contains `{ "profileId": "none" }`, skip checks 1 to 5. Apply checks 6 and 7 to all runs.
+  >
+  > **Qualitative checks:**
+  > 6. Visual hierarchy: headings are clearly larger than body text. The eye has a clear entry point.
+  > 7. Restraint: no clutter, no element overlap, no text hidden behind other elements, no dead whitespace larger than the design intent.
 
 Each QA subagent must:
 
 1. Request a `screenshot` via the file-bridge: `{ "op": "screenshot", "nodeId": "<id>", "scale": 2, "return": "file" }`.
 2. Poll for the outbox file (0.2 s intervals, up to 50 tries). Read the PNG from the path in the outbox result.
-3. Score it against all five criteria.
+3. Read profile.json. Score the design against all seven criteria.
 4. Return a SHORT TEXT verdict only:
    - `pass` if all criteria are met.
-   - A numbered defect list with a specific fix for each failing criterion, for example: `1. Body text (16px Inter Regular, #888888 on #FFFFFF) fails WCAG AA. Fix: change fill to #767676 or darker.`
+   - List objective check results first (checks 1 to 5), then qualitative check results (checks 6 and 7). For each failure, give the measured value and a specific fix. For example: `3. Contrast/AA fail: body text #888888 on #FFFFFF measured 3.5:1, required 4.5:1. Fix: change fill to #767676 or darker.`
 5. Return NO images. The PNG stays in the subagent context and is discarded when the subagent ends.
 
 The main session reads only the text verdict. Update `status.json`: set `state` to `"passed"` or `"qa_failed"` and record the defect list.
@@ -150,11 +161,11 @@ At the start of every run, check for an existing `~/.turbofig/design/<job-id>/st
 
 If it exists, load it. Apply this logic per section:
 
-- `state: "passed"` — skip. No action.
-- `state: "pending"` — run the full builder (findOrCreate + clear + fresh rebuild), then QA.
-- `state: "built"` — skip the builder. Run QA only.
-- `state: "qa_failed"` — run the fix-builder (targeted edits from the saved defect list), then QA. Do NOT run a full rebuild.
-- `state: "needs_review"` — do NOT auto-retry. A `needs_review` section already used its 2-pass budget. List it as outstanding in the final report. Only retry it if the user supplies an explicit override instruction in `$ARGUMENTS`; in that case, pass the override to the fix-builder as an additional directive.
+- `state: "passed"`: skip. No action.
+- `state: "pending"`: run the full builder (findOrCreate + clear + fresh rebuild), then QA.
+- `state: "built"`: skip the builder. Run QA only.
+- `state: "qa_failed"`: run the fix-builder (targeted edits from the saved defect list), then QA. Do NOT run a full rebuild.
+- `state: "needs_review"`: do NOT auto-retry. A `needs_review` section already used its 2-pass budget. List it as outstanding in the final report. Only retry it if the user supplies an explicit override instruction in `$ARGUMENTS`; in that case, pass the override to the fix-builder as an additional directive.
 
 Read `refinePasses` for each section that will enter the refine loop. Subtract from the 2-pass budget before dispatching any fix-builder. This prevents a crash mid-refine from granting extra passes.
 
