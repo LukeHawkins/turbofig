@@ -1479,6 +1479,19 @@ mod tests {
     }
 
     #[test]
+    fn downscale_png_reduces_portrait_image_to_max_dim() {
+        // A 1000x2000 portrait image with max_dim=1200 must scale to 600x1200.
+        // The longest edge (height) becomes max_dim; the width halves with it.
+        let png = make_png(1000, 2000);
+        let (out_bytes, w, h) = downscale_png(&png, 1200, false);
+        assert_eq!(w, 600, "width must be halved proportionally");
+        assert_eq!(h, 1200, "height must equal max_dim");
+        let decoded = image::load_from_memory(&out_bytes).expect("decode result");
+        assert_eq!(decoded.width(), 600);
+        assert_eq!(decoded.height(), 1200);
+    }
+
+    #[test]
     fn downscale_png_full_res_returns_input_unchanged() {
         // full_res=true must return the original bytes without re-encoding.
         let png = make_png(2000, 1000);
