@@ -1,12 +1,13 @@
 /**
  * Benchmark harness for turbofig file-bridge scenarios.
  *
- * Pure functions: estimateTokens, jobTokens, summarizeRun, runScenario.
+ * Pure functions: estimateTokens, jobTokens, summarizeRun, runScenario, compareToBaseline.
  * Transport: fileBridgeTransport (live) and a stub for dry-run / tests.
  * CLI: run with `bun bench/harness.ts --dry-run`.
  */
 
 import { randomUUID } from "node:crypto";
+import { unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BridgeJob, Scenario } from "./scenarios.js";
@@ -41,7 +42,6 @@ export interface Transport {
 export interface BaselineReport {
   scenario: string;
   totalTokens: number;
-  wallMs?: number;
 }
 
 /** Full report written to --out file. */
@@ -106,6 +106,30 @@ export async function runScenario(
   return { summary: summarizeRun(records), records };
 }
 
+/**
+ * Compare a run summary against a baseline for the same scenario.
+ *
+ * Returns the ratio as a fixed-3 string when the scenario matches and the
+ * baseline has a positive totalTokens. Returns "no valid baseline total" when
+ * totalTokens is zero, negative, or not a number. Returns null when the
+ * scenario name does not match (no comparison applies).
+ */
+export function compareToBaseline(
+  name: string,
+  summary: RunSummary,
+  baseline: BaselineReport,
+): string | null {
+  if (baseline.scenario !== name) return null;
+  if (
+    typeof baseline.totalTokens !== "number" ||
+    Number.isNaN(baseline.totalTokens) ||
+    baseline.totalTokens <= 0
+  ) {
+    return "no valid baseline total";
+  }
+  return (summary.totalTokens / baseline.totalTokens).toFixed(3);
+}
+
 // ---------------------------------------------------------------------------
 // Transports
 // ---------------------------------------------------------------------------
@@ -120,6 +144,8 @@ const POLL_TIMEOUT_MS = 30_000;
  * Real file-bridge transport.
  * Writes each job to inbox/<id>.json and polls outbox/<id>.json for the result.
  * Uses Bun.write / Bun.file for file I/O and node:crypto for job IDs.
+ * Deletes both files in a finally block to prevent temp-file leaks.
+ * Treats a JSON parse error during polling as a partial write and retries.
  */
 export function fileBridgeTransport(bridgeDir: string): Transport {
   return {
@@ -131,17 +157,40 @@ export function fileBridgeTransport(bridgeDir: string): Transport {
       await Bun.write(inboxPath, JSON.stringify(job));
 
       const start = Date.now();
-      while (true) {
-        const file = Bun.file(outboxPath);
-        if (await file.exists()) {
-          const text = await file.text();
-          const wallMs = Date.now() - start;
-          return { result: JSON.parse(text) as unknown, wallMs };
+      try {
+        while (true) {
+          const file = Bun.file(outboxPath);
+          if (await file.exists()) {
+            const text = await file.text();
+            let parsed: unknown;
+            try {
+              parsed = JSON.parse(text);
+            } catch {
+              // Partial write detected. Keep polling until the file is complete.
+              await Bun.sleep(POLL_INTERVAL_MS);
+              continue;
+            }
+            const wallMs = Date.now() - start;
+            return { result: parsed, wallMs };
+          }
+          if (Date.now() - start > POLL_TIMEOUT_MS) {
+            throw new Error(`Timeout waiting for bridge result: job ${id}`);
+          }
+          await Bun.sleep(POLL_INTERVAL_MS);
         }
-        if (Date.now() - start > POLL_TIMEOUT_MS) {
-          throw new Error(`Timeout waiting for bridge result: job ${id}`);
+      } finally {
+        // Delete inbox file. It is always written, so ignore any error.
+        try {
+          await unlink(inboxPath);
+        } catch {
+          /* ignore */
         }
-        await Bun.sleep(POLL_INTERVAL_MS);
+        // Delete outbox file. It may not exist when the job timed out.
+        try {
+          await unlink(outboxPath);
+        } catch {
+          /* ignore missing file */
+        }
       }
     },
   };
@@ -152,7 +201,7 @@ export function fileBridgeTransport(bridgeDir: string): Transport {
  * Returns a canned small result with wallMs 0.
  * No daemon required.
  */
-export function stubTransport(cannedResult: unknown = { ok: true }): Transport {
+function stubTransport(cannedResult: unknown = { ok: true }): Transport {
   return {
     async submit(_job: BridgeJob): Promise<{ result: unknown; wallMs: number }> {
       return { result: cannedResult, wallMs: 0 };
@@ -174,20 +223,43 @@ function printSummary(scenario: string, summary: RunSummary): void {
   console.log(`  Wall ms    : ${summary.wallMs}`);
 }
 
-/** Compare a run summary against a saved baseline and print the ratio. */
-async function printBaseline(baselineFile: string, summary: RunSummary): Promise<void> {
+/**
+ * Compare a run summary against a saved baseline for the given scenario name
+ * and print the result. Handles a missing file, a malformed file, a scenario
+ * mismatch, and an invalid totalTokens without throwing.
+ */
+async function printBaseline(
+  name: string,
+  baselineFile: string,
+  summary: RunSummary,
+): Promise<void> {
   const file = Bun.file(baselineFile);
   const exists = await file.exists();
   if (!exists) {
     console.log(`\nBaseline file not found: ${baselineFile}. Skipping comparison.`);
     return;
   }
-  const baseline = (await file.json()) as BaselineReport;
-  const ratio = summary.totalTokens / baseline.totalTokens;
+  let baseline: BaselineReport;
+  try {
+    baseline = (await file.json()) as BaselineReport;
+  } catch {
+    console.log("\nmalformed baseline, skipping");
+    return;
+  }
   console.log(`\nBaseline comparison (${baselineFile}):`);
-  console.log(`  Baseline total tokens : ${baseline.totalTokens}`);
+  console.log(`  Baseline scenario      : ${baseline.scenario}`);
+  console.log(`  Baseline total tokens  : ${baseline.totalTokens}`);
   console.log(`  This run total tokens  : ${summary.totalTokens}`);
-  console.log(`  Ratio (this / baseline): ${ratio.toFixed(3)}`);
+  const ratio = compareToBaseline(name, summary, baseline);
+  if (ratio === null) {
+    console.log(
+      `  Scenario mismatch: baseline is "${baseline.scenario}", this run is "${name}". Skipping ratio.`,
+    );
+  } else if (ratio === "no valid baseline total") {
+    console.log(`  no valid baseline total`);
+  } else {
+    console.log(`  Ratio (this / baseline): ${ratio}`);
+  }
 }
 
 /** Parse the CLI arguments. */
@@ -245,7 +317,7 @@ async function main(): Promise<void> {
     printSummary(name, summary);
 
     if (baselineFile) {
-      await printBaseline(baselineFile, summary);
+      await printBaseline(name, baselineFile, summary);
     }
 
     reports.push({
@@ -263,5 +335,10 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
-  await main();
+  try {
+    await main();
+  } catch (err: unknown) {
+    console.error("Benchmark failed:", err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
 }

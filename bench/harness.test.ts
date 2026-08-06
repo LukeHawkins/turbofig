@@ -4,7 +4,15 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { estimateTokens, jobTokens, type RunRecord, runScenario, summarizeRun } from "./harness.js";
+import type { BaselineReport, RunSummary } from "./harness.js";
+import {
+  compareToBaseline,
+  estimateTokens,
+  jobTokens,
+  type RunRecord,
+  runScenario,
+  summarizeRun,
+} from "./harness.js";
 import type { BridgeJob, Scenario } from "./scenarios.js";
 
 // ---------------------------------------------------------------------------
@@ -162,5 +170,68 @@ describe("runScenario", () => {
     expect(records[0].wallMs).toBe(42);
     expect(records[1].wallMs).toBe(42);
     expect(summary.wallMs).toBe(84);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compareToBaseline
+// ---------------------------------------------------------------------------
+
+describe("compareToBaseline", () => {
+  const summary: RunSummary = {
+    tokensIn: 60,
+    tokensOut: 40,
+    totalTokens: 100,
+    wallMs: 500,
+    count: 2,
+  };
+
+  it("returns ratio string when scenario matches and totalTokens is positive", () => {
+    const baseline: BaselineReport = { scenario: "perf", totalTokens: 200 };
+    const result = compareToBaseline("perf", summary, baseline);
+    // 100 / 200 = 0.500
+    expect(result).toBe("0.500");
+  });
+
+  it("returns null when scenario name does not match baseline scenario", () => {
+    const baseline: BaselineReport = { scenario: "other", totalTokens: 200 };
+    const result = compareToBaseline("perf", summary, baseline);
+    expect(result).toBeNull();
+  });
+
+  it("returns 'no valid baseline total' when totalTokens is zero", () => {
+    const baseline: BaselineReport = { scenario: "perf", totalTokens: 0 };
+    const result = compareToBaseline("perf", summary, baseline);
+    expect(result).toBe("no valid baseline total");
+  });
+
+  it("returns 'no valid baseline total' when totalTokens is negative", () => {
+    const baseline: BaselineReport = { scenario: "perf", totalTokens: -10 };
+    const result = compareToBaseline("perf", summary, baseline);
+    expect(result).toBe("no valid baseline total");
+  });
+
+  it("returns 'no valid baseline total' when totalTokens is NaN", () => {
+    // Force a NaN value to simulate a corrupt baseline field.
+    const baseline = { scenario: "perf", totalTokens: Number.NaN } as BaselineReport;
+    const result = compareToBaseline("perf", summary, baseline);
+    expect(result).toBe("no valid baseline total");
+  });
+
+  it("does not divide when totalTokens is missing (not a number)", () => {
+    // Simulate a baseline file missing the field entirely.
+    const baseline = { scenario: "perf", totalTokens: undefined } as unknown as BaselineReport;
+    const result = compareToBaseline("perf", summary, baseline);
+    expect(result).toBe("no valid baseline total");
+  });
+
+  it("ratio value is never NaN or Infinity", () => {
+    const baseline: BaselineReport = { scenario: "perf", totalTokens: 50 };
+    const result = compareToBaseline("perf", summary, baseline);
+    // 100 / 50 = 2.000
+    expect(result).toBe("2.000");
+    const asNumber = Number(result);
+    expect(Number.isFinite(asNumber)).toBe(true);
+    expect(Number.isNaN(asNumber)).toBe(false);
   });
 });
