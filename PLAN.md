@@ -192,6 +192,25 @@ Goal: a clean, good-looking plugin panel. Clear connection state.
 - [ ] Live activity log + a plugin-version / stale-warning indicator
 - [ ] Visual polish: on-brand, tidy, no clutter
 - [ ] Configurable daemon port: a port field in the plugin UI so the plugin connects to whatever `TURBOFIG_WS_PORT` the daemon uses (default 18847). Widen the manifest `allowedDomains` to cover localhost on the configured port, within Figma's static-whitelist constraint.
+- [ ] Clarkson easter egg: a small ASCII art of Jeremy Clarkson going very fast, rendered in a `<pre>` at the bottom of the panel footer. The art must be obviously him: hair swept back, mouth wide open, open-top car, speed lines. Use a fixed `6px` monospace so it stays tight. No tooltip. No explanation. The joke is self-evident.
+
+  ```
+      _  ))))(((  _
+     ( ~~ hair ~~ )    <- wind-swept, voluminous
+    /  '  o   o  ' \
+   |    ---------    |
+   |   /  AAAAA  \   |   P O W E R ! !
+   |  |  mouth   |  |
+   |   \_________/   |
+    \_______________/
+          ||||
+    _______|_|_______
+   /                 \_________________
+  |  T U R B O F I G                  |
+   \___________________________________/
+    ()                             ()
+        > > > > > > > > > > > > >
+  ```
 
 ## Phase 10: Packaging & distribution (pure export, easy updates)
 
@@ -228,6 +247,9 @@ Goal: robust, testable, cheap to maintain.
 - [ ] Benchmark regression guard in CI (token + speed budgets from the Phase 7 gate)
 - [ ] Long-run resilience test: start a large job, kill the daemon mid-run, confirm `KeepAlive` restarts it and the job resumes with no duplication and no lost completed work
 - [ ] `CONTRIBUTING.md` + a maintenance runbook
+- [ ] Make the benchmark regression guard hard-fail: the CI step (`bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json`, added 2026-08-06) only reports the ratio. Add a `--fail-threshold` flag to the harness and a `deck20` baseline so both scenarios gate CI, not just log.
+- [ ] Enable `clippy::expect_used` and `clippy::unwrap_used` (warn) and remove the request-path `.expect`/`.unwrap` they flag. Deferred from the 2026-08-06 audit because the daemon has many such calls; it is always-on and must not panic on the hot path.
+- [ ] Daemon LOW-priority robustness (2026-08-06 audit): bound the per-connection write channel so a stalled plugin socket cannot grow memory without limit; cap or clean the screenshot outbox PNGs (they accumulate on a long-lived daemon); cache the wrapped profile prefix per id instead of cloning the full profile source on every `execute`; reconsider clearing a good session pairing when an explicit `fileKey` is not connected.
 
 <!--
 Add phases as the project grows. Each item:
