@@ -373,11 +373,20 @@ export function createTf(figma: PluginAPI) {
     chunk,
 
     /**
+     * Returns the top-left grid position of a slide at `index`.
+     * Use this to compute positions without creating nodes.
+     * Throws a RangeError when cols is less than 1 or index is negative.
+     */
+    slidePosition,
+
+    /**
      * Creates a slide frame. Default size is 1920x1080 with name "Slide".
      * Accepts all FrameOpts fields. Provide width/height to override the defaults.
      */
     slide(opts: SlideOpts = {}): FrameNode {
-      return tf.frame({ name: "Slide", width: 1920, height: 1080, ...opts });
+      // Default to a plain frame so slide children keep free x/y positions.
+      // Auto-layout would override child positions. The caller can still set direction.
+      return tf.frame({ name: "Slide", width: 1920, height: 1080, direction: "NONE", ...opts });
     },
 
     /**

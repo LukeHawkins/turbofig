@@ -232,6 +232,7 @@ describe("createTf", () => {
       "skipInvisible",
       "findAll",
       "chunk",
+      "slidePosition",
       "slide",
       "deck",
       "instance",
@@ -255,6 +256,13 @@ describe("createTf", () => {
 
   test("tf.chunk delegates to the chunk pure function", () => {
     expect(tf.chunk([1, 2, 3], 2)).toEqual([[1, 2], [3]]);
+  });
+
+  test("tf.slidePosition delegates to the slidePosition pure function", () => {
+    expect(tf.slidePosition(1, { cols: 1, width: 1920, height: 1080, gap: 80 })).toEqual({
+      x: 0,
+      y: 1160,
+    });
   });
 });
 
@@ -450,6 +458,8 @@ describe("tf.slide", () => {
     expect(node.width).toBe(1920);
     expect(node.height).toBe(1080);
     expect(node.name).toBe("Slide");
+    // A slide defaults to a plain frame so children keep free x/y positions.
+    expect(node.layoutMode).toBe("NONE");
   });
 
   test("applies a name override from opts", () => {
