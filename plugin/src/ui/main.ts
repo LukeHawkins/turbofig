@@ -74,12 +74,12 @@ function updateFileDisplay(): void {
   if (!fileLineEl) return;
   if (latestFileInfo) {
     fileLineEl.textContent = formatFileLine(latestFileInfo.fileKey, latestFileInfo.name);
-    const { key, hint } = formatFileKeyHint(latestFileInfo.fileKey);
+    const { key, hint, rowDisplay, hintDisplay } = formatFileKeyHint(latestFileInfo.fileKey);
     if (filekeyValueEl) filekeyValueEl.textContent = key;
-    if (filekeyRowEl) filekeyRowEl.style.display = key ? "flex" : "none";
+    if (filekeyRowEl) filekeyRowEl.style.display = rowDisplay;
     if (filekeyHintEl) {
       filekeyHintEl.textContent = hint;
-      filekeyHintEl.style.display = hint ? "block" : "none";
+      filekeyHintEl.style.display = hintDisplay;
     }
   } else {
     fileLineEl.textContent = "No file";

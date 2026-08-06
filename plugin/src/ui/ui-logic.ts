@@ -180,18 +180,24 @@ export interface FileKeyDisplay {
   key: string;
   /** Short hint for targeting this file from Claude. Empty when no file is active. */
   hint: string;
+  /** CSS display value for the fileKey row: "flex" when a file is active, else "none". */
+  rowDisplay: "flex" | "none";
+  /** CSS display value for the hint: "block" when a file is active, else "none". */
+  hintDisplay: "block" | "none";
 }
 
 /**
- * Returns the full fileKey and a short targeting hint for Claude.
- * Returns empty strings when fileKey is empty (no active file).
- * The key is never truncated.
+ * Returns the full fileKey, a short targeting hint, and the CSS display values
+ * for the row and hint. Returns empty strings and "none" when fileKey is empty
+ * (no active file). The key is never truncated.
  */
 export function formatFileKeyHint(fileKey: string): FileKeyDisplay {
-  if (!fileKey) return { key: "", hint: "" };
+  if (!fileKey) return { key: "", hint: "", rowDisplay: "none", hintDisplay: "none" };
   return {
     key: fileKey,
     hint: "Target this file from Claude using its fileKey.",
+    rowDisplay: "flex",
+    hintDisplay: "block",
   };
 }
 

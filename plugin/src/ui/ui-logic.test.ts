@@ -482,6 +482,18 @@ describe("formatFileKeyHint", () => {
     expect(r.hint).toBe("");
   });
 
+  test("hides the row and hint when fileKey is empty", () => {
+    const r = formatFileKeyHint("");
+    expect(r.rowDisplay).toBe("none");
+    expect(r.hintDisplay).toBe("none");
+  });
+
+  test("shows the row and hint when a fileKey is present", () => {
+    const r = formatFileKeyHint("ABCDEF1234567890");
+    expect(r.rowDisplay).toBe("flex");
+    expect(r.hintDisplay).toBe("block");
+  });
+
   test("returns the full fileKey without truncation", () => {
     const key = "ABCDEF1234567890";
     const r = formatFileKeyHint(key);
