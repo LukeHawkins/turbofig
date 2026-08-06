@@ -179,13 +179,31 @@ export function serializeNode(
   const clampedDepth = Math.min(depth, MAX_SELECTION_DEPTH);
   const result: SelectionItem & Record<string, unknown> = { ...toSelectionItem(node) };
 
-  // Copy requested extra fields. Skip functions and undefined values.
+  // Copy requested extra fields. Skip children (owned by the depth mechanism),
+  // functions, undefined values, and values that are not JSON-safe (e.g. Figma
+  // node proxies, which are not structured-cloneable and would throw on postMessage).
   if (fields) {
     for (const field of fields) {
-      // A missing field reads as undefined, so the guard below skips it.
+      // The depth mechanism owns children; never let fields bypass the depth cap.
+      if (field === "children") continue;
       const val = node[field];
-      if (val !== undefined && typeof val !== "function") {
+      if (val === undefined || typeof val === "function") continue;
+      if (
+        val === null ||
+        typeof val === "boolean" ||
+        typeof val === "number" ||
+        typeof val === "string"
+      ) {
+        // Primitives are always JSON-safe; copy directly.
         result[field] = val;
+      } else {
+        // Object or array: verify JSON-safety before copying.
+        // Non-cloneable proxies and circular references are caught and dropped.
+        try {
+          result[field] = JSON.parse(JSON.stringify(val));
+        } catch {
+          // Not JSON-safe: skip silently.
+        }
       }
     }
   }

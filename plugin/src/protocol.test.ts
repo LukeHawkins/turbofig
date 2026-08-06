@@ -382,6 +382,32 @@ describe("serializeNode", () => {
     expect("children" in result).toBe(false);
   });
 
+  test("fields: ['children'] at depth 0 does not add a children key (reserved)", () => {
+    // children is owned by the depth mechanism; passing it in fields must not bypass the cap.
+    const child = { id: "1:2", name: "Child", type: "TEXT", x: 0, y: 0, width: 10, height: 10 };
+    const node = { ...baseNode, children: [child] };
+    const result = serializeNode(node, ["children"], 0);
+    expect("children" in result).toBe(false);
+  });
+
+  test("a plain JSON-safe object field is copied when requested", () => {
+    // A plain fills array is JSON-safe and must be included when listed in fields.
+    const fills = [{ type: "SOLID", color: { r: 1, g: 0, b: 0 } }];
+    const node = { ...baseNode, fills };
+    const result = serializeNode(node, ["fills"], 0);
+    expect(result.fills).toEqual(fills);
+  });
+
+  test("a non-JSON-safe field is skipped and serializeNode does not throw", () => {
+    // A circular reference is not JSON-safe; the field must be silently dropped.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const node = { ...baseNode, proxy: circular };
+    expect(() => serializeNode(node, ["proxy"], 0)).not.toThrow();
+    const result = serializeNode(node, ["proxy"], 0);
+    expect("proxy" in result).toBe(false);
+  });
+
   test("depth clamps at MAX_SELECTION_DEPTH (pass 99, assert it stops at the cap)", () => {
     // Build a node tree that is MAX_SELECTION_DEPTH + 2 levels deep.
     let deepest: Record<string, unknown> = {
