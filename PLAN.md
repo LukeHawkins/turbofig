@@ -165,16 +165,21 @@ Goal: the agent workflow that turns a brief into real design, cheaply and durabl
 - [ ] Verify: main-context token use for the run stays low (OPEN: needs a live metered run; the self-baseline in `DECISIONS.md` #20 records transport tokens, not the orchestrator context)
 - [x] Ship gate (self-baseline, console-mcp comparison dropped): the harness records turbofig's own token budget per scenario as the reference, written to `DECISIONS.md` #20. The live wall-time and design-coherence half of the ship decision folds into the two OPEN verifies above.
 
-## Phase 8: Anti-slop baseline + trainability
+## Phase 8: Anti-slop baseline + swappable taste profiles + trainability
 
-Goal: good taste out of the box; trainable on top; redistributable without private context.
+Goal: good taste out of the box; swappable per file; trainable on top; redistributable without private context.
 
-- [ ] Baseline taste pack (generic): spacing scale, type scale, grid, contrast/AA, hierarchy, restraint rules
-- [ ] Anti-ai-slop guardrails: avoid the common tells (centered everything, generic gradients, emoji bullets, dead whitespace)
-- [ ] Objective taste checks the critic scores against: grid adherence, type-scale conformance, contrast/AA pass, spacing rhythm; not eyeball alone
-- [ ] Loadable brand/project packs (design tokens, components, rules) bound PER SESSION (keyed like the routing registry), so concurrent files can use different brands at once
-- [ ] Clean separation: the public build ships only the generic baseline, never Luke's private packs
-- [ ] Verify: switch between two brand packs cleanly; generic build carries no private data
+**Spike-driven design (2026-08-06, see `DECISIONS.md` #21):** taste ships as swappable "profiles", not one hardcoded baseline. Three built-ins: `impeccable` (default, anti-slop rules adapted from the Apache-2.0 `pbakaus/impeccable` skill, attributed), `editorial` (art-directed), and `minimal` (minimal style plus a core anti-slop floor from both other profiles). A user may disable the profile or supply a custom one. The choice is per FILE: it persists in the document via `figma.root.setPluginData` and travels with the file. One daemon serves N files, each running its own profile via the `conn_id`-keyed registry. The tool surface stays at 4; `profileId` is a new field on `FILE_INFO` and the `turbofig_status` return, never a new tool. The plugin selector is functional in Phase 8 and polished in Phase 9.
+
+- [ ] Taste profile schema + default `impeccable`: author `skills/profiles/impeccable.js` as a pure JS `taste` constant (spacing scale, type scale, grid, contrast/AA, hierarchy, restraint) plus the anti-slop blocklist (centered-everything, generic gradients, emoji bullets, dead whitespace, gray 1px borders on everything, pure black, three-card row). Attribute impeccable. Test: `bun test` evaluates it in a mock context and asserts the `taste` shape and the core rules.
+- [ ] `editorial` + `minimal` profiles: `skills/profiles/editorial.js` (asymmetry, density, expressive type) and `skills/profiles/minimal.js` (genuinely minimal output that still carries the shared anti-slop floor). Test: `bun test` evaluates both, asserts distinct rule sets, and confirms `minimal` keeps the shared anti-slop floor.
+- [ ] Daemon per-connection profile: add `profile_id` to `PluginConn`; accept and store it in `set_connection_info` from `FILE_INFO`; add `profileId` to the `run_status` return. Test: registry set/get of `profile_id`; status returns it.
+- [ ] Daemon profile injection: `run_execute` prepends the active connection's profile JS beside the `tf` helpers and the deprecation preamble (built-in map first, then a `TURBOFIG_PROFILES_DIR` scan); an unknown id falls back to `impeccable` with a `warning`. Test: an execute under a named profile sees the injected `taste` constant; an unknown id falls back and warns.
+- [ ] Plugin per-file persistence: read `figma.root.getPluginData("turbofig:profile")` on connect and include `profileId` in `FILE_INFO`; handle `SET_PROFILE` (write via `setPluginData`, then re-emit `FILE_INFO`). Test: `protocol.test.ts` asserts `FILE_INFO` carries `profileId`; a `SET_PROFILE` round-trip.
+- [ ] Plugin functional profile selector: a plain dropdown (impeccable / editorial / minimal / none + a custom text field) that posts `SET_PROFILE`. Functional now; Phase 9 polishes it. Test: `bun test` round-trip `SET_PROFILE` -> `setPluginData` mock -> `FILE_INFO` re-emit.
+- [ ] Custom profiles + clean separation: the daemon scans `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles/`) at startup and registers `.js` files by stem; the public build ships only the three built-ins, never Luke's private packs. Test: a temp-dir custom profile is found by id; assert the repo carries no private packs.
+- [ ] Objective taste checks in the critic: `design.md` reads `profileId` from `turbofig_status` at job start and feeds the profile's constraints to the builder and critic subagents; the critic scores objective checks (grid adherence, type-scale conformance, contrast/AA pass, spacing rhythm), not eyeball alone.
+- [ ] Verify: two open files each run a different profile cleanly (each keeps its own across reconnect); disable the profile on one; load a custom one; the public build carries no private data.
 
 ## Phase 9: Slick Figma plugin UI
 
