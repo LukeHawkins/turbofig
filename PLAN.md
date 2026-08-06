@@ -143,7 +143,7 @@ Goal: reliable, fast Figma craft as a compact JS namespace injected into the eva
 - [x] Deck/slide scaffolds; component instantiation; variable read/write; text + font handling; export
 - [x] Async-only API surface (all `*Async` variants) for `documentAccess: dynamic-page`
 - [x] Compact API reference doc (one file) so the model learns the helpers cheaply
-- [ ] Verify: build a multi-slide deck in a few batched calls using only helpers
+- [x] Verify: build a multi-slide deck in a few batched calls using only helpers
 
 ## Phase 7: Design-worker orchestration + the binding gate (the senior designer)
 
