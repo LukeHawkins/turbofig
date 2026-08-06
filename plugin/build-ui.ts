@@ -13,12 +13,21 @@ const scriptDir = import.meta.dir;
 // Ensure the output directory exists.
 mkdirSync(join(scriptDir, "dist"), { recursive: true });
 
+// Read the plugin version from package.json to inject at build time.
+const pkgPath = join(scriptDir, "package.json");
+const pkg = JSON.parse(await Bun.file(pkgPath).text()) as { version: string };
+const pluginVersion = pkg.version;
+
 // Bundle the UI entry point as an IIFE for inline use in a <script> tag.
+// __PLUGIN_VERSION__ is replaced with the literal version string at build time.
 const result = await Bun.build({
   entrypoints: [join(scriptDir, "src/ui/main.ts")],
   target: "browser",
   format: "iife",
   minify: false,
+  define: {
+    __PLUGIN_VERSION__: JSON.stringify(pluginVersion),
+  },
 });
 
 if (!result.success) {

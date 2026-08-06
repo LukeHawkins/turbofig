@@ -7,12 +7,18 @@
 import type { FileInfoMessage } from "../protocol";
 import { backoffDelayMs } from "../protocol";
 import {
+  appendLog,
   connStateFromEvent,
   formatFileLine,
+  formatLogEntry,
   formatPairing,
   formatSession,
   profileToSelectValue,
+  staleWarning,
 } from "./ui-logic";
+
+/** Build-time constant injected by build-ui.ts via Bun.build define. */
+declare const __PLUGIN_VERSION__: string;
 
 const WS_URL = "ws://localhost:18847";
 
@@ -21,16 +27,23 @@ const connStatusEl = document.getElementById("conn-status") as HTMLElement;
 const fileLineEl = document.getElementById("file-line") as HTMLElement;
 const sessionLineEl = document.getElementById("session-line") as HTMLElement;
 const pairingLineEl = document.getElementById("pairing-line") as HTMLElement;
+const pluginVersionEl = document.getElementById("plugin-version") as HTMLElement;
+const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
+const activityLogEl = document.getElementById("activity-log") as HTMLElement;
 const profileSel = document.getElementById("profile") as HTMLSelectElement;
 const customInput = document.getElementById("customProfile") as HTMLInputElement;
+
+/** Maximum number of entries kept in the activity log. */
+const LOG_CAP = 20;
 
 // Runtime state.
 let latestFileInfo: FileInfoMessage | null = null;
 let attempt = 0;
 let ws: WebSocket | null = null;
-/** Daemon version received on WELCOME. Reserved for a future stale-check feature. */
-let _daemonVersion = "";
+/** Daemon version received on WELCOME. Used for the stale-version check. */
+let daemonVersion = "";
 let activeSessionId = "";
+let activityLog: string[] = [];
 
 /** Updates the connection status element from a WS lifecycle event. */
 function setConnStatus(event: "open" | "close" | "error" | "attempt"): void {
@@ -56,6 +69,19 @@ function updateSessionDisplay(): void {
   if (sessionLineEl) {
     sessionLineEl.textContent = formatSession(activeSessionId);
   }
+}
+
+/** Re-renders the activity log container and scrolls to the newest entry at the bottom. */
+function renderActivityLog(): void {
+  if (!activityLogEl) return;
+  activityLogEl.textContent = "";
+  for (const entry of activityLog) {
+    const row = document.createElement("div");
+    row.className = "log-entry";
+    row.textContent = entry;
+    activityLogEl.appendChild(row);
+  }
+  activityLogEl.scrollTop = activityLogEl.scrollHeight;
 }
 
 /** Refreshes the pairing display from the active session id and file name. */
@@ -137,9 +163,14 @@ function connect(): void {
     }
     /* The UI selector owns SET_PROFILE. Drop it if the daemon sends it. */
     if (parsed.type === "SET_PROFILE") return;
-    /* Consume WELCOME: store the daemon version. Do not forward to main thread. */
+    /* Consume WELCOME: store the daemon version and check for a stale mismatch. */
     if (parsed.type === "WELCOME") {
-      _daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
+      daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
+      const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
+      if (staleWarningEl) {
+        staleWarningEl.textContent = warning;
+        staleWarningEl.style.display = warning ? "block" : "none";
+      }
       return;
     }
     /* Read the active session id from any request message that carries it. */
@@ -147,6 +178,20 @@ function connect(): void {
       activeSessionId = parsed.sessionId;
       updateSessionDisplay();
       updatePairingDisplay();
+    }
+    /* Append request types to the activity log. */
+    if (
+      parsed.type === "STATUS" ||
+      parsed.type === "EXECUTE" ||
+      parsed.type === "GET_SELECTION" ||
+      parsed.type === "SCREENSHOT"
+    ) {
+      activityLog = appendLog(
+        activityLog,
+        formatLogEntry(parsed.type as string, Date.now()),
+        LOG_CAP,
+      );
+      renderActivityLog();
     }
     parent.postMessage({ pluginMessage: parsed }, "*");
   };
@@ -191,5 +236,8 @@ window.onmessage = (event: MessageEvent) => {
     ws.send(JSON.stringify(m));
   }
 };
+
+// Show the plugin version immediately on load.
+if (pluginVersionEl) pluginVersionEl.textContent = __PLUGIN_VERSION__;
 
 connect();

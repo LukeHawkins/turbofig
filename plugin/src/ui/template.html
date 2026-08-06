@@ -56,6 +56,39 @@
       #pairing-line.unpaired {
         color: #6e7781;
       }
+      #stale-warning {
+        background: #fff8c5;
+        border: 1px solid #d4a017;
+        border-radius: 4px;
+        padding: 5px 8px;
+        font-size: 11px;
+        color: #7d4e00;
+        margin: 0 0 6px;
+      }
+      #activity-section {
+        margin: 10px 0;
+      }
+      #activity-section h2 {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #555;
+        margin: 0 0 4px;
+      }
+      #activity-log {
+        height: 80px;
+        overflow-y: auto;
+        background: #f6f8fa;
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-family: monospace;
+        font-size: 11px;
+        color: #444;
+      }
+      .log-entry {
+        line-height: 1.6;
+      }
       #profile-row {
         margin-top: 12px;
       }
@@ -80,12 +113,18 @@
   </head>
   <body>
     <h1>Turbofig</h1>
+    <p class="info-row">Plugin: v<span id="plugin-version"></span></p>
+    <div id="stale-warning" role="alert" style="display:none"></div>
     <p class="info-row">Status: <span id="conn-status">Connecting...</span></p>
     <p class="info-row">File: <span id="file-line">No file</span></p>
     <p class="info-row">Session: <span id="session-line">No active session</span></p>
     <section id="pairing-section" aria-label="Pairing">
       <h2>Pairing</h2>
       <p id="pairing-line" class="unpaired">Not paired — no Claude session is driving this file yet.</p>
+    </section>
+    <section id="activity-section" aria-label="Activity">
+      <h2>Activity</h2>
+      <div id="activity-log" role="log" aria-live="polite"></div>
     </section>
     <div id="profile-row">
       <label for="profile">Taste profile</label>

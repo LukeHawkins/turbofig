@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  appendLog,
   connStateFromEvent,
   formatFileLine,
+  formatLogEntry,
   formatPairing,
   formatSession,
+  isDaemonStale,
   KNOWN_PROFILES,
   profileToSelectValue,
+  staleWarning,
 } from "./ui-logic";
 
 describe("connStateFromEvent", () => {
@@ -228,5 +232,128 @@ describe("formatPairing", () => {
     const r = formatPairing("abcdefghijklmnop", "My Design");
     expect(r.label).toContain("abcdefghijkl...");
     expect(r.label).toContain("My Design");
+  });
+});
+
+describe("appendLog", () => {
+  test("appends an entry to an empty log", () => {
+    const result = appendLog([], "hello", 10);
+    expect(result).toEqual(["hello"]);
+  });
+
+  test("appends to an existing log without mutating the input", () => {
+    const original = ["a", "b"];
+    const result = appendLog(original, "c", 10);
+    expect(result).toEqual(["a", "b", "c"]);
+    expect(original).toEqual(["a", "b"]);
+  });
+
+  test("does not mutate the input array", () => {
+    const original = ["x"];
+    appendLog(original, "y", 5);
+    expect(original).toHaveLength(1);
+  });
+
+  test("trims to the last cap items when the log exceeds cap", () => {
+    const log = ["a", "b", "c", "d", "e"];
+    const result = appendLog(log, "f", 3);
+    expect(result).toEqual(["d", "e", "f"]);
+  });
+
+  test("returns the full log when its length is below cap", () => {
+    const log = ["a", "b"];
+    const result = appendLog(log, "c", 10);
+    expect(result).toHaveLength(3);
+  });
+
+  test("cap of 1 keeps only the newest entry", () => {
+    const result = appendLog(["old"], "new", 1);
+    expect(result).toEqual(["new"]);
+  });
+
+  test("works with number entries", () => {
+    const result = appendLog([1, 2, 3], 4, 3);
+    expect(result).toEqual([2, 3, 4]);
+  });
+});
+
+describe("formatLogEntry", () => {
+  test("includes the request type in the output", () => {
+    const result = formatLogEntry("EXECUTE", 0);
+    expect(result).toContain("EXECUTE");
+  });
+
+  test("is deterministic for a fixed timestamp", () => {
+    const ts = 1700000000000;
+    expect(formatLogEntry("STATUS", ts)).toBe(formatLogEntry("STATUS", ts));
+  });
+
+  test("formats midnight UTC as 00:00:00", () => {
+    // 2024-01-01T00:00:00.000Z
+    const ts = new Date("2024-01-01T00:00:00.000Z").getTime();
+    const result = formatLogEntry("STATUS", ts);
+    expect(result.startsWith("00:00:00")).toBe(true);
+  });
+
+  test("formats 14:05:02 UTC correctly", () => {
+    const ts = new Date("2024-06-15T14:05:02.000Z").getTime();
+    const result = formatLogEntry("EXECUTE", ts);
+    expect(result).toBe("14:05:02 EXECUTE");
+  });
+
+  test("includes leading zeros for single-digit hours and minutes", () => {
+    const ts = new Date("2024-01-01T01:02:03.000Z").getTime();
+    const result = formatLogEntry("SCREENSHOT", ts);
+    expect(result).toBe("01:02:03 SCREENSHOT");
+  });
+});
+
+describe("isDaemonStale", () => {
+  test("equal versions are not stale", () => {
+    expect(isDaemonStale("0.1.0", "0.1.0")).toBe(false);
+  });
+
+  test("differing versions are stale", () => {
+    expect(isDaemonStale("0.1.0", "0.2.0")).toBe(true);
+  });
+
+  test("empty plugin version is not stale", () => {
+    expect(isDaemonStale("", "0.1.0")).toBe(false);
+  });
+
+  test("empty daemon version is not stale", () => {
+    expect(isDaemonStale("0.1.0", "")).toBe(false);
+  });
+
+  test("both empty is not stale", () => {
+    expect(isDaemonStale("", "")).toBe(false);
+  });
+
+  test("patch version difference is stale", () => {
+    expect(isDaemonStale("0.1.0", "0.1.1")).toBe(true);
+  });
+});
+
+describe("staleWarning", () => {
+  test("returns empty string when versions are equal", () => {
+    expect(staleWarning("0.1.0", "0.1.0")).toBe("");
+  });
+
+  test("returns empty string when plugin version is empty", () => {
+    expect(staleWarning("", "0.1.0")).toBe("");
+  });
+
+  test("returns empty string when daemon version is empty", () => {
+    expect(staleWarning("0.1.0", "")).toBe("");
+  });
+
+  test("returns a non-empty string when versions differ", () => {
+    expect(staleWarning("0.1.0", "0.2.0").length).toBeGreaterThan(0);
+  });
+
+  test("warning includes both version strings", () => {
+    const w = staleWarning("0.1.0", "0.2.0");
+    expect(w).toContain("0.1.0");
+    expect(w).toContain("0.2.0");
   });
 });

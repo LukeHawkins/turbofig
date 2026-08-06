@@ -72,6 +72,48 @@ export function formatSession(sessionId: string): string {
   return sessionId;
 }
 
+/**
+ * Returns a new array with entry appended and trimmed to the last cap items.
+ * The input array is never mutated.
+ * cap must be >= 1; a cap of 0 always returns an empty array.
+ */
+export function appendLog<T>(log: T[], entry: T, cap: number): T[] {
+  const next = [...log, entry];
+  if (next.length > cap) return next.slice(next.length - cap);
+  return next;
+}
+
+/**
+ * Returns a compact one-line label for a daemon request.
+ * Time is expressed in UTC so the output is deterministic for a fixed ts.
+ * Format: HH:MM:SS TYPE (e.g. "14:05:02 EXECUTE").
+ */
+export function formatLogEntry(type: string, ts: number): string {
+  const d = new Date(ts);
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss} ${type}`;
+}
+
+/**
+ * Returns true only when both version strings are non-empty and differ.
+ * Either string being empty means the daemon version is unknown: not stale.
+ */
+export function isDaemonStale(pluginVersion: string, daemonVersion: string): boolean {
+  if (!pluginVersion || !daemonVersion) return false;
+  return pluginVersion !== daemonVersion;
+}
+
+/**
+ * Returns a human-readable stale warning when plugin and daemon versions differ.
+ * Returns an empty string when versions match or either is unknown.
+ */
+export function staleWarning(pluginVersion: string, daemonVersion: string): string {
+  if (!isDaemonStale(pluginVersion, daemonVersion)) return "";
+  return `Version mismatch: plugin ${pluginVersion}, daemon ${daemonVersion}. Reload the plugin.`;
+}
+
 /** Result of a pairing computation: whether a Claude session drives this file, and a label. */
 export interface PairingResult {
   paired: boolean;
