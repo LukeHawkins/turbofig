@@ -29,7 +29,7 @@
 | `tf.setVariableValue` | `(variable, modeId, value)` | `void` | no | Set a variable's value for the given mode id. |
 | `tf.readVariableValue` | `(variable, modeId)` | `VariableValue \| undefined` | no | Read a variable's value for the given mode id. Returns undefined when the mode does not exist. |
 | `tf.export` | `(node, settings?)` | `Promise<Uint8Array>` | **yes** | Export a node as an image. Defaults to PNG at 1x scale. Pass `ExportSettings` to control format and constraints. |
-| `slidePosition` | `(index, opts)` | `{x, y}` | no | Pure function. Return the top-left grid position of a slide at `index`. Throws `RangeError` when `cols < 1` or `index < 0`. |
+| `tf.slidePosition` | `(index, opts)` | `{x, y}` | no | Return the top-left grid position of a slide at `index`. Throws `RangeError` when `cols < 1` or `index < 0`. |
 
 ### SlideOpts
 
@@ -107,13 +107,14 @@ Use `tf.deck` to build a set of presentation slides in one call. Each slide is a
 
 ```js
 // Build a 3-slide deck in a 2-column grid.
+// Preload the fonts once before tf.deck, not inside the build callback.
+await tf.loadFonts([{ family: "Inter", style: "Bold" }]);
 const slides = await tf.deck({
   parent: figma.currentPage,
   count: 3,
   cols: 2,
   gap: 80,
   build: async (slide, i) => {
-    await tf.loadFonts([{ family: "Inter", style: "Bold" }]);
     const title = await tf.text({ text: `Slide ${i + 1}`, size: 48, style: "Bold", color: "#FFFFFF" });
     tf.append(slide, title);
   },
@@ -122,11 +123,10 @@ tf.commit("deck");
 return slides.map((s) => s.id);
 ```
 
-Use `slidePosition` when you need to compute grid positions without creating nodes:
+Use `tf.slidePosition` when you need to compute grid positions without creating nodes:
 
 ```js
-import { slidePosition } from "./helpers";
-const pos = slidePosition(4, { cols: 3, width: 1920, height: 1080, gap: 80 });
+const pos = tf.slidePosition(4, { cols: 3, width: 1920, height: 1080, gap: 80 });
 // pos -> { x: 2000, y: 1160 }
 ```
 
