@@ -90,7 +90,7 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
 
     // The watcher callback runs on its own thread. It signals the async loop
     // through an unbounded channel. A signal means "something changed, rescan".
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if res.is_ok() {
             let _ = tx.send(());
@@ -101,29 +101,46 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
         .watch(&inbox, RecursiveMode::NonRecursive)
         .map_err(watcher_io_error)?;
 
+    run_bridge_loop(rx, &inbox, &outbox, &state).await
+}
+
+/// Run the inbox event loop.
+///
+/// Receives filesystem-event signals on `rx`. Returns `Err` when the channel
+/// closes (the watcher thread dropped the sender). A healthy loop runs forever.
+///
+/// Extracted from `serve_bridge` so the watcher-close error path can be tested
+/// without a real `notify` watcher.
+async fn run_bridge_loop(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    inbox: &Path,
+    outbox: &Path,
+    state: &Arc<AppState>,
+) -> std::io::Result<()> {
     let mut backstop = tokio::time::interval(BACKSTOP);
     let mut first_seen: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
 
     // Scan once at startup for any job left in inbox before the watch began.
-    scan_and_service(&inbox, &outbox, &state, &mut first_seen).await;
+    scan_and_service(inbox, outbox, state, &mut first_seen).await;
 
     loop {
         // Wake on a filesystem event or the backstop tick, whichever is first.
         tokio::select! {
             msg = rx.recv() => {
                 if msg.is_none() {
-                    eprintln!("Turbofig bridge: watcher channel closed");
-                    break;
+                    // The watcher thread dropped the sender. The bridge is now
+                    // deaf to inbox events. Return Err so the spawn wrapper in
+                    // main calls process::exit and launchd KeepAlive restarts.
+                    return Err(std::io::Error::other("bridge watcher channel closed"));
                 }
             }
             _ = backstop.tick() => {}
         }
         // Coalesce a burst of events into one scan.
         while rx.try_recv().is_ok() {}
-        scan_and_service(&inbox, &outbox, &state, &mut first_seen).await;
+        scan_and_service(inbox, outbox, state, &mut first_seen).await;
     }
-    Ok(())
 }
 
 /// Convert a `notify` error into an `io::Error` so `serve_bridge` can use `?`.
@@ -326,6 +343,38 @@ async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    /// Drop the sender before the loop starts. The loop must immediately return
+    /// Err (not Ok) when it discovers the channel is closed on the first recv.
+    #[tokio::test]
+    async fn watcher_channel_close_returns_err() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inbox = tmp.path().join("inbox");
+        let outbox = tmp.path().join("outbox");
+        tokio::fs::create_dir_all(&inbox)
+            .await
+            .expect("create inbox");
+        tokio::fs::create_dir_all(&outbox)
+            .await
+            .expect("create outbox");
+
+        let state = Arc::new(crate::AppState::with_timeout(
+            std::time::Duration::from_millis(100),
+        ));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // Drop the sender before calling the loop. The first rx.recv() returns
+        // None and the function must return Err.
+        drop(tx);
+
+        let result = run_bridge_loop(rx, &inbox, &outbox, &state).await;
+        assert!(result.is_err(), "closed channel must produce Err");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("bridge watcher channel closed"),
+            "unexpected error: {msg}",
+        );
+    }
 
     #[test]
     fn bridge_dir_uses_explicit_value_when_set() {

@@ -62,5 +62,29 @@ async fn main() {
         }
     });
 
-    let _ = tokio::join!(mcp_handle, ws_handle, bridge_handle);
+    // A healthy daemon runs forever. Any handle that completes — whether by a
+    // normal return (unexpected for a server), by an Err path that did not call
+    // process::exit, or by a task panic surfacing as a JoinError — means a
+    // subsystem is dead. Log the name and exit so launchd KeepAlive restarts.
+    tokio::select! {
+        res = mcp_handle => {
+            match res {
+                Ok(()) => eprintln!("Turbofig daemon: MCP server task ended unexpectedly"),
+                Err(e) => eprintln!("Turbofig daemon: MCP server task panicked: {e}"),
+            }
+        }
+        res = ws_handle => {
+            match res {
+                Ok(()) => eprintln!("Turbofig daemon: WS server task ended unexpectedly"),
+                Err(e) => eprintln!("Turbofig daemon: WS server task panicked: {e}"),
+            }
+        }
+        res = bridge_handle => {
+            match res {
+                Ok(()) => eprintln!("Turbofig daemon: bridge task ended unexpectedly"),
+                Err(e) => eprintln!("Turbofig daemon: bridge task panicked: {e}"),
+            }
+        }
+    }
+    std::process::exit(1);
 }
