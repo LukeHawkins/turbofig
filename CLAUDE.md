@@ -49,4 +49,5 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 - `DECISIONS.md`: the why behind big choices (eval-first, Rust, ports, distribution).
 - `ARCHITECTURE.md`: deeper architecture and data flow.
 - `STACK.md`: the exact stack and versions.
+- `docs/discoverability/`: the shippable discoverability hook. A `CLAUDE-snippet.md` a user pastes into a global CLAUDE.md, and an `mcp-config.json` `mcpServers` entry for allowlisted native MCP users.
 - `.claude/commands/`: `phase`, `plan`, `kickoff`, `audit`, `harden`, `goodbye` (and `design`, added in Phase 7).
