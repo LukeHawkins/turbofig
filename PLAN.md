@@ -122,17 +122,15 @@ Goal: N independent Claude sessions to N files at once. Stronger than console-mc
 
 Goal: build the token and speed levers and take a PROVISIONAL measurement. The binding far-better gate is Phase 7, once helpers + orchestration + firewall exist.
 
-**Reconciled 2026-08-05:** the Active-priority slice delivered the batching helper and the file-mode + ids-first + subagent-firewall defaults (via `tf` and `design.md`). The unchecked items below are the genuine remaining work: coded `fields`/`depth` read shaping, downscaled screenshots (needs the `image` crate), read-size caps, and the benchmark harness + baseline + provisional read (the measurement, skipped by choice).
+**Reconciled 2026-08-05:** the Active-priority slice delivered the batching helper and the file-mode + ids-first + subagent-firewall defaults (via `tf` and `design.md`). The unchecked items below are the genuine remaining work: coded `fields`/`depth` read shaping, downscaled screenshots (needs the `image` crate), read-size caps, and the benchmark harness. The console-mcp baseline run and the provisional read moved to Phase 7 with the binding gate, because the measurement needs a live stack.
 
 - [x] Shaped returns: ids-first, opt-in `fields`, `depth` limit, never a full-tree dump by default
 - [x] Screenshots default to downscaled + file-mode; inline high-res only on explicit request
 - [x] Enforce the context firewall: inline screenshots need an explicit opt-in and warn past a budget; large reads without `depth`/`fields` are capped or warned; file-mode plus subagent-read is the default path
 - [x] Batching helper: many node ops in one `execute` round-trip
 - [x] Benchmark harness: measure tokens + wall-time for "design a webpage" and "20-slide deck"
-- [ ] Run the harness against the current console-mcp stack and record baseline numbers
-- [ ] Provisional read: record turbofig-so-far vs baseline; note the binding gate is Phase 7
 
-**Deferred 2026-08-06:** the two measurement items above run with the Phase 7 binding gate. They need a live console-mcp stack, a live Figma file, and real token metering. The harness (built above) is the tool they use. No numbers are recorded until that live run, so the daemon carries no fabricated baseline.
+**Moved 2026-08-06:** the console-mcp baseline run and the provisional read moved to Phase 7, beside the binding gate. They need a live console-mcp stack, a live Figma file, and real token metering. The harness built above is the tool for them. No numbers are recorded until that live run, so the project carries no fabricated baseline.
 
 ## Phase 6: Core helper library
 
@@ -151,7 +149,7 @@ Goal: reliable, fast Figma craft as a compact JS namespace injected into the eva
 
 Goal: the agent workflow that turns a brief into real design, cheaply and durably. Then the binding ship gate.
 
-**Reconciled 2026-08-05:** the Active-priority slice delivered `design.md`, the firewalled QA critic, the rubric, checkpoint, resume, context intake, and a live landing-page verify. The unchecked items below are still open: a moodboard-driven website verify, the measured low-token verify, and the binding far-better gate. All three need the Phase 5 benchmark harness first.
+**Reconciled 2026-08-05:** the Active-priority slice delivered `design.md`, the firewalled QA critic, the rubric, checkpoint, resume, context intake, and a live landing-page verify. The unchecked items below are still open: the console-mcp baseline run and the provisional read (both moved here from Phase 5 on 2026-08-06), a moodboard-driven website verify, the measured low-token verify, and the binding far-better gate. All of them need the Phase 5 benchmark harness and a live stack first.
 
 - [x] `.claude/commands/design.md`: plan-first spec, then parallel builder subagents, then a QA critic subagent, then refine
 - [x] Context intake: accept a moodboard image, brand docs, and reference URLs as inputs
@@ -159,6 +157,8 @@ Goal: the agent workflow that turns a brief into real design, cheaply and durabl
 - [x] Rubric-driven critique (hierarchy, spacing scale, contrast/AA, alignment, restraint)
 - [x] Checkpoint long jobs: persist the plan spec + per-section progress to disk; operations are idempotent (keyed by stable node ids) so re-running never duplicates
 - [x] Resume path: a crashed or interrupted job continues from the last completed section, with completed work intact in the Figma file, instead of restarting
+- [ ] Run the benchmark harness against the current console-mcp stack and record baseline numbers (moved from Phase 5, 2026-08-06)
+- [ ] Provisional read: record turbofig-so-far vs the baseline, ahead of the full-pipeline gate below (moved from Phase 5, 2026-08-06)
 - [ ] Verify: hand it a moodboard + brief; it produces a coherent website design
 - [ ] Verify: main-context token use for the run stays low (measured against the Phase 5 harness)
 - [ ] Binding gate: re-run the harness on the FULL pipeline (helpers + orchestration + firewall); confirm far better than console-mcp (~10x+ tokens; deck under ~8 min); record in DECISIONS.md. This is the ship or no-ship decision.
