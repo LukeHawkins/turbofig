@@ -18,7 +18,7 @@ Parse `$ARGUMENTS` and extract:
 - **Palette.** Hex values if provided; otherwise derive a 4-colour palette (brand, accent, surface, text) from the tone.
 - **Type.** Font family and weight choices if provided; otherwise default to Inter with Bold headings and Regular body.
 - **Reference material.** Moodboard image paths and reference URLs. Delegate reading of any moodboard image to a subagent that returns only a compact colour and mood summary. Do not load images into the main context.
-- **Profile.** Call `turbofig_status` and read `plugin.profileId`. Record the profile id for the whole job. Then run one `turbofig_execute` eval to read the active profile's constants from `tf.taste`: `return { spacing: tf.taste.spacing, type: tf.taste.type, grid: tf.taste.grid, contrast: tf.taste.contrast, blocklist: tf.taste.blocklist };`. Persist the result to `~/.turbofig/design/<job-id>/profile.json`. If `profileId` is `none`, `tf.taste` is undefined; write `{ "profileId": "none" }` and skip all profile constraints. If the profile id is not a known value, the daemon uses `impeccable` as the fallback.
+- **Profile.** Call `turbofig_status` and read `plugin.profileId`. Record the profile id for the whole job. Then run one `turbofig_execute` eval to read the active profile's constants from `tf.taste`: `return { spacing: tf.taste.spacing, type: tf.taste.type, grid: tf.taste.grid, contrast: tf.taste.contrast, hierarchy: tf.taste.hierarchy, restraint: tf.taste.restraint, blocklist: tf.taste.blocklist };`. Persist the result to `~/.turbofig/design/<job-id>/profile.json`. If `profileId` is `none`, `tf.taste` is undefined; write `{ "profileId": "none" }` and skip all profile constraints. If the profile id is not a known value, the daemon uses `impeccable` as the fallback.
 
 If the brief is too vague to infer key sections, derive a sensible default structure (for example: Nav, Hero, Features, Footer) and proceed.
 
@@ -56,7 +56,7 @@ Give each builder subagent ONLY:
 - A pointer to `helpers/tf-api.md`. Do not paste the file; pass the path.
 - The job id and the file-bridge protocol. Each builder must use its OWN unique bridge job id for the inbox/outbox filenames: `<design-job-id>-<SectionName>-<random4>` (for example `20260805-a3f7-HeroSection-b2c9`). Two builders sharing the same id would overwrite each other's inbox file.
 - The idempotency rule: use `tf.findOrCreate` to get or create the root section frame, then call `tf.clear` on it to remove all existing children before rebuilding. `findOrCreate` alone protects only the section frame; `tf.clear` before rebuilding makes a re-run fully safe.
-- A pointer to `~/.turbofig/design/<job-id>/profile.json`. Each builder must read this file and use its `spacing` scale, `type` scale, and `grid` values when placing and sizing nodes. When `profile.json` contains `{ "profileId": "none" }`, skip profile constraints.
+- A pointer to `~/.turbofig/design/<job-id>/profile.json`. Each builder must read this file and use its `spacing` scale, `type` scale, and `grid` values when placing and sizing nodes. The builder must also apply the profile's `hierarchy` rules (controlling visual emphasis and heading depth) and `restraint` rules (controlling what to remove or avoid) when designing the section. When `profile.json` contains `{ "profileId": "none" }`, skip all profile constraints including `hierarchy` and `restraint`.
 
   ```js
   const s = await tf.findOrCreate(figma.currentPage, 'HeroSection', factory);
@@ -123,8 +123,8 @@ Dispatch a QA subagent for each target. Give each QA subagent ONLY:
   > When profile.json contains `{ "profileId": "none" }`, skip checks 1 to 5. Apply checks 6 and 7 to all runs.
   >
   > **Qualitative checks:**
-  > 6. Visual hierarchy: headings are clearly larger than body text. The eye has a clear entry point.
-  > 7. Restraint: no clutter, no element overlap, no text hidden behind other elements, no dead whitespace larger than the design intent.
+  > 6. Visual hierarchy: read the profile's `hierarchy` rules from profile.json and verify each rule is satisfied. When profile.json is `{ "profileId": "none" }`, apply the generic rule: headings are clearly larger than body text and the eye has a clear entry point.
+  > 7. Restraint: read the profile's `restraint` rules from profile.json and verify each rule is satisfied. When profile.json is `{ "profileId": "none" }`, apply the generic rule: no clutter, no element overlap, no text hidden behind other elements, no dead whitespace larger than the design intent.
 
 Each QA subagent must:
 
