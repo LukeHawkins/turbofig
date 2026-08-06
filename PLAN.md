@@ -132,6 +132,8 @@ Goal: build the token and speed levers and take a PROVISIONAL measurement. The b
 - [ ] Run the harness against the current console-mcp stack and record baseline numbers
 - [ ] Provisional read: record turbofig-so-far vs baseline; note the binding gate is Phase 7
 
+**Deferred 2026-08-06:** the two measurement items above run with the Phase 7 binding gate. They need a live console-mcp stack, a live Figma file, and real token metering. The harness (built above) is the tool they use. No numbers are recorded until that live run, so the daemon carries no fabricated baseline.
+
 ## Phase 6: Core helper library
 
 Goal: reliable, fast Figma craft as a compact JS namespace injected into the eval context.
