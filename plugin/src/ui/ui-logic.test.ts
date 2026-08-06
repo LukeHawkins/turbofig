@@ -3,6 +3,7 @@ import {
   appendLog,
   connStateFromEvent,
   daemonMessageAction,
+  formatFileKeyHint,
   formatFileLine,
   formatLogEntry,
   formatPairing,
@@ -471,5 +472,38 @@ describe("mainMessageAction", () => {
   test("relays other main-thread messages over the socket", () => {
     expect(mainMessageAction("RESULT")).toBe("relay");
     expect(mainMessageAction("SET_PROFILE")).toBe("relay");
+  });
+});
+
+describe("formatFileKeyHint", () => {
+  test("returns empty key and hint when fileKey is empty", () => {
+    const r = formatFileKeyHint("");
+    expect(r.key).toBe("");
+    expect(r.hint).toBe("");
+  });
+
+  test("returns the full fileKey without truncation", () => {
+    const key = "ABCDEF1234567890";
+    const r = formatFileKeyHint(key);
+    expect(r.key).toBe(key);
+  });
+
+  test("key is the exact input, not shortened", () => {
+    const longKey = "LONGKEYABCDEF1234567890MORECHARS";
+    const r = formatFileKeyHint(longKey);
+    expect(r.key).toBe(longKey);
+    expect(r.key.length).toBe(longKey.length);
+  });
+
+  test("returns a non-empty hint when fileKey is present", () => {
+    const r = formatFileKeyHint("ABCDEF1234567890");
+    expect(r.hint.length).toBeGreaterThan(0);
+  });
+
+  test("hint does not truncate or alter the key", () => {
+    const key = "ABCDEF1234567890";
+    const r = formatFileKeyHint(key);
+    expect(r.key).not.toContain("...");
+    expect(r.key.length).toBe(key.length);
   });
 });

@@ -270,6 +270,64 @@
         color: var(--n-500);
       }
 
+      /* === FILEKEY ROW: full key + one-click copy ======================== */
+      .filekey-row {
+        display: flex;
+        align-items: baseline;
+        gap: var(--sp-2);
+        margin: 0 0 var(--sp-2);
+      }
+
+      .filekey-value {
+        font-family: var(--ff-mono);
+        font-size: 12px;
+        color: var(--n-700);
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+      }
+
+      .filekey-hint {
+        font-size: 12px;
+        color: var(--n-500);
+        margin: 0 0 var(--sp-2);
+      }
+
+      .copy-btn {
+        font-size: 12px;
+        font-family: var(--ff-body);
+        color: var(--n-700);
+        background: var(--n-100);
+        border: 1px solid var(--n-300);
+        border-radius: 4px;
+        padding: 1px var(--sp-2);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
+      /* === ADVANCED DISCLOSURE =========================================== */
+      details.advanced-section {
+        margin-bottom: var(--sp-5);
+      }
+
+      details.advanced-section > summary {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--n-500);
+        cursor: pointer;
+        list-style: none;
+        margin-bottom: var(--sp-2);
+      }
+
+      details.advanced-section > summary::-webkit-details-marker {
+        display: none;
+      }
+
       /* === EASTER EGG: halftone portrait ================================ */
       /* Decorative graphic only. Not text content. No label or tooltip. */
       /* font-size 5px is intentionally below the type scale: this is a  */
@@ -312,17 +370,26 @@
           <dd id="session-line">No active session</dd>
         </div>
       </dl>
+      <div id="filekey-row" class="filekey-row" style="display:none">
+        <span id="filekey-value" class="filekey-value"></span>
+        <button id="copy-filekey" class="copy-btn" type="button">Copy</button>
+      </div>
+      <p id="filekey-hint" class="filekey-hint" style="display:none"></p>
       <p id="pairing-line" class="unpaired">
         Not paired: no Claude session is driving this file yet.
       </p>
     </section>
 
-    <!-- Daemon port: the WebSocket port the plugin connects to. -->
-    <section class="control-section" aria-label="Daemon port">
-      <label class="control-label" for="port-field">Daemon port</label>
-      <input id="port-field" type="number" min="1" max="65535" value="18847" />
-      <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
-    </section>
+    <!-- Advanced: collapsed by default. Port is a rarely changed setting. -->
+    <details class="advanced-section">
+      <summary>Advanced</summary>
+      <!-- Daemon port: the WebSocket port the plugin connects to. -->
+      <section class="control-section" aria-label="Daemon port">
+        <label class="control-label" for="port-field">Daemon port</label>
+        <input id="port-field" type="number" min="1" max="65535" value="18847" />
+        <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
+      </section>
+    </details>
 
     <!-- Taste profile: a single control, labelled clearly. -->
     <section class="control-section" aria-label="Taste profile">

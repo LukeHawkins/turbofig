@@ -174,6 +174,27 @@ export interface PairingResult {
   label: string;
 }
 
+/** Result of formatting the fileKey display row. */
+export interface FileKeyDisplay {
+  /** Full, untruncated fileKey. Empty string when no file is active. */
+  key: string;
+  /** Short hint for targeting this file from Claude. Empty when no file is active. */
+  hint: string;
+}
+
+/**
+ * Returns the full fileKey and a short targeting hint for Claude.
+ * Returns empty strings when fileKey is empty (no active file).
+ * The key is never truncated.
+ */
+export function formatFileKeyHint(fileKey: string): FileKeyDisplay {
+  if (!fileKey) return { key: "", hint: "" };
+  return {
+    key: fileKey,
+    hint: "Target this file from Claude using its fileKey.",
+  };
+}
+
 /**
  * Returns the pairing state between a Claude session and this file.
  * Empty sessionId means no session drives this file: paired is false.

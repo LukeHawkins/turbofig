@@ -73,3 +73,28 @@ describe("template.html: impeccable taste compliance", () => {
     }
   });
 });
+
+describe("template.html: panel model", () => {
+  test("contains a details element for the Advanced section", () => {
+    expect(template).toContain("<details");
+  });
+
+  test("Advanced summary is present", () => {
+    expect(template).toContain("<summary>Advanced</summary>");
+  });
+
+  test("port-field appears after the Advanced summary (inside the disclosure)", () => {
+    const summaryIndex = template.indexOf("<summary>Advanced</summary>");
+    const portFieldIndex = template.indexOf('id="port-field"');
+    expect(summaryIndex).toBeGreaterThanOrEqual(0);
+    expect(portFieldIndex).toBeGreaterThan(summaryIndex);
+  });
+
+  test("copy-filekey button is present in the template", () => {
+    expect(template).toContain('id="copy-filekey"');
+  });
+
+  test("filekey-row element is present in the template", () => {
+    expect(template).toContain('id="filekey-row"');
+  });
+});

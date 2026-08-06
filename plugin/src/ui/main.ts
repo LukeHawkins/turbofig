@@ -10,6 +10,7 @@ import {
   appendLog,
   connStateFromEvent,
   daemonMessageAction,
+  formatFileKeyHint,
   formatFileLine,
   formatLogEntry,
   formatPairing,
@@ -40,6 +41,10 @@ const profileSel = document.getElementById("profile") as HTMLSelectElement;
 const customInput = document.getElementById("customProfile") as HTMLInputElement;
 const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
+const filekeyRowEl = document.getElementById("filekey-row") as HTMLElement;
+const filekeyValueEl = document.getElementById("filekey-value") as HTMLElement;
+const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
+const filekeyHintEl = document.getElementById("filekey-hint") as HTMLElement;
 
 /** Maximum number of entries kept in the activity log. */
 const LOG_CAP = 20;
@@ -69,8 +74,17 @@ function updateFileDisplay(): void {
   if (!fileLineEl) return;
   if (latestFileInfo) {
     fileLineEl.textContent = formatFileLine(latestFileInfo.fileKey, latestFileInfo.name);
+    const { key, hint } = formatFileKeyHint(latestFileInfo.fileKey);
+    if (filekeyValueEl) filekeyValueEl.textContent = key;
+    if (filekeyRowEl) filekeyRowEl.style.display = key ? "flex" : "none";
+    if (filekeyHintEl) {
+      filekeyHintEl.textContent = hint;
+      filekeyHintEl.style.display = hint ? "block" : "none";
+    }
   } else {
     fileLineEl.textContent = "No file";
+    if (filekeyRowEl) filekeyRowEl.style.display = "none";
+    if (filekeyHintEl) filekeyHintEl.style.display = "none";
   }
 }
 
@@ -139,6 +153,27 @@ customInput.onchange = () => {
     postSetProfile();
   }
 };
+
+/* Copy the full fileKey to the clipboard on click. Give brief feedback. */
+if (copyFilekeyBtn) {
+  copyFilekeyBtn.onclick = () => {
+    const key = latestFileInfo?.fileKey;
+    if (!key) return;
+    if (navigator.clipboard) {
+      navigator.clipboard
+        .writeText(key)
+        .then(() => {
+          copyFilekeyBtn.textContent = "Copied";
+          setTimeout(() => {
+            copyFilekeyBtn.textContent = "Copy";
+          }, 1500);
+        })
+        .catch(() => {
+          /* Clipboard write failed; no action needed. */
+        });
+    }
+  };
+}
 
 /* Commit the port on change (blur or Enter).
    Invalid input shows the hint and resets the field to the last valid port. */
