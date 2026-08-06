@@ -149,7 +149,9 @@ Goal: reliable, fast Figma craft as a compact JS namespace injected into the eva
 
 Goal: the agent workflow that turns a brief into real design, cheaply and durably. Then the binding ship gate.
 
-**Reconciled 2026-08-05:** the Active-priority slice delivered `design.md`, the firewalled QA critic, the rubric, checkpoint, resume, context intake, and a live landing-page verify. The unchecked items below are still open: the console-mcp baseline run and the provisional read (both moved here from Phase 5 on 2026-08-06), a moodboard-driven website verify, the measured low-token verify, and the binding far-better gate. All of them need the Phase 5 benchmark harness and a live stack first.
+**Reconciled 2026-08-05:** the Active-priority slice delivered `design.md`, the firewalled QA critic, the rubric, checkpoint, resume, context intake, and a live landing-page verify.
+
+**Comparison dropped 2026-08-06:** the console-mcp comparison is retired (see `DECISIONS.md` #20). The user does not want it and it needed an external stack. The two baseline items below are closed as dropped. The binding gate becomes a self-baseline: record turbofig's own harness numbers as the reference budget, not a "10x vs console-mcp" claim. Two live verifies stay open because the user has no live moodboard run available this session: the moodboard-to-website coherence verify and the metered main-context-tokens verify. The ship decision now rests on those qualitative live verifies.
 
 - [x] `.claude/commands/design.md`: plan-first spec, then parallel builder subagents, then a QA critic subagent, then refine
 - [x] Context intake: accept a moodboard image, brand docs, and reference URLs as inputs
@@ -157,11 +159,11 @@ Goal: the agent workflow that turns a brief into real design, cheaply and durabl
 - [x] Rubric-driven critique (hierarchy, spacing scale, contrast/AA, alignment, restraint)
 - [x] Checkpoint long jobs: persist the plan spec + per-section progress to disk; operations are idempotent (keyed by stable node ids) so re-running never duplicates
 - [x] Resume path: a crashed or interrupted job continues from the last completed section, with completed work intact in the Figma file, instead of restarting
-- [ ] Run the benchmark harness against the current console-mcp stack and record baseline numbers (moved from Phase 5, 2026-08-06)
-- [ ] Provisional read: record turbofig-so-far vs the baseline, ahead of the full-pipeline gate below (moved from Phase 5, 2026-08-06)
-- [ ] Verify: hand it a moodboard + brief; it produces a coherent website design
-- [ ] Verify: main-context token use for the run stays low (measured against the Phase 5 harness)
-- [ ] Binding gate: re-run the harness on the FULL pipeline (helpers + orchestration + firewall); confirm far better than console-mcp (~10x+ tokens; deck under ~8 min); record in DECISIONS.md. This is the ship or no-ship decision.
+- [x] ~~Run the benchmark harness against the current console-mcp stack and record baseline numbers~~ Dropped 2026-08-06: the console-mcp comparison is retired (see `DECISIONS.md` #20). No external baseline.
+- [x] ~~Provisional read: record turbofig-so-far vs the baseline~~ Dropped 2026-08-06: superseded by the self-baseline in `DECISIONS.md` #20.
+- [ ] Verify: hand it a moodboard + brief; it produces a coherent website design (OPEN: needs a live moodboard run; deferred until the user provides a brief + moodboard + a real Figma file)
+- [ ] Verify: main-context token use for the run stays low (OPEN: needs a live metered run; the self-baseline in `DECISIONS.md` #20 records transport tokens, not the orchestrator context)
+- [x] Ship gate (self-baseline, console-mcp comparison dropped): the harness records turbofig's own token budget per scenario as the reference, written to `DECISIONS.md` #20. The live wall-time and design-coherence half of the ship decision folds into the two OPEN verifies above.
 
 ## Phase 8: Anti-slop baseline + trainability
 
