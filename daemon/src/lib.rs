@@ -132,11 +132,28 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Directory where screenshot PNGs are written in file mode, if configured.
     screenshot_dir: Option<std::path::PathBuf>,
+    /// Built-in taste profiles keyed by profile ID.
+    /// Each value is the JS source to inject before user code.
+    profiles: HashMap<String, String>,
 }
 
 impl AppState {
     /// Private constructor. Both public constructors delegate here.
     fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>) -> Self {
+        // Embed the three built-in taste profiles at compile time.
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            "impeccable".to_owned(),
+            include_str!("../../skills/profiles/impeccable.js").to_owned(),
+        );
+        profiles.insert(
+            "editorial".to_owned(),
+            include_str!("../../skills/profiles/editorial.js").to_owned(),
+        );
+        profiles.insert(
+            "minimal".to_owned(),
+            include_str!("../../skills/profiles/minimal.js").to_owned(),
+        );
         Self {
             connections: Mutex::new(HashMap::new()),
             conn_counter: AtomicU64::new(1),
@@ -145,6 +162,7 @@ impl AppState {
             counter: AtomicU64::new(1),
             request_timeout: timeout,
             screenshot_dir,
+            profiles,
         }
     }
 
@@ -211,6 +229,30 @@ impl AppState {
             .get(&conn_id)
             .map(|c| c.profile_id.clone())
             .unwrap_or_default()
+    }
+
+    /// Return the JS source to inject before user code and an optional warning.
+    ///
+    /// Rules:
+    /// - `""` or `"impeccable"` -> impeccable JS, no warning.
+    /// - `"none"` -> empty string, no warning (injection disabled).
+    /// - a known built-in id -> that profile JS, no warning.
+    /// - any other non-empty id -> impeccable JS, warning naming the unknown id.
+    pub fn resolve_profile_js(&self, profile_id: &str) -> (String, Option<String>) {
+        match profile_id {
+            "" | "impeccable" => (self.profiles["impeccable"].clone(), None),
+            "none" => (String::new(), None),
+            id => {
+                if let Some(js) = self.profiles.get(id) {
+                    (js.clone(), None)
+                } else {
+                    (
+                        self.profiles["impeccable"].clone(),
+                        Some(format!("unknown profile '{id}'; using impeccable")),
+                    )
+                }
+            }
+        }
     }
 
     /// Remove a connection from the registry. Call this when the socket closes.
@@ -553,9 +595,18 @@ pub async fn run_execute(
         Err(e) => return route_error_to_json(e),
     };
 
+    // Resolve the taste profile for this connection and build the injected code.
+    let profile_id = state.connection_profile(conn_id);
+    let (profile_js, profile_warning) = state.resolve_profile_js(&profile_id);
+    let injected_code = if profile_js.is_empty() {
+        code.to_owned()
+    } else {
+        format!("{profile_js}\n{code}")
+    };
+
     let id = state.next_request_id();
     let rx = state.register_pending(id, conn_id);
-    let request = json!({"type": "EXECUTE", "requestId": id, "code": code});
+    let request = json!({"type": "EXECUTE", "requestId": id, "code": injected_code});
 
     if tx.send(request.to_string()).is_err() {
         state.cancel_pending(id);
@@ -568,14 +619,20 @@ pub async fn run_execute(
                 let result = reply.get("result").cloned().unwrap_or(Value::Null);
                 let len = serde_json::to_string(&result).map(|s| s.len()).unwrap_or(0);
                 let resp = json!({"ok": true, "result": result});
-                with_warning(resp, read_budget_warning(len))
+                // Combine the read-budget warning with the profile warning.
+                let combined = match (read_budget_warning(len), profile_warning) {
+                    (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                    (a, b) => a.or(b),
+                };
+                with_warning(resp, combined)
             } else {
                 let error = reply
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("eval failed")
                     .to_owned();
-                json!({"ok": false, "error": error})
+                let resp = json!({"ok": false, "error": error});
+                with_warning(resp, profile_warning)
             }
         }
         Ok(Err(_)) => {
@@ -1737,5 +1794,191 @@ mod tests {
             json!("editorial"),
             "profileId must match what was stored"
         );
+    }
+
+    // resolve_profile_js unit tests
+
+    #[test]
+    fn resolve_profile_js_empty_returns_impeccable_no_warning() {
+        // An empty profile_id must return the impeccable JS with no warning.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (js, warn) = state.resolve_profile_js("");
+        assert!(
+            js.contains("const taste"),
+            "impeccable JS must contain 'const taste'"
+        );
+        assert!(
+            js.contains("impeccable"),
+            "impeccable JS must mention impeccable"
+        );
+        assert!(warn.is_none(), "no warning for empty profile_id");
+    }
+
+    #[test]
+    fn resolve_profile_js_impeccable_returns_impeccable_no_warning() {
+        // An explicit "impeccable" id must return the impeccable JS with no warning.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (js, warn) = state.resolve_profile_js("impeccable");
+        assert!(
+            js.contains("const taste"),
+            "impeccable JS must contain 'const taste'"
+        );
+        assert!(warn.is_none(), "no warning for impeccable");
+    }
+
+    #[test]
+    fn resolve_profile_js_none_returns_empty_no_warning() {
+        // The "none" id must return an empty string and no warning.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (js, warn) = state.resolve_profile_js("none");
+        assert!(js.is_empty(), "none must return empty string");
+        assert!(warn.is_none(), "no warning for none");
+    }
+
+    #[test]
+    fn resolve_profile_js_known_builtin_returns_that_profile_no_warning() {
+        // A known built-in id other than impeccable must return that profile with no warning.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (js, warn) = state.resolve_profile_js("editorial");
+        assert!(
+            js.contains("const taste"),
+            "editorial JS must contain 'const taste'"
+        );
+        assert!(
+            js.contains("editorial"),
+            "editorial JS must mention editorial"
+        );
+        assert!(warn.is_none(), "no warning for known profile");
+    }
+
+    #[test]
+    fn resolve_profile_js_unknown_returns_impeccable_with_warning() {
+        // An unknown id must return the impeccable JS and a warning naming the unknown id.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (js, warn) = state.resolve_profile_js("bogus");
+        assert!(
+            js.contains("const taste"),
+            "fallback JS must contain 'const taste'"
+        );
+        assert!(js.contains("impeccable"), "fallback JS must be impeccable");
+        let w = warn.expect("warning must be present for unknown id");
+        assert!(w.contains("bogus"), "warning must name the unknown id");
+        assert!(w.contains("impeccable"), "warning must mention impeccable");
+    }
+
+    // run_execute profile-injection integration tests
+
+    #[tokio::test]
+    async fn run_execute_injects_named_profile_into_code() {
+        // A connection with profile "editorial" must receive the editorial JS prepended to
+        // user code. The sent EXECUTE frame's code field must contain "const taste" and
+        // "editorial".
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-editorial".to_owned(),
+            "Editorial File".to_owned(),
+            "editorial".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        // Answer the pending execute so run_execute returns cleanly.
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                // Verify injection before answering.
+                let code = req["code"].as_str().expect("code field");
+                assert!(
+                    code.contains("const taste"),
+                    "code must contain 'const taste'"
+                );
+                assert!(code.contains("editorial"), "code must contain 'editorial'");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                state_clone.resolve(req_id, json!({"ok": true, "result": "done"}));
+            }
+        });
+
+        let result = run_execute(&state, None, None, "return 1;").await;
+        assert_eq!(result["ok"], json!(true), "execute must succeed");
+    }
+
+    #[tokio::test]
+    async fn run_execute_unknown_profile_uses_impeccable_and_sets_warning() {
+        // A connection with an unknown profile must receive the impeccable JS and the
+        // returned JSON must carry a "warning" field mentioning "impeccable".
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-bogus".to_owned(),
+            "Bogus File".to_owned(),
+            "bogus".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let code = req["code"].as_str().expect("code field");
+                // The impeccable profile must have been injected.
+                assert!(
+                    code.contains("impeccable"),
+                    "code must contain impeccable marker"
+                );
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                state_clone.resolve(req_id, json!({"ok": true, "result": null}));
+            }
+        });
+
+        let result = run_execute(&state, None, None, "return 2;").await;
+        assert_eq!(result["ok"], json!(true), "execute must succeed");
+        let warning = result["warning"].as_str().expect("warning must be present");
+        assert!(
+            warning.contains("impeccable"),
+            "warning must mention impeccable"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_execute_none_profile_sends_user_code_unmodified() {
+        // A connection with profile "none" must send the user code without any injection.
+        // The EXECUTE frame's code must equal the original user code exactly.
+        use tokio::sync::mpsc as tmpsc;
+
+        let user_code = "return 42;";
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-none".to_owned(),
+            "None File".to_owned(),
+            "none".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let code = req["code"].as_str().expect("code field");
+                assert!(
+                    !code.contains("const taste"),
+                    "none profile must not inject taste"
+                );
+                assert_eq!(code, user_code, "code must equal the original user code");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                state_clone.resolve(req_id, json!({"ok": true, "result": 42}));
+            }
+        });
+
+        let result = run_execute(&state, None, None, user_code).await;
+        assert_eq!(result["ok"], json!(true), "execute must succeed");
     }
 }
