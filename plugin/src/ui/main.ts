@@ -9,6 +9,7 @@ import { backoffDelayMs } from "../protocol";
 import {
   connStateFromEvent,
   formatFileLine,
+  formatPairing,
   formatSession,
   profileToSelectValue,
 } from "./ui-logic";
@@ -19,6 +20,7 @@ const WS_URL = "ws://localhost:18847";
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
 const fileLineEl = document.getElementById("file-line") as HTMLElement;
 const sessionLineEl = document.getElementById("session-line") as HTMLElement;
+const pairingLineEl = document.getElementById("pairing-line") as HTMLElement;
 const profileSel = document.getElementById("profile") as HTMLSelectElement;
 const customInput = document.getElementById("customProfile") as HTMLInputElement;
 
@@ -54,6 +56,15 @@ function updateSessionDisplay(): void {
   if (sessionLineEl) {
     sessionLineEl.textContent = formatSession(activeSessionId);
   }
+}
+
+/** Refreshes the pairing display from the active session id and file name. */
+function updatePairingDisplay(): void {
+  if (!pairingLineEl) return;
+  const fileName = latestFileInfo ? latestFileInfo.name : "";
+  const { paired, label } = formatPairing(activeSessionId, fileName);
+  pairingLineEl.textContent = label;
+  pairingLineEl.className = paired ? "paired" : "unpaired";
 }
 
 /** Returns the current profile id selected in the panel. */
@@ -135,6 +146,7 @@ function connect(): void {
     if (typeof parsed.sessionId === "string") {
       activeSessionId = parsed.sessionId;
       updateSessionDisplay();
+      updatePairingDisplay();
     }
     parent.postMessage({ pluginMessage: parsed }, "*");
   };
@@ -157,6 +169,7 @@ window.onmessage = (event: MessageEvent) => {
   if (m.type === "FILE_INFO") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
+    updatePairingDisplay();
     /* Reflect the current profile in the selector. Default to impeccable. */
     const pid = typeof m.profileId === "string" && m.profileId !== "" ? m.profileId : "impeccable";
     const { value, isCustom } = profileToSelectValue(pid);

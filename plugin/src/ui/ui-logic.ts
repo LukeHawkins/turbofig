@@ -71,3 +71,31 @@ export function formatSession(sessionId: string): string {
   if (sessionId.length > 12) return `${sessionId.slice(0, 12)}...`;
   return sessionId;
 }
+
+/** Result of a pairing computation: whether a Claude session drives this file, and a label. */
+export interface PairingResult {
+  paired: boolean;
+  label: string;
+}
+
+/**
+ * Returns the pairing state between a Claude session and this file.
+ * Empty sessionId means no session drives this file: paired is false.
+ * Non-empty sessionId means a session is active: paired is true.
+ * Truncates the session id to 12 characters with "..." when it is longer.
+ * Includes the file name in the label when fileName is non-empty.
+ */
+export function formatPairing(sessionId: string, fileName: string): PairingResult {
+  if (!sessionId) {
+    return {
+      paired: false,
+      label: "Not paired — no Claude session is driving this file yet.",
+    };
+  }
+  const shortId = sessionId.length > 12 ? `${sessionId.slice(0, 12)}...` : sessionId;
+  const filePart = fileName ? ` on ${fileName}` : "";
+  return {
+    paired: true,
+    label: `Paired with session ${shortId}${filePart}.`,
+  };
+}

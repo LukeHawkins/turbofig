@@ -32,6 +32,30 @@
       #conn-status.offline {
         color: #cf222e;
       }
+      #pairing-section {
+        margin: 10px 0;
+        padding: 8px;
+        border-radius: 4px;
+        background: #f6f8fa;
+      }
+      #pairing-section h2 {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #555;
+        margin: 0 0 4px;
+      }
+      #pairing-line {
+        margin: 0;
+        color: #444;
+      }
+      #pairing-line.paired {
+        color: #1a7f37;
+      }
+      #pairing-line.unpaired {
+        color: #6e7781;
+      }
       #profile-row {
         margin-top: 12px;
       }
@@ -59,6 +83,10 @@
     <p class="info-row">Status: <span id="conn-status">Connecting...</span></p>
     <p class="info-row">File: <span id="file-line">No file</span></p>
     <p class="info-row">Session: <span id="session-line">No active session</span></p>
+    <section id="pairing-section" aria-label="Pairing">
+      <h2>Pairing</h2>
+      <p id="pairing-line" class="unpaired">Not paired — no Claude session is driving this file yet.</p>
+    </section>
     <div id="profile-row">
       <label for="profile">Taste profile</label>
       <select id="profile">

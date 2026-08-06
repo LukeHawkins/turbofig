@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   connStateFromEvent,
   formatFileLine,
+  formatPairing,
   formatSession,
   KNOWN_PROFILES,
   profileToSelectValue,
@@ -169,5 +170,63 @@ describe("profileToSelectValue", () => {
   test("minimal is a known profile", () => {
     const r = profileToSelectValue("minimal");
     expect(r.isCustom).toBe(false);
+  });
+});
+
+describe("formatPairing", () => {
+  test("empty sessionId returns paired false", () => {
+    const r = formatPairing("", "My File");
+    expect(r.paired).toBe(false);
+  });
+
+  test("empty sessionId label says not paired", () => {
+    const r = formatPairing("", "My File");
+    expect(r.label).toContain("Not paired");
+  });
+
+  test("empty sessionId with empty fileName returns paired false", () => {
+    const r = formatPairing("", "");
+    expect(r.paired).toBe(false);
+    expect(r.label).toContain("Not paired");
+  });
+
+  test("non-empty sessionId returns paired true", () => {
+    const r = formatPairing("ses-abc", "My File");
+    expect(r.paired).toBe(true);
+  });
+
+  test("short sessionId appears in label without truncation", () => {
+    const r = formatPairing("ses-abc", "My File");
+    expect(r.label).toContain("ses-abc");
+  });
+
+  test("sessionId of exactly 12 characters is not truncated", () => {
+    const r = formatPairing("123456789012", "Doc");
+    expect(r.label).toContain("123456789012");
+    expect(r.label).not.toContain("...");
+  });
+
+  test("sessionId longer than 12 characters is truncated with ...", () => {
+    const r = formatPairing("1234567890123", "Doc");
+    expect(r.label).toContain("123456789012...");
+  });
+
+  test("non-empty fileName is included in the paired label", () => {
+    const r = formatPairing("ses-abc", "Brand System");
+    expect(r.label).toContain("Brand System");
+  });
+
+  test("empty fileName does not cause a broken label", () => {
+    const r = formatPairing("ses-abc", "");
+    expect(r.paired).toBe(true);
+    expect(r.label.length).toBeGreaterThan(0);
+    expect(r.label).not.toContain("undefined");
+    expect(r.label).not.toContain("null");
+  });
+
+  test("long sessionId with fileName includes both truncated id and file name", () => {
+    const r = formatPairing("abcdefghijklmnop", "My Design");
+    expect(r.label).toContain("abcdefghijkl...");
+    expect(r.label).toContain("My Design");
   });
 });
