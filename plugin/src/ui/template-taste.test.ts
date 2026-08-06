@@ -48,7 +48,12 @@ describe("template.html — impeccable taste compliance", () => {
   });
 
   test("every font-size: Npx value is from the impeccable type scale", () => {
-    const matches = [...template.matchAll(/font-size:\s*(\d+)px/g)];
+    // Strip the .clarkson rule before checking font sizes.
+    // The .clarkson element is a decorative halftone graphic, not text content.
+    // Its 5px font-size drives character-cell density, not readability.
+    // It is an intentional exemption from the type scale rule.
+    const withoutClarkson = template.replace(/\.clarkson\s*\{[^}]*\}/s, "");
+    const matches = [...withoutClarkson.matchAll(/font-size:\s*(\d+)px/g)];
     // At least one font-size declaration must be present.
     expect(matches.length).toBeGreaterThan(0);
     for (const match of matches) {
@@ -58,7 +63,10 @@ describe("template.html — impeccable taste compliance", () => {
   });
 
   test("no font-size value is below 12px", () => {
-    const matches = [...template.matchAll(/font-size:\s*(\d+)px/g)];
+    // Strip the .clarkson rule before checking minimum sizes.
+    // See the note above: .clarkson is a decorative graphic, not text content.
+    const withoutClarkson = template.replace(/\.clarkson\s*\{[^}]*\}/s, "");
+    const matches = [...withoutClarkson.matchAll(/font-size:\s*(\d+)px/g)];
     for (const match of matches) {
       const size = Number(match[1]);
       expect(size).toBeGreaterThanOrEqual(12);

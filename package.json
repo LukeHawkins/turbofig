@@ -7,7 +7,7 @@
     "plugin"
   ],
   "scripts": {
-    "typecheck": "tsc -p plugin/tsconfig.json --noEmit && tsc -p bench/tsconfig.json --noEmit",
+    "typecheck": "tsc -p plugin/tsconfig.json --noEmit && tsc -p bench/tsconfig.json --noEmit && tsc -p scripts/tsconfig.json --noEmit",
     "test": "bun test",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

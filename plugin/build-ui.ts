@@ -8,6 +8,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const TOKEN = "__UI_BUNDLE__";
+const CLARKSON_TOKEN = "__CLARKSON__";
 const scriptDir = import.meta.dir;
 
 // Ensure the output directory exists.
@@ -55,8 +56,15 @@ if (!template.includes(TOKEN)) {
   process.exit(1);
 }
 
-// Inject the bundle and write the output file.
-const html = template.replace(TOKEN, bundleText);
+// Read the halftone art if it exists. The build does not fail without it.
+const clarksonPath = join(scriptDir, "assets/clarkson.txt");
+const clarksonExists = await Bun.file(clarksonPath).exists();
+const clarkson = clarksonExists ? await Bun.file(clarksonPath).text() : "";
+
+// Inject the bundle and the halftone art.
+// Use the function form of replace so '$' sequences in the content are
+// never interpreted as replacement patterns.
+const html = template.replace(TOKEN, () => bundleText).replace(CLARKSON_TOKEN, () => clarkson);
 const outPath = join(scriptDir, "dist/ui.html");
 await Bun.write(outPath, html);
 console.log(`Built dist/ui.html (${html.length} bytes)`);

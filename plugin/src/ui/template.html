@@ -269,6 +269,21 @@
         font-size: 12px;
         color: var(--n-500);
       }
+
+      /* === EASTER EGG: halftone portrait ================================ */
+      /* Decorative graphic only. Not text content. No label or tooltip. */
+      /* font-size 5px is intentionally below the type scale — this is a  */
+      /* pixel-art render, not a text element. See template-taste.test.ts. */
+      .clarkson {
+        font-family: var(--ff-mono);
+        font-size: 5px;
+        line-height: 1;
+        white-space: pre;
+        overflow: hidden;
+        max-width: 100%;
+        color: var(--n-300);
+        margin-top: var(--sp-2);
+      }
     </style>
   </head>
   <body>
@@ -331,6 +346,7 @@
     <!-- Footer: plugin version, quiet and small. -->
     <footer class="panel-footer">
       <span class="version-text">v<span id="plugin-version"></span></span>
+      <pre class="clarkson" aria-hidden="true">__CLARKSON__</pre>
     </footer>
 
     <script>__UI_BUNDLE__</script>
