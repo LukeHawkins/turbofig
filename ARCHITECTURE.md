@@ -53,16 +53,17 @@ The plugin dispatches on a `{type}` field in each message:
 
 | Type | Direction | Description |
 |---|---|---|
-| `FILE_INFO` | plugin to daemon | Sent on connect: fileKey + root name (Phase 2) |
+| `FILE_INFO` | plugin to daemon | Sent on connect and after a profile change: fileKey, root name, and `profileId` (Phase 2; `profileId` added Phase 8) |
 | `STATUS` | daemon to plugin | Liveness ping carrying a `requestId` (Phase 2) |
 | `RESULT` | plugin to daemon | Reply carrying the matching `requestId` (Phase 2) |
 | `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS (Phase 3) |
 | `GET_SELECTION` | daemon to plugin | Return compact selection info (Phase 3) |
 | `SCREENSHOT` | daemon to plugin | Export PNG (Phase 3) |
+| `SET_PROFILE` | UI iframe to plugin main thread | Writes the profile id to `figma.root.setPluginData("turbofig:profile", id)` then re-emits `FILE_INFO` with the updated `profileId` (Phase 8) |
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
-`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope: the sync-to-async deprecation preamble (runs first) and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message and never crash the plugin.
+`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Three things are injected into the eval scope before user code runs: the sync-to-async deprecation preamble (runs first), the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`), and the active file's taste profile (`tf.taste`). The daemon wraps the profile in an IIFE and assigns the result to `tf.taste` before appending user code. So generated code calls `figma.*`, `tf.*`, and `tf.taste.*` directly. Eval errors return a clean message and never crash the plugin.
 
 ## Routing registry (Phase 4)
 
@@ -75,7 +76,18 @@ Each MCP session is paired to a `fileKey` by an explicit pick or the sole connec
 
 ## Helper layer
 
-The `tf` namespace is a compact JS craft library injected into every eval. Source lives in `plugin/src/helpers.ts` (pure logic unit-tested; figma glue smoke-tested), exposed via `createTf(figma)` and passed into the eval as `tf`. The compact API reference is `helpers/tf-api.md` (this is what the model reads to learn the helpers cheaply). Built so far: auto-layout `frame` (per-axis sizing, transparent by default), `text` (font-load, optional `width` for wrapping), `rect`, `color`/`solid`, `loadFonts`, `append`, `clear`, `findOrCreate` (idempotent-by-name), `commit`. Still to build (Phase 6 tail): deck/slide scaffolds, component instantiation, variable read/write, export. All functions use the async Figma API surface required by `documentAccess: dynamic-page`.
+The `tf` namespace is a compact JS craft library injected into every eval. Source lives in `plugin/src/helpers.ts` (pure logic unit-tested; figma glue smoke-tested), exposed via `createTf(figma)` and passed into the eval as `tf`. The compact API reference is `helpers/tf-api.md` (this is what the model reads to learn the helpers cheaply). The library is complete as of Phase 6. Categories and members:
+
+- Layout primitives: `frame` (per-axis sizing, transparent by default), `rect`, `append`, `clear`, `findOrCreate` (idempotent-by-name).
+- Text and fonts: `text` (font-load, optional `width` for wrapping), `loadFonts`, `color`, `solid`.
+- Decks and slides: `deck`, `slide`, `slidePosition`, `chunk`.
+- Component instances: `instance`, `instanceByKey`.
+- Variables: `getVariable`, `setVariableValue`, `readVariableValue`.
+- Export: `export`.
+- Utilities: `skipInvisible`, `findAll`, `commit`.
+- Runtime-injected: `tf.taste` (the active file's taste profile; set by the daemon before user code runs).
+
+All functions use the async Figma API surface required by `documentAccess: dynamic-page`.
 
 Idempotency pattern for re-runnable sections: `findOrCreate(parent, name, factory)` then `clear(node)` then rebuild. `findOrCreate` protects only the named node, so `clear` before rebuilding prevents duplicated children on a resume.
 
@@ -85,7 +97,7 @@ Idempotency pattern for re-runnable sections: `findOrCreate(parent, name, factor
 
 ## Skill layer
 
-`skills/` (Phase 7+): the design-worker recipes and the generic taste baseline. Brand/project packs load on top at runtime. The public build ships only the generic baseline.
+`skills/` (Phase 7+): the design-worker recipes and swappable per-file taste profiles. Profiles live in `skills/profiles/`. Three built-ins ship with the product: the impeccable default, editorial, and minimal. Custom profiles go in `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles`); the daemon scans that directory at startup. Each open file tracks its active profile via plugin data. The daemon prepends the active profile to the eval payload as `tf.taste`.
 
 ## Ports
 
@@ -106,3 +118,4 @@ Both are overridable via `TURBOFIG_MCP_PORT` and `TURBOFIG_WS_PORT` environment 
 | `TURBOFIG_WS_PORT` | 18847 | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |
+| `TURBOFIG_PROFILES_DIR` | `~/.turbofig/profiles` | Scanned at daemon startup for custom `.js` taste profiles |

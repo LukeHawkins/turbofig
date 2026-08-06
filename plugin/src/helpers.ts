@@ -172,8 +172,8 @@ export function chunk<T>(items: T[], size = 75): T[][] {
  * modes are invalid. The caller must not apply them to the node.
  *
  * Axis mapping:
- *   VERTICAL   — primary axis is height, counter axis is width.
- *   HORIZONTAL — primary axis is width, counter axis is height.
+ *   VERTICAL: primary axis is height, counter axis is width.
+ *   HORIZONTAL: primary axis is width, counter axis is height.
  */
 export function axisSizing(
   direction: "NONE" | "HORIZONTAL" | "VERTICAL",

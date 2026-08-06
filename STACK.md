@@ -2,7 +2,7 @@
 
 ## Rust (daemon/)
 
-In Cargo.toml now (through Phase 3):
+In Cargo.toml now:
 - `tokio` 1 (features = ["rt-multi-thread", "net", "macros", "sync", "time", "fs"])
 - `rmcp` 3.1.0 (features = ["server", "macros", "transport-streamable-http-server"]; `legacy_session_mode` is a config field, not a feature)
 - `axum` 0.8 (features = ["ws"]): the ws feature serves the plugin WebSocket
@@ -11,6 +11,7 @@ In Cargo.toml now (through Phase 3):
 - `futures-util` 0.3: WebSocket sink/stream split
 - `base64` 0.22: decode the plugin's PNG screenshot bytes (Phase 3)
 - `notify` 6: event-driven file-bridge wakes (FSEvents / inotify), no busy polling
+- `http` 1: reads the `mcp-session-id` header from MCP HTTP request parts for session routing (Phase 4)
 - `image` 0.25 (default-features off, features = ["png"]): downscale screenshots to a longest-edge cap (Phase 5)
 - `reqwest` 0.12 (features = ["json"]): dev-dependency, transport integration test
 - `tokio-tungstenite` 0.24: dev-dependency, a WebSocket client for tests
