@@ -158,7 +158,7 @@ fn builtin_profiles() -> HashMap<String, String> {
 /// Build a profile map starting from the built-in profiles.
 /// When `dir` is Some and exists, load every `.js` file in it as an additional
 /// profile keyed by the file stem. A built-in id always wins over a custom file
-/// of the same name. Unreadable files are silently ignored.
+/// of the same name. Unreadable files are logged to stderr and skipped.
 fn load_profiles(dir: Option<&std::path::Path>) -> HashMap<String, String> {
     let mut profiles = builtin_profiles();
     let Some(dir) = dir else {
@@ -178,8 +178,15 @@ fn load_profiles(dir: Option<&std::path::Path>) -> HashMap<String, String> {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                // Report an unreadable file. Do not confuse it later with an
+                // unknown id: the resolve path warns "unknown profile" only for
+                // ids that were never registered, not for files that failed here.
+                eprintln!("Turbofig: failed to read profile {}: {e}", path.display());
+                continue;
+            }
         };
         profiles.entry(stem.to_owned()).or_insert(source);
     }
@@ -2036,6 +2043,81 @@ mod tests {
 
         let result = run_execute(&state, None, None, user_code).await;
         assert_eq!(result["ok"], json!(true), "execute must succeed");
+    }
+
+    #[tokio::test]
+    async fn run_execute_eval_failure_still_carries_profile_warning() {
+        // An unknown profile must attach its warning even when the eval fails.
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-bogus".to_owned(),
+            "Bogus File".to_owned(),
+            "bogus".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                // Reply with an eval failure.
+                state_clone.resolve(req_id, json!({"ok": false, "error": "boom"}));
+            }
+        });
+
+        let result = run_execute(&state, None, None, "throw new Error('boom');").await;
+        assert_eq!(result["ok"], json!(false), "execute must report failure");
+        assert_eq!(result["error"], json!("boom"), "error passes through");
+        let warning = result["warning"].as_str().expect("warning must be present");
+        assert!(
+            warning.contains("impeccable"),
+            "eval-failure reply must still carry the profile warning"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_execute_merges_budget_and_profile_warnings() {
+        // A large result under an unknown profile must carry BOTH warnings, joined.
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-bogus".to_owned(),
+            "Bogus File".to_owned(),
+            "bogus".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                // A result over the read budget forces the budget warning.
+                let big = "x".repeat(READ_BUDGET_BYTES + 100);
+                state_clone.resolve(req_id, json!({"ok": true, "result": big}));
+            }
+        });
+
+        let result = run_execute(&state, None, None, "return 'big';").await;
+        assert_eq!(result["ok"], json!(true), "execute must succeed");
+        let warning = result["warning"].as_str().expect("warning must be present");
+        assert!(
+            warning.contains("budget"),
+            "must carry the read-budget warning"
+        );
+        assert!(
+            warning.contains("impeccable"),
+            "must carry the profile warning"
+        );
+        assert!(warning.contains("; "), "the two warnings must be joined");
     }
 
     // Custom profiles directory tests
