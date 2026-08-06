@@ -1,11 +1,14 @@
 import { createTf } from "./helpers";
 import {
+  applySetProfile,
   buildExecuteError,
   buildExecuteSuccess,
+  buildFileInfo,
   buildResult,
   buildScreenshot,
   buildSelection,
   isDaemonMessage,
+  readProfileId,
   safeResult,
   serializeNode,
   wrapUserCode,
@@ -13,12 +16,15 @@ import {
 
 figma.showUI(__html__, { width: 320, height: 240 });
 
+/** Posts a FILE_INFO message to the UI with the current file identity and profile. */
+function emitFileInfo(): void {
+  figma.ui.postMessage(
+    buildFileInfo(figma.fileKey ?? "", figma.root.name, readProfileId(figma.root)),
+  );
+}
+
 /* Send FILE_INFO to the UI so it can identify the file to the daemon on connect. */
-figma.ui.postMessage({
-  type: "FILE_INFO",
-  fileKey: figma.fileKey ?? "",
-  name: figma.root.name,
-});
+emitFileInfo();
 
 figma.ui.onmessage = (msg: unknown) => {
   if (!isDaemonMessage(msg)) return;
@@ -110,6 +116,11 @@ figma.ui.onmessage = (msg: unknown) => {
       })();
       break;
     }
+    case "SET_PROFILE":
+      /* Store the new profile id in the document, then re-emit FILE_INFO. */
+      applySetProfile(figma.root, msg.profileId);
+      emitFileInfo();
+      break;
     default:
       break;
   }

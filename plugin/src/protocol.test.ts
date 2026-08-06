@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applySetProfile,
   backoffDelayMs,
   buildExecuteError,
   buildExecuteSuccess,
+  buildFileInfo,
   buildResult,
   buildScreenshot,
   buildSelection,
   DEPRECATION_PREAMBLE,
   isDaemonMessage,
   MAX_SELECTION_DEPTH,
+  readProfileId,
   safeResult,
   serializeNode,
   toSelectionItem,
@@ -17,7 +20,9 @@ import {
 
 describe("isDaemonMessage", () => {
   test("accepts a valid FILE_INFO message", () => {
-    expect(isDaemonMessage({ type: "FILE_INFO", fileKey: "abc123", name: "My File" })).toBe(true);
+    expect(
+      isDaemonMessage({ type: "FILE_INFO", fileKey: "abc123", name: "My File", profileId: "" }),
+    ).toBe(true);
   });
 
   test("accepts a valid STATUS message", () => {
@@ -461,5 +466,97 @@ describe("buildScreenshot", () => {
 
   test("result passes the isDaemonMessage guard", () => {
     expect(isDaemonMessage(buildScreenshot(1, "abc", 100, 50))).toBe(true);
+  });
+});
+
+describe("buildFileInfo", () => {
+  test("returns a FILE_INFO carrying fileKey, name, and profileId", () => {
+    const msg = buildFileInfo("key1", "Design File", "minimal");
+    expect(msg.type).toBe("FILE_INFO");
+    expect(msg.fileKey).toBe("key1");
+    expect(msg.name).toBe("Design File");
+    expect(msg.profileId).toBe("minimal");
+  });
+
+  test("result passes the isDaemonMessage guard", () => {
+    expect(isDaemonMessage(buildFileInfo("k", "n", ""))).toBe(true);
+  });
+
+  test("accepts an empty profileId string", () => {
+    const msg = buildFileInfo("k", "n", "");
+    expect(msg.profileId).toBe("");
+  });
+});
+
+describe("isDaemonMessage: SET_PROFILE branch", () => {
+  test("accepts a well-formed SET_PROFILE message", () => {
+    expect(isDaemonMessage({ type: "SET_PROFILE", profileId: "minimal" })).toBe(true);
+  });
+
+  test("accepts a SET_PROFILE with an empty profileId string", () => {
+    expect(isDaemonMessage({ type: "SET_PROFILE", profileId: "" })).toBe(true);
+  });
+
+  test("rejects SET_PROFILE missing profileId", () => {
+    expect(isDaemonMessage({ type: "SET_PROFILE" })).toBe(false);
+  });
+
+  test("rejects SET_PROFILE with a numeric profileId", () => {
+    expect(isDaemonMessage({ type: "SET_PROFILE", profileId: 42 })).toBe(false);
+  });
+
+  test("FILE_INFO with profileId passes the guard", () => {
+    expect(
+      isDaemonMessage({ type: "FILE_INFO", fileKey: "f", name: "n", profileId: "minimal" }),
+    ).toBe(true);
+  });
+
+  test("FILE_INFO missing profileId is rejected", () => {
+    expect(isDaemonMessage({ type: "FILE_INFO", fileKey: "f", name: "n" })).toBe(false);
+  });
+});
+
+describe("profile store helpers", () => {
+  /** Builds an in-memory PluginDataStore for testing. */
+  function makeMockStore(): {
+    getPluginData(key: string): string;
+    setPluginData(key: string, value: string): void;
+  } {
+    const data: Record<string, string> = {};
+    return {
+      getPluginData(key: string): string {
+        return key in data ? data[key] : "";
+      },
+      setPluginData(key: string, value: string): void {
+        data[key] = value;
+      },
+    };
+  }
+
+  test("readProfileId returns empty string when no profile is set", () => {
+    const store = makeMockStore();
+    expect(readProfileId(store)).toBe("");
+  });
+
+  test("applySetProfile writes a profileId that readProfileId then returns", () => {
+    const store = makeMockStore();
+    applySetProfile(store, "minimal");
+    expect(readProfileId(store)).toBe("minimal");
+  });
+
+  test("buildFileInfo round-trip: SET_PROFILE -> setPluginData -> FILE_INFO carries profileId", () => {
+    // Simulate the SET_PROFILE -> applySetProfile -> emitFileInfo path.
+    const store = makeMockStore();
+    applySetProfile(store, "minimal");
+    const msg = buildFileInfo("k", "n", readProfileId(store));
+    expect(msg.profileId).toBe("minimal");
+    expect(isDaemonMessage(msg)).toBe(true);
+  });
+
+  test("overwriting a profile replaces the previous value", () => {
+    const store = makeMockStore();
+    applySetProfile(store, "minimal");
+    applySetProfile(store, "vibrant");
+    expect(readProfileId(store)).toBe("vibrant");
   });
 });

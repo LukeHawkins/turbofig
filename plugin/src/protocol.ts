@@ -8,6 +8,14 @@ export interface FileInfoMessage {
   type: "FILE_INFO";
   fileKey: string;
   name: string;
+  /** Active taste profile for this file. Empty string when no profile is set. */
+  profileId: string;
+}
+
+/** Sent by the daemon to the plugin to set the active taste profile for the file. */
+export interface SetProfileMessage {
+  type: "SET_PROFILE";
+  profileId: string;
 }
 
 /** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */
@@ -74,7 +82,8 @@ export type DaemonMessage =
   | ExecuteMessage
   | GetSelectionMessage
   | ScreenshotMessage
-  | ResultMessage;
+  | ResultMessage
+  | SetProfileMessage;
 
 /**
  * Returns true when `x` is a well-formed DaemonMessage.
@@ -86,7 +95,11 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
   if (typeof msg.type !== "string") return false;
   switch (msg.type) {
     case "FILE_INFO":
-      return typeof msg.fileKey === "string" && typeof msg.name === "string";
+      return (
+        typeof msg.fileKey === "string" &&
+        typeof msg.name === "string" &&
+        typeof msg.profileId === "string"
+      );
     case "STATUS":
       return typeof msg.requestId === "number";
     case "EXECUTE":
@@ -97,9 +110,48 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
       return typeof msg.requestId === "number";
     case "RESULT":
       return typeof msg.requestId === "number";
+    case "SET_PROFILE":
+      return typeof msg.profileId === "string";
     default:
       return false;
   }
+}
+
+/** Plugin-data key used to persist the active taste profile per Figma file. */
+export const PROFILE_KEY = "turbofig:profile";
+
+/**
+ * Minimal interface for reading and writing Figma plugin data.
+ * Matches the shape of figma.root (and any FrameNode / DocumentNode).
+ * Use this in unit tests with a plain in-memory object.
+ */
+export interface PluginDataStore {
+  getPluginData(key: string): string;
+  setPluginData(key: string, value: string): void;
+}
+
+/**
+ * Returns the active taste profile id stored on the Figma document root.
+ * Returns an empty string when no profile has been set (Figma returns "" for unset keys).
+ */
+export function readProfileId(root: PluginDataStore): string {
+  return root.getPluginData(PROFILE_KEY);
+}
+
+/**
+ * Writes the given profile id to the Figma document root.
+ * Pass figma.root directly; it satisfies the PluginDataStore shape.
+ */
+export function applySetProfile(root: PluginDataStore, profileId: string): void {
+  root.setPluginData(PROFILE_KEY, profileId);
+}
+
+/**
+ * Builds a FILE_INFO message for the given file key, document name, and profile id.
+ * Use this in the plugin main thread to post file identity to the UI.
+ */
+export function buildFileInfo(fileKey: string, name: string, profileId: string): FileInfoMessage {
+  return { type: "FILE_INFO", fileKey, name, profileId };
 }
 
 /**
