@@ -18,7 +18,7 @@ Claude/AI  --curl / native MCP / file-bridge-->  Rust daemon  --WebSocket-->  Fi
 - **Helpers (JS, `helpers/`):** compact craft library injected into the eval context (auto-layout, decks, components, variables, perf rules).
 - **Skills (`skills/`):** the design-worker recipes + the generic taste baseline. User brand packs load on top.
 
-Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. All capability flows through `execute`. Never grow this. Each tool takes an optional `fileKey` to target one of several open files; omit it to use the paired or sole file.
+Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. All capability flows through `execute`. Never grow this. Each tool takes an optional `fileKey` to target one of several open files; omit it to use the paired or sole file. Read shaping is opt-in per call: `get_selection` takes optional `fields` (extra node props) and `depth` (child traversal, capped at 5); `screenshot` takes `maxDim` (downscale cap, default 1200) and `fullRes` (skip downscaling), and defaults to file mode. Large reads and inline screenshots over budget return an advisory `warning`.
 
 ## Always-on rules
 
