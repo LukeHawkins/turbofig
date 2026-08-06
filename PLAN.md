@@ -136,7 +136,7 @@ Goal: build the token and speed levers and take a PROVISIONAL measurement. The b
 
 Goal: reliable, fast Figma craft as a compact JS namespace injected into the eval context.
 
-**Reconciled 2026-08-05:** the Active-priority slice delivered the `tf` layout primitives, text and font handling, the async-only surface, the core perf rules (Promise.all fonts, chunk, commitUndo), and the compact API reference. The unchecked items below are still open: the extra perf helpers (`skipInvisibleInstanceChildren`, `findAllWithCriteria`), deck and slide scaffolds, component instantiation, variable read and write, export helpers, and the multi-slide-deck verify.
+**Completed 2026-08-06:** all items done. The Active-priority slice delivered the layout primitives, text and font handling, the async-only surface, and the core perf rules. This phase added the remaining `tf` helpers: `skipInvisible`, `findAll`, `chunk`, `slide`, `deck`, `instance`, `instanceByKey`, `getVariable`, `setVariableValue`, `readVariableValue`, `export`, plus the pure `slidePosition`. Two design contracts to keep: `tf.slide` defaults to `direction: "NONE"` (a plain frame) so slide children keep free x/y positions, and `tf.deck` throws when its `parent` uses auto-layout, because auto-layout silently overrides the grid positions. The multi-slide-deck verify is `plugin/src/deck.test.ts` (mock PluginAPI, no live Figma).
 
 - [x] Perf rules baked in: fonts via `Promise.all`, `skipInvisibleInstanceChildren`, `findAllWithCriteria`, `commitUndo`, chunk 50-100 nodes
 - [x] Layout primitives: auto-layout builders (vertical/horizontal, sizing, spacing, padding)
