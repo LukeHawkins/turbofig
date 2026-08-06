@@ -11,12 +11,12 @@ In Cargo.toml now (through Phase 3):
 - `futures-util` 0.3: WebSocket sink/stream split
 - `base64` 0.22: decode the plugin's PNG screenshot bytes (Phase 3)
 - `notify` 6: event-driven file-bridge wakes (FSEvents / inotify), no busy polling
+- `image` 0.25 (default-features off, features = ["png"]): downscale screenshots to a longest-edge cap (Phase 5)
 - `reqwest` 0.12 (features = ["json"]): dev-dependency, transport integration test
 - `tokio-tungstenite` 0.24: dev-dependency, a WebSocket client for tests
 - `tempfile` 3: dev-dependency, temp dirs for the file-bridge tests
 
 Later phases (not yet added):
-- `image` 0.25 (Phase 5, screenshot downscaling)
 - `rustls` (Phase 10, musl and cross-platform builds)
 
 ## TypeScript (plugin/)
@@ -32,5 +32,5 @@ Later phases (not yet added):
 ## Notes
 
 - The WebSocket server (Phase 2) uses the axum `ws` feature, not a `tokio-tungstenite` server dep. `tokio-tungstenite` is a dev-dependency: a WebSocket client for the integration tests.
-- `image` and `rustls` are not yet added (Phase 5 and Phase 10).
+- `image` was added in Phase 5 (PNG-only, screenshot downscaling). `rustls` is not yet added (Phase 10).
 - Never use npm, pnpm, or yarn. Bun only.

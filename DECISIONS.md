@@ -32,6 +32,7 @@
 
 10. **Context firewall is enforced, not just convention. Inline screenshots need an explicit opt-in and warn past a budget. File-mode plus subagent-read is the default path. Large reads without depth or fields are capped or warned.**
     Why: for a redistributed product the token promise cannot depend on client prompt discipline alone.
+    Built in Phase 5: the "cap or warn" choice is an advisory `warning` field, never truncation. A read over `READ_BUDGET_BYTES` (20000) or an inline screenshot over `INLINE_SCREENSHOT_BUDGET_BYTES` (100000) gains a `warning` that names the remedy; the daemon never drops data, because truncating an `execute` result could corrupt it. Screenshots downscale to a longest-edge cap (`maxDim`, default 1200, floored at 1) via the `image` crate, and default to file mode; `fullRes` plus `return:"inline"` is the only high-res path. Read shaping is additive: `get_selection` keeps its seven-field base shape and adds opt-in `fields` and `depth` (capped at 5; `children` is reserved for the depth mechanism).
 
 11. **Brand packs bind per session, keyed like the routing registry.**
     Why: concurrent multi-file sessions may need different brands at once, so a single global active pack would break isolation.
