@@ -33,7 +33,7 @@ Turbofig serves a user-facing protocol, not a dev server. Default HTTP MCP port 
 
 ## Testing policy
 
-Tests ship with every item, in the same commit. Never defer tests to a later phase. An item is done only when its new behaviour has a test that runs and passes: Rust via `cargo test` (`#[test]` / `#[tokio::test]`), plugin/JS logic via `bun test`. `/phase` verifies the tests exist and are real (not empty stubs) before it commits. The Phase 12 hardening pass raises coverage, it does not introduce the first tests.
+Tests ship with every item, in the same commit. Never defer tests to a later phase. An item is done only when its new behaviour has a test that runs and passes: Rust via `cargo test` (`#[test]` / `#[tokio::test]`), plugin/JS logic via `bun test`. `/phase` verifies the tests exist and are real (not empty stubs) before it commits. The Phase 13 hardening pass raises coverage, it does not introduce the first tests.
 
 ## Commit hygiene (enforced)
 
@@ -194,7 +194,17 @@ Goal: a clean, good-looking plugin panel. Clear connection state.
 - [x] Configurable daemon port: a port field in the plugin UI so the plugin connects to whatever `TURBOFIG_WS_PORT` the daemon uses (default 18847). Widen the manifest `allowedDomains` to cover localhost on the configured port, within Figma's static-whitelist constraint.
 - [x] Clarkson easter egg: a halftone dot-matrix render of Jeremy Clarkson going very fast, embedded as a `<pre>` in the panel footer. Style: photographic halftone using small repeated characters (`o`, `-`, `.`, ` `) to produce a greyscale dither — not hand-drawn line art. Source photo: `plugin/assets/clarkson-source.jpg` (drop in manually before running this phase). A Bun script at `scripts/img-to-halftone.ts` converts it: reads the image, samples each cell at ~3×6px, maps luminance to a density character, writes the output to `plugin/assets/clarkson.txt`. The plugin embeds the `.txt` content inline at build time (Bun reads it and injects it as a JS template literal). Render at `font-size: 5px`, `line-height: 1`, monospace, max-width the panel. No tooltip. No label. The joke stands alone.
 
-## Phase 10: Packaging & distribution (pure export, easy updates)
+## Phase 10: Out-of-the-box usability (discovery, taste-on-by-default, one-daemon clarity)
+
+Goal: a new user connects and gets great, on-taste output with zero ritual and no need to read the repo. Surfaced by the first live Phase 9 test (2026-08-06): the AI did not know turbofig existed or how to drive it, the generated output ignored the taste profile (all purple), and the port field implied a wrong multi-file model. This phase makes the happy path obvious and correct, before packaging and presentation.
+
+- [ ] Self-describing daemon: a plain GET or any non-MCP request to the HTTP port returns a short "how to use turbofig" payload (the four tools, the file-bridge protocol, how to target a file by `fileKey`, and that the panel shows the file and the port). An AI told only "turbofig is on port 18846" can then bootstrap without the repo. Test: a GET to the port returns the help payload; the MCP and file-bridge paths still work.
+- [ ] Discoverability hook: ship a way for Claude to learn turbofig exists and is running (a small skill or a CLAUDE.md snippet, and a native `mcpServers` entry for allowlisted users). The user must not have to say "look in the turbofig repo". Test: the shipped hook names the port and the connect steps.
+- [ ] Taste on by default: confirm the file's selected profile is injected as `tf.taste` for that connection, and make the design workflow consult it so generated designs obey the profile instead of defaulting to generic purple. Fix the injection if the live all-purple result was a real gap. Strengthen `design.md` and the onboarding so the taste is applied without being asked. Test: an execute under `impeccable` sees `tf.taste`; a build uses the profile palette and tokens, not raw defaults.
+- [ ] One-daemon connection clarity: one daemon serves every open file on the default port; a Claude targets a file by `fileKey` or pairing, never by port. Hide the port field behind an "Advanced" disclosure (default hidden) and make the file and the pairing the prominent, self-explanatory part of the panel. Show the full `fileKey` with a one-click copy and a ready "point a Claude at this file" hint, so targeting one of several open files is a single glance and copy. When one file is open, no targeting is needed; when several are open, the copied `fileKey` (or a one-time pairing) selects the file. Update the panel copy and the docs so a new user understands the model at a glance. Test: the panel renders without the port field by default; the advanced toggle reveals it; the full `fileKey` is present and copyable.
+- [ ] Verify: a fresh user opens a file, points a Claude at it with no repo reading, and gets an on-taste design; two files with two Claudes stay isolated on the one default port.
+
+## Phase 11: Packaging & distribution (pure export, easy updates)
 
 Goal: users install a compiled binary with no source and no compiler; updates are trivial. Ship macOS + npx first, then widen.
 
@@ -208,7 +218,7 @@ Goal: users install a compiled binary with no source and no compiler; updates ar
 - [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs over the file-bridge
 - [x] Productionize the file-bridge (pulled forward after Phase 3 for speed): client writes are race-safe by a file-stability check (a half-written file fails to parse and is retried, so no second sentinel file is needed) and the daemon now wakes on `notify` filesystem events with a 50 ms backstop poll for near-zero idle CPU. On macOS FSEvents delivery bounds latency at about 10-15 ms; on Linux inotify it is sub-millisecond. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
 
-## Phase 11: Presentation (README-first)
+## Phase 12: Presentation (README-first)
 
 Goal: newcomers discover, understand, and install from the README alone.
 
@@ -219,7 +229,7 @@ Goal: newcomers discover, understand, and install from the README alone.
 - [ ] Docs: brand-pack authoring, skill authoring, architecture overview
 - [ ] Badges + crates.io/npm links + license
 
-## Phase 12: Hardening & maintainability
+## Phase 13: Hardening & maintainability
 
 Goal: robust, testable, cheap to maintain.
 

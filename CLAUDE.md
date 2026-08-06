@@ -39,7 +39,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Tooling
 
-- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`, `base64` (decode screenshot PNG), `notify` (event-driven file-bridge wakes), `http` (read the `mcp-session-id` header from the request parts for session routing), `image` (`png` only, downscale screenshots to a longest-edge cap). Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Later crates: `rustls` (Phase 10).
+- **Rust** (daemon): Cargo, clippy, rustfmt. Crates now: `rmcp`, `axum` (`ws` feature), `tokio` (`sync`, `time`, `fs`), `serde_json`, `serde`, `futures-util`, `base64` (decode screenshot PNG), `notify` (event-driven file-bridge wakes), `http` (read the `mcp-session-id` header from the request parts for session routing), `image` (`png` only, downscale screenshots to a longest-edge cap). Dev: `reqwest`, `tokio-tungstenite` (test WS client), `tempfile`. Later crates: `rustls` (Phase 11).
 - **Bun** (plugin + scripts): never npm/pnpm/yarn. Biome for TS lint+format. TypeScript strict.
 - **Ports** are a product contract, not dev servers: HTTP `18846`, WS `18847`, both env-overridable. This intentionally overrides the usual "randomised high ports" rule (see `DECISIONS.md`). Three more env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default 30000), `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`), and `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles`, scanned at startup for custom `.js` taste profiles).
 
