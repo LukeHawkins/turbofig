@@ -137,23 +137,71 @@ pub struct AppState {
     profiles: HashMap<String, String>,
 }
 
+/// Return the built-in taste profiles embedded at compile time.
+fn builtin_profiles() -> HashMap<String, String> {
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "impeccable".to_owned(),
+        include_str!("../../skills/profiles/impeccable.js").to_owned(),
+    );
+    profiles.insert(
+        "editorial".to_owned(),
+        include_str!("../../skills/profiles/editorial.js").to_owned(),
+    );
+    profiles.insert(
+        "minimal".to_owned(),
+        include_str!("../../skills/profiles/minimal.js").to_owned(),
+    );
+    profiles
+}
+
+/// Build a profile map starting from the built-in profiles.
+/// When `dir` is Some and exists, load every `.js` file in it as an additional
+/// profile keyed by the file stem. A built-in id always wins over a custom file
+/// of the same name. Unreadable files are silently ignored.
+fn load_profiles(dir: Option<&std::path::Path>) -> HashMap<String, String> {
+    let mut profiles = builtin_profiles();
+    let Some(dir) = dir else {
+        return profiles;
+    };
+    if !dir.exists() {
+        return profiles;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return profiles;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("js") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        profiles.entry(stem.to_owned()).or_insert(source);
+    }
+    profiles
+}
+
+/// Return the profiles directory from `TURBOFIG_PROFILES_DIR`.
+/// Default: `~/.turbofig/profiles` (derived from the bridge base directory).
+pub fn profiles_dir_from_env() -> std::path::PathBuf {
+    match std::env::var("TURBOFIG_PROFILES_DIR") {
+        Ok(val) => std::path::PathBuf::from(val),
+        Err(_) => bridge_dir_from_env().join("profiles"),
+    }
+}
+
 impl AppState {
-    /// Private constructor. Both public constructors delegate here.
-    fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>) -> Self {
-        // Embed the three built-in taste profiles at compile time.
-        let mut profiles = HashMap::new();
-        profiles.insert(
-            "impeccable".to_owned(),
-            include_str!("../../skills/profiles/impeccable.js").to_owned(),
-        );
-        profiles.insert(
-            "editorial".to_owned(),
-            include_str!("../../skills/profiles/editorial.js").to_owned(),
-        );
-        profiles.insert(
-            "minimal".to_owned(),
-            include_str!("../../skills/profiles/minimal.js").to_owned(),
-        );
+    /// Private constructor. All public constructors delegate here.
+    fn build(
+        timeout: Duration,
+        screenshot_dir: Option<std::path::PathBuf>,
+        profiles: HashMap<String, String>,
+    ) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
             conn_counter: AtomicU64::new(1),
@@ -168,18 +216,26 @@ impl AppState {
 
     /// Create a new AppState. Reads the timeout from TURBOFIG_REQUEST_TIMEOUT_MS.
     /// Sets screenshot_dir to `~/.turbofig/outbox`.
+    /// Loads custom profiles from `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles`).
     pub fn new() -> Self {
         Self::build(
             request_timeout_from_env(),
             Some(bridge_dir_from_env().join("outbox")),
+            load_profiles(Some(&profiles_dir_from_env())),
         )
     }
 
     /// Create a new AppState with an explicit request timeout.
     /// Use this in tests to set a short timeout without touching global env.
-    /// Sets screenshot_dir to None; tests supply their own output dir.
+    /// Sets screenshot_dir to None. Loads built-in profiles only.
     pub fn with_timeout(d: Duration) -> Self {
-        Self::build(d, None)
+        Self::build(d, None, load_profiles(None))
+    }
+
+    /// Create a new AppState with a custom profiles directory.
+    /// Uses the env timeout and no screenshot dir. Use in tests that inject profiles.
+    pub fn with_profiles_dir(dir: std::path::PathBuf) -> Self {
+        Self::build(request_timeout_from_env(), None, load_profiles(Some(&dir)))
     }
 
     /// Return a clone of the screenshot output directory, if configured.
@@ -1980,5 +2036,91 @@ mod tests {
 
         let result = run_execute(&state, None, None, user_code).await;
         assert_eq!(result["ok"], json!(true), "execute must succeed");
+    }
+
+    // Custom profiles directory tests
+
+    #[test]
+    fn custom_profile_loaded_from_dir() {
+        // A .js file in the profiles dir must be loadable by its stem.
+        // Built-ins must still resolve from the same instance.
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("create temp dir");
+        let js = r#"const taste = {id:"myfancy"};"#;
+        std::fs::write(dir.path().join("myfancy.js"), js).expect("write profile");
+
+        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
+
+        let (profile_js, warn) = state.resolve_profile_js("myfancy");
+        assert!(
+            profile_js.contains("myfancy"),
+            "custom profile must contain the expected content"
+        );
+        assert!(warn.is_none(), "no warning for a valid custom profile");
+
+        // Built-ins must still work.
+        let (imp_js, imp_warn) = state.resolve_profile_js("impeccable");
+        assert!(
+            imp_js.contains("const taste"),
+            "impeccable must still resolve"
+        );
+        assert!(imp_warn.is_none(), "no warning for impeccable");
+
+        let (ed_js, ed_warn) = state.resolve_profile_js("editorial");
+        assert!(
+            ed_js.contains("const taste"),
+            "editorial must still resolve"
+        );
+        assert!(ed_warn.is_none(), "no warning for editorial");
+
+        let (min_js, min_warn) = state.resolve_profile_js("minimal");
+        assert!(min_js.contains("const taste"), "minimal must still resolve");
+        assert!(min_warn.is_none(), "no warning for minimal");
+    }
+
+    #[test]
+    fn builtin_wins_over_custom_collision() {
+        // A custom file named impeccable.js must NOT override the real built-in.
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("create temp dir");
+        let sentinel = r#"const taste = {id:"SENTINEL"};"#;
+        std::fs::write(dir.path().join("impeccable.js"), sentinel).expect("write sentinel profile");
+
+        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
+
+        let (js, warn) = state.resolve_profile_js("impeccable");
+        assert!(
+            !js.contains("SENTINEL"),
+            "built-in must win; SENTINEL must not appear"
+        );
+        assert!(warn.is_none(), "no warning for impeccable");
+    }
+
+    #[test]
+    fn repo_profiles_dir_has_only_three_builtins() {
+        // The public repo ships exactly three profiles: impeccable, editorial, minimal.
+        // No private packs may be committed alongside them.
+        use std::collections::HashSet;
+        let profiles_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../skills/profiles");
+        let entries = std::fs::read_dir(profiles_path).expect("skills/profiles must exist");
+        let stems: HashSet<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("js") {
+                    p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let expected: HashSet<String> = ["impeccable", "editorial", "minimal"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            stems, expected,
+            "skills/profiles must contain exactly the three built-in profiles"
+        );
     }
 }
