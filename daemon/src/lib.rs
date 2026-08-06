@@ -1192,6 +1192,55 @@ impl ServerHandler for StatusHandler {
 
 // ── MCP HTTP server ───────────────────────────────────────────────────────────
 
+/// Help text returned by GET / and the fallback handler on the MCP HTTP port.
+///
+/// An AI that discovers port 18846 can read this to bootstrap without the repo.
+pub const HELP_TEXT: &str = "\
+Turbofig — always-on Figma design daemon
+=========================================
+
+This HTTP port speaks MCP at POST /mcp (streamable-http, legacy session mode).
+Include the mcp-session-id header on all requests after initialize.
+
+Four tools (surface is locked at four):
+  turbofig_execute        Run arbitrary Figma Plugin API JavaScript in the live file.
+  turbofig_get_selection  Return compact selection info from the active file.
+  turbofig_screenshot     Export a PNG from the active file.
+  turbofig_status         Return daemon and plugin state, including the active profile id.
+
+Every tool accepts an optional fileKey parameter.
+Set fileKey to target one of several open Figma files.
+Omit fileKey to use the paired file or the sole connected file.
+
+File-bridge (dialog-free path)
+-------------------------------
+Write a JSON job to ~/.turbofig/inbox/ and read the result from ~/.turbofig/outbox/.
+Override the bridge directory with the TURBOFIG_BRIDGE_DIR environment variable.
+Job ops mirror the tools: execute, get_selection, screenshot, status.
+
+Plugin panel
+------------
+The Figma plugin panel shows the active file, its fileKey, the bound session,
+and the configured daemon port.
+
+Ports (both env-overridable)
+-----------------------------
+  18846  HTTP MCP port  (TURBOFIG_MCP_PORT)
+  18847  WebSocket port for plugins  (TURBOFIG_WS_PORT)
+";
+
+/// Handler for GET / and the fallback route. Returns the help payload as plain text.
+async fn help_handler() -> impl IntoResponse {
+    (
+        axum::http::StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
+        HELP_TEXT,
+    )
+}
+
 /// Build the axum router with the MCP service mounted at /mcp.
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
     // StreamableHttpServerConfig is #[non_exhaustive], so construct via Default
@@ -1204,7 +1253,10 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         LocalSessionManager::default().into(),
         config,
     );
-    axum::Router::new().nest_service("/mcp", service)
+    axum::Router::new()
+        .route("/", axum::routing::get(help_handler))
+        .nest_service("/mcp", service)
+        .fallback(help_handler)
 }
 
 /// Serve the MCP router on the given TCP listener.
