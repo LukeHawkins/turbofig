@@ -11,6 +11,7 @@ import {
   buildSetProfile,
   DEPRECATION_PREAMBLE,
   isDaemonMessage,
+  isInboundMessage,
   MAX_SELECTION_DEPTH,
   readProfileId,
   safeResult,
@@ -602,5 +603,49 @@ describe("buildSetProfile", () => {
     const fileInfo = buildFileInfo("k", "n", readProfileId(store));
     expect(fileInfo.profileId).toBe("minimal");
     expect(isDaemonMessage(fileInfo)).toBe(true);
+  });
+});
+
+describe("isInboundMessage", () => {
+  test("accepts STATUS", () => {
+    expect(isInboundMessage({ type: "STATUS", requestId: 1 })).toBe(true);
+  });
+
+  test("accepts EXECUTE", () => {
+    expect(isInboundMessage({ type: "EXECUTE", requestId: 1, code: "return 1;" })).toBe(true);
+  });
+
+  test("accepts GET_SELECTION", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 2 })).toBe(true);
+  });
+
+  test("accepts SCREENSHOT", () => {
+    expect(isInboundMessage({ type: "SCREENSHOT", requestId: 3 })).toBe(true);
+  });
+
+  test("accepts SET_PROFILE", () => {
+    expect(isInboundMessage({ type: "SET_PROFILE", profileId: "minimal" })).toBe(true);
+  });
+
+  test("rejects FILE_INFO (outbound only)", () => {
+    expect(isInboundMessage({ type: "FILE_INFO", fileKey: "k", name: "n", profileId: "" })).toBe(
+      false,
+    );
+  });
+
+  test("rejects RESULT (outbound only)", () => {
+    expect(isInboundMessage({ type: "RESULT", requestId: 1 })).toBe(false);
+  });
+
+  test("rejects null", () => {
+    expect(isInboundMessage(null)).toBe(false);
+  });
+
+  test("rejects an unknown type", () => {
+    expect(isInboundMessage({ type: "UNKNOWN" })).toBe(false);
+  });
+
+  test("rejects EXECUTE missing code", () => {
+    expect(isInboundMessage({ type: "EXECUTE", requestId: 1 })).toBe(false);
   });
 });

@@ -91,6 +91,42 @@ export type DaemonMessage =
   | SetProfileMessage;
 
 /**
+ * Union of messages the plugin main thread can receive.
+ * FILE_INFO and RESULT are outbound-only and are excluded.
+ */
+export type InboundMessage =
+  | StatusMessage
+  | ExecuteMessage
+  | GetSelectionMessage
+  | ScreenshotMessage
+  | SetProfileMessage;
+
+/**
+ * Returns true when `x` is a well-formed inbound message for the plugin main thread.
+ * Accepts STATUS, EXECUTE, GET_SELECTION, SCREENSHOT, and SET_PROFILE only.
+ * Rejects outbound-only types: FILE_INFO and RESULT.
+ */
+export function isInboundMessage(x: unknown): x is InboundMessage {
+  if (typeof x !== "object" || x === null) return false;
+  const msg = x as Record<string, unknown>;
+  if (typeof msg.type !== "string") return false;
+  switch (msg.type) {
+    case "STATUS":
+      return typeof msg.requestId === "number";
+    case "EXECUTE":
+      return typeof msg.requestId === "number" && typeof msg.code === "string";
+    case "GET_SELECTION":
+      return typeof msg.requestId === "number";
+    case "SCREENSHOT":
+      return typeof msg.requestId === "number";
+    case "SET_PROFILE":
+      return typeof msg.profileId === "string";
+    default:
+      return false;
+  }
+}
+
+/**
  * Returns true when `x` is a well-formed message for the plugin main thread.
  * Most types arrive from the daemon over the WebSocket. `SET_PROFILE` arrives
  * from the plugin UI iframe. Use this guard before the main thread handles any
