@@ -16,6 +16,21 @@ const taste = {
   label: "Editorial",
 
   /**
+   * Colour palette. Six hex tokens: one expressive editorial brand hue (deep
+   * crimson/burgundy, classic print), one warm terracotta accent, two warm
+   * paper surfaces, and two warm text values. text is not pure black (#000000)
+   * per the pure-black blocklist entry.
+   */
+  palette: {
+    brand: "#8B2330",
+    accent: "#C4622D",
+    surface: "#FAF8F3",
+    surfaceAlt: "#F0EBE3",
+    text: "#1A1410",
+    textMuted: "#6B5A4E",
+  },
+
+  /**
    * Spacing scale in px (ascending). Denser than impeccable to support
    * high-information layouts. Use these values for padding, gap, and margin.
    */

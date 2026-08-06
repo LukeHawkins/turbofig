@@ -111,4 +111,55 @@ describe("impeccable taste profile", () => {
       expect(bl).toContain(id);
     }
   });
+
+  test("palette exists and carries all six required keys", () => {
+    const p = taste.palette as Record<string, unknown>;
+    expect(typeof p).toBe("object");
+    expect(p).not.toBeNull();
+
+    const requiredKeys = ["brand", "accent", "surface", "surfaceAlt", "text", "textMuted"];
+    for (const key of requiredKeys) {
+      expect(typeof p[key]).toBe("string");
+      expect((p[key] as string).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("palette.text is not pure black (#000000)", () => {
+    // The pure-black blocklist entry in this profile forbids #000000 fills.
+    // text is the primary text token and must obey this constraint.
+    const p = taste.palette as Record<string, string>;
+    expect(p.text).not.toBe("#000000");
+  });
+
+  test("palette.brand is not a purple or violet hue", () => {
+    // The live slop incident produced an all-purple design because the workflow
+    // defaulted to a generic purple when no palette was present. This deny-list
+    // guards the impeccable brand token against that regression. The listed
+    // values cover the most common CSS / Tailwind / Material purple/violet hex
+    // values. The check is case-insensitive to handle both upper and lower case.
+    const PURPLE_DENY_LIST = new Set([
+      "#6b21a8",
+      "#7c3aed",
+      "#8b5cf6",
+      "#9333ea",
+      "#a855f7",
+      "#7b2fbe",
+      "#5b21b6",
+      "#4c1d95",
+      "#6d28d9",
+      "#7e22ce",
+      "#9b59b6",
+      "#8e44ad",
+      "#6c3483",
+      "#4a235a",
+      "#512da8",
+      "#673ab7",
+      "#9c27b0",
+      "#7b1fa2",
+      "#6a1b9a",
+      "#4a148c",
+    ]);
+    const p = taste.palette as Record<string, string>;
+    expect(PURPLE_DENY_LIST.has(p.brand.toLowerCase())).toBe(false);
+  });
 });

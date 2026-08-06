@@ -15,6 +15,21 @@ const taste = {
   label: "Impeccable",
 
   /**
+   * Colour palette. Six hex tokens: one calm brand hue (deep ocean teal),
+   * one subtle accent, two neutral surfaces, and two text values. Follows the
+   * restraint rule: one brand colour plus neutrals per view. text is not pure
+   * black (#000000) per the pure-black blocklist entry.
+   */
+  palette: {
+    brand: "#1E4D5E",
+    accent: "#267A8C",
+    surface: "#F8F7F4",
+    surfaceAlt: "#EDECEA",
+    text: "#1C1C1E",
+    textMuted: "#6B6B70",
+  },
+
+  /**
    * Spacing scale in px (ascending). Use these values for padding, gap, and
    * margin. Do not invent values outside this scale.
    */

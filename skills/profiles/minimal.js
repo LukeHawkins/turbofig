@@ -16,6 +16,21 @@ const taste = {
   label: "Minimal",
 
   /**
+   * Colour palette. Six hex tokens: near-monochrome. One dark charcoal-slate
+   * brand (no strong hue), one cool gray accent (barely visible), two near-
+   * white surfaces, and two dark text values. text is not pure black (#000000)
+   * per the pure-black blocklist entry.
+   */
+  palette: {
+    brand: "#2D3748",
+    accent: "#718096",
+    surface: "#FAFAFA",
+    surfaceAlt: "#EDF2F7",
+    text: "#1A202C",
+    textMuted: "#7A8B9A",
+  },
+
+  /**
    * Spacing scale in px (ascending). Generous steps enforce visible breathing
    * room. Fewer values reduce the chance of arbitrary choices.
    */

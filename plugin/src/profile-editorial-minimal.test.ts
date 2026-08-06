@@ -94,6 +94,15 @@ function assertSchema(taste: Record<string, unknown>, expectedId: string): void 
   for (const v of bl) {
     expect(typeof v).toBe("string");
   }
+
+  const p = taste.palette as Record<string, unknown>;
+  expect(typeof p).toBe("object");
+  expect(p).not.toBeNull();
+  const requiredPaletteKeys = ["brand", "accent", "surface", "surfaceAlt", "text", "textMuted"];
+  for (const key of requiredPaletteKeys) {
+    expect(typeof p[key]).toBe("string");
+    expect((p[key] as string).length).toBeGreaterThan(0);
+  }
 }
 
 describe("editorial taste profile", () => {
@@ -154,5 +163,31 @@ describe("editorial vs minimal distinctness", () => {
 
     const diffCount = [spacingDiffers, scaleDiffers, gridDiffers].filter(Boolean).length;
     expect(diffCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("editorial and minimal palettes each carry all six required keys", () => {
+    const requiredKeys = ["brand", "accent", "surface", "surfaceAlt", "text", "textMuted"];
+    for (const [label, profile] of [
+      ["editorial", editorial],
+      ["minimal", minimal],
+    ] as [string, Record<string, unknown>][]) {
+      const p = profile.palette as Record<string, unknown>;
+      expect(typeof p).toBe("object");
+      expect(p).not.toBeNull();
+      for (const key of requiredKeys) {
+        expect(typeof p[key]).toBe("string");
+        expect((p[key] as string).length).toBeGreaterThan(0);
+      }
+      // text must not be pure black — the pure-black blocklist entry applies.
+      expect(p.text as string).not.toBe("#000000");
+      void label;
+    }
+  });
+
+  test("editorial and minimal palette brand tokens are visibly distinct", () => {
+    // Each profile must use a different brand colour to produce distinct output.
+    const ep = editorial.palette as Record<string, string>;
+    const mp = minimal.palette as Record<string, string>;
+    expect(ep.brand.toLowerCase()).not.toBe(mp.brand.toLowerCase());
   });
 });

@@ -66,4 +66,28 @@ describe("profile injection reaches user code", () => {
     expect(first).toBe("editorial");
     expect(second).toBe("minimal");
   });
+
+  test("impeccable: injected eval can read tf.taste.palette with all six keys", async () => {
+    // Proves that an execute under the impeccable profile sees tf.taste.palette,
+    // meaning builders can read the profile palette and are not forced to invent
+    // a generic default colour. This is the "build uses the profile palette, not
+    // raw defaults" check.
+    const result = (await runInjected("impeccable", "return tf.taste.palette;")) as Record<
+      string,
+      unknown
+    >;
+
+    expect(typeof result).toBe("object");
+    expect(result).not.toBeNull();
+
+    const requiredKeys = ["brand", "accent", "surface", "surfaceAlt", "text", "textMuted"];
+    for (const key of requiredKeys) {
+      expect(typeof result[key]).toBe("string");
+      expect((result[key] as string).length).toBeGreaterThan(0);
+    }
+
+    // text must not be pure black — the pure-black blocklist entry applies to
+    // fill colours and text is the primary text token.
+    expect(result.text).not.toBe("#000000");
+  });
 });
