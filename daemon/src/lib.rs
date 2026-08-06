@@ -178,6 +178,23 @@ fn load_profiles(dir: Option<&std::path::Path>) -> HashMap<String, String> {
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        // "none" is a reserved id that disables injection. Reject it before reading.
+        if stem == "none" {
+            eprintln!(
+                "Turbofig: skipped profile {}: 'none' is reserved (it disables injection)",
+                path.display()
+            );
+            continue;
+        }
+        // Built-in ids win. Log the collision so it is visible instead of silent.
+        if profiles.contains_key(stem) {
+            eprintln!(
+                "Turbofig: skipped profile {}: built-in '{}' wins over custom file",
+                path.display(),
+                stem
+            );
+            continue;
+        }
         let source = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -188,7 +205,16 @@ fn load_profiles(dir: Option<&std::path::Path>) -> HashMap<String, String> {
                 continue;
             }
         };
-        profiles.entry(stem.to_owned()).or_insert(source);
+        // A valid profile file must define a `taste` constant.
+        // A file without it would throw an opaque ReferenceError at eval time.
+        if !source.contains("taste") {
+            eprintln!(
+                "Turbofig: skipped profile {}: file does not contain 'taste' (no const taste definition found)",
+                path.display()
+            );
+            continue;
+        }
+        profiles.insert(stem.to_owned(), source);
     }
     profiles
 }
@@ -303,14 +329,17 @@ impl AppState {
     /// - any other non-empty id -> impeccable JS, warning naming the unknown id.
     pub fn resolve_profile_js(&self, profile_id: &str) -> (String, Option<String>) {
         match profile_id {
-            "" | "impeccable" => (self.profiles["impeccable"].clone(), None),
+            "" | "impeccable" => (
+                self.profiles.get("impeccable").cloned().unwrap_or_default(),
+                None,
+            ),
             "none" => (String::new(), None),
             id => {
                 if let Some(js) = self.profiles.get(id) {
                     (js.clone(), None)
                 } else {
                     (
-                        self.profiles["impeccable"].clone(),
+                        self.profiles.get("impeccable").cloned().unwrap_or_default(),
                         Some(format!("unknown profile '{id}'; using impeccable")),
                     )
                 }
@@ -699,7 +728,8 @@ pub async fn run_execute(
             }
         }
         Ok(Err(_)) => {
-            json!({"ok": false, "error": "plugin disconnected"})
+            let resp = json!({"ok": false, "error": "plugin disconnected"});
+            with_warning(resp, profile_warning)
         }
         Err(_elapsed) => {
             state.cancel_pending(id);
@@ -2427,6 +2457,116 @@ mod tests {
         assert_eq!(
             stems, expected,
             "public repo must contain exactly the three built-in profiles; no private packs"
+        );
+    }
+
+    // Robustness tests for load_profiles guards and the disconnected branch.
+
+    #[test]
+    fn reserved_none_profile_not_loaded() {
+        // A file named none.js must not register because "none" disables injection.
+        // After construction, resolve_profile_js("none") must return empty JS and no warning.
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("create temp dir");
+        std::fs::write(dir.path().join("none.js"), r#"const taste = {id:"none"};"#)
+            .expect("write none.js");
+
+        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
+        let (js, warn) = state.resolve_profile_js("none");
+        assert!(
+            js.is_empty(),
+            "none must still return empty JS (injection disabled); got: {js:?}"
+        );
+        assert!(warn.is_none(), "none must not produce a warning");
+    }
+
+    #[test]
+    fn profile_without_taste_token_is_skipped() {
+        // A .js file that does not contain the word "taste" must not register.
+        // Resolving its stem must fall back to impeccable with the unknown-profile warning.
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("create temp dir");
+        std::fs::write(dir.path().join("bad.js"), "const x = 1;").expect("write bad.js");
+
+        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
+        let (js, warn) = state.resolve_profile_js("bad");
+        assert!(
+            js.contains("const taste"),
+            "fallback must be impeccable, which defines const taste"
+        );
+        let warning = warn.expect("unknown-profile warning must be present");
+        assert!(
+            warning.contains("impeccable"),
+            "warning must mention impeccable; got: {warning:?}"
+        );
+    }
+
+    #[test]
+    fn valid_custom_profile_still_loads_with_taste_token() {
+        // A .js file that contains "taste" must register and resolve without a warning.
+        // This mirrors custom_profile_loaded_from_dir but focuses on the taste guard.
+        use tempfile::TempDir;
+        let dir = TempDir::new().expect("create temp dir");
+        std::fs::write(
+            dir.path().join("brandq.js"),
+            r#"const taste = {id:"brandq",radius:4};"#,
+        )
+        .expect("write brandq.js");
+
+        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
+        let (js, warn) = state.resolve_profile_js("brandq");
+        assert!(
+            js.contains("brandq"),
+            "custom profile must be loaded; got: {js:?}"
+        );
+        assert!(warn.is_none(), "no warning for a valid custom profile");
+    }
+
+    #[tokio::test]
+    async fn run_execute_disconnected_branch_carries_profile_warning() {
+        // An unknown profile on a connection whose oneshot sender is cancelled
+        // (simulating plugin disconnect) must return
+        // error == "plugin disconnected" AND a warning mentioning "impeccable".
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-disc".to_owned(),
+            "Disc File".to_owned(),
+            "unknown_disc_profile".to_owned(),
+        );
+
+        // Receive the EXECUTE frame and cancel the pending request instead of
+        // resolving it. This drops the oneshot sender, so run_execute gets Ok(Err(_)).
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                state_clone.cancel_pending(req_id);
+            }
+        });
+
+        let result = run_execute(&state, None, None, "return 99;").await;
+        assert_eq!(
+            result["ok"],
+            json!(false),
+            "disconnected must report ok:false"
+        );
+        assert_eq!(
+            result["error"],
+            json!("plugin disconnected"),
+            "error must be 'plugin disconnected'"
+        );
+        let warning = result["warning"]
+            .as_str()
+            .expect("warning must be present on the disconnected branch");
+        assert!(
+            warning.contains("impeccable"),
+            "disconnected warning must mention impeccable; got: {warning:?}"
         );
     }
 }
