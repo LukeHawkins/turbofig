@@ -567,7 +567,7 @@ pub async fn run_status(
 
     let id = state.next_request_id();
     let rx = state.register_pending(id, conn_id);
-    let request = json!({"type": "STATUS", "requestId": id});
+    let request = json!({"type": "STATUS", "requestId": id, "sessionId": session_id.unwrap_or("")});
 
     if tx.send(request.to_string()).is_err() {
         // The receiver dropped between the snapshot and the send.
@@ -701,7 +701,7 @@ pub async fn run_execute(
 
     let id = state.next_request_id();
     let rx = state.register_pending(id, conn_id);
-    let request = json!({"type": "EXECUTE", "requestId": id, "code": injected_code});
+    let request = json!({"type": "EXECUTE", "requestId": id, "code": injected_code, "sessionId": session_id.unwrap_or("")});
 
     if tx.send(request.to_string()).is_err() {
         state.cancel_pending(id);
@@ -771,7 +771,8 @@ pub async fn run_get_selection(
 
     let id = state.next_request_id();
     let rx = state.register_pending(id, conn_id);
-    let mut request = json!({"type": "GET_SELECTION", "requestId": id});
+    let mut request =
+        json!({"type": "GET_SELECTION", "requestId": id, "sessionId": session_id.unwrap_or("")});
     if let Some(f) = fields {
         request["fields"] = json!(f);
     }
@@ -885,7 +886,8 @@ pub async fn run_screenshot(
         "type": "SCREENSHOT",
         "requestId": id,
         "scale": scale,
-        "nodeId": node_id
+        "nodeId": node_id,
+        "sessionId": session_id.unwrap_or("")
     });
 
     if tx.send(request.to_string()).is_err() {
@@ -1222,6 +1224,12 @@ pub async fn serve_with_state(
 
 // ── WebSocket server ──────────────────────────────────────────────────────────
 
+/// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
+/// Returns a JSON string: `{"type":"WELCOME","version":"<crate version>"}`.
+pub(crate) fn welcome_message() -> String {
+    json!({"type": "WELCOME", "version": env!("CARGO_PKG_VERSION")}).to_string()
+}
+
 /// Handle an upgraded WebSocket connection from the Figma plugin.
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sink, mut stream) = socket.split();
@@ -1263,6 +1271,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 .unwrap_or("")
                                 .to_owned();
                             state.set_connection_info(conn_id, file_key, name, profile_id);
+                            // Push WELCOME so the plugin UI can display version/session info.
+                            // Ignore send errors: the write task may have already exited.
+                            let _ = tx.send(welcome_message());
                         }
                         Some("RESULT") => {
                             if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
@@ -2571,6 +2582,101 @@ mod tests {
             warning.contains("impeccable"),
             "disconnected warning must mention impeccable; got: {warning:?}"
         );
+    }
+
+    // WELCOME message and sessionId tests.
+
+    #[test]
+    fn welcome_message_has_correct_type_and_version() {
+        // The helper must return JSON with type == "WELCOME" and version == the crate version.
+        let msg = welcome_message();
+        let v: Value = serde_json::from_str(&msg).expect("welcome_message must be valid JSON");
+        assert_eq!(v["type"], json!("WELCOME"), "type must be WELCOME");
+        assert_eq!(
+            v["version"],
+            json!(env!("CARGO_PKG_VERSION")),
+            "version must match CARGO_PKG_VERSION"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_execute_outbound_frame_carries_session_id() {
+        // When run_execute is called with a session_id, the EXECUTE frame sent to
+        // the plugin must contain that session_id as the "sessionId" field.
+        // Pass both session_id and file_key so resolve_route finds the connection
+        // on the first call and records the session pairing at the same time.
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-sid".to_owned(),
+            "Session File".to_owned(),
+            "none".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                // Verify the sessionId before resolving.
+                assert_eq!(
+                    req["sessionId"],
+                    json!("test-session-abc"),
+                    "EXECUTE frame must carry the resolved session id"
+                );
+                state_clone.resolve(req_id, json!({"ok": true, "result": null}));
+            }
+        });
+
+        // Provide both session_id and file_key. resolve_route records the pairing
+        // and routes to fk-sid in one step.
+        let result = run_execute(
+            &state,
+            Some("test-session-abc"),
+            Some("fk-sid"),
+            "return 1;",
+        )
+        .await;
+        assert_eq!(result["ok"], json!(true), "execute must succeed");
+    }
+
+    #[tokio::test]
+    async fn run_execute_outbound_frame_carries_empty_session_id_when_none() {
+        // When run_execute is called with session_id == None (file-bridge path),
+        // the EXECUTE frame must contain "sessionId": "" (empty string).
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-nosid".to_owned(),
+            "No Session File".to_owned(),
+            "none".to_owned(),
+        );
+
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                assert_eq!(
+                    req["sessionId"],
+                    json!(""),
+                    "EXECUTE frame must carry empty string when session_id is None"
+                );
+                state_clone.resolve(req_id, json!({"ok": true, "result": null}));
+            }
+        });
+
+        // None session_id simulates the file-bridge path.
+        let result = run_execute(&state, None, None, "return 2;").await;
+        assert_eq!(result["ok"], json!(true), "execute must succeed");
     }
 
     // Mutex poison-recovery test.

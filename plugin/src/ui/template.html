@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turbofig</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 16px;
+        font-size: 13px;
+        color: #111;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 12px;
+      }
+      .info-row {
+        margin: 0 0 6px;
+        color: #555;
+      }
+      .info-row span {
+        color: #111;
+        font-weight: 500;
+      }
+      #conn-status.connected {
+        color: #1a7f37;
+      }
+      #conn-status.reconnecting {
+        color: #b85c00;
+      }
+      #conn-status.offline {
+        color: #cf222e;
+      }
+      #profile-row {
+        margin-top: 12px;
+      }
+      #profile-row label {
+        display: block;
+        margin-bottom: 4px;
+        color: #333;
+      }
+      #profile {
+        width: 100%;
+        font-size: 13px;
+        box-sizing: border-box;
+      }
+      #customProfile {
+        width: 100%;
+        font-size: 13px;
+        box-sizing: border-box;
+        margin-top: 4px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Turbofig</h1>
+    <p class="info-row">Status: <span id="conn-status">Connecting...</span></p>
+    <p class="info-row">File: <span id="file-line">No file</span></p>
+    <p class="info-row">Session: <span id="session-line">No active session</span></p>
+    <div id="profile-row">
+      <label for="profile">Taste profile</label>
+      <select id="profile">
+        <option value="impeccable">Impeccable</option>
+        <option value="editorial">Editorial</option>
+        <option value="minimal">Minimal</option>
+        <option value="none">None</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input id="customProfile" type="text" placeholder="Enter profile id" />
+    </div>
+    <script>__UI_BUNDLE__</script>
+  </body>
+</html>

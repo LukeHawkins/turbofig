@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "bun build src/code.ts --outfile dist/code.js --target=browser"
+    "build": "bun build src/code.ts --outfile dist/code.js --target=browser && bun build-ui.ts"
   },
   "devDependencies": {
     "@figma/plugin-typings": "*"

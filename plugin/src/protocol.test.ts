@@ -606,6 +606,50 @@ describe("buildSetProfile", () => {
   });
 });
 
+describe("isDaemonMessage: WELCOME branch", () => {
+  test("accepts a valid WELCOME message", () => {
+    expect(isDaemonMessage({ type: "WELCOME", version: "0.5.0" })).toBe(true);
+  });
+
+  test("accepts WELCOME with an empty version string", () => {
+    expect(isDaemonMessage({ type: "WELCOME", version: "" })).toBe(true);
+  });
+
+  test("rejects WELCOME missing version", () => {
+    expect(isDaemonMessage({ type: "WELCOME" })).toBe(false);
+  });
+
+  test("rejects WELCOME with a numeric version", () => {
+    expect(isDaemonMessage({ type: "WELCOME", version: 1 })).toBe(false);
+  });
+});
+
+describe("isDaemonMessage: sessionId on request messages", () => {
+  test("STATUS with sessionId passes the guard", () => {
+    expect(isDaemonMessage({ type: "STATUS", requestId: 1, sessionId: "ses-abc" })).toBe(true);
+  });
+
+  test("STATUS with empty sessionId passes the guard", () => {
+    expect(isDaemonMessage({ type: "STATUS", requestId: 1, sessionId: "" })).toBe(true);
+  });
+
+  test("EXECUTE with sessionId passes the guard", () => {
+    expect(
+      isDaemonMessage({ type: "EXECUTE", requestId: 2, code: "return 1;", sessionId: "ses-xyz" }),
+    ).toBe(true);
+  });
+
+  test("GET_SELECTION with sessionId passes the guard", () => {
+    expect(isDaemonMessage({ type: "GET_SELECTION", requestId: 3, sessionId: "ses-abc" })).toBe(
+      true,
+    );
+  });
+
+  test("SCREENSHOT with sessionId passes the guard", () => {
+    expect(isDaemonMessage({ type: "SCREENSHOT", requestId: 4, sessionId: "ses-abc" })).toBe(true);
+  });
+});
+
 describe("isInboundMessage", () => {
   test("accepts STATUS", () => {
     expect(isInboundMessage({ type: "STATUS", requestId: 1 })).toBe(true);

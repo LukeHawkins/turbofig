@@ -23,10 +23,21 @@ export interface SetProfileMessage {
   profileId: string;
 }
 
+/**
+ * Sent by the daemon on connect after it receives FILE_INFO.
+ * The UI must store the version and must not forward this message to the main thread.
+ */
+export interface WelcomeMessage {
+  type: "WELCOME";
+  version: string;
+}
+
 /** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */
 export interface StatusMessage {
   type: "STATUS";
   requestId: number;
+  /** The MCP session that issued the call. Empty string for file-bridge requests. */
+  sessionId?: string;
 }
 
 /** Sent by the daemon to the plugin to evaluate code in the Figma context. */
@@ -34,6 +45,8 @@ export interface ExecuteMessage {
   type: "EXECUTE";
   requestId: number;
   code: string;
+  /** The MCP session that issued the call. Empty string for file-bridge requests. */
+  sessionId?: string;
 }
 
 /** Sent by the daemon to the plugin to request the current Figma selection. */
@@ -44,6 +57,8 @@ export interface GetSelectionMessage {
   fields?: string[];
   /** How many child levels to traverse. 0 (default) returns the top-level nodes only. */
   depth?: number;
+  /** The MCP session that issued the call. Empty string for file-bridge requests. */
+  sessionId?: string;
 }
 
 /** Sent by the daemon to the plugin to request a PNG screenshot of a node. */
@@ -52,6 +67,8 @@ export interface ScreenshotMessage {
   requestId: number;
   scale?: number;
   nodeId?: string;
+  /** The MCP session that issued the call. Empty string for file-bridge requests. */
+  sessionId?: string;
 }
 
 /** A single selected Figma node, serialised for the selection response. */
@@ -83,6 +100,7 @@ export interface ResultMessage {
 /** Union of all messages on the daemon <-> plugin WebSocket. */
 export type DaemonMessage =
   | FileInfoMessage
+  | WelcomeMessage
   | StatusMessage
   | ExecuteMessage
   | GetSelectionMessage
@@ -143,6 +161,8 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
         typeof msg.name === "string" &&
         typeof msg.profileId === "string"
       );
+    case "WELCOME":
+      return typeof msg.version === "string";
     case "STATUS":
       return typeof msg.requestId === "number";
     case "EXECUTE":
