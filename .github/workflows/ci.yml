@@ -18,8 +18,11 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Build
+      - name: Build (debug)
         run: cargo build
+
+      - name: Build (release)
+        run: cargo build --release
 
       - name: Test
         run: cargo test
@@ -52,4 +55,7 @@ jobs:
         run: bunx @biomejs/biome check .
 
       - name: Test
-        run: bun test --pass-with-no-tests
+        run: bun test
+
+      - name: Benchmark dry-run
+        run: bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json

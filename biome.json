@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.7/schema.json",
   "files": {
-    "includes": ["plugin/**/*.ts", "plugin/**/*.tsx", "bench/**/*.ts", "*.json"]
+    "includes": ["plugin/**/*.ts", "plugin/**/*.tsx", "bench/**/*.ts", "skills/**/*.js", "*.json"]
   },
   "formatter": {
     "enabled": true,
@@ -23,5 +23,20 @@
       "quoteStyle": "double",
       "trailingCommas": "all"
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["skills/**/*.js"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedVariables": "off"
+          },
+          "suspicious": {
+            "noApproximativeNumericConstant": "off"
+          }
+        }
+      }
+    }
+  ]
 }
