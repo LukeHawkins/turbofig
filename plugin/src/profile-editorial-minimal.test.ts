@@ -54,8 +54,10 @@ function assertSchema(taste: Record<string, unknown>, expectedId: string): void 
   expect(typeof t.ratio).toBe("number");
   expect(Array.isArray(t.scale)).toBe(true);
   expect((t.scale as unknown[]).length).toBeGreaterThan(0);
-  expect(Array.isArray(t.families)).toBe(true);
-  expect((t.families as unknown[]).length).toBeGreaterThan(0);
+  expect(Array.isArray(t.displayFamilies)).toBe(true);
+  expect((t.displayFamilies as unknown[]).length).toBeGreaterThan(0);
+  expect(Array.isArray(t.textFamilies)).toBe(true);
+  expect((t.textFamilies as unknown[]).length).toBeGreaterThan(0);
 
   const g = taste.grid as Record<string, unknown>;
   expect(typeof g).toBe("object");

@@ -23,14 +23,17 @@ const taste = {
 
   /**
    * Type system. A larger ratio (1.414, the augmented fourth) gives more
-   * expressive size contrast between levels. families lean toward editorial
-   * serifs first, with a grotesque fallback.
+   * expressive size contrast between levels. The scale is derived from the
+   * ratio at the top end and adjusted for legibility at small sizes.
+   * displayFamilies uses expressive Figma-available serif display faces.
+   * textFamilies uses a readable grotesque for body copy.
    */
   type: {
     baseSize: 16,
     ratio: 1.414,
     scale: [11, 14, 16, 22, 32, 45, 64, 90],
-    families: ["Freight Display", "Georgia", "Times New Roman", "Arial"],
+    displayFamilies: ["Playfair Display", "DM Serif Display", "Georgia"],
+    textFamilies: ["Libre Franklin", "IBM Plex Sans", "Arial"],
   },
 
   /**
@@ -93,7 +96,6 @@ const taste = {
     "three-card-row",
     "stock-photo-hero",
     "all-caps-body-copy",
-    "font-size-below-12",
     "misaligned-grid",
     "uniform-column-widths",
     "decorative-divider-overuse",

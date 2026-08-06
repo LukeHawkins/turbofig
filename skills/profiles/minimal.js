@@ -23,14 +23,16 @@ const taste = {
 
   /**
    * Type system. A small ratio (1.2, the minor third) keeps size differences
-   * subtle. The scale has fewer steps than other profiles. families favor
-   * neutral system fonts.
+   * subtle. The scale has fewer steps than other profiles.
+   * displayFamilies and textFamilies both use restrained system sans-serif
+   * faces to keep the visual tone neutral.
    */
   type: {
     baseSize: 16,
     ratio: 1.2,
     scale: [13, 16, 19, 23, 28],
-    families: ["Inter", "SF Pro Text", "Helvetica Neue", "Arial"],
+    displayFamilies: ["Inter", "Helvetica Neue", "Arial"],
+    textFamilies: ["Inter", "Helvetica Neue", "Arial"],
   },
 
   /**

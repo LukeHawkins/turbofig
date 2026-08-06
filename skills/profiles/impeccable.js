@@ -22,15 +22,17 @@ const taste = {
 
   /**
    * Type system. baseSize is the body copy size in px. ratio is the Major
-   * Third (1.25) modular scale factor. scale lists the computed sizes from
-   * smallest to largest. families are the preferred font family names in
-   * priority order.
+   * Third (1.25) modular scale factor. The scale is derived from the ratio
+   * at the top end and adjusted for legibility at small sizes.
+   * displayFamilies is the ordered fallback chain for headings and display
+   * type. textFamilies is the ordered fallback chain for body text.
    */
   type: {
     baseSize: 16,
     ratio: 1.25,
     scale: [12, 14, 16, 20, 25, 31, 39, 49, 61],
-    families: ["Inter", "Helvetica Neue", "Arial"],
+    displayFamilies: ["Inter", "Space Grotesk", "Arial"],
+    textFamilies: ["Inter", "Helvetica Neue", "Arial"],
   },
 
   /**
