@@ -21,6 +21,7 @@ futures-util = "0.3"
 notify = "6"
 base64 = "0.22"
 http = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }

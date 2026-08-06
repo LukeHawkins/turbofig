@@ -125,7 +125,7 @@ Goal: build the token and speed levers and take a PROVISIONAL measurement. The b
 **Reconciled 2026-08-05:** the Active-priority slice delivered the batching helper and the file-mode + ids-first + subagent-firewall defaults (via `tf` and `design.md`). The unchecked items below are the genuine remaining work: coded `fields`/`depth` read shaping, downscaled screenshots (needs the `image` crate), read-size caps, and the benchmark harness + baseline + provisional read (the measurement, skipped by choice).
 
 - [x] Shaped returns: ids-first, opt-in `fields`, `depth` limit, never a full-tree dump by default
-- [ ] Screenshots default to downscaled + file-mode; inline high-res only on explicit request
+- [x] Screenshots default to downscaled + file-mode; inline high-res only on explicit request
 - [ ] Enforce the context firewall: inline screenshots need an explicit opt-in and warn past a budget; large reads without `depth`/`fields` are capped or warned; file-mode plus subagent-read is the default path
 - [x] Batching helper: many node ops in one `execute` round-trip
 - [x] Benchmark harness: measure tokens + wall-time for "design a webpage" and "20-slide deck"

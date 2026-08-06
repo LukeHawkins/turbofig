@@ -275,6 +275,15 @@ async fn process_job(
             let scale = job.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0);
             let node_id = job.get("nodeId").and_then(|v| v.as_str());
             let return_mode = job.get("return").and_then(|v| v.as_str()).unwrap_or("file");
+            let max_dim = job
+                .get("maxDim")
+                .and_then(|v| v.as_u64())
+                .map(|d| d.min(u32::MAX as u64) as u32)
+                .unwrap_or(1200);
+            let full_res = job
+                .get("fullRes")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             crate::run_screenshot(
                 state,
                 None,
@@ -283,6 +292,8 @@ async fn process_job(
                 node_id,
                 return_mode,
                 Some(output_dir),
+                max_dim,
+                full_res,
             )
             .await
         }

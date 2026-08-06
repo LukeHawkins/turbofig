@@ -578,6 +578,39 @@ pub async fn run_get_selection(
     }
 }
 
+// ── PNG downscaling ───────────────────────────────────────────────────────────
+
+/// Downscale a PNG byte slice so its longest edge is at most `max_dim` pixels.
+///
+/// Returns the (possibly re-encoded) bytes and the effective (width, height).
+///
+/// - If `full_res` is true, return the input bytes unchanged with the decoded dims.
+/// - If the input is not a valid PNG, return the input bytes unchanged with dims (0, 0).
+/// - If the longest edge is already <= `max_dim`, return the input bytes unchanged.
+/// - Otherwise resize preserving aspect ratio and re-encode to PNG.
+fn downscale_png(bytes: &[u8], max_dim: u32, full_res: bool) -> (Vec<u8>, u32, u32) {
+    let img = match image::load_from_memory(bytes) {
+        Ok(img) => img,
+        Err(_) => return (bytes.to_vec(), 0, 0),
+    };
+    let w = img.width();
+    let h = img.height();
+    if full_res || w.max(h) <= max_dim {
+        return (bytes.to_vec(), w, h);
+    }
+    let resized = img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3);
+    let new_w = resized.width();
+    let new_h = resized.height();
+    let mut out: Vec<u8> = Vec::new();
+    if resized
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .is_err()
+    {
+        return (bytes.to_vec(), w, h);
+    }
+    (out, new_w, new_h)
+}
+
 // ── Shared screenshot logic ───────────────────────────────────────────────────
 
 /// Capture a PNG screenshot of a Figma node and return a JSON value.
@@ -590,6 +623,7 @@ pub async fn run_get_selection(
 ///   returns `{"ok":true,"path":"...","w":w,"h":h}`.
 ///
 /// Reused by both `turbofig_screenshot` (MCP) and the filesystem bridge.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_screenshot(
     state: &Arc<AppState>,
     session_id: Option<&str>,
@@ -598,6 +632,8 @@ pub async fn run_screenshot(
     node_id: Option<&str>,
     return_mode: &str,
     output_dir: Option<&std::path::Path>,
+    max_dim: u32,
+    full_res: bool,
 ) -> Value {
     let (conn_id, tx, _, _) = match state.resolve_route(session_id, file_key) {
         Ok(r) => r,
@@ -628,34 +664,45 @@ pub async fn run_screenshot(
                     .to_owned();
                 return json!({"ok": false, "error": error});
             }
-            let png = match reply.get("png").and_then(|v| v.as_str()) {
+            let png_b64 = match reply.get("png").and_then(|v| v.as_str()) {
                 Some(s) => s.to_owned(),
                 None => return json!({"ok": false, "error": "screenshot failed"}),
             };
-            // Read as f64: a node's width and height can be fractional, and
-            // as_u64 would silently drop a fractional value to 0.
-            let w = reply.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let h = reply.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            // Read plugin-reported dims as f64: node dimensions can be fractional,
+            // and as_u64 would silently truncate a fractional value to 0.
+            let plugin_w = reply.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let plugin_h = reply.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            // Decode base64 to bytes, downscale if needed, then re-encode or write.
+            let raw_bytes = match B64.decode(&png_b64) {
+                Ok(b) => b,
+                Err(_) => return json!({"ok": false, "error": "invalid base64 png"}),
+            };
+            let (out_bytes, ds_w, ds_h) = downscale_png(&raw_bytes, max_dim, full_res);
+            // Use decoded dims when available; fall back to the plugin-reported dims
+            // when the payload is not a valid PNG (e.g. test stubs with non-PNG bytes).
+            let (eff_w, eff_h): (serde_json::Value, serde_json::Value) = if ds_w == 0 && ds_h == 0 {
+                (json!(plugin_w), json!(plugin_h))
+            } else {
+                (json!(ds_w), json!(ds_h))
+            };
 
             if return_mode == "inline" {
-                json!({"ok": true, "w": w, "h": h, "png": png})
+                let out_b64 = B64.encode(&out_bytes);
+                json!({"ok": true, "w": eff_w, "h": eff_h, "png": out_b64})
             } else {
-                // File mode: decode base64 and write to disk.
+                // File mode: write the downscaled bytes to disk.
                 let Some(dir) = output_dir else {
                     return json!({"ok": false, "error": "file mode needs an output dir"});
-                };
-                let bytes = match B64.decode(&png) {
-                    Ok(b) => b,
-                    Err(_) => return json!({"ok": false, "error": "invalid base64 png"}),
                 };
                 if let Err(e) = tokio::fs::create_dir_all(dir).await {
                     return json!({"ok": false, "error": format!("write failed: {e}")});
                 }
                 let path = dir.join(format!("{id}.png"));
-                if let Err(e) = tokio::fs::write(&path, &bytes).await {
+                if let Err(e) = tokio::fs::write(&path, &out_bytes).await {
                     return json!({"ok": false, "error": format!("write failed: {e}")});
                 }
-                json!({"ok": true, "path": path.to_string_lossy(), "w": w, "h": h})
+                json!({"ok": true, "path": path.to_string_lossy(), "w": eff_w, "h": eff_h})
             }
         }
         Ok(Err(_)) => {
@@ -747,6 +794,14 @@ struct ScreenshotParams {
         description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
     )]
     file_key: Option<String>,
+    #[serde(rename = "maxDim", default = "default_max_dim")]
+    #[schemars(description = "Longest-edge pixel cap for downscaling; default 1200")]
+    max_dim: u32,
+    #[serde(rename = "fullRes", default)]
+    #[schemars(
+        description = "Return full resolution with no downscaling; default false. Combine with return:'inline' for a high-res inline image"
+    )]
+    full_res: bool,
 }
 
 fn default_screenshot_scale() -> f64 {
@@ -755,6 +810,10 @@ fn default_screenshot_scale() -> f64 {
 
 fn default_return_mode() -> String {
     "file".to_owned()
+}
+
+fn default_max_dim() -> u32 {
+    1200
 }
 
 /// MCP handler that exposes the four turbofig tools.
@@ -856,6 +915,8 @@ impl StatusHandler {
             node_id,
             return_mode,
             file_key,
+            max_dim,
+            full_res,
         }): Parameters<ScreenshotParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
@@ -868,6 +929,8 @@ impl StatusHandler {
             node_id.as_deref(),
             &return_mode,
             self.state.screenshot_dir().as_deref(),
+            max_dim,
+            full_res,
         )
         .await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -1316,5 +1379,63 @@ mod tests {
         assert_eq!(connections.len(), 2, "both connections must be listed");
         let fks: Vec<&str> = connections.iter().map(|(_, fk, _)| fk.as_str()).collect();
         assert!(fks.contains(&"fk1") && fks.contains(&"fk2"));
+    }
+
+    // downscale_png unit tests
+
+    /// Encode an in-memory RgbaImage to PNG bytes.
+    fn make_png(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbaImage::new(width, height);
+        let mut buf: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .expect("encode test PNG");
+        buf
+    }
+
+    #[test]
+    fn downscale_png_reduces_large_image_to_max_dim() {
+        // A 2000x1000 image with max_dim=1200 must scale to 1200x600.
+        let png = make_png(2000, 1000);
+        let (out_bytes, w, h) = downscale_png(&png, 1200, false);
+        assert_eq!(w, 1200, "width must equal max_dim");
+        assert_eq!(h, 600, "height must be halved proportionally");
+        // Verify the returned bytes decode to the new dimensions.
+        let decoded = image::load_from_memory(&out_bytes).expect("decode result");
+        assert_eq!(decoded.width(), 1200);
+        assert_eq!(decoded.height(), 600);
+    }
+
+    #[test]
+    fn downscale_png_full_res_returns_input_unchanged() {
+        // full_res=true must return the original bytes without re-encoding.
+        let png = make_png(2000, 1000);
+        let (out_bytes, w, h) = downscale_png(&png, 1200, true);
+        assert_eq!(out_bytes, png, "bytes must be unchanged for full_res=true");
+        assert_eq!(w, 2000);
+        assert_eq!(h, 1000);
+    }
+
+    #[test]
+    fn downscale_png_small_image_is_not_upscaled() {
+        // A 100x50 image with max_dim=1200 must be returned unchanged (no upscale).
+        let png = make_png(100, 50);
+        let (out_bytes, w, h) = downscale_png(&png, 1200, false);
+        assert_eq!(
+            out_bytes, png,
+            "bytes must be unchanged when image fits inside max_dim"
+        );
+        assert_eq!(w, 100);
+        assert_eq!(h, 50);
+    }
+
+    #[test]
+    fn downscale_png_invalid_bytes_pass_through_with_zero_dims() {
+        // Non-PNG input must return the original bytes and (0, 0) without panicking.
+        let bad = b"hello";
+        let (out_bytes, w, h) = downscale_png(bad, 1200, false);
+        assert_eq!(out_bytes, bad, "bytes must be unchanged for invalid PNG");
+        assert_eq!(w, 0);
+        assert_eq!(h, 0);
     }
 }
