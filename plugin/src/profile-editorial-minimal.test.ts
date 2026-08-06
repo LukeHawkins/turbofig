@@ -30,6 +30,25 @@ const CORE_FLOOR_IDS = [
   "three-card-row",
 ];
 
+/** Relative luminance of a #rrggbb hex colour per WCAG 2.1. */
+function luminance(hex: string): number {
+  const h = hex.replace("#", "");
+  const chan = [0, 2, 4].map((i) => {
+    const c = Number.parseInt(h.slice(i, i + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * chan[0] + 0.7152 * chan[1] + 0.0722 * chan[2];
+}
+
+/** WCAG contrast ratio between two #rrggbb hex colours. */
+function contrastRatio(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  const hi = Math.max(la, lb);
+  const lo = Math.min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 /** Assert the full schema contract for one profile. */
 function assertSchema(taste: Record<string, unknown>, expectedId: string): void {
   expect(taste.id).toBe(expectedId);
@@ -190,4 +209,23 @@ describe("editorial vs minimal distinctness", () => {
     const mp = minimal.palette as Record<string, string>;
     expect(ep.brand.toLowerCase()).not.toBe(mp.brand.toLowerCase());
   });
+});
+
+describe("editorial and minimal palette contrast (WCAG AA)", () => {
+  // Both text and textMuted must read as body copy on the surface, so both
+  // must meet the 4.5:1 AA body minimum. This guards future palette edits.
+  for (const [label, profile] of [
+    ["editorial", editorial],
+    ["minimal", minimal],
+  ] as [string, Record<string, unknown>][]) {
+    const p = profile.palette as Record<string, string>;
+
+    test(`${label}: text on surface meets AA (>= 4.5:1)`, () => {
+      expect(contrastRatio(p.text, p.surface)).toBeGreaterThanOrEqual(4.5);
+    });
+
+    test(`${label}: textMuted on surface meets AA (>= 4.5:1)`, () => {
+      expect(contrastRatio(p.textMuted, p.surface)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });

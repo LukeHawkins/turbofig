@@ -27,7 +27,7 @@ const taste = {
     surface: "#FAFAFA",
     surfaceAlt: "#EDF2F7",
     text: "#1A202C",
-    textMuted: "#7A8B9A",
+    textMuted: "#5A6B7A",
   },
 
   /**
