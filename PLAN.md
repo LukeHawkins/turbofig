@@ -179,7 +179,7 @@ Goal: good taste out of the box; swappable per file; trainable on top; redistrib
 - [x] Plugin functional profile selector: a plain dropdown (impeccable / editorial / minimal / none + a custom text field) that posts `SET_PROFILE`. Functional now; Phase 9 polishes it. Test: `bun test` round-trip `SET_PROFILE` -> `setPluginData` mock -> `FILE_INFO` re-emit.
 - [x] Custom profiles + clean separation: the daemon scans `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles/`) at startup and registers `.js` files by stem; the public build ships only the three built-ins, never Luke's private packs. Test: a temp-dir custom profile is found by id; assert the repo carries no private packs.
 - [x] Objective taste checks in the critic: `design.md` reads `profileId` from `turbofig_status` at job start and feeds the profile's constraints to the builder and critic subagents; the critic scores objective checks (grid adherence, type-scale conformance, contrast/AA pass, spacing rhythm), not eyeball alone.
-- [ ] Verify: two open files each run a different profile cleanly (each keeps its own across reconnect); disable the profile on one; load a custom one; the public build carries no private data.
+- [x] Verify: two open files each run a different profile cleanly (each keeps its own across reconnect); disable the profile on one; load a custom one; the public build carries no private data.
 
 ## Phase 9: Slick Figma plugin UI
 

@@ -2123,4 +2123,200 @@ mod tests {
             "skills/profiles must contain exactly the three built-in profiles"
         );
     }
+
+    // Phase 8 scenario: two files run isolated profiles, survive reconnect, support
+    // "none" disable, support a custom profile, and the public build carries no private packs.
+
+    #[tokio::test]
+    async fn phase8_two_files_run_isolated_profiles() {
+        use std::collections::HashSet;
+        use tempfile::TempDir;
+        use tokio::sync::mpsc as tmpsc;
+
+        // Build a state with one custom profile: brandx.
+        let dir = TempDir::new().expect("create temp dir");
+        let brandx_js = r#"const taste = {id:"brandx"};"#;
+        std::fs::write(dir.path().join("brandx.js"), brandx_js).expect("write brandx profile");
+        let state = Arc::new(AppState::with_profiles_dir(dir.path().to_path_buf()));
+
+        // --- Step 1: register two connections with different profiles. ---
+        let (tx_a, mut rx_a) = tmpsc::unbounded_channel::<String>();
+        let conn_a = state.add_connection(tx_a);
+        state.set_connection_info(
+            conn_a,
+            "fkA".to_owned(),
+            "File A".to_owned(),
+            "editorial".to_owned(),
+        );
+
+        let (tx_b, mut rx_b) = tmpsc::unbounded_channel::<String>();
+        let conn_b = state.add_connection(tx_b);
+        state.set_connection_info(
+            conn_b,
+            "fkB".to_owned(),
+            "File B".to_owned(),
+            "minimal".to_owned(),
+        );
+
+        // --- Step 2: run execute on each file and verify profile isolation. ---
+
+        // File A must carry the editorial profile.
+        let state_a = state.clone();
+        let handle_a =
+            tokio::spawn(
+                async move { run_execute(&state_a, None, Some("fkA"), "return 'a';").await },
+            );
+
+        // Answer A's plugin request and assert the frame.
+        let msg_a = rx_a.recv().await.expect("A must send a frame");
+        let req_a: Value = serde_json::from_str(&msg_a).expect("parse A EXECUTE frame");
+        let code_a = req_a["code"].as_str().expect("A code field");
+        assert!(
+            code_a.contains("editorial"),
+            "file A code must contain 'editorial'"
+        );
+        assert!(
+            code_a.contains("const taste"),
+            "file A code must contain 'const taste'"
+        );
+        assert!(
+            !code_a.contains("minimal"),
+            "file A code must NOT contain 'minimal'"
+        );
+        let rid_a = req_a["requestId"].as_u64().expect("A requestId");
+        state.resolve(rid_a, json!({"ok": true, "result": null}));
+        handle_a.await.expect("A task must complete");
+
+        // File B must carry the minimal profile and must not carry the editorial profile.
+        let state_b = state.clone();
+        let handle_b =
+            tokio::spawn(
+                async move { run_execute(&state_b, None, Some("fkB"), "return 'b';").await },
+            );
+
+        let msg_b = rx_b.recv().await.expect("B must send a frame");
+        let req_b: Value = serde_json::from_str(&msg_b).expect("parse B EXECUTE frame");
+        let code_b = req_b["code"].as_str().expect("B code field");
+        assert!(
+            code_b.contains("minimal"),
+            "file B code must contain 'minimal'"
+        );
+        assert!(
+            !code_b.contains("editorial"),
+            "file B code must NOT contain 'editorial'"
+        );
+        let rid_b = req_b["requestId"].as_u64().expect("B requestId");
+        state.resolve(rid_b, json!({"ok": true, "result": null}));
+        handle_b.await.expect("B task must complete");
+
+        // --- Step 3: reconnect file A and verify the profile persists. ---
+        state.remove_connection(conn_a);
+        let (tx_a2, mut rx_a2) = tmpsc::unbounded_channel::<String>();
+        let conn_a2 = state.add_connection(tx_a2);
+        // Same file key and profile as before.
+        state.set_connection_info(
+            conn_a2,
+            "fkA".to_owned(),
+            "File A".to_owned(),
+            "editorial".to_owned(),
+        );
+
+        let state_a2 = state.clone();
+        let handle_a2 =
+            tokio::spawn(
+                async move { run_execute(&state_a2, None, Some("fkA"), "return 'a2';").await },
+            );
+
+        let msg_a2 = rx_a2
+            .recv()
+            .await
+            .expect("A2 must send a frame after reconnect");
+        let req_a2: Value = serde_json::from_str(&msg_a2).expect("parse A2 EXECUTE frame");
+        let code_a2 = req_a2["code"].as_str().expect("A2 code field");
+        assert!(
+            code_a2.contains("editorial"),
+            "profile must survive reconnect on file A"
+        );
+        let rid_a2 = req_a2["requestId"].as_u64().expect("A2 requestId");
+        state.resolve(rid_a2, json!({"ok": true, "result": null}));
+        handle_a2.await.expect("A2 task must complete");
+
+        // --- Step 4: disable profile on B with "none". ---
+        let user_code_b = "return 'none';";
+        state.set_connection_info(
+            conn_b,
+            "fkB".to_owned(),
+            "File B".to_owned(),
+            "none".to_owned(),
+        );
+
+        let state_b2 = state.clone();
+        let handle_b2 =
+            tokio::spawn(
+                async move { run_execute(&state_b2, None, Some("fkB"), user_code_b).await },
+            );
+
+        let msg_b2 = rx_b.recv().await.expect("B must send a frame after none");
+        let req_b2: Value = serde_json::from_str(&msg_b2).expect("parse B2 EXECUTE frame");
+        let code_b2 = req_b2["code"].as_str().expect("B2 code field");
+        assert_eq!(
+            code_b2, user_code_b,
+            "none profile must send user code unmodified"
+        );
+        assert!(
+            !code_b2.contains("const taste"),
+            "none profile must not inject taste"
+        );
+        let rid_b2 = req_b2["requestId"].as_u64().expect("B2 requestId");
+        state.resolve(rid_b2, json!({"ok": true, "result": null}));
+        handle_b2.await.expect("B2 task must complete");
+
+        // --- Step 5: switch file A to the custom brandx profile. ---
+        state.set_connection_info(
+            conn_a2,
+            "fkA".to_owned(),
+            "File A".to_owned(),
+            "brandx".to_owned(),
+        );
+
+        let state_a3 = state.clone();
+        let handle_a3 = tokio::spawn(async move {
+            run_execute(&state_a3, None, Some("fkA"), "return 'brandx';").await
+        });
+
+        let msg_a3 = rx_a2.recv().await.expect("A must send a frame for brandx");
+        let req_a3: Value = serde_json::from_str(&msg_a3).expect("parse A3 EXECUTE frame");
+        let code_a3 = req_a3["code"].as_str().expect("A3 code field");
+        assert!(
+            code_a3.contains("brandx"),
+            "custom brandx profile must be injected on file A"
+        );
+        let rid_a3 = req_a3["requestId"].as_u64().expect("A3 requestId");
+        state.resolve(rid_a3, json!({"ok": true, "result": null}));
+        handle_a3.await.expect("A3 task must complete");
+
+        // --- Step 6: the public build carries no private packs. ---
+        // This mirrors repo_profiles_dir_has_only_three_builtins inline.
+        let profiles_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../skills/profiles");
+        let entries = std::fs::read_dir(profiles_path).expect("skills/profiles must exist");
+        let stems: HashSet<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("js") {
+                    p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let expected: HashSet<String> = ["impeccable", "editorial", "minimal"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            stems, expected,
+            "public repo must contain exactly the three built-in profiles; no private packs"
+        );
+    }
 }
