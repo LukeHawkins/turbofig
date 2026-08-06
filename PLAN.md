@@ -126,7 +126,7 @@ Goal: build the token and speed levers and take a PROVISIONAL measurement. The b
 
 - [x] Shaped returns: ids-first, opt-in `fields`, `depth` limit, never a full-tree dump by default
 - [x] Screenshots default to downscaled + file-mode; inline high-res only on explicit request
-- [ ] Enforce the context firewall: inline screenshots need an explicit opt-in and warn past a budget; large reads without `depth`/`fields` are capped or warned; file-mode plus subagent-read is the default path
+- [x] Enforce the context firewall: inline screenshots need an explicit opt-in and warn past a budget; large reads without `depth`/`fields` are capped or warned; file-mode plus subagent-read is the default path
 - [x] Batching helper: many node ops in one `execute` round-trip
 - [x] Benchmark harness: measure tokens + wall-time for "design a webpage" and "20-slide deck"
 - [ ] Run the harness against the current console-mcp stack and record baseline numbers

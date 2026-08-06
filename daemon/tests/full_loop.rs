@@ -433,6 +433,88 @@ async fn test_get_selection_fields_and_depth_forwarded() {
     );
 }
 
+/// Spawn a mock plugin whose EXECUTE reply carries a large `result` string
+/// (well over the 20 000-byte read budget) so the budget warning fires.
+/// The small-result variant reuses spawn_design_plugin, which returns a small object.
+async fn spawn_large_result_plugin(ws_addr: SocketAddr) {
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock large-result plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "Big", "name": "Big File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) else {
+                        continue;
+                    };
+                    if json.get("type").and_then(|t| t.as_str()) == Some("EXECUTE") {
+                        // Return a result string that is well over 20 000 bytes.
+                        let big_string = "x".repeat(25_000);
+                        let reply = serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "result": big_string
+                        });
+                        let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// A large execute result triggers a "warning" field in the response.
+#[tokio::test]
+async fn test_execute_large_result_has_warning() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_large_result_plugin(ws_addr).await;
+
+    let result = turbofig::run_execute(&state, None, None, "any code").await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert!(
+        result.get("warning").and_then(|v| v.as_str()).is_some(),
+        "large result must carry a warning field, got: {result}"
+    );
+    let w = result["warning"].as_str().unwrap();
+    assert!(
+        w.contains("fields") || w.contains("file"),
+        "warning must name a remedy: {w}"
+    );
+}
+
+/// A small execute result (the normal design-loop result) has no "warning" field.
+#[tokio::test]
+async fn test_execute_small_result_has_no_warning() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    // spawn_design_plugin returns {"id": "1:5", "type": "FRAME"} — well under budget.
+    spawn_design_plugin(ws_addr).await;
+
+    let result = turbofig::run_execute(&state, None, None, "return figma.createFrame().id;").await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert!(
+        result.get("warning").is_none(),
+        "small result must not carry a warning field, got: {result}"
+    );
+}
+
 /// Depth clamps to 5 at the daemon before reaching the plugin.
 #[tokio::test]
 async fn test_get_selection_depth_clamps_at_daemon() {
