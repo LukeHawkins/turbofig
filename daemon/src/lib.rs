@@ -77,9 +77,11 @@ pub fn request_timeout_from_env() -> Duration {
 
 /// An active plugin connection.
 /// Holds the file key, the document name, and a sender for outbound JSON messages.
+/// profile_id is empty until FILE_INFO arrives with a profileId field.
 pub struct PluginConn {
     pub file_key: String,
     pub name: String,
+    pub profile_id: String,
     pub tx: mpsc::UnboundedSender<String>,
 }
 
@@ -177,20 +179,38 @@ impl AppState {
             PluginConn {
                 file_key: String::new(),
                 name: String::new(),
+                profile_id: String::new(),
                 tx,
             },
         );
         conn_id
     }
 
-    /// Update the file_key and name for an existing connection.
+    /// Update the file_key, name, and profile_id for an existing connection.
     /// Call this when FILE_INFO arrives.
-    pub fn set_connection_info(&self, conn_id: u64, file_key: String, name: String) {
+    pub fn set_connection_info(
+        &self,
+        conn_id: u64,
+        file_key: String,
+        name: String,
+        profile_id: String,
+    ) {
         let mut guard = self.connections.lock().expect("connections lock");
         if let Some(conn) = guard.get_mut(&conn_id) {
             conn.file_key = file_key;
             conn.name = name;
+            conn.profile_id = profile_id;
         }
+    }
+
+    /// Return the profile_id for the given connection.
+    /// Returns an empty string when the connection is gone or has no profile set.
+    pub fn connection_profile(&self, conn_id: u64) -> String {
+        let guard = self.connections.lock().expect("connections lock");
+        guard
+            .get(&conn_id)
+            .map(|c| c.profile_id.clone())
+            .unwrap_or_default()
     }
 
     /// Remove a connection from the registry. Call this when the socket closes.
@@ -419,6 +439,8 @@ pub async fn run_status(
         return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
     }
 
+    let profile_id = state.connection_profile(conn_id);
+
     match tokio::time::timeout(state.request_timeout, rx).await {
         Ok(Ok(result)) => {
             let fk = result
@@ -434,7 +456,12 @@ pub async fn run_status(
             let plugins = state.named_connections_json();
             json!({
                 "ok": true,
-                "plugin": {"connected": true, "fileKey": fk, "name": nm},
+                "plugin": {
+                    "connected": true,
+                    "fileKey": fk,
+                    "name": nm,
+                    "profileId": profile_id
+                },
                 "plugins": plugins
             })
         }
@@ -448,7 +475,13 @@ pub async fn run_status(
             // Name the unresponsive file so the caller knows which one is silent.
             json!({
                 "ok": true,
-                "plugin": {"connected": true, "responsive": false, "fileKey": fk, "name": name},
+                "plugin": {
+                    "connected": true,
+                    "responsive": false,
+                    "fileKey": fk,
+                    "name": name,
+                    "profileId": profile_id
+                },
                 "plugins": plugins
             })
         }
@@ -1070,7 +1103,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_owned();
-                            state.set_connection_info(conn_id, file_key, name);
+                            // profileId is optional. Absent means no profile set yet.
+                            let profile_id = json
+                                .get("profileId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            state.set_connection_info(conn_id, file_key, name, profile_id);
                         }
                         Some("RESULT") => {
                             if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
@@ -1243,7 +1282,12 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(tx);
-        state.set_connection_info(conn_id, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(
+            conn_id,
+            "fk1".to_owned(),
+            "File 1".to_owned(),
+            String::new(),
+        );
 
         let result = state.resolve_route(None, None);
         assert!(result.is_ok(), "expected Ok");
@@ -1258,7 +1302,12 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(tx);
-        state.set_connection_info(conn_id, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(
+            conn_id,
+            "fk1".to_owned(),
+            "File 1".to_owned(),
+            String::new(),
+        );
 
         // First call with session: auto-pick and record pairing.
         let result = state.resolve_route(Some("session-a"), None);
@@ -1280,8 +1329,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
-        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned(), String::new());
 
         match state.resolve_route(None, None) {
             Err(RouteError::Ambiguous(fks)) => {
@@ -1299,7 +1348,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
 
         let (conn_id, _tx, fk, _nm) = state
             .resolve_route(None, Some(""))
@@ -1316,8 +1365,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
-        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned(), String::new());
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned(), String::new());
 
         // No target: two named connections means ambiguous, never a panic.
         match state.resolve_route(None, None) {
@@ -1343,8 +1392,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
-        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned(), String::new());
 
         // Explicit fk2 with a session: must return fk2 and record pairing.
         let result = state.resolve_route(Some("session-x"), Some("fk2"));
@@ -1364,7 +1413,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn = state.add_connection(tx);
-        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned(), String::new());
 
         // Establish a pairing first.
         let _ = state.resolve_route(Some("session-y"), Some("fk1"));
@@ -1427,8 +1476,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
-        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned(), String::new());
 
         let connections = state.list_connections();
         assert_eq!(connections.len(), 2, "both connections must be listed");
@@ -1605,5 +1654,88 @@ mod tests {
         let val = json!([1, 2, 3]);
         let result = with_warning(val.clone(), Some("ignored".to_owned()));
         assert_eq!(result, val, "non-object value must be returned unchanged");
+    }
+
+    // profile_id registry tests
+
+    #[test]
+    fn set_connection_info_stores_profile_id_and_connection_profile_returns_it() {
+        // Add a connection, set info with a profile, then read the profile back.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info(
+            conn,
+            "fk".to_owned(),
+            "name".to_owned(),
+            "editorial".to_owned(),
+        );
+        assert_eq!(state.connection_profile(conn), "editorial");
+    }
+
+    #[test]
+    fn connection_profile_returns_empty_for_unknown_conn_id() {
+        // A conn_id that was never registered must return an empty string.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        assert_eq!(state.connection_profile(9999), "");
+    }
+
+    #[test]
+    fn connection_profile_returns_empty_after_remove_connection() {
+        // A removed connection must return an empty profile, not panic.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info(
+            conn,
+            "fk".to_owned(),
+            "name".to_owned(),
+            "editorial".to_owned(),
+        );
+        state.remove_connection(conn);
+        assert_eq!(state.connection_profile(conn), "");
+    }
+
+    #[tokio::test]
+    async fn run_status_connected_reply_contains_profile_id() {
+        // Spin up a real WS connection so run_status can complete the STATUS round-trip.
+        // Mirror the pattern used in the integration-style status tests elsewhere.
+        use tokio::sync::mpsc as tmpsc;
+
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+
+        // Simulate a plugin: register a connection with a profile, add it to the registry.
+        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(plugin_tx);
+        state.set_connection_info(
+            conn_id,
+            "fk-profile".to_owned(),
+            "Profile File".to_owned(),
+            "editorial".to_owned(),
+        );
+
+        // Spawn a task that reads the STATUS request and replies with a RESULT.
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = plugin_rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse STATUS request");
+                let req_id = req["requestId"].as_u64().expect("requestId");
+                state_clone.resolve(
+                    req_id,
+                    json!({"fileKey": "fk-profile", "name": "Profile File"}),
+                );
+            }
+        });
+
+        let result = run_status(&state, None, None).await;
+
+        assert_eq!(result["ok"], json!(true), "ok must be true");
+        let plugin = &result["plugin"];
+        assert_eq!(plugin["connected"], json!(true), "must be connected");
+        assert_eq!(
+            plugin["profileId"],
+            json!("editorial"),
+            "profileId must match what was stored"
+        );
     }
 }
