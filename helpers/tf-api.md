@@ -21,6 +21,37 @@
 | `tf.skipInvisible` | `(on?: boolean)` | `void` | no | Set `figma.skipInvisibleInstanceChildren` (default `true`). Skipping hidden instance children speeds up traversal on large documents. No-op when the property is absent. |
 | `tf.findAll` | `(node, criteria)` | `SceneNode[]` | no | Wrap `node.findAllWithCriteria(criteria)`. Use for fast, native type-based node queries. Example: `{ types: ["TEXT"] }`. |
 | `tf.chunk` | `(items, size?)` | `T[][]` | no | Split an array into consecutive sub-arrays of at most `size` elements. Default `size` is 75. Throws `RangeError` when `size < 1`. |
+| `tf.slide` | `(opts?: SlideOpts)` | `FrameNode` | no | Create a slide frame. Default size is 1920x1080 with name "Slide". Accepts all FrameOpts fields. |
+| `tf.deck` | `(opts)` | `Promise<FrameNode[]>` | **yes** | Create `count` slide frames, position them in a grid, append each to `parent`, and call `build` per slide. Default `cols=1`, `gap=80`. |
+| `tf.instance` | `(component: ComponentNode)` | `InstanceNode` | no | Return a new instance of the given component. |
+| `tf.instanceByKey` | `(key: string)` | `Promise<InstanceNode>` | **yes** | Import a component by its key and return a new instance. |
+| `tf.getVariable` | `(id: string)` | `Promise<Variable \| null>` | **yes** | Return the variable with the given id, or null when not found. |
+| `tf.setVariableValue` | `(variable, modeId, value)` | `void` | no | Set a variable's value for the given mode id. |
+| `tf.readVariableValue` | `(variable, modeId)` | `VariableValue \| undefined` | no | Read a variable's value for the given mode id. Returns undefined when the mode does not exist. |
+| `tf.export` | `(node, settings?)` | `Promise<Uint8Array>` | **yes** | Export a node as an image. Defaults to PNG at 1x scale. Pass `ExportSettings` to control format and constraints. |
+| `slidePosition` | `(index, opts)` | `{x, y}` | no | Pure function. Return the top-left grid position of a slide at `index`. Throws `RangeError` when `cols < 1` or `index < 0`. |
+
+### SlideOpts
+
+`SlideOpts` extends `FrameOpts`. All fields are optional. The slide factory sets these defaults before applying opts:
+
+- `name`: `"Slide"`
+- `width`: `1920`
+- `height`: `1080`
+
+Pass any `FrameOpts` field to override a default. For example, `{ fill: "#1E1E1E" }` gives a dark slide at the standard 1920x1080 size.
+
+### deck opts
+
+```ts
+{
+  parent: BaseNode & ChildrenMixin; // Node to append slides to.
+  count: number;                    // Number of slides to create.
+  cols?: number;                    // Grid columns. Default 1.
+  gap?: number;                     // Gap in pixels between slides. Default 80.
+  build?: (slide: FrameNode, index: number) => void | Promise<void>;
+}
+```
 
 ### TextOpts
 
@@ -67,6 +98,37 @@ When you pass `width`, the node is resized to that pixel width and `autoResize` 
 ```
 
 `fill` is optional. When omitted the rect is transparent (an empty fills array). Provide a hex string to fill it.
+
+---
+
+## Decks and slides
+
+Use `tf.deck` to build a set of presentation slides in one call. Each slide is a 1920x1080 `FrameNode`. The optional `build` callback receives each slide and its index so you can populate content per slide.
+
+```js
+// Build a 3-slide deck in a 2-column grid.
+const slides = await tf.deck({
+  parent: figma.currentPage,
+  count: 3,
+  cols: 2,
+  gap: 80,
+  build: async (slide, i) => {
+    await tf.loadFonts([{ family: "Inter", style: "Bold" }]);
+    const title = await tf.text({ text: `Slide ${i + 1}`, size: 48, style: "Bold", color: "#FFFFFF" });
+    tf.append(slide, title);
+  },
+});
+tf.commit("deck");
+return slides.map((s) => s.id);
+```
+
+Use `slidePosition` when you need to compute grid positions without creating nodes:
+
+```js
+import { slidePosition } from "./helpers";
+const pos = slidePosition(4, { cols: 3, width: 1920, height: 1080, gap: 80 });
+// pos -> { x: 2000, y: 1160 }
+```
 
 ---
 

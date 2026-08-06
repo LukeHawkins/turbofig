@@ -55,6 +55,12 @@ export interface RectOpts {
   corner?: number;
 }
 
+/**
+ * Options for the slide factory.
+ * All fields are the same as FrameOpts. Defaults are: width=1920, height=1080, name="Slide".
+ */
+export interface SlideOpts extends FrameOpts {}
+
 // --- Pure functions ---
 
 /**
@@ -122,6 +128,26 @@ export function dedupeFonts(fonts: FontName[]): FontName[] {
 }
 
 /**
+ * Returns the top-left position of a slide at `index` in a grid layout.
+ * Row = Math.floor(index / cols), column = index % cols.
+ * x = col * (width + gap), y = row * (height + gap).
+ * Throws a RangeError when cols is less than 1 or index is negative.
+ */
+export function slidePosition(
+  index: number,
+  opts: { cols: number; width: number; height: number; gap: number },
+): { x: number; y: number } {
+  if (opts.cols < 1) throw new RangeError("slidePosition: cols must be at least 1");
+  if (index < 0) throw new RangeError("slidePosition: index must be non-negative");
+  const row = Math.floor(index / opts.cols);
+  const col = index % opts.cols;
+  return {
+    x: col * (opts.width + opts.gap),
+    y: row * (opts.height + opts.gap),
+  };
+}
+
+/**
  * Splits an array into consecutive sub-arrays of at most `size` elements.
  * Default size is 75, the midpoint of the 50-100 node batching rule.
  * Throws a RangeError when size is less than 1.
@@ -174,7 +200,8 @@ export function axisSizing(
 
 /** Creates and returns the tf namespace bound to a live PluginAPI instance. */
 export function createTf(figma: PluginAPI) {
-  return {
+  // Assign to a variable so that slide and deck can call tf.frame and tf.slide.
+  const tf = {
     /** Parses a hex colour string to an RGB triple with 0..1 components. */
     color: hexToRgb,
 
@@ -344,5 +371,84 @@ export function createTf(figma: PluginAPI) {
      * Throws a RangeError when size is less than 1.
      */
     chunk,
+
+    /**
+     * Creates a slide frame. Default size is 1920x1080 with name "Slide".
+     * Accepts all FrameOpts fields. Provide width/height to override the defaults.
+     */
+    slide(opts: SlideOpts = {}): FrameNode {
+      return tf.frame({ name: "Slide", width: 1920, height: 1080, ...opts });
+    },
+
+    /**
+     * Creates `count` slide frames, positions each in a grid, and appends each to `parent`.
+     * Default grid is one column (cols=1) with an 80px gap between slides.
+     * Calls `build(slide, index)` for each slide when provided. Returns the slides in order.
+     */
+    async deck(opts: {
+      parent: BaseNode & ChildrenMixin;
+      count: number;
+      cols?: number;
+      gap?: number;
+      build?: (slide: FrameNode, index: number) => void | Promise<void>;
+    }): Promise<FrameNode[]> {
+      const cols = opts.cols ?? 1;
+      const gap = opts.gap ?? 80;
+      const slideWidth = 1920;
+      const slideHeight = 1080;
+      const slides: FrameNode[] = [];
+      for (let i = 0; i < opts.count; i++) {
+        const pos = slidePosition(i, { cols, width: slideWidth, height: slideHeight, gap });
+        const s = tf.slide({ width: slideWidth, height: slideHeight });
+        s.x = pos.x;
+        s.y = pos.y;
+        opts.parent.appendChild(s);
+        if (opts.build) {
+          await opts.build(s, i);
+        }
+        slides.push(s);
+      }
+      return slides;
+    },
+
+    /** Returns a new instance of the given component. */
+    instance(component: ComponentNode): InstanceNode {
+      return component.createInstance();
+    },
+
+    /** Imports a component by its key and returns a new instance. */
+    async instanceByKey(key: string): Promise<InstanceNode> {
+      const c = await figma.importComponentByKeyAsync(key);
+      return c.createInstance();
+    },
+
+    /** Returns the Variable with the given id, or null when not found. */
+    async getVariable(id: string): Promise<Variable | null> {
+      return figma.variables.getVariableByIdAsync(id);
+    },
+
+    /** Sets a variable's value for the given mode id. */
+    setVariableValue(variable: Variable, modeId: string, value: VariableValue): void {
+      variable.setValueForMode(modeId, value);
+    },
+
+    /**
+     * Reads a variable's value for the given mode id.
+     * Returns undefined when the mode does not exist on the variable.
+     */
+    readVariableValue(variable: Variable, modeId: string): VariableValue | undefined {
+      return variable.valuesByMode[modeId];
+    },
+
+    /**
+     * Exports a node as an image. Defaults to PNG at 1x scale.
+     * Pass a custom ExportSettings object to control format, constraints, and other options.
+     */
+    async export(node: SceneNode & ExportMixin, settings?: ExportSettings): Promise<Uint8Array> {
+      return node.exportAsync(
+        settings ?? { format: "PNG", constraint: { type: "SCALE", value: 1 } },
+      );
+    },
   };
+  return tf;
 }

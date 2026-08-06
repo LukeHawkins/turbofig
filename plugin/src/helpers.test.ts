@@ -6,6 +6,7 @@ import {
   dedupeFonts,
   hexToRgb,
   normalizePadding,
+  slidePosition,
   solidPaint,
 } from "./helpers";
 
@@ -231,6 +232,14 @@ describe("createTf", () => {
       "skipInvisible",
       "findAll",
       "chunk",
+      "slide",
+      "deck",
+      "instance",
+      "instanceByKey",
+      "getVariable",
+      "setVariableValue",
+      "readVariableValue",
+      "export",
     ] as const;
     for (const name of methods) {
       expect(typeof tf[name]).toBe("function");
@@ -353,5 +362,271 @@ describe("dedupeFonts", () => {
     expect(result[0].family).toBe("Roboto");
     expect(result[1].family).toBe("Inter");
     expect(result[2]).toEqual({ family: "Inter", style: "Bold" });
+  });
+});
+
+describe("slidePosition", () => {
+  const opts = { cols: 3, width: 1920, height: 1080, gap: 80 };
+
+  test("returns {x:0, y:0} for index 0 in any grid", () => {
+    expect(slidePosition(0, opts)).toEqual({ x: 0, y: 0 });
+  });
+
+  test("returns the correct position for a mid-row index (index 1, cols 3)", () => {
+    // col=1, row=0 -> x=1*(1920+80)=2000, y=0
+    expect(slidePosition(1, opts)).toEqual({ x: 2000, y: 0 });
+  });
+
+  test("wraps to the next row when index equals cols (index 3, cols 3)", () => {
+    // col=0, row=1 -> x=0, y=1*(1080+80)=1160
+    expect(slidePosition(3, opts)).toEqual({ x: 0, y: 1160 });
+  });
+
+  test("stacks slides vertically in single-column mode (cols=1)", () => {
+    // index=2, col=0, row=2 -> x=0, y=2*(1080+80)=2320
+    expect(slidePosition(2, { cols: 1, width: 1920, height: 1080, gap: 80 })).toEqual({
+      x: 0,
+      y: 2320,
+    });
+  });
+
+  test("throws a RangeError when cols is 0", () => {
+    expect(() => slidePosition(0, { cols: 0, width: 1920, height: 1080, gap: 80 })).toThrow(
+      RangeError,
+    );
+  });
+
+  test("throws a RangeError when cols is negative", () => {
+    expect(() => slidePosition(0, { cols: -1, width: 1920, height: 1080, gap: 80 })).toThrow(
+      RangeError,
+    );
+  });
+
+  test("throws a RangeError when index is negative", () => {
+    expect(() => slidePosition(-1, opts)).toThrow(RangeError);
+  });
+});
+
+// --- Shared mock factories for Figma-touching tests ---
+
+/** Creates a minimal writable frame mock that satisfies the frame() method requirements. */
+function makeFakeFrame(): FrameNode {
+  const f: Record<string, unknown> = {
+    name: "",
+    width: 100,
+    height: 100,
+    layoutMode: "NONE",
+    fills: [],
+    x: 0,
+    y: 0,
+    itemSpacing: 0,
+    paddingTop: 0,
+    paddingRight: 0,
+    paddingBottom: 0,
+    paddingLeft: 0,
+    primaryAxisSizingMode: "AUTO",
+    counterAxisSizingMode: "AUTO",
+    primaryAxisAlignItems: "MIN",
+    counterAxisAlignItems: "MIN",
+    children: [],
+    resize(w: number, h: number) {
+      f.width = w;
+      f.height = h;
+    },
+    appendChild(child: unknown) {
+      (f.children as unknown[]).push(child);
+    },
+  };
+  return f as unknown as FrameNode;
+}
+
+describe("tf.slide", () => {
+  const mockFigma = { createFrame: () => makeFakeFrame() } as unknown as PluginAPI;
+  const tf = createTf(mockFigma);
+
+  test("creates a frame with default width 1920, height 1080, and name Slide", () => {
+    const s = tf.slide();
+    const node = s as unknown as Record<string, unknown>;
+    expect(node.width).toBe(1920);
+    expect(node.height).toBe(1080);
+    expect(node.name).toBe("Slide");
+  });
+
+  test("applies a name override from opts", () => {
+    const s = tf.slide({ name: "Intro" });
+    expect((s as unknown as Record<string, unknown>).name).toBe("Intro");
+  });
+
+  test("applies a width override from opts", () => {
+    const s = tf.slide({ width: 1280 });
+    expect((s as unknown as Record<string, unknown>).width).toBe(1280);
+  });
+});
+
+describe("tf.deck", () => {
+  const mockFigma = { createFrame: () => makeFakeFrame() } as unknown as PluginAPI;
+  const tf = createTf(mockFigma);
+
+  test("creates exactly count slides and returns them", async () => {
+    const parent = {
+      children: [],
+      appendChild(c: unknown) {
+        (this.children as unknown[]).push(c);
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const slides = await tf.deck({ parent, count: 3 });
+    expect(slides).toHaveLength(3);
+  });
+
+  test("appends each slide to the parent", async () => {
+    const appended: unknown[] = [];
+    const parent = {
+      children: [],
+      appendChild(c: unknown) {
+        appended.push(c);
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const slides = await tf.deck({ parent, count: 2 });
+    expect(appended).toHaveLength(2);
+    expect(appended[0]).toBe(slides[0]);
+    expect(appended[1]).toBe(slides[1]);
+  });
+
+  test("positions slides correctly with cols=2 and gap=80", async () => {
+    const parent = { children: [], appendChild() {} } as unknown as BaseNode & ChildrenMixin;
+    const slides = await tf.deck({ parent, count: 3, cols: 2, gap: 80 });
+    const [s0, s1, s2] = slides.map((s) => s as unknown as Record<string, unknown>);
+    // slide 0: col=0, row=0 -> x=0, y=0
+    expect(s0.x).toBe(0);
+    expect(s0.y).toBe(0);
+    // slide 1: col=1, row=0 -> x=1*(1920+80)=2000, y=0
+    expect(s1.x).toBe(2000);
+    expect(s1.y).toBe(0);
+    // slide 2: col=0, row=1 -> x=0, y=1*(1080+80)=1160
+    expect(s2.x).toBe(0);
+    expect(s2.y).toBe(1160);
+  });
+
+  test("calls the build callback for each slide with the correct index", async () => {
+    const calls: Array<{ index: number; node: FrameNode }> = [];
+    const parent = { children: [], appendChild() {} } as unknown as BaseNode & ChildrenMixin;
+    const slides = await tf.deck({
+      parent,
+      count: 3,
+      build: (slide, index) => {
+        calls.push({ index, node: slide });
+      },
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls[0].index).toBe(0);
+    expect(calls[0].node).toBe(slides[0]);
+    expect(calls[1].index).toBe(1);
+    expect(calls[2].index).toBe(2);
+  });
+});
+
+describe("tf.instance", () => {
+  test("returns the result of component.createInstance()", () => {
+    const fakeInstance = { type: "INSTANCE" } as unknown as InstanceNode;
+    const mockComponent = { createInstance: () => fakeInstance } as unknown as ComponentNode;
+    const tf = createTf({} as unknown as PluginAPI);
+    expect(tf.instance(mockComponent)).toBe(fakeInstance);
+  });
+});
+
+describe("tf.instanceByKey", () => {
+  test("imports a component by key and returns a new instance", async () => {
+    const fakeInstance = { type: "INSTANCE" } as unknown as InstanceNode;
+    const fakeComponent = { createInstance: () => fakeInstance } as unknown as ComponentNode;
+    const mockFigma = {
+      importComponentByKeyAsync: async (_key: string) => fakeComponent,
+    } as unknown as PluginAPI;
+    const tf = createTf(mockFigma);
+    const result = await tf.instanceByKey("abc-key");
+    expect(result).toBe(fakeInstance);
+  });
+});
+
+describe("tf variable helpers", () => {
+  test("getVariable delegates to figma.variables.getVariableByIdAsync", async () => {
+    const fakeVar = { id: "v1" } as unknown as Variable;
+    const mockFigma = {
+      variables: {
+        getVariableByIdAsync: async (id: string) => (id === "v1" ? fakeVar : null),
+      },
+    } as unknown as PluginAPI;
+    const tf = createTf(mockFigma);
+    expect(await tf.getVariable("v1")).toBe(fakeVar);
+    expect(await tf.getVariable("missing")).toBeNull();
+  });
+
+  test("setVariableValue calls setValueForMode with the given mode and value", () => {
+    let capturedMode: string | undefined;
+    let capturedValue: unknown;
+    const fakeVar = {
+      valuesByMode: {},
+      setValueForMode(modeId: string, value: unknown) {
+        capturedMode = modeId;
+        capturedValue = value;
+      },
+    } as unknown as Variable;
+    const tf = createTf({} as unknown as PluginAPI);
+    tf.setVariableValue(fakeVar, "mode1", 42);
+    expect(capturedMode).toBe("mode1");
+    expect(capturedValue).toBe(42);
+  });
+
+  test("readVariableValue reads valuesByMode for the given mode", () => {
+    const fakeVar = {
+      valuesByMode: { mode1: "hello" },
+      setValueForMode() {},
+    } as unknown as Variable;
+    const tf = createTf({} as unknown as PluginAPI);
+    expect(tf.readVariableValue(fakeVar, "mode1")).toBe("hello");
+  });
+
+  test("readVariableValue returns undefined for a mode that does not exist", () => {
+    const fakeVar = {
+      valuesByMode: {},
+      setValueForMode() {},
+    } as unknown as Variable;
+    const tf = createTf({} as unknown as PluginAPI);
+    expect(tf.readVariableValue(fakeVar, "missing")).toBeUndefined();
+  });
+});
+
+describe("tf.export", () => {
+  test("calls exportAsync with default PNG 1x settings when no settings given", async () => {
+    const fakeBytes = new Uint8Array([1, 2, 3]);
+    let capturedSettings: unknown;
+    const mockNode = {
+      exportAsync: async (s: unknown) => {
+        capturedSettings = s;
+        return fakeBytes;
+      },
+    } as unknown as SceneNode & ExportMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    const result = await tf.export(mockNode);
+    expect(result).toBe(fakeBytes);
+    expect(capturedSettings).toEqual({ format: "PNG", constraint: { type: "SCALE", value: 1 } });
+  });
+
+  test("passes custom settings through to exportAsync unchanged", async () => {
+    const fakeBytes = new Uint8Array([4, 5, 6]);
+    let capturedSettings: unknown;
+    const customSettings = {
+      format: "PNG",
+      constraint: { type: "SCALE", value: 2 },
+    } as ExportSettings;
+    const mockNode = {
+      exportAsync: async (s: unknown) => {
+        capturedSettings = s;
+        return fakeBytes;
+      },
+    } as unknown as SceneNode & ExportMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    const result = await tf.export(mockNode, customSettings);
+    expect(result).toBe(fakeBytes);
+    expect(capturedSettings).toBe(customSettings);
   });
 });

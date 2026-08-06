@@ -140,7 +140,7 @@ Goal: reliable, fast Figma craft as a compact JS namespace injected into the eva
 
 - [x] Perf rules baked in: fonts via `Promise.all`, `skipInvisibleInstanceChildren`, `findAllWithCriteria`, `commitUndo`, chunk 50-100 nodes
 - [x] Layout primitives: auto-layout builders (vertical/horizontal, sizing, spacing, padding)
-- [ ] Deck/slide scaffolds; component instantiation; variable read/write; text + font handling; export
+- [x] Deck/slide scaffolds; component instantiation; variable read/write; text + font handling; export
 - [x] Async-only API surface (all `*Async` variants) for `documentAccess: dynamic-page`
 - [x] Compact API reference doc (one file) so the model learns the helpers cheaply
 - [ ] Verify: build a multi-slide deck in a few batched calls using only helpers
