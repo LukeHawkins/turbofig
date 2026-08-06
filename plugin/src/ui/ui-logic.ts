@@ -19,7 +19,7 @@ export interface ConnStateResult {
  * Computes the connection state and display label from a WS event and attempt count.
  * Call this on each WS lifecycle event. Pass the current attempt counter.
  * Attempt 0 means the initial connect. Offline threshold: 5 or more failed attempts.
- * "error" returns reconnecting — the close event fires next and drives the retry.
+ * "error" returns reconnecting: the close event fires next and drives the retry.
  */
 export function connStateFromEvent(event: WsEvent, attempt: number): ConnStateResult {
   if (event === "open") {
@@ -131,7 +131,7 @@ export function formatPairing(sessionId: string, fileName: string): PairingResul
   if (!sessionId) {
     return {
       paired: false,
-      label: "Not paired — no Claude session is driving this file yet.",
+      label: "Not paired: no Claude session is driving this file yet.",
     };
   }
   const shortId = sessionId.length > 12 ? `${sessionId.slice(0, 12)}...` : sessionId;

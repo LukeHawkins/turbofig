@@ -5,129 +5,297 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Turbofig</title>
     <style>
+      /* === DESIGN TOKENS (impeccable profile) =========================== */
+      :root {
+        /* Spacing: impeccable scale (px): 4 8 12 16 24 32 48 64 96 */
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 16px;
+        --sp-5: 24px;
+        --sp-6: 32px;
+
+        /* Type: impeccable scale (px): 12 14 16 20 25 31 39 49 61 */
+        --fs-xs: 12px;
+        --fs-sm: 14px;
+        --fs-md: 16px;
+        --fs-lg: 20px;
+
+        /* Font stacks */
+        --ff-display: "Inter", "Space Grotesk", Arial, sans-serif;
+        --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
+        --ff-mono: "SF Mono", "Fira Code", Consolas, monospace;
+
+        /* Neutral ramp: contrast vs white noted */
+        --n-0: #ffffff;
+        --n-50: #f7f7f7;
+        --n-100: #efefef;
+        --n-300: #c4c4c4;
+        --n-500: #6b6b6b; /* 4.8 : 1 on white: meets AA for normal text */
+        --n-700: #3d3d3d; /* 9.7 : 1 on white */
+        --n-900: #1a1a1a; /* 18  : 1 on white */
+
+        /* Muted semantic status (allowed by impeccable blocklist) */
+        --c-connected: #1e6b3a;
+        --c-reconnecting: #9a4d00;
+        --c-offline: #b91c1c;
+      }
+
+      /* === RESET ========================================================= */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      /* === BASE ========================================================== */
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        margin: 16px;
-        font-size: 13px;
-        color: #111;
+        font-family: var(--ff-body);
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--n-900);
+        background: var(--n-0);
+        margin: 0;
+        padding: var(--sp-4);
       }
-      h1 {
+
+      /* === HEADER: wordmark ============================================= */
+      .panel-header {
+        padding-bottom: var(--sp-2);
+        margin-bottom: var(--sp-3);
+        border-bottom: 1px solid var(--n-100);
+      }
+
+      .wordmark {
+        font-family: var(--ff-display);
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        line-height: 1;
+        color: var(--n-900);
+        margin: 0;
+      }
+
+      /* === STATUS BLOCK: focal point ==================================== */
+      /* Size before weight: the largest text on the panel. */
+      .status-block {
+        padding: var(--sp-2) 0;
+        margin-bottom: var(--sp-5);
+      }
+
+      #conn-status {
         font-size: 16px;
-        margin: 0 0 12px;
-      }
-      .info-row {
-        margin: 0 0 6px;
-        color: #555;
-      }
-      .info-row span {
-        color: #111;
         font-weight: 500;
+        color: var(--n-500);
+      }
+
+      /* Coloured dot prefix; inherits class from #conn-status. */
+      #conn-status::before {
+        content: "";
+        display: inline-block;
+        width: var(--sp-2);
+        height: var(--sp-2);
+        border-radius: 50%;
+        background: var(--n-300);
+        margin-right: var(--sp-1);
+        vertical-align: middle;
+        position: relative;
+        top: -1px;
+      }
+
+      #conn-status.connecting {
+        color: var(--n-500);
       }
       #conn-status.connected {
-        color: #1a7f37;
+        color: var(--c-connected);
+      }
+      #conn-status.connected::before {
+        background: var(--c-connected);
       }
       #conn-status.reconnecting {
-        color: #b85c00;
+        color: var(--c-reconnecting);
+      }
+      #conn-status.reconnecting::before {
+        background: var(--c-reconnecting);
       }
       #conn-status.offline {
-        color: #cf222e;
+        color: var(--c-offline);
       }
-      #pairing-section {
-        margin: 10px 0;
-        padding: 8px;
+      #conn-status.offline::before {
+        background: var(--c-offline);
+      }
+
+      /* === STALE WARNING ================================================= */
+      /* Hidden by default; shown when daemon and plugin versions differ. */
+      .stale-banner {
+        font-size: 12px;
+        color: #7d4e00;
+        background: #fef9c3;
         border-radius: 4px;
-        background: #f6f8fa;
+        padding: var(--sp-1) var(--sp-2);
+        margin-bottom: var(--sp-2);
       }
-      #pairing-section h2 {
-        font-size: 11px;
+
+      /* === META GROUP (file / session / pairing) ========================= */
+      .meta-section {
+        margin-bottom: var(--sp-5);
+      }
+
+      /* Two-column grid: label column auto-sized, value fills the rest. */
+      .meta-list {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: var(--sp-3);
+        row-gap: var(--sp-1);
+        margin: 0 0 var(--sp-2);
+        padding: 0;
+      }
+
+      /* display:contents removes the row div from layout; dt/dd become grid items. */
+      .meta-row {
+        display: contents;
+      }
+
+      .meta-row dt {
+        font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #555;
-        margin: 0 0 4px;
+        letter-spacing: 0.06em;
+        color: var(--n-500);
+        align-self: baseline;
       }
-      #pairing-line {
+
+      .meta-row dd {
+        font-size: 14px;
+        color: var(--n-700);
         margin: 0;
-        color: #444;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
+
+      /* Pairing sits below the meta rows, slightly less prominent. */
+      #pairing-line {
+        font-size: 12px;
+        margin: 0;
+        line-height: 1.5;
+        color: var(--n-500);
+      }
+
       #pairing-line.paired {
-        color: #1a7f37;
+        color: var(--c-connected);
       }
       #pairing-line.unpaired {
-        color: #6e7781;
+        color: var(--n-500);
       }
-      #stale-warning {
-        background: #fff8c5;
-        border: 1px solid #d4a017;
-        border-radius: 4px;
-        padding: 5px 8px;
-        font-size: 11px;
-        color: #7d4e00;
-        margin: 0 0 6px;
+
+      /* === TASTE PROFILE CONTROL ========================================= */
+      .control-section {
+        margin-bottom: var(--sp-5);
       }
-      #activity-section {
-        margin: 10px 0;
-      }
-      #activity-section h2 {
-        font-size: 11px;
+
+      .control-label {
+        display: block;
+        font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #555;
-        margin: 0 0 4px;
+        letter-spacing: 0.06em;
+        color: var(--n-500);
+        margin-bottom: var(--sp-1);
       }
+
+      #profile,
+      #customProfile {
+        width: 100%;
+        font-size: 14px;
+        font-family: var(--ff-body);
+        padding: var(--sp-1) var(--sp-2);
+        border: 1px solid var(--n-300);
+        border-radius: 4px;
+        background: var(--n-0);
+        color: var(--n-900);
+      }
+
+      #customProfile {
+        margin-top: var(--sp-1);
+        display: none;
+      }
+
+      /* === ACTIVITY LOG ================================================== */
+      .log-section {
+        margin-bottom: var(--sp-5);
+      }
+
+      /* Reusable label style: 12px uppercase, muted. */
+      .section-label {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--n-500);
+        margin: 0 0 var(--sp-1);
+      }
+
       #activity-log {
         height: 80px;
         overflow-y: auto;
-        background: #f6f8fa;
+        background: var(--n-50);
         border-radius: 4px;
-        padding: 4px 6px;
-        font-family: monospace;
-        font-size: 11px;
-        color: #444;
+        padding: var(--sp-1) var(--sp-2);
+        font-family: var(--ff-mono);
+        font-size: 12px;
+        color: var(--n-700);
       }
+
       .log-entry {
         line-height: 1.6;
       }
-      #profile-row {
-        margin-top: 12px;
+
+      /* === FOOTER: quiet version line =================================== */
+      .panel-footer {
+        padding-top: var(--sp-2);
       }
-      #profile-row label {
-        display: block;
-        margin-bottom: 4px;
-        color: #333;
-      }
-      #profile {
-        width: 100%;
-        font-size: 13px;
-        box-sizing: border-box;
-      }
-      #customProfile {
-        width: 100%;
-        font-size: 13px;
-        box-sizing: border-box;
-        margin-top: 4px;
-        display: none;
+
+      .version-text {
+        font-size: 12px;
+        color: var(--n-500);
       }
     </style>
   </head>
   <body>
-    <h1>Turbofig</h1>
-    <p class="info-row">Plugin: v<span id="plugin-version"></span></p>
-    <div id="stale-warning" role="alert" style="display:none"></div>
-    <p class="info-row">Status: <span id="conn-status">Connecting...</span></p>
-    <p class="info-row">File: <span id="file-line">No file</span></p>
-    <p class="info-row">Session: <span id="session-line">No active session</span></p>
-    <section id="pairing-section" aria-label="Pairing">
-      <h2>Pairing</h2>
-      <p id="pairing-line" class="unpaired">Not paired — no Claude session is driving this file yet.</p>
+    <!-- Wordmark: one border below separates it from the panel content. -->
+    <header class="panel-header">
+      <h1 class="wordmark">Turbofig</h1>
+    </header>
+
+    <!-- Focal point: connection status. Largest text in the panel. -->
+    <div class="status-block">
+      <span id="conn-status">Connecting...</span>
+    </div>
+
+    <!-- Stale warning: visible only when daemon and plugin versions differ. -->
+    <div id="stale-warning" class="stale-banner" role="alert" style="display:none"></div>
+
+    <!-- File identity and pairing: grouped tightly by proximity. -->
+    <section class="meta-section" aria-label="File and session">
+      <dl class="meta-list">
+        <div class="meta-row">
+          <dt>File</dt>
+          <dd id="file-line">No file</dd>
+        </div>
+        <div class="meta-row">
+          <dt>Session</dt>
+          <dd id="session-line">No active session</dd>
+        </div>
+      </dl>
+      <p id="pairing-line" class="unpaired">
+        Not paired: no Claude session is driving this file yet.
+      </p>
     </section>
-    <section id="activity-section" aria-label="Activity">
-      <h2>Activity</h2>
-      <div id="activity-log" role="log" aria-live="polite"></div>
-    </section>
-    <div id="profile-row">
-      <label for="profile">Taste profile</label>
+
+    <!-- Taste profile: a single control, labelled clearly. -->
+    <section class="control-section" aria-label="Taste profile">
+      <label class="control-label" for="profile">Taste profile</label>
       <select id="profile">
         <option value="impeccable">Impeccable</option>
         <option value="editorial">Editorial</option>
@@ -136,7 +304,19 @@
         <option value="custom">Custom</option>
       </select>
       <input id="customProfile" type="text" placeholder="Enter profile id" />
-    </div>
+    </section>
+
+    <!-- Activity log: monospace, fixed height, scrollable. -->
+    <section class="log-section" aria-label="Activity">
+      <p class="section-label">Activity</p>
+      <div id="activity-log" role="log" aria-live="polite"></div>
+    </section>
+
+    <!-- Footer: plugin version, quiet and small. -->
+    <footer class="panel-footer">
+      <span class="version-text">v<span id="plugin-version"></span></span>
+    </footer>
+
     <script>__UI_BUNDLE__</script>
   </body>
 </html>
