@@ -534,3 +534,188 @@ async fn test_get_selection_depth_clamps_at_daemon() {
         "daemon must clamp depth 99 to 5: {result}"
     );
 }
+
+// ── get_selection budget warning tests ────────────────────────────────────────
+
+/// Spawn a mock plugin whose GET_SELECTION reply carries a selection payload
+/// well over the 20 000-byte read budget so the warning fires.
+async fn spawn_large_selection_plugin(ws_addr: SocketAddr) {
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock large-selection plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "BigSel", "name": "Big Selection File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) else {
+                        continue;
+                    };
+                    if json.get("type").and_then(|t| t.as_str()) == Some("GET_SELECTION") {
+                        // Build a selection payload well over 20 000 bytes.
+                        // Each item carries a long name string to inflate the JSON.
+                        let long_name = "n".repeat(2_000);
+                        let items: Vec<serde_json::Value> = (0..15)
+                            .map(|i| {
+                                serde_json::json!({
+                                    "id": format!("1:{i}"),
+                                    "name": long_name,
+                                    "type": "FRAME",
+                                    "x": 0, "y": 0, "w": 100, "h": 100
+                                })
+                            })
+                            .collect();
+                        let reply = serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "selection": items
+                        });
+                        let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// A large get_selection result triggers a "warning" field in the response.
+#[tokio::test]
+async fn test_get_selection_large_result_has_warning() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_large_selection_plugin(ws_addr).await;
+
+    let result = turbofig::run_get_selection(&state, None, None, None, None).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert!(
+        result.get("warning").and_then(|v| v.as_str()).is_some(),
+        "large selection must carry a warning field, got: {result}"
+    );
+    let w = result["warning"].as_str().unwrap();
+    assert!(
+        w.contains("fields") || w.contains("file"),
+        "warning must name a remedy: {w}"
+    );
+}
+
+/// A small get_selection result (the normal design-loop result) has no "warning" field.
+#[tokio::test]
+async fn test_get_selection_small_result_has_no_warning() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    // spawn_design_plugin returns a single small item - well under the 20 000-byte budget.
+    spawn_design_plugin(ws_addr).await;
+
+    let result = turbofig::run_get_selection(&state, None, None, None, None).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert!(
+        result.get("warning").is_none(),
+        "small selection must not carry a warning field, got: {result}"
+    );
+}
+
+// ── inline screenshot budget warning tests ─────────────────────────────────────
+
+/// Spawn a mock plugin that replies to SCREENSHOT with a large base64 string.
+///
+/// The string is valid base64 but not a valid PNG. The downscale pass-through
+/// returns the same bytes; re-encoding them gives a base64 string well over the
+/// 100 000-byte inline budget so the warning fires.
+async fn spawn_large_screenshot_plugin(ws_addr: SocketAddr) {
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock large-screenshot plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "BigShot", "name": "Big Screenshot File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) else {
+                        continue;
+                    };
+                    if json.get("type").and_then(|t| t.as_str()) == Some("SCREENSHOT") {
+                        // 135 000 'A' chars is valid base64. It decodes to ~101 250 bytes
+                        // of null data, which is not a valid PNG. The daemon pass-through
+                        // re-encodes those bytes back to ~135 000 base64 chars, well over
+                        // the 100 000-byte inline budget.
+                        let large_b64 = "A".repeat(135_000);
+                        let reply = serde_json::json!({
+                            "type": "RESULT", "requestId": id, "ok": true,
+                            "png": large_b64, "w": 10, "h": 10
+                        });
+                        let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// A large inline screenshot triggers a "warning" field in the response.
+#[tokio::test]
+async fn test_screenshot_inline_large_has_warning() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    spawn_large_screenshot_plugin(ws_addr).await;
+
+    let result =
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, false).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert!(
+        result.get("warning").and_then(|v| v.as_str()).is_some(),
+        "large inline screenshot must carry a warning field, got: {result}"
+    );
+    let w = result["warning"].as_str().unwrap();
+    assert!(
+        w.contains("file") || w.contains("subagent"),
+        "warning must name a remedy: {w}"
+    );
+}
+
+/// A small inline screenshot (the normal case) has no "warning" field.
+#[tokio::test]
+async fn test_screenshot_inline_small_has_no_warning() {
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_addr = spawn_ws(state.clone()).await;
+    // spawn_design_plugin returns "aGVsbG8=" (b"hello" base64) - well under budget.
+    spawn_design_plugin(ws_addr).await;
+
+    let result =
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, false).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed: {result}"
+    );
+    assert!(
+        result.get("warning").is_none(),
+        "small inline screenshot must not carry a warning field, got: {result}"
+    );
+}

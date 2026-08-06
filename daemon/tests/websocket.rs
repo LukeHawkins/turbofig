@@ -5,6 +5,8 @@
 //! full turbofig_status round-trip through a mock plugin.
 //! No port 18847 is ever hardcoded here.
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1601,5 +1603,106 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
         status_payload["ok"],
         serde_json::json!(true),
         "daemon must stay alive and answer status after an eval error, got: {status_payload}"
+    );
+}
+
+/// run_screenshot with a real oversized PNG is downscaled to maxDim correctly.
+///
+/// Generates a 2000x1000 RgbaImage, encodes it to PNG, base64-encodes it, and
+/// feeds it through a mock plugin. Asserts:
+///   - default (maxDim=1200, fullRes=false) returns w=1200, h=600 from the decoded image.
+///   - fullRes=true returns the original w=2000, h=1000.
+#[tokio::test]
+async fn test_run_screenshot_real_png_is_downscaled() {
+    // Build a 2000x1000 blank image and encode to PNG bytes.
+    let img = image::RgbaImage::new(2000, 1000);
+    let mut png_bytes: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encode test PNG");
+    let png_b64 = B64.encode(&png_bytes);
+
+    // Set up a mock plugin that returns this PNG for every SCREENSHOT request.
+    let state = Arc::new(turbofig::AppState::new());
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error");
+    });
+
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            serde_json::json!({"type": "FILE_INFO", "fileKey": "F", "name": "F"}).to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let b64_for_plugin = png_b64.clone();
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            if let TtMessage::Text(text) = msg {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if json.get("type").and_then(|t| t.as_str()) == Some("SCREENSHOT") {
+                        if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                            let reply = serde_json::json!({
+                                "type": "RESULT", "requestId": id, "ok": true,
+                                "png": b64_for_plugin, "w": 2000, "h": 1000
+                            });
+                            let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Default: maxDim=1200, fullRes=false. Longest edge 2000 -> scales to 1200x600.
+    let result =
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, false).await;
+    assert_eq!(
+        result["ok"],
+        serde_json::json!(true),
+        "must succeed with default downscale: {result}"
+    );
+    assert_eq!(
+        result["w"],
+        serde_json::json!(1200u64),
+        "w must equal maxDim=1200 after downscale: {result}"
+    );
+    assert_eq!(
+        result["h"],
+        serde_json::json!(600u64),
+        "h must be proportionally halved to 600 after downscale: {result}"
+    );
+
+    // fullRes=true: no downscaling; original dims from the decoded image.
+    let result_full =
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, true).await;
+    assert_eq!(
+        result_full["ok"],
+        serde_json::json!(true),
+        "must succeed with fullRes=true: {result_full}"
+    );
+    assert_eq!(
+        result_full["w"],
+        serde_json::json!(2000u64),
+        "w must be original 2000 for fullRes=true: {result_full}"
+    );
+    assert_eq!(
+        result_full["h"],
+        serde_json::json!(1000u64),
+        "h must be original 1000 for fullRes=true: {result_full}"
     );
 }

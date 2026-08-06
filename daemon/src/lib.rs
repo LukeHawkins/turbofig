@@ -640,6 +640,8 @@ pub async fn run_get_selection(
 /// - If the longest edge is already <= `max_dim`, return the input bytes unchanged.
 /// - Otherwise resize preserving aspect ratio and re-encode to PNG.
 fn downscale_png(bytes: &[u8], max_dim: u32, full_res: bool) -> (Vec<u8>, u32, u32) {
+    // A zero max_dim is degenerate; clamp to 1 so the resize is always well-defined.
+    let max_dim = max_dim.max(1);
     let img = match image::load_from_memory(bytes) {
         Ok(img) => img,
         Err(_) => return (bytes.to_vec(), 0, 0),
@@ -1444,6 +1446,23 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
             .expect("encode test PNG");
         buf
+    }
+
+    #[test]
+    fn downscale_png_max_dim_zero_does_not_panic_and_produces_valid_output() {
+        // max_dim=0 is clamped to 1 inside downscale_png. The call must not panic
+        // and must return a decodable PNG with at least a 1-pixel longest edge.
+        let png = make_png(100, 50);
+        let (out_bytes, w, h) = downscale_png(&png, 0, false);
+        assert!(
+            w >= 1,
+            "width must be >= 1 after clamping max_dim=0, got {w}"
+        );
+        assert!(
+            h >= 1,
+            "height must be >= 1 after clamping max_dim=0, got {h}"
+        );
+        image::load_from_memory(&out_bytes).expect("downscaled result must be a valid PNG");
     }
 
     #[test]
