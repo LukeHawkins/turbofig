@@ -471,6 +471,19 @@ describe("tf.slide", () => {
     const s = tf.slide({ width: 1280 });
     expect((s as unknown as Record<string, unknown>).width).toBe(1280);
   });
+
+  test("applies a height override from opts", () => {
+    const s = tf.slide({ height: 720 });
+    expect((s as unknown as Record<string, unknown>).height).toBe(720);
+  });
+
+  test("opts override the direction default and set a fill", () => {
+    // The opts spread runs after the direction: "NONE" default, so a caller can restore auto-layout.
+    const s = tf.slide({ direction: "HORIZONTAL", fill: "#FFFFFF" });
+    const node = s as unknown as Record<string, unknown>;
+    expect(node.layoutMode).toBe("HORIZONTAL");
+    expect((node.fills as unknown[]).length).toBe(1);
+  });
 });
 
 describe("tf.deck", () => {
@@ -500,6 +513,40 @@ describe("tf.deck", () => {
     expect(appended).toHaveLength(2);
     expect(appended[0]).toBe(slides[0]);
     expect(appended[1]).toBe(slides[1]);
+  });
+
+  test("returns an empty array and appends nothing when count is 0", async () => {
+    const appended: unknown[] = [];
+    const parent = {
+      children: [],
+      appendChild(c: unknown) {
+        appended.push(c);
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const slides = await tf.deck({ parent, count: 0 });
+    expect(slides).toEqual([]);
+    expect(appended).toHaveLength(0);
+  });
+
+  test("stacks slides with the default cols=1 and gap=80 when neither is given", async () => {
+    const parent = { children: [], appendChild() {} } as unknown as BaseNode & ChildrenMixin;
+    const slides = await tf.deck({ parent, count: 2 });
+    const [s0, s1] = slides.map((s) => s as unknown as Record<string, unknown>);
+    // Default single column: both x=0. Default gap 80: second slide at y=1080+80.
+    expect(s0.x).toBe(0);
+    expect(s0.y).toBe(0);
+    expect(s1.x).toBe(0);
+    expect(s1.y).toBe(1160);
+  });
+
+  test("throws when the parent uses auto-layout", async () => {
+    // A parent with layoutMode other than NONE would override the grid positions.
+    const parent = {
+      layoutMode: "VERTICAL",
+      children: [],
+      appendChild() {},
+    } as unknown as BaseNode & ChildrenMixin;
+    await expect(tf.deck({ parent, count: 2 })).rejects.toThrow(/auto-layout/);
   });
 
   test("positions slides correctly with cols=2 and gap=80", async () => {
@@ -548,11 +595,17 @@ describe("tf.instanceByKey", () => {
   test("imports a component by key and returns a new instance", async () => {
     const fakeInstance = { type: "INSTANCE" } as unknown as InstanceNode;
     const fakeComponent = { createInstance: () => fakeInstance } as unknown as ComponentNode;
+    let capturedKey = "";
     const mockFigma = {
-      importComponentByKeyAsync: async (_key: string) => fakeComponent,
+      importComponentByKeyAsync: async (key: string) => {
+        capturedKey = key;
+        return fakeComponent;
+      },
     } as unknown as PluginAPI;
     const tf = createTf(mockFigma);
     const result = await tf.instanceByKey("abc-key");
+    // The helper must forward the exact key to importComponentByKeyAsync.
+    expect(capturedKey).toBe("abc-key");
     expect(result).toBe(fakeInstance);
   });
 });
