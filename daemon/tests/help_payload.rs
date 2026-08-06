@@ -134,8 +134,8 @@ async fn test_mcp_path_not_overridden_by_fallback() {
     let status = res.status();
     let body = res.text().await.expect("read body");
 
-    // The help text marker ("Turbofig — always-on") must not appear.
-    let marker = "Turbofig — always-on";
+    // The help text marker ("Turbofig: always-on") must not appear.
+    let marker = "Turbofig: always-on";
     assert!(
         !body.contains(marker),
         "GET /mcp must not return the help text, but got body:\n{body}"

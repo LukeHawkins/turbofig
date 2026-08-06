@@ -1196,7 +1196,7 @@ impl ServerHandler for StatusHandler {
 ///
 /// An AI that discovers port 18846 can read this to bootstrap without the repo.
 pub const HELP_TEXT: &str = "\
-Turbofig — always-on Figma design daemon
+Turbofig: always-on Figma design daemon
 =========================================
 
 This HTTP port speaks MCP at POST /mcp (streamable-http, legacy session mode).

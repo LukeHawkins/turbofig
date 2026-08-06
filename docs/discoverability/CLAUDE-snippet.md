@@ -1,4 +1,4 @@
-# Turbofig — Figma design agent (local daemon)
+# Turbofig: Figma design agent (local daemon)
 
 Turbofig may be running on this machine. It exposes an HTTP MCP server on port 18846.
 
@@ -6,10 +6,10 @@ Turbofig may be running on this machine. It exposes an HTTP MCP server on port 1
 
 ## Four tools
 
-- `turbofig_execute` — run Figma Plugin API JavaScript in the open file
-- `turbofig_get_selection` — read the current selection
-- `turbofig_screenshot` — capture the canvas or a node
-- `turbofig_status` — return connection and taste-profile state
+- `turbofig_execute`: run Figma Plugin API JavaScript in the open file
+- `turbofig_get_selection`: read the current selection
+- `turbofig_screenshot`: capture the canvas or a node
+- `turbofig_status`: return connection and taste-profile state
 
 Each tool accepts an optional `fileKey` parameter to target a specific open file. Omit `fileKey` to use the paired file or the sole connected file.
 
