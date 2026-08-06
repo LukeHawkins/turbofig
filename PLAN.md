@@ -185,6 +185,8 @@ Goal: good taste out of the box; swappable per file; trainable on top; redistrib
 
 Goal: a clean, good-looking plugin panel. Clear connection state.
 
+**Taste base (required):** design the panel to the `impeccable` taste profile (`skills/profiles/impeccable.js`). Derive the panel spacing, type, and colour tokens from its `spacing`, `type`, and `contrast` values. Obey the impeccable anti-slop `blocklist`: no centered-everything, no generic gradients, no emoji bullets, no dead whitespace, no gray 1px borders on everything, no pure black, no three-card row. The panel must not look AI-generated.
+
 - [ ] Connection status (connected / reconnecting / offline) + active file + session
 - [ ] Pairing view (which Claude session is bound to this file)
 - [ ] Live activity log + a plugin-version / stale-warning indicator
