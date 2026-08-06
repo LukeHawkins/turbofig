@@ -9,10 +9,13 @@ import { backoffDelayMs } from "../protocol";
 import {
   appendLog,
   connStateFromEvent,
+  daemonMessageAction,
   formatFileLine,
   formatLogEntry,
   formatPairing,
   formatSession,
+  isRequestType,
+  mainMessageAction,
   parsePort,
   profileToSelectValue,
   staleWarning,
@@ -45,6 +48,8 @@ const LOG_CAP = 20;
 let latestFileInfo: FileInfoMessage | null = null;
 let attempt = 0;
 let ws: WebSocket | null = null;
+/** Pending reconnect timer. Cleared before any new connect so only one runs. */
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 /** Daemon version received on WELCOME. Used for the stale-version check. */
 let daemonVersion = "";
 let activeSessionId = "";
@@ -150,6 +155,11 @@ portFieldEl.onchange = () => {
 
 /** Opens a WebSocket and registers lifecycle handlers. */
 function connect(): void {
+  /* Cancel any pending reconnect so a stale timer cannot open a second socket. */
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   setConnStatus("attempt");
   const socket = new WebSocket(wsUrlForPort(currentPort));
   ws = socket;
@@ -179,10 +189,11 @@ function connect(): void {
     } catch {
       return;
     }
+    const action = daemonMessageAction(parsed.type as string);
     /* The UI selector owns SET_PROFILE. Drop it if the daemon sends it. */
-    if (parsed.type === "SET_PROFILE") return;
+    if (action === "drop") return;
     /* Consume WELCOME: store the daemon version and check for a stale mismatch. */
-    if (parsed.type === "WELCOME") {
+    if (action === "welcome") {
       daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
       const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
       if (staleWarningEl) {
@@ -198,12 +209,7 @@ function connect(): void {
       updatePairingDisplay();
     }
     /* Append request types to the activity log. */
-    if (
-      parsed.type === "STATUS" ||
-      parsed.type === "EXECUTE" ||
-      parsed.type === "GET_SELECTION" ||
-      parsed.type === "SCREENSHOT"
-    ) {
+    if (isRequestType(parsed.type as string)) {
       activityLog = appendLog(
         activityLog,
         formatLogEntry(parsed.type as string, Date.now()),
@@ -220,7 +226,7 @@ function scheduleReconnect(): void {
   const delay = backoffDelayMs(attempt);
   attempt += 1;
   setConnStatus("close");
-  setTimeout(connect, delay);
+  reconnectTimer = setTimeout(connect, delay);
 }
 
 /* Forward main-thread messages over the WS. FILE_INFO is stored and re-sent on each connect. */
@@ -229,23 +235,25 @@ window.onmessage = (event: MessageEvent) => {
   const msg = data?.pluginMessage;
   if (!msg || typeof msg !== "object") return;
   const m = msg as Record<string, unknown>;
+  const action = mainMessageAction(m.type as string);
   /* PORT: update the port field and reconnect when the port changes. */
-  if (m.type === "PORT") {
+  if (action === "port") {
     const newPort = typeof m.port === "number" ? m.port : 18847;
     if (portFieldEl) portFieldEl.value = String(newPort);
     if (newPort !== currentPort) {
       currentPort = newPort;
-      /* Detach onclose before closing so scheduleReconnect does not fire. */
+      /* Detach onclose before closing so the old socket does not schedule a reconnect. */
       if (ws) {
         ws.onclose = null;
         ws.close();
       }
       attempt = 0;
+      /* connect() clears any pending reconnect timer, so only one socket opens. */
       connect();
     }
     return;
   }
-  if (m.type === "FILE_INFO") {
+  if (action === "fileinfo") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
     updatePairingDisplay();

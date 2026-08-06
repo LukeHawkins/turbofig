@@ -72,6 +72,38 @@ export function formatSession(sessionId: string): string {
   return sessionId;
 }
 
+/** Daemon request types that the UI relays and records in the activity log. */
+export const REQUEST_TYPES = ["STATUS", "EXECUTE", "GET_SELECTION", "SCREENSHOT"] as const;
+
+/** Returns true when the type is a daemon request shown in the activity log. */
+export function isRequestType(type: string): boolean {
+  return (REQUEST_TYPES as readonly string[]).includes(type);
+}
+
+/**
+ * Decides how the UI handles a message received from the daemon over the socket.
+ * "drop": the daemon must not drive this. Ignore it (SET_PROFILE).
+ * "welcome": consume it locally to read the daemon version (WELCOME).
+ * "relay": forward it to the main thread (requests and everything else).
+ */
+export function daemonMessageAction(type: string): "drop" | "welcome" | "relay" {
+  if (type === "SET_PROFILE") return "drop";
+  if (type === "WELCOME") return "welcome";
+  return "relay";
+}
+
+/**
+ * Decides how the UI handles a message from the main thread.
+ * "port": consume it locally to set the port and reconnect (PORT).
+ * "fileinfo": store and reflect the file identity (FILE_INFO).
+ * "relay": forward it over the socket (RESULT and others).
+ */
+export function mainMessageAction(type: string): "port" | "fileinfo" | "relay" {
+  if (type === "PORT") return "port";
+  if (type === "FILE_INFO") return "fileinfo";
+  return "relay";
+}
+
 /**
  * Returns a new array with entry appended and trimmed to the last cap items.
  * The input array is never mutated.

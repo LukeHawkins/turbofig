@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test";
 import {
   appendLog,
   connStateFromEvent,
+  daemonMessageAction,
   formatFileLine,
   formatLogEntry,
   formatPairing,
   formatSession,
   isDaemonStale,
+  isRequestType,
   KNOWN_PROFILES,
+  mainMessageAction,
   parsePort,
   profileToSelectValue,
   staleWarning,
@@ -421,5 +424,52 @@ describe("wsUrlForPort", () => {
 
   test("returns a URL for port 65535", () => {
     expect(wsUrlForPort(65535)).toBe("ws://localhost:65535");
+  });
+});
+
+describe("isRequestType", () => {
+  test("accepts the four daemon request types", () => {
+    expect(isRequestType("STATUS")).toBe(true);
+    expect(isRequestType("EXECUTE")).toBe(true);
+    expect(isRequestType("GET_SELECTION")).toBe(true);
+    expect(isRequestType("SCREENSHOT")).toBe(true);
+  });
+
+  test("rejects non-request types", () => {
+    expect(isRequestType("WELCOME")).toBe(false);
+    expect(isRequestType("SET_PROFILE")).toBe(false);
+    expect(isRequestType("RESULT")).toBe(false);
+    expect(isRequestType("")).toBe(false);
+  });
+});
+
+describe("daemonMessageAction", () => {
+  test("drops SET_PROFILE so the daemon cannot drive the profile", () => {
+    expect(daemonMessageAction("SET_PROFILE")).toBe("drop");
+  });
+
+  test("consumes WELCOME locally", () => {
+    expect(daemonMessageAction("WELCOME")).toBe("welcome");
+  });
+
+  test("relays request messages to the main thread", () => {
+    expect(daemonMessageAction("STATUS")).toBe("relay");
+    expect(daemonMessageAction("EXECUTE")).toBe("relay");
+    expect(daemonMessageAction("RESULT")).toBe("relay");
+  });
+});
+
+describe("mainMessageAction", () => {
+  test("consumes PORT locally", () => {
+    expect(mainMessageAction("PORT")).toBe("port");
+  });
+
+  test("consumes FILE_INFO locally", () => {
+    expect(mainMessageAction("FILE_INFO")).toBe("fileinfo");
+  });
+
+  test("relays other main-thread messages over the socket", () => {
+    expect(mainMessageAction("RESULT")).toBe("relay");
+    expect(mainMessageAction("SET_PROFILE")).toBe("relay");
   });
 });
