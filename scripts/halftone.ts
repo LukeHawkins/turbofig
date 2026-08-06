@@ -3,18 +3,23 @@
  * All functions are importable and independently testable.
  */
 
+// Read a byte, treating an out-of-range index as 0.
+function byteAt(buf: Uint8Array, offset: number): number {
+  return buf[offset] ?? 0;
+}
+
 // Read a 16-bit unsigned little-endian integer from a byte array.
 function readU16LE(buf: Uint8Array, offset: number): number {
-  return (buf[offset]! | (buf[offset + 1]! << 8)) >>> 0;
+  return (byteAt(buf, offset) | (byteAt(buf, offset + 1) << 8)) >>> 0;
 }
 
 // Read a 32-bit unsigned little-endian integer from a byte array.
 function readU32LE(buf: Uint8Array, offset: number): number {
   return (
-    (buf[offset]! |
-      (buf[offset + 1]! << 8) |
-      (buf[offset + 2]! << 16) |
-      (buf[offset + 3]! << 24)) >>>
+    (byteAt(buf, offset) |
+      (byteAt(buf, offset + 1) << 8) |
+      (byteAt(buf, offset + 2) << 16) |
+      (byteAt(buf, offset + 3) << 24)) >>>
     0
   );
 }
@@ -22,7 +27,10 @@ function readU32LE(buf: Uint8Array, offset: number): number {
 // Read a 32-bit signed little-endian integer from a byte array.
 function readI32LE(buf: Uint8Array, offset: number): number {
   return (
-    buf[offset]! | (buf[offset + 1]! << 8) | (buf[offset + 2]! << 16) | (buf[offset + 3]! << 24)
+    byteAt(buf, offset) |
+    (byteAt(buf, offset + 1) << 8) |
+    (byteAt(buf, offset + 2) << 16) |
+    (byteAt(buf, offset + 3) << 24)
   );
 }
 
@@ -59,20 +67,30 @@ export function parseBmp(buf: Uint8Array): BmpData {
   const topDown = rawHeight < 0;
   const absHeight = Math.abs(rawHeight);
 
+  // Width must be positive for a valid image.
+  if (width <= 0) {
+    throw new Error(`Invalid BMP width: ${width}.`);
+  }
+
   // Row size is padded to a 4-byte boundary.
   const rowSize = Math.floor((bpp * width + 31) / 32) * 4;
   const bytesPerPixel = bpp / 8;
 
+  // The pixel data must fit inside the buffer, or the image is truncated.
+  if (buf.length < pixelOffset + absHeight * rowSize) {
+    throw new Error("Truncated BMP: pixel data runs past the end of the buffer.");
+  }
+
   // Build the luminance grid. Pixels are stored in BGR (or BGRA) order.
   const rows: number[][] = [];
   for (let r = 0; r < absHeight; r++) {
-    const rowBytes = buf.subarray(pixelOffset + r * rowSize, pixelOffset + r * rowSize + rowSize);
+    const rowStart = pixelOffset + r * rowSize;
     const row: number[] = new Array(width) as number[];
     for (let c = 0; c < width; c++) {
-      const base = c * bytesPerPixel;
-      const b = rowBytes[base]!;
-      const g = rowBytes[base + 1]!;
-      const red = rowBytes[base + 2]!;
+      const base = rowStart + c * bytesPerPixel;
+      const b = byteAt(buf, base);
+      const g = byteAt(buf, base + 1);
+      const red = byteAt(buf, base + 2);
       // Rec.601 luminance from linear RGB.
       row[c] = 0.299 * red + 0.587 * g + 0.114 * b;
     }
@@ -97,7 +115,7 @@ export function luminanceToChar(norm: number, ramp: string[]): string {
   const clamped = Math.max(0, Math.min(1, norm));
   const raw = Math.round(clamped * (ramp.length - 1));
   const index = Math.max(0, Math.min(raw, ramp.length - 1));
-  return ramp[index]!;
+  return ramp[index] ?? " ";
 }
 
 /** Options for buildHalftone. */

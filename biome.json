@@ -33,6 +33,16 @@
   },
   "overrides": [
     {
+      "includes": ["**/*.test.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          }
+        }
+      }
+    },
+    {
       "includes": ["skills/**/*.js"],
       "linter": {
         "rules": {

@@ -143,6 +143,22 @@ describe("parseBmp", () => {
     view.setUint16(28, 8, true);
     expect(() => parseBmp(buf)).toThrow("Unsupported bits per pixel: 8");
   });
+
+  test("throws when the pixel data is truncated", () => {
+    const buf = makeBmp24([
+      [
+        { r: 0, g: 0, b: 0 },
+        { r: 0, g: 0, b: 0 },
+      ],
+      [
+        { r: 0, g: 0, b: 0 },
+        { r: 0, g: 0, b: 0 },
+      ],
+    ]);
+    // Cut the buffer short so the declared pixel data no longer fits.
+    const short = buf.subarray(0, buf.length - 4);
+    expect(() => parseBmp(short)).toThrow("Truncated BMP");
+  });
 });
 
 // ---------------------------------------------------------------------------
