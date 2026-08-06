@@ -138,7 +138,7 @@ Goal: reliable, fast Figma craft as a compact JS namespace injected into the eva
 
 **Reconciled 2026-08-05:** the Active-priority slice delivered the `tf` layout primitives, text and font handling, the async-only surface, the core perf rules (Promise.all fonts, chunk, commitUndo), and the compact API reference. The unchecked items below are still open: the extra perf helpers (`skipInvisibleInstanceChildren`, `findAllWithCriteria`), deck and slide scaffolds, component instantiation, variable read and write, export helpers, and the multi-slide-deck verify.
 
-- [ ] Perf rules baked in: fonts via `Promise.all`, `skipInvisibleInstanceChildren`, `findAllWithCriteria`, `commitUndo`, chunk 50-100 nodes
+- [x] Perf rules baked in: fonts via `Promise.all`, `skipInvisibleInstanceChildren`, `findAllWithCriteria`, `commitUndo`, chunk 50-100 nodes
 - [x] Layout primitives: auto-layout builders (vertical/horizontal, sizing, spacing, padding)
 - [ ] Deck/slide scaffolds; component instantiation; variable read/write; text + font handling; export
 - [x] Async-only API surface (all `*Async` variants) for `documentAccess: dynamic-page`

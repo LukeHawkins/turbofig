@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   axisSizing,
+  chunk,
   createTf,
   dedupeFonts,
   hexToRgb,
@@ -165,6 +166,51 @@ describe("axisSizing", () => {
   });
 });
 
+describe("chunk", () => {
+  test("splits an even array into sub-arrays of the given size", () => {
+    expect(chunk([1, 2, 3, 4], 2)).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+  });
+
+  test("puts the remainder in the last sub-array", () => {
+    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
+
+  test("uses size 75 by default and splits 76 items into two sub-arrays", () => {
+    const items = Array.from({ length: 76 }, (_, i) => i);
+    const result = chunk(items);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toHaveLength(75);
+    expect(result[1]).toHaveLength(1);
+  });
+
+  test("returns one sub-array when size equals the array length", () => {
+    expect(chunk([1, 2, 3], 3)).toEqual([[1, 2, 3]]);
+  });
+
+  test("returns one sub-array when size is larger than the array length", () => {
+    expect(chunk([1, 2], 10)).toEqual([[1, 2]]);
+  });
+
+  test("handles size 1 by placing each element in its own sub-array", () => {
+    expect(chunk([1, 2, 3], 1)).toEqual([[1], [2], [3]]);
+  });
+
+  test("returns an empty array for an empty input", () => {
+    expect(chunk([], 10)).toEqual([]);
+  });
+
+  test("throws a RangeError when size is 0", () => {
+    expect(() => chunk([1, 2], 0)).toThrow(RangeError);
+  });
+
+  test("throws a RangeError when size is negative", () => {
+    expect(() => chunk([1, 2], -5)).toThrow(RangeError);
+  });
+});
+
 describe("createTf", () => {
   // Cast through unknown so the test does not require a real PluginAPI instance.
   // createTf reads figma only inside its methods, so an empty object is safe here.
@@ -182,6 +228,9 @@ describe("createTf", () => {
       "append",
       "findOrCreate",
       "commit",
+      "skipInvisible",
+      "findAll",
+      "chunk",
     ] as const;
     for (const name of methods) {
       expect(typeof tf[name]).toBe("function");
@@ -193,6 +242,49 @@ describe("createTf", () => {
     expect(result.r).toBeCloseTo(0.2, 3);
     expect(result.g).toBeCloseTo(0.4, 3);
     expect(result.b).toBeCloseTo(0.8, 3);
+  });
+
+  test("tf.chunk delegates to the chunk pure function", () => {
+    expect(tf.chunk([1, 2, 3], 2)).toEqual([[1, 2], [3]]);
+  });
+});
+
+describe("tf.skipInvisible", () => {
+  test("sets skipInvisibleInstanceChildren to true when called with no argument", () => {
+    const mock = { skipInvisibleInstanceChildren: false } as unknown as PluginAPI;
+    const tf = createTf(mock);
+    tf.skipInvisible();
+    expect((mock as unknown as Record<string, unknown>).skipInvisibleInstanceChildren).toBe(true);
+  });
+
+  test("sets skipInvisibleInstanceChildren to false when called with false", () => {
+    const mock = { skipInvisibleInstanceChildren: true } as unknown as PluginAPI;
+    const tf = createTf(mock);
+    tf.skipInvisible(false);
+    expect((mock as unknown as Record<string, unknown>).skipInvisibleInstanceChildren).toBe(false);
+  });
+
+  test("does not throw when the property is absent from the figma mock", () => {
+    const tf = createTf({} as unknown as PluginAPI);
+    expect(() => tf.skipInvisible()).not.toThrow();
+  });
+});
+
+describe("tf.findAll", () => {
+  test("delegates to node.findAllWithCriteria and returns its result", () => {
+    const fakeNodes = [{ type: "TEXT", id: "t1" }];
+    const criteria = { types: ["TEXT"] };
+    let capturedCriteria: unknown;
+    const mockNode = {
+      findAllWithCriteria(c: unknown) {
+        capturedCriteria = c;
+        return fakeNodes;
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    const result = tf.findAll(mockNode, criteria as unknown as FindAllCriteria<NodeType[]>);
+    expect(result).toBe(fakeNodes);
+    expect(capturedCriteria).toBe(criteria);
   });
 });
 

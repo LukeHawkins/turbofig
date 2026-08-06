@@ -122,6 +122,22 @@ export function dedupeFonts(fonts: FontName[]): FontName[] {
 }
 
 /**
+ * Splits an array into consecutive sub-arrays of at most `size` elements.
+ * Default size is 75, the midpoint of the 50-100 node batching rule.
+ * Throws a RangeError when size is less than 1.
+ * Returns an empty array for an empty input.
+ */
+export function chunk<T>(items: T[], size = 75): T[][] {
+  if (size < 1) throw new RangeError("chunk: size must be at least 1");
+  if (items.length === 0) return [];
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    result.push(items.slice(i, i + size));
+  }
+  return result;
+}
+
+/**
  * Maps an auto-layout direction and the presence of explicit dimensions to
  * per-axis sizing modes. Use the result to set primaryAxisSizingMode and
  * counterAxisSizingMode on a FrameNode.
@@ -299,5 +315,34 @@ export function createTf(figma: PluginAPI) {
         figma.commitUndo();
       }
     },
+
+    /**
+     * Sets figma.skipInvisibleInstanceChildren to `on` (default true).
+     * When true, Figma skips hidden instance children during traversal,
+     * which speeds up findAll calls on large documents.
+     * No-op when the property is absent from this PluginAPI instance.
+     */
+    skipInvisible(on = true): void {
+      // Guard: the property may not exist in all API versions or test mocks.
+      if ("skipInvisibleInstanceChildren" in figma) {
+        (figma as unknown as Record<string, unknown>).skipInvisibleInstanceChildren = on;
+      }
+    },
+
+    /**
+     * Wraps node.findAllWithCriteria(criteria).
+     * Use this for fast, native type-based node queries instead of a predicate scan.
+     * Example: tf.findAll(page, { types: ["TEXT"] })
+     */
+    findAll(node: BaseNode & ChildrenMixin, criteria: FindAllCriteria<NodeType[]>): SceneNode[] {
+      return node.findAllWithCriteria(criteria) as SceneNode[];
+    },
+
+    /**
+     * Splits an array into consecutive sub-arrays of at most `size` elements.
+     * Default size is 75, the midpoint of the 50-100 node batching rule.
+     * Throws a RangeError when size is less than 1.
+     */
+    chunk,
   };
 }

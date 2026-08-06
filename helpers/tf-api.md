@@ -18,6 +18,9 @@
 | `tf.append` | `(parent, ...children)` | `parent` (chainable) | no | Append one or more `SceneNode`s to a parent. Returns the parent for chaining. |
 | `tf.findOrCreate` | `(parent, name, factory)` | `Promise<SceneNode>` | **yes** | Return an existing direct child named `name`, or call `factory`, name it, append it, and return it. |
 | `tf.commit` | `(label?: string)` | `void` | no | Call `figma.commitUndo()` to mark the end of a batch undo step. |
+| `tf.skipInvisible` | `(on?: boolean)` | `void` | no | Set `figma.skipInvisibleInstanceChildren` (default `true`). Skipping hidden instance children speeds up traversal on large documents. No-op when the property is absent. |
+| `tf.findAll` | `(node, criteria)` | `SceneNode[]` | no | Wrap `node.findAllWithCriteria(criteria)`. Use for fast, native type-based node queries. Example: `{ types: ["TEXT"] }`. |
+| `tf.chunk` | `(items, size?)` | `T[][]` | no | Split an array into consecutive sub-arrays of at most `size` elements. Default `size` is 75. Throws `RangeError` when `size < 1`. |
 
 ### TextOpts
 
@@ -72,6 +75,9 @@ When you pass `width`, the node is resized to that pixel width and `autoResize` 
 - Preload all fonts once with `await tf.loadFonts([...])` before creating any text nodes. This avoids one network round-trip per node.
 - Do as many node operations as possible in one eval call. Each `turbofig_execute` call has network overhead.
 - Call `tf.commit(label)` once at the end of a batch to create a single undo step.
+- Call `tf.skipInvisible()` at the start of any eval that scans the document. It sets `figma.skipInvisibleInstanceChildren = true`, which skips hidden instance children during traversal.
+- Use `tf.findAll(node, { types: ["TEXT"] })` instead of `node.findAll(predicate)`. The native criteria filter is faster on large documents.
+- Use `tf.chunk(nodes, size)` to process large node arrays in batches of at most `size` (default 75). Process each batch in sequence to avoid blocking the UI thread for long periods.
 
 ---
 
