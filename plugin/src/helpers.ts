@@ -359,10 +359,15 @@ export function createTf(figma: PluginAPI) {
     /**
      * Wraps node.findAllWithCriteria(criteria).
      * Use this for fast, native type-based node queries instead of a predicate scan.
-     * Example: tf.findAll(page, { types: ["TEXT"] })
+     * Example: tf.findAll(page, { types: ["TEXT"] }) returns TextNode[].
+     * The node must be on the current page or a page already loaded with
+     * figma.loadPageAsync(). An unloaded page throws under dynamic-page.
      */
-    findAll(node: BaseNode & ChildrenMixin, criteria: FindAllCriteria<NodeType[]>): SceneNode[] {
-      return node.findAllWithCriteria(criteria) as SceneNode[];
+    findAll<T extends NodeType[]>(
+      node: BaseNode & ChildrenMixin,
+      criteria: FindAllCriteria<T>,
+    ): { type: T[number] }[] {
+      return node.findAllWithCriteria(criteria);
     },
 
     /**
@@ -393,6 +398,7 @@ export function createTf(figma: PluginAPI) {
      * Creates `count` slide frames, positions each in a grid, and appends each to `parent`.
      * Default grid is one column (cols=1) with an 80px gap between slides.
      * Calls `build(slide, index)` for each slide when provided. Returns the slides in order.
+     * The parent must not have auto-layout. Auto-layout overrides the grid x/y positions.
      */
     async deck(opts: {
       parent: BaseNode & ChildrenMixin;
@@ -401,6 +407,10 @@ export function createTf(figma: PluginAPI) {
       gap?: number;
       build?: (slide: FrameNode, index: number) => void | Promise<void>;
     }): Promise<FrameNode[]> {
+      // Guard: an auto-layout parent silently overrides the grid positions.
+      if ("layoutMode" in opts.parent && (opts.parent as FrameNode).layoutMode !== "NONE") {
+        throw new Error("deck: parent must not use auto-layout (set layoutMode to NONE)");
+      }
       const cols = opts.cols ?? 1;
       const gap = opts.gap ?? 80;
       const slideWidth = 1920;

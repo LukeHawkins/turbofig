@@ -38,6 +38,7 @@
 - `name`: `"Slide"`
 - `width`: `1920`
 - `height`: `1080`
+- `direction`: `"NONE"` (a plain frame; slide children keep free x/y positions and are not auto-laid-out)
 
 Pass any `FrameOpts` field to override a default. For example, `{ fill: "#1E1E1E" }` gives a dark slide at the standard 1920x1080 size.
 
