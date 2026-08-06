@@ -78,15 +78,21 @@
 
         profileSel.onchange = function () {
           if (profileSel.value === "custom") {
+            /* Show the field and wait for the user to commit a custom id.
+               Do not post yet: an empty custom id resolves to impeccable and
+               would snap the select off "custom" while the user is typing. */
             customInput.style.display = "block";
-          } else {
-            customInput.style.display = "none";
+            customInput.focus();
+            return;
           }
+          customInput.style.display = "none";
           postSetProfile();
         };
 
-        customInput.oninput = function () {
-          if (profileSel.value === "custom") {
+        /* Commit the custom id on change (blur or Enter), not on each keystroke.
+           This stops a mid-typing FILE_INFO echo from reformatting the control. */
+        customInput.onchange = function () {
+          if (profileSel.value === "custom" && customInput.value.trim() !== "") {
             postSetProfile();
           }
         };
