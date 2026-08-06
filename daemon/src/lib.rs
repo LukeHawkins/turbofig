@@ -664,7 +664,7 @@ pub async fn run_execute(
     let injected_code = if profile_js.is_empty() {
         code.to_owned()
     } else {
-        format!("{profile_js}\n{code}")
+        format!("tf.taste = (() => {{\n{profile_js}\nreturn taste;\n}})();\n{code}")
     };
 
     let id = state.next_request_id();
@@ -1960,6 +1960,10 @@ mod tests {
                     "code must contain 'const taste'"
                 );
                 assert!(code.contains("editorial"), "code must contain 'editorial'");
+                assert!(
+                    code.contains("tf.taste"),
+                    "code must assign profile to tf.taste"
+                );
                 let req_id = req["requestId"].as_u64().expect("requestId");
                 state_clone.resolve(req_id, json!({"ok": true, "result": "done"}));
             }
@@ -1994,6 +1998,10 @@ mod tests {
                 assert!(
                     code.contains("impeccable"),
                     "code must contain impeccable marker"
+                );
+                assert!(
+                    code.contains("tf.taste"),
+                    "code must assign profile to tf.taste"
                 );
                 let req_id = req["requestId"].as_u64().expect("requestId");
                 state_clone.resolve(req_id, json!({"ok": true, "result": null}));
@@ -2034,6 +2042,10 @@ mod tests {
                 assert!(
                     !code.contains("const taste"),
                     "none profile must not inject taste"
+                );
+                assert!(
+                    !code.contains("tf.taste"),
+                    "none profile must not assign tf.taste"
                 );
                 assert_eq!(code, user_code, "code must equal the original user code");
                 let req_id = req["requestId"].as_u64().expect("requestId");
@@ -2262,6 +2274,10 @@ mod tests {
             "file A code must contain 'const taste'"
         );
         assert!(
+            code_a.contains("tf.taste"),
+            "file A code must assign profile to tf.taste"
+        );
+        assert!(
             !code_a.contains("minimal"),
             "file A code must NOT contain 'minimal'"
         );
@@ -2282,6 +2298,10 @@ mod tests {
         assert!(
             code_b.contains("minimal"),
             "file B code must contain 'minimal'"
+        );
+        assert!(
+            code_b.contains("tf.taste"),
+            "file B code must assign profile to tf.taste"
         );
         assert!(
             !code_b.contains("editorial"),
@@ -2349,6 +2369,10 @@ mod tests {
             !code_b2.contains("const taste"),
             "none profile must not inject taste"
         );
+        assert!(
+            !code_b2.contains("tf.taste"),
+            "none profile must not assign tf.taste"
+        );
         let rid_b2 = req_b2["requestId"].as_u64().expect("B2 requestId");
         state.resolve(rid_b2, json!({"ok": true, "result": null}));
         handle_b2.await.expect("B2 task must complete");
@@ -2372,6 +2396,10 @@ mod tests {
         assert!(
             code_a3.contains("brandx"),
             "custom brandx profile must be injected on file A"
+        );
+        assert!(
+            code_a3.contains("tf.taste"),
+            "custom brandx profile must assign to tf.taste"
         );
         let rid_a3 = req_a3["requestId"].as_u64().expect("A3 requestId");
         state.resolve(rid_a3, json!({"ok": true, "result": null}));

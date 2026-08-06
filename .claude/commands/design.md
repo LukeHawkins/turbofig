@@ -18,7 +18,7 @@ Parse `$ARGUMENTS` and extract:
 - **Palette.** Hex values if provided; otherwise derive a 4-colour palette (brand, accent, surface, text) from the tone.
 - **Type.** Font family and weight choices if provided; otherwise default to Inter with Bold headings and Regular body.
 - **Reference material.** Moodboard image paths and reference URLs. Delegate reading of any moodboard image to a subagent that returns only a compact colour and mood summary. Do not load images into the main context.
-- **Profile.** Call `turbofig_status` and read `plugin.profileId`. Record the profile id for the whole job. Then run one `turbofig_execute` eval to read the active profile's `taste` constants: `spacing`, `type`, `grid`, `contrast`, and `blocklist`. Persist these to `~/.turbofig/design/<job-id>/profile.json`. If `profileId` is `none`, write `{ "profileId": "none" }` and skip all profile constraints. If the profile id is not a known value, the daemon uses `impeccable` as the fallback.
+- **Profile.** Call `turbofig_status` and read `plugin.profileId`. Record the profile id for the whole job. Then run one `turbofig_execute` eval to read the active profile's constants from `tf.taste`: `return { spacing: tf.taste.spacing, type: tf.taste.type, grid: tf.taste.grid, contrast: tf.taste.contrast, blocklist: tf.taste.blocklist };`. Persist the result to `~/.turbofig/design/<job-id>/profile.json`. If `profileId` is `none`, `tf.taste` is undefined; write `{ "profileId": "none" }` and skip all profile constraints. If the profile id is not a known value, the daemon uses `impeccable` as the fallback.
 
 If the brief is too vague to infer key sections, derive a sensible default structure (for example: Nav, Hero, Features, Footer) and proceed.
 

@@ -18,6 +18,7 @@
 | `tf.append` | `(parent, ...children)` | `parent` (chainable) | no | Append one or more `SceneNode`s to a parent. Returns the parent for chaining. |
 | `tf.findOrCreate` | `(parent, name, factory)` | `Promise<SceneNode>` | **yes** | Return an existing direct child named `name`, or call `factory`, name it, append it, and return it. |
 | `tf.commit` | `(label?: string)` | `void` | no | Call `figma.commitUndo()` to mark the end of a batch undo step. |
+| `tf.taste` | property | `object \| undefined` | — | The active file's taste profile constants: `spacing`, `type`, `grid`, `contrast`, `hierarchy`, `restraint`, `blocklist`. The daemon assigns this from the file's profile before each eval. It is `undefined` when the profile is `none`. |
 | `tf.skipInvisible` | `(on?: boolean)` | `void` | no | Set `figma.skipInvisibleInstanceChildren` (default `true`). Skipping hidden instance children speeds up traversal on large documents. No-op when the property is absent. |
 | `tf.findAll` | `(node, criteria)` | `SceneNode[]` | no | Wrap `node.findAllWithCriteria(criteria)`. Use for fast, native type-based node queries. Example: `{ types: ["TEXT"] }`. |
 | `tf.chunk` | `(items, size?)` | `T[][]` | no | Split an array into consecutive sub-arrays of at most `size` elements. Default `size` is 75. Throws `RangeError` when `size < 1`. |
