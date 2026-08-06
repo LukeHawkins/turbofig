@@ -8,8 +8,10 @@ import {
   formatSession,
   isDaemonStale,
   KNOWN_PROFILES,
+  parsePort,
   profileToSelectValue,
   staleWarning,
+  wsUrlForPort,
 } from "./ui-logic";
 
 describe("connStateFromEvent", () => {
@@ -355,5 +357,69 @@ describe("staleWarning", () => {
     const w = staleWarning("0.1.0", "0.2.0");
     expect(w).toContain("0.1.0");
     expect(w).toContain("0.2.0");
+  });
+});
+
+describe("parsePort", () => {
+  test("returns a valid mid-range port", () => {
+    expect(parsePort("8080")).toBe(8080);
+  });
+
+  test("accepts the minimum valid port (1)", () => {
+    expect(parsePort("1")).toBe(1);
+  });
+
+  test("accepts the maximum valid port (65535)", () => {
+    expect(parsePort("65535")).toBe(65535);
+  });
+
+  test("accepts the default daemon port (18847)", () => {
+    expect(parsePort("18847")).toBe(18847);
+  });
+
+  test("returns null for port 0", () => {
+    expect(parsePort("0")).toBeNull();
+  });
+
+  test("returns null for port 65536", () => {
+    expect(parsePort("65536")).toBeNull();
+  });
+
+  test("returns null for a non-numeric string", () => {
+    expect(parsePort("abc")).toBeNull();
+  });
+
+  test("returns null for an empty string", () => {
+    expect(parsePort("")).toBeNull();
+  });
+
+  test("returns null for a whitespace-only string", () => {
+    expect(parsePort("   ")).toBeNull();
+  });
+
+  test("returns null for a fractional number", () => {
+    expect(parsePort("8080.5")).toBeNull();
+  });
+
+  test("accepts a port with surrounding whitespace", () => {
+    expect(parsePort("  3000  ")).toBe(3000);
+  });
+});
+
+describe("wsUrlForPort", () => {
+  test("returns the default daemon URL for port 18847", () => {
+    expect(wsUrlForPort(18847)).toBe("ws://localhost:18847");
+  });
+
+  test("returns a URL for a custom port", () => {
+    expect(wsUrlForPort(8080)).toBe("ws://localhost:8080");
+  });
+
+  test("returns a URL for port 1", () => {
+    expect(wsUrlForPort(1)).toBe("ws://localhost:1");
+  });
+
+  test("returns a URL for port 65535", () => {
+    expect(wsUrlForPort(65535)).toBe("ws://localhost:65535");
   });
 });

@@ -24,6 +24,27 @@ export interface SetProfileMessage {
 }
 
 /**
+ * Sent by the plugin UI iframe to the plugin main thread to change the daemon
+ * WebSocket port. The main thread validates and persists the port, then sends
+ * a PortMessage back to the UI. Never forwarded over the WebSocket.
+ */
+export interface SetPortMessage {
+  type: "SET_PORT";
+  port: number;
+}
+
+/**
+ * Sent by the plugin main thread to the UI to report the active daemon port.
+ * Emitted on bootstrap (from clientStorage) and after each SET_PORT is accepted.
+ * The UI uses this to build the WebSocket URL and to update the port field.
+ * This message never travels over the WebSocket.
+ */
+export interface PortMessage {
+  type: "PORT";
+  port: number;
+}
+
+/**
  * Sent by the daemon on connect after it receives FILE_INFO.
  * The UI must store the version and must not forward this message to the main thread.
  */
@@ -117,7 +138,8 @@ export type InboundMessage =
   | ExecuteMessage
   | GetSelectionMessage
   | ScreenshotMessage
-  | SetProfileMessage;
+  | SetProfileMessage
+  | SetPortMessage;
 
 /**
  * Returns true when `x` is a well-formed inbound message for the plugin main thread.
@@ -139,6 +161,8 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return typeof msg.requestId === "number";
     case "SET_PROFILE":
       return typeof msg.profileId === "string";
+    case "SET_PORT":
+      return typeof msg.port === "number";
     default:
       return false;
   }

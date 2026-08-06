@@ -7,8 +7,8 @@
   "ui": "dist/ui.html",
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["ws://localhost:18847"],
-    "reasoning": "Connects to the local Turbofig daemon",
-    "devAllowedDomains": ["ws://localhost:18847"]
+    "allowedDomains": ["ws://localhost:*", "ws://127.0.0.1:*"],
+    "reasoning": "Connects to the local Turbofig daemon on a user-configurable port",
+    "devAllowedDomains": ["ws://localhost:*", "ws://127.0.0.1:*"]
   }
 }

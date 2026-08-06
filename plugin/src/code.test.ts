@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { handleExecute, handleGetSelection, handleScreenshot } from "./code";
+import { applySetPort, handleExecute, handleGetSelection, handleScreenshot } from "./code";
 
 // ---------------------------------------------------------------------------
 // handleExecute
@@ -141,5 +141,86 @@ describe("handleScreenshot", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe("node is not exportable");
     expect(result.requestId).toBe(9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applySetPort
+// ---------------------------------------------------------------------------
+
+/** A minimal in-memory mock for figma.clientStorage. */
+function makeMockStorage(): {
+  store: Record<string, unknown>;
+  getAsync(key: string): Promise<unknown>;
+  setAsync(key: string, value: unknown): Promise<void>;
+} {
+  const store: Record<string, unknown> = {};
+  return {
+    store,
+    async getAsync(key: string): Promise<unknown> {
+      return key in store ? store[key] : undefined;
+    },
+    async setAsync(key: string, value: unknown): Promise<void> {
+      store[key] = value;
+    },
+  };
+}
+
+describe("applySetPort", () => {
+  test("persists a valid mid-range port and returns it", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 8080);
+    expect(result).toBe(8080);
+    expect(storage.store["turbofig:wsPort"]).toBe(8080);
+  });
+
+  test("accepts the minimum valid port (1)", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 1);
+    expect(result).toBe(1);
+    expect(storage.store["turbofig:wsPort"]).toBe(1);
+  });
+
+  test("accepts the maximum valid port (65535)", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 65535);
+    expect(result).toBe(65535);
+    expect(storage.store["turbofig:wsPort"]).toBe(65535);
+  });
+
+  test("accepts the default port (18847)", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 18847);
+    expect(result).toBe(18847);
+  });
+
+  test("rejects port 0 and returns null", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 0);
+    expect(result).toBeNull();
+  });
+
+  test("rejects port 65536 and returns null", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 65536);
+    expect(result).toBeNull();
+  });
+
+  test("rejects a non-integer port and returns null", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, 8080.5);
+    expect(result).toBeNull();
+  });
+
+  test("rejects a negative port and returns null", async () => {
+    const storage = makeMockStorage();
+    const result = await applySetPort(storage, -1);
+    expect(result).toBeNull();
+  });
+
+  test("does not write to storage when the port is invalid", async () => {
+    const storage = makeMockStorage();
+    await applySetPort(storage, 0);
+    expect(Object.keys(storage.store)).toHaveLength(0);
   });
 });

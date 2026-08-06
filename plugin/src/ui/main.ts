@@ -13,14 +13,17 @@ import {
   formatLogEntry,
   formatPairing,
   formatSession,
+  parsePort,
   profileToSelectValue,
   staleWarning,
+  wsUrlForPort,
 } from "./ui-logic";
 
 /** Build-time constant injected by build-ui.ts via Bun.build define. */
 declare const __PLUGIN_VERSION__: string;
 
-const WS_URL = "ws://localhost:18847";
+/** Active daemon port. Updated when PORT arrives from the main thread. */
+let currentPort = 18847;
 
 // Resolve panel elements once on load.
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
@@ -32,6 +35,8 @@ const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
 const activityLogEl = document.getElementById("activity-log") as HTMLElement;
 const profileSel = document.getElementById("profile") as HTMLSelectElement;
 const customInput = document.getElementById("customProfile") as HTMLInputElement;
+const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
+const portHintEl = document.getElementById("port-hint") as HTMLElement;
 
 /** Maximum number of entries kept in the activity log. */
 const LOG_CAP = 20;
@@ -130,10 +135,23 @@ customInput.onchange = () => {
   }
 };
 
+/* Commit the port on change (blur or Enter).
+   Invalid input shows the hint and resets the field to the last valid port. */
+portFieldEl.onchange = () => {
+  const parsed = parsePort(portFieldEl.value);
+  if (parsed === null) {
+    if (portHintEl) portHintEl.style.display = "block";
+    portFieldEl.value = String(currentPort);
+    return;
+  }
+  if (portHintEl) portHintEl.style.display = "none";
+  parent.postMessage({ pluginMessage: { type: "SET_PORT", port: parsed } }, "*");
+};
+
 /** Opens a WebSocket and registers lifecycle handlers. */
 function connect(): void {
   setConnStatus("attempt");
-  const socket = new WebSocket(WS_URL);
+  const socket = new WebSocket(wsUrlForPort(currentPort));
   ws = socket;
 
   socket.onopen = () => {
@@ -211,6 +229,22 @@ window.onmessage = (event: MessageEvent) => {
   const msg = data?.pluginMessage;
   if (!msg || typeof msg !== "object") return;
   const m = msg as Record<string, unknown>;
+  /* PORT: update the port field and reconnect when the port changes. */
+  if (m.type === "PORT") {
+    const newPort = typeof m.port === "number" ? m.port : 18847;
+    if (portFieldEl) portFieldEl.value = String(newPort);
+    if (newPort !== currentPort) {
+      currentPort = newPort;
+      /* Detach onclose before closing so scheduleReconnect does not fire. */
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+      attempt = 0;
+      connect();
+    }
+    return;
+  }
   if (m.type === "FILE_INFO") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();

@@ -692,4 +692,31 @@ describe("isInboundMessage", () => {
   test("rejects EXECUTE missing code", () => {
     expect(isInboundMessage({ type: "EXECUTE", requestId: 1 })).toBe(false);
   });
+
+  test("accepts SET_PORT with a numeric port", () => {
+    expect(isInboundMessage({ type: "SET_PORT", port: 18847 })).toBe(true);
+  });
+
+  test("rejects SET_PORT missing port", () => {
+    expect(isInboundMessage({ type: "SET_PORT" })).toBe(false);
+  });
+
+  test("rejects SET_PORT with a string port", () => {
+    expect(isInboundMessage({ type: "SET_PORT", port: "18847" })).toBe(false);
+  });
+});
+
+describe("PortMessage shape", () => {
+  // PortMessage is a main-thread-to-UI message only and has no guard function.
+  // These tests verify the shape is structurally correct as a plain object.
+  test("PORT message has type and numeric port", () => {
+    const msg = { type: "PORT" as const, port: 8080 };
+    expect(msg.type).toBe("PORT");
+    expect(typeof msg.port).toBe("number");
+  });
+
+  test("PORT message carries the default port 18847", () => {
+    const msg = { type: "PORT" as const, port: 18847 };
+    expect(msg.port).toBe(18847);
+  });
 });

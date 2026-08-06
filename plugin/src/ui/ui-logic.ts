@@ -114,6 +114,28 @@ export function staleWarning(pluginVersion: string, daemonVersion: string): stri
   return `Version mismatch: plugin ${pluginVersion}, daemon ${daemonVersion}. Reload the plugin.`;
 }
 
+/**
+ * Parses a port input string and returns a valid integer port, or null.
+ * Accepts integers in the range 1–65535 only.
+ * Rejects empty input, non-numeric strings, and fractional numbers (e.g. "8080.5").
+ */
+export function parsePort(input: string): number | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n)) return null;
+  if (n < 1 || n > 65535) return null;
+  return n;
+}
+
+/**
+ * Returns the WebSocket URL for the given port.
+ * Always connects to localhost at the specified port.
+ */
+export function wsUrlForPort(port: number): string {
+  return `ws://localhost:${port}`;
+}
+
 /** Result of a pairing computation: whether a Claude session drives this file, and a label. */
 export interface PairingResult {
   paired: boolean;

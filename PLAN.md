@@ -191,7 +191,7 @@ Goal: a clean, good-looking plugin panel. Clear connection state.
 - [x] Pairing view (which Claude session is bound to this file)
 - [x] Live activity log + a plugin-version / stale-warning indicator
 - [x] Visual polish: on-brand, tidy, no clutter
-- [ ] Configurable daemon port: a port field in the plugin UI so the plugin connects to whatever `TURBOFIG_WS_PORT` the daemon uses (default 18847). Widen the manifest `allowedDomains` to cover localhost on the configured port, within Figma's static-whitelist constraint.
+- [x] Configurable daemon port: a port field in the plugin UI so the plugin connects to whatever `TURBOFIG_WS_PORT` the daemon uses (default 18847). Widen the manifest `allowedDomains` to cover localhost on the configured port, within Figma's static-whitelist constraint.
 - [ ] Clarkson easter egg: a halftone dot-matrix render of Jeremy Clarkson going very fast, embedded as a `<pre>` in the panel footer. Style: photographic halftone using small repeated characters (`o`, `-`, `.`, ` `) to produce a greyscale dither — not hand-drawn line art. Source photo: `plugin/assets/clarkson-source.jpg` (drop in manually before running this phase). A Bun script at `scripts/img-to-halftone.ts` converts it: reads the image, samples each cell at ~3×6px, maps luminance to a density character, writes the output to `plugin/assets/clarkson.txt`. The plugin embeds the `.txt` content inline at build time (Bun reads it and injects it as a JS template literal). Render at `font-size: 5px`, `line-height: 1`, monospace, max-width the panel. No tooltip. No label. The joke stands alone.
 
 ## Phase 10: Packaging & distribution (pure export, easy updates)

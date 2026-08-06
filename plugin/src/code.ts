@@ -20,6 +20,23 @@ import {
   wrapUserCode,
 } from "./protocol";
 
+/** Minimal subset of figma.clientStorage needed by applySetPort. */
+interface ClientStorage {
+  getAsync(key: string): Promise<unknown>;
+  setAsync(key: string, value: unknown): Promise<void>;
+}
+
+/**
+ * Validates and persists a daemon WebSocket port.
+ * Returns the saved port when valid (integer, 1–65535), or null when invalid.
+ * Extracted for testability without a live Figma environment.
+ */
+export async function applySetPort(storage: ClientStorage, port: number): Promise<number | null> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  await storage.setAsync("turbofig:wsPort", port);
+  return port;
+}
+
 /**
  * Handles an EXECUTE message. Runs user code in an async function with figma and tf in scope.
  * Returns a success ResultMessage, or an error ResultMessage when the code throws.
@@ -129,6 +146,16 @@ if ((globalThis as Record<string, unknown>).figma !== undefined) {
   /* Send FILE_INFO to the UI so it can identify the file to the daemon on connect. */
   emitFileInfo();
 
+  /* Read the stored port and send it to the UI. The UI connects after receiving PORT. */
+  void (async () => {
+    const stored = await figma.clientStorage.getAsync("turbofig:wsPort");
+    const port =
+      typeof stored === "number" && Number.isInteger(stored) && stored >= 1 && stored <= 65535
+        ? stored
+        : 18847;
+    figma.ui.postMessage({ type: "PORT", port });
+  })();
+
   figma.ui.onmessage = (msg: unknown) => {
     if (!isInboundMessage(msg)) return;
     switch (msg.type) {
@@ -151,6 +178,14 @@ if ((globalThis as Record<string, unknown>).figma !== undefined) {
         /* Store the new profile id in the document, then re-emit FILE_INFO. */
         applySetProfile(figma.root, msg.profileId);
         emitFileInfo();
+        break;
+      case "SET_PORT":
+        /* Validate and persist the port; send PORT back so the UI can reconnect. */
+        void applySetPort(figma.clientStorage, msg.port).then((saved) => {
+          if (saved !== null) {
+            figma.ui.postMessage({ type: "PORT", port: saved });
+          }
+        });
         break;
       default:
         break;
