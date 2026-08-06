@@ -12,7 +12,12 @@ export interface FileInfoMessage {
   profileId: string;
 }
 
-/** Sent by the daemon to the plugin to set the active taste profile for the file. */
+/**
+ * Sent by the plugin UI iframe to the plugin main thread to set the active
+ * taste profile for the file. This message is local to the plugin. The UI must
+ * never forward it over the WebSocket to the daemon. It shares the main thread
+ * inbound channel with daemon messages, so `isDaemonMessage` guards it too.
+ */
 export interface SetProfileMessage {
   type: "SET_PROFILE";
   profileId: string;
@@ -86,8 +91,10 @@ export type DaemonMessage =
   | SetProfileMessage;
 
 /**
- * Returns true when `x` is a well-formed DaemonMessage.
- * Use this guard before handling messages received over the WebSocket.
+ * Returns true when `x` is a well-formed message for the plugin main thread.
+ * Most types arrive from the daemon over the WebSocket. `SET_PROFILE` arrives
+ * from the plugin UI iframe. Use this guard before the main thread handles any
+ * inbound message.
  */
 export function isDaemonMessage(x: unknown): x is DaemonMessage {
   if (typeof x !== "object" || x === null) return false;
