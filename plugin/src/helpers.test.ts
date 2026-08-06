@@ -693,3 +693,173 @@ describe("tf.export", () => {
     expect(capturedSettings).toBe(customSettings);
   });
 });
+
+// --- FIX 3: tf.frame NONE-direction contract ---
+
+describe("tf.frame direction NONE contract", () => {
+  const mockFigma = { createFrame: () => makeFakeFrame() } as unknown as PluginAPI;
+
+  test("a NONE frame with gap and padding does NOT write itemSpacing or padding", () => {
+    const tf = createTf(mockFigma);
+    const f = tf.frame({ direction: "NONE", gap: 16, padding: 8 }) as unknown as Record<
+      string,
+      unknown
+    >;
+    // itemSpacing and padding fields must stay at the mock defaults (0).
+    expect(f.itemSpacing).toBe(0);
+    expect(f.paddingTop).toBe(0);
+    expect(f.paddingRight).toBe(0);
+    expect(f.paddingBottom).toBe(0);
+    expect(f.paddingLeft).toBe(0);
+  });
+
+  test("a VERTICAL frame with gap and padding DOES write itemSpacing and padding", () => {
+    const tf = createTf(mockFigma);
+    const f = tf.frame({ direction: "VERTICAL", gap: 16, padding: 8 }) as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(f.itemSpacing).toBe(16);
+    expect(f.paddingTop).toBe(8);
+    expect(f.paddingRight).toBe(8);
+    expect(f.paddingBottom).toBe(8);
+    expect(f.paddingLeft).toBe(8);
+  });
+
+  test("a HORIZONTAL frame with gap and padding DOES write itemSpacing and padding", () => {
+    const tf = createTf(mockFigma);
+    const f = tf.frame({
+      direction: "HORIZONTAL",
+      gap: 24,
+      padding: { top: 4, right: 8, bottom: 4, left: 8 },
+    }) as unknown as Record<string, unknown>;
+    expect(f.itemSpacing).toBe(24);
+    expect(f.paddingTop).toBe(4);
+    expect(f.paddingRight).toBe(8);
+    expect(f.paddingBottom).toBe(4);
+    expect(f.paddingLeft).toBe(8);
+  });
+});
+
+// --- FIX 4: Behavioural tests for tf.clear, tf.append, tf.findOrCreate, tf.commit ---
+
+describe("tf.clear", () => {
+  test("removes all children from a node", () => {
+    const removed: unknown[] = [];
+    const makeChild = () => ({
+      remove() {
+        removed.push(this);
+      },
+    });
+    const c1 = makeChild();
+    const c2 = makeChild();
+    const mockNode = {
+      children: [c1, c2],
+    } as unknown as BaseNode & ChildrenMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    tf.clear(mockNode);
+    expect(removed).toHaveLength(2);
+    expect(removed[0]).toBe(c1);
+    expect(removed[1]).toBe(c2);
+  });
+
+  test("does nothing when the node has no children", () => {
+    const mockNode = { children: [] } as unknown as BaseNode & ChildrenMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    expect(() => tf.clear(mockNode)).not.toThrow();
+  });
+});
+
+describe("tf.append", () => {
+  test("appends one child to the parent and returns the parent", () => {
+    const appended: unknown[] = [];
+    const parent = {
+      appendChild(c: unknown) {
+        appended.push(c);
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const child = {} as unknown as SceneNode;
+    const tf = createTf({} as unknown as PluginAPI);
+    const returned = tf.append(parent, child);
+    expect(returned).toBe(parent);
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toBe(child);
+  });
+
+  test("appends multiple children in order and returns the parent", () => {
+    const appended: unknown[] = [];
+    const parent = {
+      appendChild(c: unknown) {
+        appended.push(c);
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const c1 = { id: "a" } as unknown as SceneNode;
+    const c2 = { id: "b" } as unknown as SceneNode;
+    const c3 = { id: "c" } as unknown as SceneNode;
+    const tf = createTf({} as unknown as PluginAPI);
+    const returned = tf.append(parent, c1, c2, c3);
+    expect(returned).toBe(parent);
+    expect(appended).toEqual([c1, c2, c3]);
+  });
+});
+
+describe("tf.findOrCreate", () => {
+  test("returns the existing child when a child with the given name is present", async () => {
+    const existing = { name: "Target" } as unknown as SceneNode;
+    const parent = {
+      children: [existing],
+      appendChild() {},
+    } as unknown as BaseNode & ChildrenMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    const factoryCalled: boolean[] = [];
+    const result = await tf.findOrCreate(parent, "Target", () => {
+      factoryCalled.push(true);
+      return {} as SceneNode;
+    });
+    expect(result).toBe(existing);
+    expect(factoryCalled).toHaveLength(0);
+  });
+
+  test("calls the factory, names the node, appends it, and returns it when absent", async () => {
+    const appended: unknown[] = [];
+    const parent = {
+      children: [],
+      appendChild(c: unknown) {
+        appended.push(c);
+      },
+    } as unknown as BaseNode & ChildrenMixin;
+    const tf = createTf({} as unknown as PluginAPI);
+    const newNode = { name: "" } as unknown as SceneNode;
+    const result = await tf.findOrCreate(parent, "NewNode", () => newNode);
+    expect(result).toBe(newNode);
+    expect((result as unknown as Record<string, unknown>).name).toBe("NewNode");
+    expect(appended).toHaveLength(1);
+    expect(appended[0]).toBe(newNode);
+  });
+});
+
+describe("tf.commit", () => {
+  test("calls figma.commitUndo when the method is present", () => {
+    let called = false;
+    const mockFigma = {
+      commitUndo() {
+        called = true;
+      },
+    } as unknown as PluginAPI;
+    const tf = createTf(mockFigma);
+    tf.commit();
+    expect(called).toBe(true);
+  });
+
+  test("does not throw when figma.commitUndo is absent", () => {
+    const mockFigma = {} as unknown as PluginAPI;
+    const tf = createTf(mockFigma);
+    expect(() => tf.commit()).not.toThrow();
+  });
+
+  test("accepts an optional label without throwing", () => {
+    const mockFigma = { commitUndo() {} } as unknown as PluginAPI;
+    const tf = createTf(mockFigma);
+    expect(() => tf.commit("my label")).not.toThrow();
+  });
+});

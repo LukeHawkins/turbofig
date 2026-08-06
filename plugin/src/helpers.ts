@@ -242,15 +242,18 @@ export function createTf(figma: PluginAPI) {
       const node = figma.createFrame();
       const direction = opts.direction ?? "VERTICAL";
       node.layoutMode = direction;
-      if (opts.gap !== undefined) {
-        node.itemSpacing = opts.gap;
-      }
-      if (opts.padding !== undefined) {
-        const pad = normalizePadding(opts.padding);
-        node.paddingTop = pad.top;
-        node.paddingRight = pad.right;
-        node.paddingBottom = pad.bottom;
-        node.paddingLeft = pad.left;
+      // Gap and padding only apply to auto-layout frames. Skip them for plain frames (NONE).
+      if (direction !== "NONE") {
+        if (opts.gap !== undefined) {
+          node.itemSpacing = opts.gap;
+        }
+        if (opts.padding !== undefined) {
+          const pad = normalizePadding(opts.padding);
+          node.paddingTop = pad.top;
+          node.paddingRight = pad.right;
+          node.paddingBottom = pad.bottom;
+          node.paddingLeft = pad.left;
+        }
       }
       // Always set fills explicitly. An empty array makes the frame transparent.
       // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
