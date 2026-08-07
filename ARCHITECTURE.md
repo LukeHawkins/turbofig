@@ -47,7 +47,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 The plugin has two threads, as required by the Figma plugin model:
 
 - **Main thread** (`plugin/src/code.ts`): runs in the Figma sandbox. Has access to the Figma Plugin API. Receives messages from the UI thread and executes Figma API calls.
-- **UI thread** (`plugin/src/ui.html`): runs in a sandboxed iframe. Holds the WebSocket connection to the daemon. Relays messages between the daemon and the main thread via `parent.postMessage` / `figma.ui.onmessage`.
+- **UI thread** (`plugin/src/ui/` → built to `dist/ui.html`): runs in a sandboxed iframe. Holds the WebSocket connection to the daemon. Relays messages between the daemon and the main thread via `parent.postMessage` / `figma.ui.onmessage`. The panel has three screens toggled by `.screen`/`.active` class swap, each with its own `figma.ui.resize` call via a `RESIZE` message: **main** (300×200, default, wordmark + status + file row + footer nav), **advanced** (300×440, taste profile selector + activity log + port field), **about** (300×260, large wordmark + tagline + description + repo/author links). The header wordmark uses a pure-CSS motion ghost effect (`text-shadow` with `color-mix(in srgb, var(--text) N%, transparent)`) so it is theme-aware without JS — light and dark mode both work via the injected `--figma-color-*` tokens. All font-size values must be on the impeccable type scale (12, 14, 16, 20, 25, 31, 39, 49, 61 px); the test suite enforces this automatically.
 
 The plugin dispatches on a `{type}` field in each message:
 
