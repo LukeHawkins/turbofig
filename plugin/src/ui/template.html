@@ -5,9 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Turbofig</title>
     <style>
-      /* === DESIGN TOKENS (impeccable profile) =========================== */
+      /* === DESIGN TOKENS ================================================= */
       :root {
-        /* Spacing: impeccable scale (px): 4 8 12 16 24 32 48 64 96 */
+        /* Figma-aware theme tokens: update live when the user switches themes. */
+        --bg: var(--figma-color-bg, #ffffff);
+        --bg-secondary: var(--figma-color-bg-secondary, #f5f5f5);
+        --bg-brand: var(--figma-color-bg-brand, #0d99ff);
+        --text: var(--figma-color-text, #1a1a1a);
+        --text-secondary: var(--figma-color-text-secondary, #6b6b6b);
+        --text-onbrand: var(--figma-color-text-onbrand, #ffffff);
+        --border: var(--figma-color-border, #e6e6e6);
+        --c-connected: var(--figma-color-icon-success, #1e6b3a);
+        --c-reconnecting: var(--figma-color-icon-warning, #9a4d00);
+        --c-offline: var(--figma-color-icon-danger, #b91c1c);
+
+        /* Spacing scale (px): 4 8 12 16 24 32 */
         --sp-1: 4px;
         --sp-2: 8px;
         --sp-3: 12px;
@@ -15,7 +27,7 @@
         --sp-5: 24px;
         --sp-6: 32px;
 
-        /* Type: impeccable scale (px): 12 14 16 20 25 31 39 49 61 */
+        /* Type scale (px): 12 14 16 20 25 31 39 49 61 */
         --fs-xs: 12px;
         --fs-sm: 14px;
         --fs-md: 16px;
@@ -25,20 +37,6 @@
         --ff-display: "Inter", "Space Grotesk", Arial, sans-serif;
         --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
         --ff-mono: "SF Mono", "Fira Code", Consolas, monospace;
-
-        /* Neutral ramp: contrast vs white noted */
-        --n-0: #ffffff;
-        --n-50: #f7f7f7;
-        --n-100: #efefef;
-        --n-300: #c4c4c4;
-        --n-500: #6b6b6b; /* 4.8 : 1 on white: meets AA for normal text */
-        --n-700: #3d3d3d; /* 9.7 : 1 on white */
-        --n-900: #1a1a1a; /* 18  : 1 on white */
-
-        /* Muted semantic status (allowed by impeccable blocklist) */
-        --c-connected: #1e6b3a;
-        --c-reconnecting: #9a4d00;
-        --c-offline: #b91c1c;
       }
 
       /* === RESET ========================================================= */
@@ -53,50 +51,50 @@
         font-family: var(--ff-body);
         font-size: 14px;
         line-height: 1.5;
-        color: var(--n-900);
-        background: var(--n-0);
+        color: var(--text);
+        background: var(--bg);
         margin: 0;
         padding: var(--sp-4);
       }
 
-      /* === HEADER: wordmark ============================================= */
+      /* === HEADER ======================================================== */
       .panel-header {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
         padding-bottom: var(--sp-2);
         margin-bottom: var(--sp-3);
-        border-bottom: 1px solid var(--n-100);
+        border-bottom: 1px solid var(--border);
       }
 
       .wordmark {
         font-family: var(--ff-display);
-        font-size: 20px;
-        font-weight: 600;
+        font-size: 14px;
+        font-weight: 700;
         letter-spacing: -0.02em;
         line-height: 1;
-        color: var(--n-900);
-        margin: 0;
+        color: var(--text);
       }
 
-      /* === STATUS BLOCK: focal point ==================================== */
-      /* Size before weight: the largest text on the panel. */
-      .status-block {
-        padding: var(--sp-2) 0;
-        margin-bottom: var(--sp-5);
+      .header-version {
+        font-size: 12px;
+        color: var(--text-secondary);
       }
 
-      #conn-status {
-        font-size: 16px;
-        font-weight: 500;
-        color: var(--n-500);
-      }
-
+      /* === CONNECTION STATUS ============================================= */
       /* Coloured dot prefix; inherits class from #conn-status. */
+      #conn-status {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
       #conn-status::before {
         content: "";
         display: inline-block;
-        width: var(--sp-2);
-        height: var(--sp-2);
+        width: 6px;
+        height: 6px;
         border-radius: 50%;
-        background: var(--n-300);
+        background: var(--border);
         margin-right: var(--sp-1);
         vertical-align: middle;
         position: relative;
@@ -104,7 +102,7 @@
       }
 
       #conn-status.connecting {
-        color: var(--n-500);
+        color: var(--text-secondary);
       }
       #conn-status.connected {
         color: var(--c-connected);
@@ -136,7 +134,7 @@
         margin-bottom: var(--sp-2);
       }
 
-      /* === META GROUP (file / session / pairing) ========================= */
+      /* === META GROUP ==================================================== */
       .meta-section {
         margin-bottom: var(--sp-5);
       }
@@ -161,32 +159,31 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: var(--n-500);
+        color: var(--text-secondary);
         align-self: baseline;
       }
 
       .meta-row dd {
         font-size: 14px;
-        color: var(--n-700);
+        color: var(--text);
         margin: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        min-width: 0;
       }
 
-      /* Pairing sits below the meta rows, slightly less prominent. */
-      #pairing-line {
-        font-size: 12px;
-        margin: 0;
-        line-height: 1.5;
-        color: var(--n-500);
-      }
-
-      #pairing-line.paired {
-        color: var(--c-connected);
-      }
-      #pairing-line.unpaired {
-        color: var(--n-500);
+      /* === CONNECT BUTTON ================================================ */
+      .connect-btn {
+        display: block;
+        width: 100%;
+        font-size: 14px;
+        font-weight: 500;
+        font-family: var(--ff-body);
+        padding: var(--sp-2) var(--sp-4);
+        background: var(--bg-brand);
+        color: var(--text-onbrand);
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-bottom: var(--sp-4);
       }
 
       /* === TASTE PROFILE CONTROL ========================================= */
@@ -200,7 +197,7 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: var(--n-500);
+        color: var(--text-secondary);
         margin-bottom: var(--sp-1);
       }
 
@@ -211,10 +208,10 @@
         font-size: 14px;
         font-family: var(--ff-body);
         padding: var(--sp-1) var(--sp-2);
-        border: 1px solid var(--n-300);
+        border: 1px solid var(--border);
         border-radius: 4px;
-        background: var(--n-0);
-        color: var(--n-900);
+        background: var(--bg);
+        color: var(--text);
       }
 
       #customProfile {
@@ -241,66 +238,32 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: var(--n-500);
+        color: var(--text-secondary);
         margin: 0 0 var(--sp-1);
       }
 
       #activity-log {
         height: 80px;
         overflow-y: auto;
-        background: var(--n-50);
+        background: var(--bg-secondary);
         border-radius: 4px;
         padding: var(--sp-1) var(--sp-2);
         font-family: var(--ff-mono);
         font-size: 12px;
-        color: var(--n-700);
+        color: var(--text);
       }
 
       .log-entry {
         line-height: 1.6;
       }
 
-      /* === FOOTER: quiet version line =================================== */
-      .panel-footer {
-        padding-top: var(--sp-2);
-      }
-
-      .version-text {
-        font-size: 12px;
-        color: var(--n-500);
-      }
-
-      /* === FILEKEY ROW: full key + one-click copy ======================== */
-      .filekey-row {
-        display: flex;
-        align-items: baseline;
-        gap: var(--sp-2);
-        margin: 0 0 var(--sp-2);
-      }
-
-      .filekey-value {
-        font-family: var(--ff-mono);
-        font-size: 12px;
-        color: var(--n-700);
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        min-width: 0;
-      }
-
-      .filekey-hint {
-        font-size: 12px;
-        color: var(--n-500);
-        margin: 0 0 var(--sp-2);
-      }
-
+      /* === COPY BUTTON =================================================== */
       .copy-btn {
         font-size: 12px;
         font-family: var(--ff-body);
-        color: var(--n-700);
-        background: var(--n-100);
-        border: 1px solid var(--n-300);
+        color: var(--text);
+        background: var(--border);
+        border: 1px solid var(--border);
         border-radius: 4px;
         padding: 1px var(--sp-2);
         cursor: pointer;
@@ -318,7 +281,7 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
-        color: var(--n-500);
+        color: var(--text-secondary);
         cursor: pointer;
         list-style: none;
         margin-bottom: var(--sp-2);
@@ -327,63 +290,58 @@
       details.advanced-section > summary::-webkit-details-marker {
         display: none;
       }
-
-      /* === EASTER EGG: halftone portrait ================================ */
-      /* Decorative graphic only. Not text content. No label or tooltip. */
-      /* font-size 5px is intentionally below the type scale: this is a  */
-      /* pixel-art render, not a text element. See template-taste.test.ts. */
-      .clarkson {
-        font-family: var(--ff-mono);
-        font-size: 5px;
-        line-height: 1;
-        white-space: pre;
-        overflow: hidden;
-        max-width: 100%;
-        color: var(--n-300);
-        margin-top: var(--sp-2);
-      }
     </style>
   </head>
   <body>
-    <!-- Wordmark: one border below separates it from the panel content. -->
+    <!-- Header: wordmark, version, spacer, connection status in one row. -->
     <header class="panel-header">
-      <h1 class="wordmark">Turbofig</h1>
-    </header>
-
-    <!-- Focal point: connection status. Largest text in the panel. -->
-    <div class="status-block">
+      <span class="wordmark">turbofig</span>
+      <span class="header-version">v<span id="plugin-version"></span></span>
+      <span class="header-spacer" style="flex:1"></span>
       <span id="conn-status">Connecting...</span>
-    </div>
+    </header>
 
     <!-- Stale warning: visible only when daemon and plugin versions differ. -->
     <div id="stale-warning" class="stale-banner" role="alert" style="display:none"></div>
 
-    <!-- File identity and pairing: grouped tightly by proximity. -->
+    <!-- File identity and session: grouped tightly by proximity. -->
     <section class="meta-section" aria-label="File and session">
       <dl class="meta-list">
         <div class="meta-row">
           <dt>File</dt>
-          <dd id="file-line">No file</dd>
+          <dd style="display:flex;align-items:center;gap:var(--sp-2);">
+            <span id="file-line" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">No file</span>
+            <button id="copy-filekey" class="copy-btn" type="button" style="display:none">Copy</button>
+          </dd>
         </div>
-        <div class="meta-row">
+        <div class="meta-row" id="session-row" style="display:none">
           <dt>Session</dt>
-          <dd id="session-line">No active session</dd>
+          <dd id="session-line"></dd>
         </div>
       </dl>
-      <div id="filekey-row" class="filekey-row" style="display:none">
-        <span id="filekey-value" class="filekey-value"></span>
-        <button id="copy-filekey" class="copy-btn" type="button">Copy</button>
-        <button id="copy-connect" class="copy-btn" type="button" style="display:none">Copy prompt</button>
-      </div>
-      <p id="filekey-hint" class="filekey-hint" style="display:none"></p>
-      <p id="pairing-line" class="unpaired">
-        Not paired: no Claude session is driving this file yet.
-      </p>
+      <button id="copy-connect" class="connect-btn" type="button" style="display:none">Copy prompt to connect Claude</button>
     </section>
 
-    <!-- Advanced: collapsed by default. Port is a rarely changed setting. -->
+    <!-- Advanced: collapsed by default. Taste, log, and port are rarely changed. -->
     <details class="advanced-section">
       <summary>Advanced</summary>
+      <!-- Taste profile: a single control, labelled clearly. -->
+      <section class="control-section" aria-label="Taste profile">
+        <label class="control-label" for="profile">Taste profile</label>
+        <select id="profile">
+          <option value="impeccable">Impeccable</option>
+          <option value="editorial">Editorial</option>
+          <option value="minimal">Minimal</option>
+          <option value="none">None</option>
+          <option value="custom">Custom</option>
+        </select>
+        <input id="customProfile" type="text" placeholder="Enter profile id" />
+      </section>
+      <!-- Activity log: monospace, fixed height, scrollable. -->
+      <section class="log-section" aria-label="Activity">
+        <p class="section-label">Activity</p>
+        <div id="activity-log" role="log" aria-live="polite"></div>
+      </section>
       <!-- Daemon port: the WebSocket port the plugin connects to. -->
       <section class="control-section" aria-label="Daemon port">
         <label class="control-label" for="port-field">Daemon port</label>
@@ -391,31 +349,6 @@
         <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
       </section>
     </details>
-
-    <!-- Taste profile: a single control, labelled clearly. -->
-    <section class="control-section" aria-label="Taste profile">
-      <label class="control-label" for="profile">Taste profile</label>
-      <select id="profile">
-        <option value="impeccable">Impeccable</option>
-        <option value="editorial">Editorial</option>
-        <option value="minimal">Minimal</option>
-        <option value="none">None</option>
-        <option value="custom">Custom</option>
-      </select>
-      <input id="customProfile" type="text" placeholder="Enter profile id" />
-    </section>
-
-    <!-- Activity log: monospace, fixed height, scrollable. -->
-    <section class="log-section" aria-label="Activity">
-      <p class="section-label">Activity</p>
-      <div id="activity-log" role="log" aria-live="polite"></div>
-    </section>
-
-    <!-- Footer: plugin version, quiet and small. -->
-    <footer class="panel-footer">
-      <span class="version-text">v<span id="plugin-version"></span></span>
-      <pre class="clarkson" aria-hidden="true">__CLARKSON__</pre>
-    </footer>
 
     <script>__UI_BUNDLE__</script>
   </body>

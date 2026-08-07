@@ -11,10 +11,8 @@ import {
   connStateFromEvent,
   daemonMessageAction,
   formatConnectPrompt,
-  formatFileKeyHint,
   formatFileLine,
   formatLogEntry,
-  formatPairing,
   formatSession,
   isRequestType,
   mainMessageAction,
@@ -37,7 +35,7 @@ let daemonMcpPort = 18846;
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
 const fileLineEl = document.getElementById("file-line") as HTMLElement;
 const sessionLineEl = document.getElementById("session-line") as HTMLElement;
-const pairingLineEl = document.getElementById("pairing-line") as HTMLElement;
+const sessionRowEl = document.getElementById("session-row") as HTMLElement;
 const pluginVersionEl = document.getElementById("plugin-version") as HTMLElement;
 const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
 const activityLogEl = document.getElementById("activity-log") as HTMLElement;
@@ -45,11 +43,8 @@ const profileSel = document.getElementById("profile") as HTMLSelectElement;
 const customInput = document.getElementById("customProfile") as HTMLInputElement;
 const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
-const filekeyRowEl = document.getElementById("filekey-row") as HTMLElement;
-const filekeyValueEl = document.getElementById("filekey-value") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
 const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
-const filekeyHintEl = document.getElementById("filekey-hint") as HTMLElement;
 
 /** Maximum number of entries kept in the activity log. */
 const LOG_CAP = 20;
@@ -79,25 +74,23 @@ function updateFileDisplay(): void {
   if (!fileLineEl) return;
   if (latestFileInfo) {
     fileLineEl.textContent = formatFileLine(latestFileInfo.fileKey, latestFileInfo.name);
-    const { key, hint, rowDisplay, hintDisplay } = formatFileKeyHint(latestFileInfo.fileKey);
-    if (filekeyValueEl) filekeyValueEl.textContent = key;
-    if (filekeyRowEl) filekeyRowEl.style.display = rowDisplay;
-    if (copyConnectBtn) copyConnectBtn.style.display = key ? "inline-block" : "none";
-    if (filekeyHintEl) {
-      filekeyHintEl.textContent = hint;
-      filekeyHintEl.style.display = hintDisplay;
-    }
+    const hasKey = Boolean(latestFileInfo.fileKey);
+    if (copyFilekeyBtn) copyFilekeyBtn.style.display = hasKey ? "inline-block" : "none";
+    if (copyConnectBtn) copyConnectBtn.style.display = hasKey ? "block" : "none";
   } else {
     fileLineEl.textContent = "No file";
-    if (filekeyRowEl) filekeyRowEl.style.display = "none";
+    if (copyFilekeyBtn) copyFilekeyBtn.style.display = "none";
     if (copyConnectBtn) copyConnectBtn.style.display = "none";
-    if (filekeyHintEl) filekeyHintEl.style.display = "none";
   }
 }
 
 /** Refreshes the session display from the latest active session id. */
 function updateSessionDisplay(): void {
-  if (sessionLineEl) {
+  if (!sessionRowEl || !sessionLineEl) return;
+  if (!activeSessionId) {
+    sessionRowEl.style.display = "none";
+  } else {
+    sessionRowEl.style.display = "";
     sessionLineEl.textContent = formatSession(activeSessionId);
   }
 }
@@ -113,15 +106,6 @@ function renderActivityLog(): void {
     activityLogEl.appendChild(row);
   }
   activityLogEl.scrollTop = activityLogEl.scrollHeight;
-}
-
-/** Refreshes the pairing display from the active session id and file name. */
-function updatePairingDisplay(): void {
-  if (!pairingLineEl) return;
-  const fileName = latestFileInfo ? latestFileInfo.name : "";
-  const { paired, label } = formatPairing(activeSessionId, fileName);
-  pairingLineEl.textContent = label;
-  pairingLineEl.className = paired ? "paired" : "unpaired";
 }
 
 /** Returns the current profile id selected in the panel. */
@@ -193,7 +177,7 @@ if (copyConnectBtn) {
         .then(() => {
           copyConnectBtn.textContent = "Copied";
           setTimeout(() => {
-            copyConnectBtn.textContent = "Copy prompt";
+            copyConnectBtn.textContent = "Copy prompt to connect Claude";
           }, 1500);
         })
         .catch(() => {
@@ -272,7 +256,6 @@ function connect(): void {
     if (typeof parsed.sessionId === "string" && parsed.sessionId !== "") {
       activeSessionId = parsed.sessionId;
       updateSessionDisplay();
-      updatePairingDisplay();
     }
     /* Append request types to the activity log. */
     if (isRequestType(parsed.type as string)) {
@@ -322,7 +305,6 @@ window.onmessage = (event: MessageEvent) => {
   if (action === "fileinfo") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
-    updatePairingDisplay();
     /* Reflect the current profile in the selector. Default to impeccable. */
     const pid = typeof m.profileId === "string" && m.profileId !== "" ? m.profileId : "impeccable";
     const { value, isCustom } = profileToSelectValue(pid);
