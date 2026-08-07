@@ -203,6 +203,17 @@ describe("screenSize", () => {
   test("both screens return the same width (300)", () => {
     expect(screenSize("main").width).toBe(screenSize("advanced").width);
   });
+
+  test("about screen returns 300x260", () => {
+    const { width, height } = screenSize("about");
+    expect(width).toBe(300);
+    expect(height).toBe(260);
+  });
+
+  test("about screen height differs from main and advanced", () => {
+    expect(screenSize("about").height).not.toBe(screenSize("main").height);
+    expect(screenSize("about").height).not.toBe(screenSize("advanced").height);
+  });
 });
 
 describe("appendLog", () => {

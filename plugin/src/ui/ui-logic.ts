@@ -186,8 +186,10 @@ export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
 /**
  * Returns the panel dimensions for the given screen name.
  * main: compact status view (300 x 200). advanced: full settings view (300 x 440).
+ * about: project info view (300 x 260).
  */
-export function screenSize(name: "main" | "advanced"): { width: number; height: number } {
+export function screenSize(name: "main" | "advanced" | "about"): { width: number; height: number } {
   if (name === "advanced") return { width: 300, height: 440 };
+  if (name === "about") return { width: 300, height: 260 };
   return { width: 300, height: 200 };
 }

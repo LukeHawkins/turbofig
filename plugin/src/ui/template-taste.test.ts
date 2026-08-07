@@ -75,8 +75,8 @@ describe("template.html: panel model", () => {
     expect(template).toContain('id="screen-advanced"');
   });
 
-  test("gear button nav-advanced is present in the template", () => {
-    expect(template).toContain('id="nav-advanced"');
+  test("nav-more button is present in the template", () => {
+    expect(template).toContain('id="nav-more"');
   });
 
   test("back button nav-back is present in the template", () => {

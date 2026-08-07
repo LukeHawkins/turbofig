@@ -83,19 +83,107 @@
       .wordmark {
         font-family: var(--ff-display);
         font-size: 14px;
-        font-weight: 700;
-        letter-spacing: -0.02em;
+        font-weight: 900;
+        letter-spacing: -0.05em;
         line-height: 1;
         color: var(--text);
+        /* Motion ghost: 4 shadows trail right at decreasing opacity.
+           color-mix() derives the shadow colour from the live theme token,
+           so light and dark mode both work without any JS. */
+        text-shadow:
+          6px  0 0 color-mix(in srgb, var(--text) 44%, transparent),
+          11px 0 0 color-mix(in srgb, var(--text) 22%, transparent),
+          17px 0 0 color-mix(in srgb, var(--text) 10%, transparent),
+          24px 0 0 color-mix(in srgb, var(--text) 4%,  transparent);
       }
 
       .header-version {
         font-size: 12px;
         color: var(--text-secondary);
+        opacity: 0.7;
       }
 
       .header-spacer {
         flex: 1;
+      }
+
+      /* === PANEL FOOTER ===================================================== */
+      /* Sits at the bottom of the main screen via margin-top: auto. */
+      .panel-footer {
+        margin-top: auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding-top: var(--sp-2);
+        border-top: 1px solid var(--border);
+      }
+
+      .text-btn {
+        background: none;
+        border: none;
+        color: var(--text-secondary);
+        font-size: 12px;
+        font-family: var(--ff-body);
+        cursor: pointer;
+        padding: 2px 0;
+        border-radius: 4px;
+        transition: color 0.15s;
+        letter-spacing: 0.01em;
+      }
+      .text-btn:hover {
+        color: var(--text);
+      }
+
+      /* === ABOUT SCREEN ===================================================== */
+      .about-wordmark {
+        font-family: var(--ff-display);
+        font-size: 25px;
+        font-weight: 900;
+        letter-spacing: -0.05em;
+        line-height: 1;
+        color: var(--text);
+        text-shadow:
+          10px 0 0 color-mix(in srgb, var(--text) 44%, transparent),
+          18px 0 0 color-mix(in srgb, var(--text) 22%, transparent),
+          28px 0 0 color-mix(in srgb, var(--text) 10%, transparent),
+          40px 0 0 color-mix(in srgb, var(--text) 4%,  transparent);
+      }
+
+      .about-tagline {
+        font-size: var(--fs-sm);
+        color: var(--text-secondary);
+        margin: 0;
+      }
+
+      .about-desc {
+        font-size: var(--fs-xs);
+        color: var(--text);
+        margin: 0;
+        line-height: 1.6;
+      }
+
+      .about-links {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+        margin-top: auto;
+      }
+
+      .about-link {
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: var(--ff-body);
+        text-align: left;
+        transition: color 0.15s;
+      }
+      .about-link:hover {
+        color: var(--text);
       }
 
       /* === CONNECTION STATUS ============================================= */
@@ -320,15 +408,9 @@
     <section id="screen-main" class="screen active">
       <header class="panel-header">
         <span class="wordmark">turbofig</span>
-        <span class="header-version">v<span id="plugin-version"></span></span>
         <span class="header-spacer"></span>
         <span id="conn-status" role="status" aria-live="polite">Connecting...</span>
-        <button id="nav-advanced" class="icon-btn ghost-btn" type="button" aria-label="Advanced settings" title="Advanced settings">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.5"/>
-            <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.929 2.929l1.06 1.06M9.011 9.011l1.06 1.06M2.929 11.071l1.06-1.06M9.011 4.989l1.06-1.06" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </button>
+        <span class="header-version">v<span id="plugin-version"></span></span>
       </header>
 
       <!-- Stale warning: visible only when daemon and plugin versions differ. -->
@@ -356,6 +438,12 @@
       <div id="session-row" class="session-row" style="display:none">
         <span class="row-label">Session</span>
         <span id="session-line"></span>
+      </div>
+
+      <!-- Footer: text nav links pushed to the bottom of the panel. -->
+      <div class="panel-footer">
+        <button id="nav-about" class="text-btn" type="button">About</button>
+        <button id="nav-more" class="text-btn" type="button">More</button>
       </div>
     </section>
 
@@ -393,6 +481,30 @@
         <input id="port-field" type="number" min="1" max="65535" value="18847" />
         <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
       </section>
+    </section>
+
+    <!-- About screen: project info, author, repo. -->
+    <section id="screen-about" class="screen">
+      <button id="nav-back-about" class="back-btn" type="button" aria-label="Back">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M9 11L5 7l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Back
+      </button>
+
+      <span class="about-wordmark">turbofig</span>
+      <p class="about-tagline">bridge any AI to Figma</p>
+
+      <p class="about-desc">A local daemon that connects AI agents to your Figma files over WebSocket. Always on, always paired. No cloud, no re-pairing.</p>
+
+      <div class="about-links">
+        <button class="about-link" type="button" onclick="window.open('https://github.com/lukehawkins/turbofig','_blank')">
+          github.com/lukehawkins/turbofig
+        </button>
+        <button class="about-link" type="button" onclick="window.open('https://lukehawkins.eu','_blank')">
+          Made by Luke Hawkins
+        </button>
+      </div>
     </section>
 
     <script>__UI_BUNDLE__</script>

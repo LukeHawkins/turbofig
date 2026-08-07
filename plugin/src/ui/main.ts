@@ -46,8 +46,10 @@ const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
 const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
-const navAdvancedBtn = document.getElementById("nav-advanced") as HTMLButtonElement;
+const navMoreBtn = document.getElementById("nav-more") as HTMLButtonElement;
+const navAboutBtn = document.getElementById("nav-about") as HTMLButtonElement;
 const navBackBtn = document.getElementById("nav-back") as HTMLButtonElement;
+const navBackAboutBtn = document.getElementById("nav-back-about") as HTMLButtonElement;
 
 /** Maximum number of entries kept in the activity log. */
 const LOG_CAP = 20;
@@ -166,7 +168,7 @@ function setCopiedFeedback(btn: HTMLButtonElement): void {
 }
 
 /** Shows the named screen and posts a RESIZE message to resize the plugin panel. */
-function showScreen(name: "main" | "advanced"): void {
+function showScreen(name: "main" | "advanced" | "about"): void {
   Array.from(document.querySelectorAll<HTMLElement>(".screen")).forEach((s) => {
     s.classList.remove("active");
   });
@@ -220,14 +222,24 @@ if (copyConnectBtn) {
   });
 }
 
-/* Navigate to the advanced screen on gear button click. */
-if (navAdvancedBtn) {
-  navAdvancedBtn.addEventListener("click", () => showScreen("advanced"));
+/* Navigate to the advanced screen on More click. */
+if (navMoreBtn) {
+  navMoreBtn.addEventListener("click", () => showScreen("advanced"));
 }
 
-/* Navigate back to the main screen on back button click. */
+/* Navigate to the about screen on About click. */
+if (navAboutBtn) {
+  navAboutBtn.addEventListener("click", () => showScreen("about"));
+}
+
+/* Navigate back to main from the advanced screen. */
 if (navBackBtn) {
   navBackBtn.addEventListener("click", () => showScreen("main"));
+}
+
+/* Navigate back to main from the about screen. */
+if (navBackAboutBtn) {
+  navBackAboutBtn.addEventListener("click", () => showScreen("main"));
 }
 
 /* Commit the port on change (blur or Enter).
