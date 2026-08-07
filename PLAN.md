@@ -205,7 +205,18 @@ Goal: a new user connects and gets great, on-taste output with zero ritual and n
 - [x] Connect-prompt button (added 2026-08-07): the panel shows a "Copy prompt" button beside the raw-`fileKey` Copy. It copies a self-bootstrapping Claude Code prompt (the HTTP MCP port, a pointer to the daemon GET, and this file's `fileKey`). The daemon sends `mcpPort` in `WELCOME` so the prompt stays accurate under a custom `TURBOFIG_MCP_PORT`. The panel is the visible surface; the daemon GET is the complementary "learn the protocol" half.
 - [ ] Verify: a fresh user opens a file, points a Claude at it with no repo reading, and gets an on-taste design; two files with two Claudes stay isolated on the one default port. (OPEN: needs a live run with a real Figma file and a fresh Claude session; deferred until the user runs it. The building blocks now exist: the self-describing GET payload, the discoverability hook, taste-on-by-default with a profile palette, and the one-daemon panel with a copyable fileKey.)
 
-## Phase 11: Packaging & distribution (pure export, easy updates)
+## Phase 11: Presentation (README-first)
+
+Goal: newcomers discover, understand, and install from the README alone.
+
+- [ ] README: positioning vs figma-mcp / figma-console-mcp / Framelink (a clear "why this" table)
+- [ ] Quickstart: install, import plugin, first design, in under 5 minutes
+- [ ] State onboarding honestly: reconnect is zero-friction, but first install is a one-time manual dev-import of the plugin; do not oversell "zero ritual"
+- [ ] A screencast GIF of a moodboard to website-design run
+- [ ] Docs: brand-pack authoring, skill authoring, architecture overview
+- [ ] Badges + crates.io/npm links + license
+
+## Phase 12: Packaging & distribution (pure export, easy updates)
 
 Goal: users install a compiled binary with no source and no compiler; updates are trivial. Ship macOS + npx first, then widen.
 
@@ -218,17 +229,6 @@ Goal: users install a compiled binary with no source and no compiler; updates ar
 - [ ] Play nice with Luke's setup: the file-bridge is the primary dialog-free path (native MCP is admin-blocked on his account, tested). Keep curl-on-18846 working as a fallback. Register a native `mcpServers` entry for users whose admin allowlists it.
 - [ ] Migrate Luke's existing `figma-*` skills onto turbofig and confirm the daily workflow runs over the file-bridge
 - [x] Productionize the file-bridge (pulled forward after Phase 3 for speed): client writes are race-safe by a file-stability check (a half-written file fails to parse and is retried, so no second sentinel file is needed) and the daemon now wakes on `notify` filesystem events with a 50 ms backstop poll for near-zero idle CPU. On macOS FSEvents delivery bounds latency at about 10-15 ms; on Linux inotify it is sub-millisecond. See `DECISIONS.md` #15 and `skills/file-bridge.md`.
-
-## Phase 12: Presentation (README-first)
-
-Goal: newcomers discover, understand, and install from the README alone.
-
-- [ ] README: positioning vs figma-mcp / figma-console-mcp / Framelink (a clear "why this" table)
-- [ ] Quickstart: install, import plugin, first design, in under 5 minutes
-- [ ] State onboarding honestly: reconnect is zero-friction, but first install is a one-time manual dev-import of the plugin; do not oversell "zero ritual"
-- [ ] A screencast GIF of a moodboard to website-design run
-- [ ] Docs: brand-pack authoring, skill authoring, architecture overview
-- [ ] Badges + crates.io/npm links + license
 
 ## Phase 13: Hardening & maintainability
 
