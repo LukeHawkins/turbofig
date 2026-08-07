@@ -5,7 +5,23 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { applySetPort, handleExecute, handleGetSelection, handleScreenshot } from "./code";
+
+// ---------------------------------------------------------------------------
+// UI bootstrap (source guard)
+// ---------------------------------------------------------------------------
+
+describe("showUI bootstrap", () => {
+  const src = readFileSync(join(import.meta.dir, "code.ts"), "utf8");
+
+  test("opts into themeColors so Figma injects theme variables", () => {
+    // Without themeColors, the --figma-color-* variables are never injected and
+    // the panel falls back to its white defaults. This guards that opt-in.
+    expect(src).toContain("themeColors: true");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // handleExecute

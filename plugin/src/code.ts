@@ -141,7 +141,9 @@ function emitFileInfo(): void {
 // Plugin bootstrap. Guard with a globalThis check so this file is importable in unit tests.
 // In the Figma sandbox, globalThis.figma is the PluginAPI. Outside it, the block is skipped.
 if ((globalThis as Record<string, unknown>).figma !== undefined) {
-  figma.showUI(__html__, { width: 320, height: 520 });
+  // themeColors makes Figma inject the --figma-color-* variables and a
+  // figma-light/figma-dark class, so the panel matches the user's theme.
+  figma.showUI(__html__, { width: 300, height: 360, themeColors: true });
 
   /* Send FILE_INFO to the UI so it can identify the file to the daemon on connect. */
   emitFileInfo();
