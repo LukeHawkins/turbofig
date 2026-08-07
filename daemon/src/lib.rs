@@ -1196,32 +1196,29 @@ impl ServerHandler for StatusHandler {
 ///
 /// An AI that discovers port 18846 can read this to bootstrap without the repo.
 pub const HELP_TEXT: &str = "\
-Turbofig: always-on Figma design daemon
+turbofig: always-on Figma design daemon
 =========================================
 
-This HTTP port speaks MCP at POST /mcp (streamable-http, legacy session mode).
-Include the mcp-session-id header on all requests after initialize.
+Two transports. Prefer the file-bridge: it is faster and more token-efficient
+(no MCP tool definitions, no JSON-RPC or SSE envelope) and fires no permission
+dialog. Use MCP only when the file-bridge is not available.
 
-Four tools (surface is locked at four):
-  turbofig_execute        Run arbitrary Figma Plugin API JavaScript in the live file.
-  turbofig_get_selection  Return compact selection info from the active file.
-  turbofig_screenshot     Export a PNG from the active file.
-  turbofig_status         Return daemon and plugin state, including the active profile id.
+File-bridge (recommended, dialog-free)
+--------------------------------------
+Write a JSON job to ~/.turbofig/inbox/<id>.json and read the result from
+~/.turbofig/outbox/<id>.json (any unique <id>). Override the folder with
+TURBOFIG_BRIDGE_DIR. Ops: execute (JS in \"code\"), get_selection, screenshot,
+status. Add \"fileKey\":\"<key>\" to target one of several open files; omit it
+for the sole open file.
+Example: {\"op\":\"execute\",\"fileKey\":\"<key>\",\"code\":\"return figma.root.name;\"}
 
-Every tool accepts an optional fileKey parameter.
-Set fileKey to target one of several open Figma files.
-Omit fileKey to use the paired file or the sole connected file.
-
-File-bridge (dialog-free path)
--------------------------------
-Write a JSON job to ~/.turbofig/inbox/ and read the result from ~/.turbofig/outbox/.
-Override the bridge directory with the TURBOFIG_BRIDGE_DIR environment variable.
-Job ops mirror the tools: execute, get_selection, screenshot, status.
-
-Plugin panel
-------------
-The Figma plugin panel shows the active file, its fileKey, the bound session,
-and the configured daemon port.
+MCP (fallback)
+--------------
+This is plain local HTTP, not HTTPS. Use curl, never a web-fetch tool.
+POST /mcp (streamable-http, legacy session mode); include the mcp-session-id
+header on every request after initialize. The four tools mirror the ops:
+turbofig_execute, turbofig_get_selection, turbofig_screenshot, turbofig_status.
+Each takes an optional fileKey.
 
 Ports (both env-overridable)
 -----------------------------

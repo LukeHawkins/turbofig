@@ -177,9 +177,9 @@ export function wsUrlForPort(port: number): string {
 export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
   if (!fileKey) return "";
   return [
-    `Edit this Figma file with turbofig (local daemon on port ${mcpPort}).`,
-    `GET http://127.0.0.1:${mcpPort}/ for the tools and file-bridge protocol.`,
-    `Target this file: fileKey "${fileKey}".`,
+    "turbofig (local Figma daemon) drives this file. Prefer the file-bridge: fastest, most token-efficient, no permission prompt. Write a JSON job to ~/.turbofig/inbox/<id>.json, read the result from ~/.turbofig/outbox/<id>.json (any unique <id>).",
+    `Job: {"op":"execute","fileKey":"${fileKey}","code":"return figma.root.name;"}. Ops: status, execute, get_selection, screenshot.`,
+    `MCP fallback only if needed: POST http://127.0.0.1:${mcpPort}/mcp (plain local HTTP, so use curl, never a web-fetch tool or HTTPS).`,
   ].join("\n");
 }
 

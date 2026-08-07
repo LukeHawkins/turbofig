@@ -449,29 +449,37 @@ describe("formatConnectPrompt", () => {
     expect(result).toContain("ABC123fileKey");
   });
 
-  test("output contains the port number", () => {
-    const result = formatConnectPrompt("someKey", 19999);
-    expect(result).toContain("19999");
+  test("leads with the file-bridge inbox and outbox paths", () => {
+    const result = formatConnectPrompt("someKey", 18846);
+    expect(result).toContain("~/.turbofig/inbox/");
+    expect(result).toContain("~/.turbofig/outbox/");
   });
 
-  test("output does not contain the default port when a different port is passed", () => {
+  test("gives a concrete execute example carrying the fileKey", () => {
+    const result = formatConnectPrompt("ABC123fileKey", 18846);
+    expect(result).toContain('"op":"execute"');
+    expect(result).toContain('"fileKey":"ABC123fileKey"');
+  });
+
+  test("mentions MCP only as a fallback, with the correct port and path", () => {
+    const result = formatConnectPrompt("someKey", 19999);
+    expect(result).toContain("http://127.0.0.1:19999/mcp");
+  });
+
+  test("does not contain the default port when a different port is passed", () => {
     const result = formatConnectPrompt("someKey", 19999);
     expect(result).not.toContain("18846");
   });
 
-  test("output contains the self-describe URL with the correct port", () => {
-    const result = formatConnectPrompt("someKey", 19999);
-    expect(result).toContain("http://127.0.0.1:19999/");
+  test("never instructs a bare GET or a web-fetch (which forces HTTPS and breaks)", () => {
+    const result = formatConnectPrompt("someKey", 18846);
+    expect(result).not.toContain("GET ");
+    expect(result).toContain("curl");
+    expect(result).toContain("web-fetch");
   });
 
-  test("output contains the word fileKey", () => {
+  test("puts the file-bridge before the MCP fallback", () => {
     const result = formatConnectPrompt("someKey", 18846);
-    expect(result).toContain("fileKey");
-  });
-
-  test("output is three lines joined by newlines", () => {
-    const result = formatConnectPrompt("someKey", 18846);
-    const lines = result.split("\n");
-    expect(lines.length).toBe(3);
+    expect(result.indexOf("inbox")).toBeLessThan(result.indexOf("/mcp"));
   });
 });

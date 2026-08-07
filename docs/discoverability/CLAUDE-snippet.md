@@ -1,23 +1,19 @@
-# Turbofig: Figma design agent (local daemon)
+# turbofig: Figma design agent (local daemon)
 
-Turbofig may be running on this machine. It exposes an HTTP MCP server on port 18846.
+turbofig may be running on this machine. It drives the open Figma file.
 
-**First step:** GET `http://127.0.0.1:18846/` to receive a short help payload that describes every available operation.
+**Prefer the file-bridge.** It is the fastest and most token-efficient path (no MCP tool definitions, no JSON-RPC or SSE envelope) and fires no permission dialog. Use MCP only when the file-bridge is not available.
 
-## Four tools
+## File-bridge (recommended)
 
-- `turbofig_execute`: run Figma Plugin API JavaScript in the open file
-- `turbofig_get_selection`: read the current selection
-- `turbofig_screenshot`: capture the canvas or a node
-- `turbofig_status`: return connection and taste-profile state
+Write a JSON job to `~/.turbofig/inbox/<id>.json` and read the result from `~/.turbofig/outbox/<id>.json` (any unique `<id>`). Ops: `execute` (JS in `code`), `get_selection`, `screenshot`, `status`. Add `"fileKey":"<key>"` to target one of several open files; omit it for the sole open file.
 
-Each tool accepts an optional `fileKey` parameter to target a specific open file. Omit `fileKey` to use the paired file or the sole connected file.
+Example job: `{"op":"execute","fileKey":"<key>","code":"return figma.root.name;"}`
 
-## File-bridge (no MCP required)
+## MCP (fallback)
 
-Write a JSON job to `~/.turbofig/inbox/`. Read the result from `~/.turbofig/outbox/`. Operations mirror the four tools: `execute`, `get_selection`, `screenshot`, `status`.
+Plain local HTTP on port 18846, not HTTPS. Use curl, never a web-fetch tool (it forces HTTPS and fails). `POST http://127.0.0.1:18846/mcp`. The four tools mirror the ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`, each with an optional `fileKey`.
 
-## Targeting and taste
+## Taste
 
-- **fileKey targeting:** one daemon serves all open Figma files. Pass a `fileKey` to target one file explicitly.
-- **Taste on by default:** each file has an active taste profile (default: `impeccable`) injected as `tf.taste`. Generated designs must obey it. Call `turbofig_status` to read the active `profileId`.
+Each file has an active taste profile (default `impeccable`) injected as `tf.taste`. Generated designs must obey it.
