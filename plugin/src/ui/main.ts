@@ -18,6 +18,7 @@ import {
   mainMessageAction,
   parsePort,
   profileToSelectValue,
+  screenSize,
   staleWarning,
   wsUrlForPort,
 } from "./ui-logic";
@@ -45,9 +46,14 @@ const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
 const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
+const navAdvancedBtn = document.getElementById("nav-advanced") as HTMLButtonElement;
+const navBackBtn = document.getElementById("nav-back") as HTMLButtonElement;
 
 /** Maximum number of entries kept in the activity log. */
 const LOG_CAP = 20;
+
+/** SVG markup for the check icon used as copied-state feedback. */
+const CHECK_SVG = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2.5 7l3.5 3.5 5.5-5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 // Runtime state.
 let latestFileInfo: FileInfoMessage | null = null;
@@ -75,8 +81,8 @@ function updateFileDisplay(): void {
   if (latestFileInfo) {
     fileLineEl.textContent = formatFileLine(latestFileInfo.fileKey, latestFileInfo.name);
     const hasKey = Boolean(latestFileInfo.fileKey);
-    if (copyFilekeyBtn) copyFilekeyBtn.style.display = hasKey ? "inline-block" : "none";
-    if (copyConnectBtn) copyConnectBtn.style.display = hasKey ? "block" : "none";
+    if (copyFilekeyBtn) copyFilekeyBtn.style.display = hasKey ? "" : "none";
+    if (copyConnectBtn) copyConnectBtn.style.display = hasKey ? "" : "none";
   } else {
     fileLineEl.textContent = "No file";
     if (copyFilekeyBtn) copyFilekeyBtn.style.display = "none";
@@ -124,6 +130,52 @@ function postSetProfile(): void {
   );
 }
 
+/**
+ * Copies text to the clipboard using a hidden textarea.
+ * Returns true when the copy succeeded, false otherwise.
+ * navigator.clipboard is unreliable inside the Figma plugin iframe.
+ */
+function clipboardCopy(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  ta.style.top = "-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let success = false;
+  try {
+    success = document.execCommand("copy");
+  } catch {
+    success = false;
+  }
+  document.body.removeChild(ta);
+  return success;
+}
+
+/** Applies a transient copied-state to a button, showing a check icon for 1.2 seconds. */
+function setCopiedFeedback(btn: HTMLButtonElement): void {
+  btn.classList.add("copied");
+  const orig = btn.innerHTML;
+  btn.innerHTML = CHECK_SVG;
+  setTimeout(() => {
+    btn.classList.remove("copied");
+    btn.innerHTML = orig;
+  }, 1200);
+}
+
+/** Shows the named screen and posts a RESIZE message to resize the plugin panel. */
+function showScreen(name: "main" | "advanced"): void {
+  Array.from(document.querySelectorAll<HTMLElement>(".screen")).forEach((s) => {
+    s.classList.remove("active");
+  });
+  const target = document.getElementById(`screen-${name}`);
+  if (target) target.classList.add("active");
+  const { width, height } = screenSize(name);
+  parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
+}
+
 profileSel.onchange = () => {
   if (profileSel.value === "custom") {
     /* Show the custom field and wait for the user to commit an id.
@@ -145,46 +197,37 @@ customInput.onchange = () => {
   }
 };
 
-/* Copy the full fileKey to the clipboard on click. Give brief feedback. */
+/* Copy the full fileKey to the clipboard on click. Show a check icon for brief feedback. */
 if (copyFilekeyBtn) {
-  copyFilekeyBtn.onclick = () => {
+  copyFilekeyBtn.addEventListener("click", () => {
     const key = latestFileInfo?.fileKey;
     if (!key) return;
-    if (navigator.clipboard) {
-      navigator.clipboard
-        .writeText(key)
-        .then(() => {
-          copyFilekeyBtn.textContent = "Copied";
-          setTimeout(() => {
-            copyFilekeyBtn.textContent = "Copy";
-          }, 1500);
-        })
-        .catch(() => {
-          /* Clipboard write failed; no action needed. */
-        });
+    if (clipboardCopy(key)) {
+      setCopiedFeedback(copyFilekeyBtn);
     }
-  };
+  });
 }
 
-/* Copy the connect prompt to the clipboard on click. Give brief feedback. */
+/* Copy the connect prompt to the clipboard on click. Show a check icon for brief feedback. */
 if (copyConnectBtn) {
-  copyConnectBtn.onclick = () => {
-    if (navigator.clipboard && latestFileInfo) {
-      const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort);
-      if (!prompt) return;
-      navigator.clipboard
-        .writeText(prompt)
-        .then(() => {
-          copyConnectBtn.textContent = "Copied";
-          setTimeout(() => {
-            copyConnectBtn.textContent = "Copy prompt to connect Claude";
-          }, 1500);
-        })
-        .catch(() => {
-          /* Clipboard write failed; no action needed. */
-        });
+  copyConnectBtn.addEventListener("click", () => {
+    if (!latestFileInfo) return;
+    const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort);
+    if (!prompt) return;
+    if (clipboardCopy(prompt)) {
+      setCopiedFeedback(copyConnectBtn);
     }
-  };
+  });
+}
+
+/* Navigate to the advanced screen on gear button click. */
+if (navAdvancedBtn) {
+  navAdvancedBtn.addEventListener("click", () => showScreen("advanced"));
+}
+
+/* Navigate back to the main screen on back button click. */
+if (navBackBtn) {
+  navBackBtn.addEventListener("click", () => showScreen("main"));
 }
 
 /* Commit the port on change (blur or Enter).
@@ -252,7 +295,7 @@ function connect(): void {
     }
     /* Read the active session id from a request that carries a real one.
        A file-bridge call sends an empty session id. Keep the last real
-       session so a bridge call does not clear the pairing display. */
+       session so a bridge call does not clear the session display. */
     if (typeof parsed.sessionId === "string" && parsed.sessionId !== "") {
       activeSessionId = parsed.sessionId;
       updateSessionDisplay();

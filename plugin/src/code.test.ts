@@ -21,6 +21,20 @@ describe("showUI bootstrap", () => {
     // the panel falls back to its white defaults. This guards that opt-in.
     expect(src).toContain("themeColors: true");
   });
+
+  test("uses the compact main-screen height (200) as the initial panel height", () => {
+    // Matches the screenSize("main") value so the panel opens at the correct size.
+    expect(src).toContain("height: 200");
+  });
+
+  test("handles RESIZE messages from the UI", () => {
+    // The RESIZE case must be present in the onmessage dispatch.
+    expect(src).toContain('"RESIZE"');
+  });
+
+  test("calls figma.ui.resize to apply the dimensions", () => {
+    expect(src).toContain("figma.ui.resize");
+  });
 });
 
 // ---------------------------------------------------------------------------

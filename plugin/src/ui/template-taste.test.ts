@@ -67,19 +67,20 @@ describe("template.html: impeccable taste compliance", () => {
 });
 
 describe("template.html: panel model", () => {
-  test("contains a details element for the Advanced section", () => {
-    expect(template).toContain("<details");
+  test("screen-main section is present", () => {
+    expect(template).toContain('id="screen-main"');
   });
 
-  test("Advanced summary is present", () => {
-    expect(template).toContain("<summary>Advanced</summary>");
+  test("screen-advanced section is present", () => {
+    expect(template).toContain('id="screen-advanced"');
   });
 
-  test("port-field appears after the Advanced summary (inside the disclosure)", () => {
-    const summaryIndex = template.indexOf("<summary>Advanced</summary>");
-    const portFieldIndex = template.indexOf('id="port-field"');
-    expect(summaryIndex).toBeGreaterThanOrEqual(0);
-    expect(portFieldIndex).toBeGreaterThan(summaryIndex);
+  test("gear button nav-advanced is present in the template", () => {
+    expect(template).toContain('id="nav-advanced"');
+  });
+
+  test("back button nav-back is present in the template", () => {
+    expect(template).toContain('id="nav-back"');
   });
 
   test("copy-filekey button is present in the template", () => {
@@ -90,17 +91,28 @@ describe("template.html: panel model", () => {
     expect(template).toContain('id="copy-connect"');
   });
 
-  test("profile select is inside the Advanced accordion", () => {
-    const summaryIndex = template.indexOf("<summary>Advanced</summary>");
+  test("profile select is inside screen-advanced", () => {
+    const advancedIndex = template.indexOf('id="screen-advanced"');
     const profileIndex = template.indexOf('id="profile"');
-    expect(summaryIndex).toBeGreaterThanOrEqual(0);
-    expect(profileIndex).toBeGreaterThan(summaryIndex);
+    expect(advancedIndex).toBeGreaterThanOrEqual(0);
+    expect(profileIndex).toBeGreaterThan(advancedIndex);
   });
 
-  test("activity-log is inside the Advanced accordion", () => {
-    const summaryIndex = template.indexOf("<summary>Advanced</summary>");
+  test("activity-log is inside screen-advanced", () => {
+    const advancedIndex = template.indexOf('id="screen-advanced"');
     const logIndex = template.indexOf('id="activity-log"');
-    expect(summaryIndex).toBeGreaterThanOrEqual(0);
-    expect(logIndex).toBeGreaterThan(summaryIndex);
+    expect(advancedIndex).toBeGreaterThanOrEqual(0);
+    expect(logIndex).toBeGreaterThan(advancedIndex);
+  });
+
+  test("port-field is inside screen-advanced", () => {
+    const advancedIndex = template.indexOf('id="screen-advanced"');
+    const portFieldIndex = template.indexOf('id="port-field"');
+    expect(advancedIndex).toBeGreaterThanOrEqual(0);
+    expect(portFieldIndex).toBeGreaterThan(advancedIndex);
+  });
+
+  test("no details element is present (accordion replaced by two screens)", () => {
+    expect(template).not.toContain("<details");
   });
 });

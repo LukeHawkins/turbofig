@@ -728,3 +728,33 @@ describe("PortMessage shape", () => {
     expect(msg.port).toBe(18847);
   });
 });
+
+describe("ResizeMessage", () => {
+  test("isInboundMessage accepts a well-formed RESIZE message", () => {
+    expect(isInboundMessage({ type: "RESIZE", width: 300, height: 200 })).toBe(true);
+  });
+
+  test("isInboundMessage accepts the advanced-screen dimensions", () => {
+    expect(isInboundMessage({ type: "RESIZE", width: 300, height: 440 })).toBe(true);
+  });
+
+  test("isInboundMessage rejects RESIZE with a non-numeric width", () => {
+    expect(isInboundMessage({ type: "RESIZE", width: "300", height: 200 })).toBe(false);
+  });
+
+  test("isInboundMessage rejects RESIZE with a non-numeric height", () => {
+    expect(isInboundMessage({ type: "RESIZE", width: 300, height: "200" })).toBe(false);
+  });
+
+  test("isInboundMessage rejects RESIZE missing both dimensions", () => {
+    expect(isInboundMessage({ type: "RESIZE" })).toBe(false);
+  });
+
+  test("RESIZE round-trips as a plain object", () => {
+    const msg = { type: "RESIZE" as const, width: 300, height: 200 };
+    expect(msg.type).toBe("RESIZE");
+    expect(msg.width).toBe(300);
+    expect(msg.height).toBe(200);
+    expect(isInboundMessage(msg)).toBe(true);
+  });
+});

@@ -45,6 +45,17 @@ export interface PortMessage {
 }
 
 /**
+ * Sent by the plugin UI iframe to the plugin main thread to resize the panel.
+ * The main thread calls figma.ui.resize with the given dimensions.
+ * Never forwarded over the WebSocket.
+ */
+export interface ResizeMessage {
+  type: "RESIZE";
+  width: number;
+  height: number;
+}
+
+/**
  * Sent by the daemon on connect after it receives FILE_INFO.
  * The UI must store the version and must not forward this message to the main thread.
  */
@@ -141,7 +152,8 @@ export type InboundMessage =
   | GetSelectionMessage
   | ScreenshotMessage
   | SetProfileMessage
-  | SetPortMessage;
+  | SetPortMessage
+  | ResizeMessage;
 
 /**
  * Returns true when `x` is a well-formed inbound message for the plugin main thread.
@@ -165,6 +177,8 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return typeof msg.profileId === "string";
     case "SET_PORT":
       return typeof msg.port === "number";
+    case "RESIZE":
+      return typeof msg.width === "number" && typeof msg.height === "number";
     default:
       return false;
   }

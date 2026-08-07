@@ -4,10 +4,8 @@ import {
   connStateFromEvent,
   daemonMessageAction,
   formatConnectPrompt,
-  formatFileKeyHint,
   formatFileLine,
   formatLogEntry,
-  formatPairing,
   formatSession,
   isDaemonStale,
   isRequestType,
@@ -15,6 +13,7 @@ import {
   mainMessageAction,
   parsePort,
   profileToSelectValue,
+  screenSize,
   staleWarning,
   wsUrlForPort,
 } from "./ui-logic";
@@ -184,61 +183,25 @@ describe("profileToSelectValue", () => {
   });
 });
 
-describe("formatPairing", () => {
-  test("empty sessionId returns paired false", () => {
-    const r = formatPairing("", "My File");
-    expect(r.paired).toBe(false);
+describe("screenSize", () => {
+  test("main screen returns 300x200", () => {
+    const { width, height } = screenSize("main");
+    expect(width).toBe(300);
+    expect(height).toBe(200);
   });
 
-  test("empty sessionId label says not paired", () => {
-    const r = formatPairing("", "My File");
-    expect(r.label).toContain("Not paired");
+  test("advanced screen returns 300x440", () => {
+    const { width, height } = screenSize("advanced");
+    expect(width).toBe(300);
+    expect(height).toBe(440);
   });
 
-  test("empty sessionId with empty fileName returns paired false", () => {
-    const r = formatPairing("", "");
-    expect(r.paired).toBe(false);
-    expect(r.label).toContain("Not paired");
+  test("main and advanced return different heights", () => {
+    expect(screenSize("main").height).not.toBe(screenSize("advanced").height);
   });
 
-  test("non-empty sessionId returns paired true", () => {
-    const r = formatPairing("ses-abc", "My File");
-    expect(r.paired).toBe(true);
-  });
-
-  test("short sessionId appears in label without truncation", () => {
-    const r = formatPairing("ses-abc", "My File");
-    expect(r.label).toContain("ses-abc");
-  });
-
-  test("sessionId of exactly 12 characters is not truncated", () => {
-    const r = formatPairing("123456789012", "Doc");
-    expect(r.label).toContain("123456789012");
-    expect(r.label).not.toContain("...");
-  });
-
-  test("sessionId longer than 12 characters is truncated with ...", () => {
-    const r = formatPairing("1234567890123", "Doc");
-    expect(r.label).toContain("123456789012...");
-  });
-
-  test("non-empty fileName is included in the paired label", () => {
-    const r = formatPairing("ses-abc", "Brand System");
-    expect(r.label).toContain("Brand System");
-  });
-
-  test("empty fileName does not cause a broken label", () => {
-    const r = formatPairing("ses-abc", "");
-    expect(r.paired).toBe(true);
-    expect(r.label.length).toBeGreaterThan(0);
-    expect(r.label).not.toContain("undefined");
-    expect(r.label).not.toContain("null");
-  });
-
-  test("long sessionId with fileName includes both truncated id and file name", () => {
-    const r = formatPairing("abcdefghijklmnop", "My Design");
-    expect(r.label).toContain("abcdefghijkl...");
-    expect(r.label).toContain("My Design");
+  test("both screens return the same width (300)", () => {
+    expect(screenSize("main").width).toBe(screenSize("advanced").width);
   });
 });
 
@@ -473,51 +436,6 @@ describe("mainMessageAction", () => {
   test("relays other main-thread messages over the socket", () => {
     expect(mainMessageAction("RESULT")).toBe("relay");
     expect(mainMessageAction("SET_PROFILE")).toBe("relay");
-  });
-});
-
-describe("formatFileKeyHint", () => {
-  test("returns empty key and hint when fileKey is empty", () => {
-    const r = formatFileKeyHint("");
-    expect(r.key).toBe("");
-    expect(r.hint).toBe("");
-  });
-
-  test("hides the row and hint when fileKey is empty", () => {
-    const r = formatFileKeyHint("");
-    expect(r.rowDisplay).toBe("none");
-    expect(r.hintDisplay).toBe("none");
-  });
-
-  test("shows the row and hint when a fileKey is present", () => {
-    const r = formatFileKeyHint("ABCDEF1234567890");
-    expect(r.rowDisplay).toBe("flex");
-    expect(r.hintDisplay).toBe("block");
-  });
-
-  test("returns the full fileKey without truncation", () => {
-    const key = "ABCDEF1234567890";
-    const r = formatFileKeyHint(key);
-    expect(r.key).toBe(key);
-  });
-
-  test("key is the exact input, not shortened", () => {
-    const longKey = "LONGKEYABCDEF1234567890MORECHARS";
-    const r = formatFileKeyHint(longKey);
-    expect(r.key).toBe(longKey);
-    expect(r.key.length).toBe(longKey.length);
-  });
-
-  test("returns a non-empty hint when fileKey is present", () => {
-    const r = formatFileKeyHint("ABCDEF1234567890");
-    expect(r.hint.length).toBeGreaterThan(0);
-  });
-
-  test("hint does not truncate or alter the key", () => {
-    const key = "ABCDEF1234567890";
-    const r = formatFileKeyHint(key);
-    expect(r.key).not.toContain("...");
-    expect(r.key.length).toBe(key.length);
   });
 });
 

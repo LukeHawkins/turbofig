@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Turbofig</title>
+    <title>turbofig</title>
     <style>
       /* === DESIGN TOKENS ================================================= */
       :root {
@@ -15,6 +15,7 @@
         --text-secondary: var(--figma-color-text-secondary, #6b6b6b);
         --text-onbrand: var(--figma-color-text-onbrand, #ffffff);
         --border: var(--figma-color-border, #e6e6e6);
+        --icon: var(--figma-color-icon, #333333);
         --c-connected: var(--figma-color-icon-success, #1e6b3a);
         --c-reconnecting: var(--figma-color-icon-warning, #9a4d00);
         --c-offline: var(--figma-color-icon-danger, #b91c1c);
@@ -55,6 +56,19 @@
         background: var(--bg);
         margin: 0;
         padding: var(--sp-4);
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* === SCREENS ======================================================= */
+      /* Toggle between screens by adding/removing .active. */
+      .screen {
+        display: none;
+        flex-direction: column;
+        gap: var(--sp-3);
+      }
+      .screen.active {
+        display: flex;
       }
 
       /* === HEADER ======================================================== */
@@ -63,7 +77,6 @@
         align-items: center;
         gap: var(--sp-2);
         padding-bottom: var(--sp-2);
-        margin-bottom: var(--sp-3);
         border-bottom: 1px solid var(--border);
       }
 
@@ -81,8 +94,12 @@
         color: var(--text-secondary);
       }
 
+      .header-spacer {
+        flex: 1;
+      }
+
       /* === CONNECTION STATUS ============================================= */
-      /* Coloured dot prefix; inherits class from #conn-status. */
+      /* Coloured dot prefix; class drives both dot and text colour. */
       #conn-status {
         font-size: 12px;
         color: var(--text-secondary);
@@ -127,68 +144,107 @@
       /* Hidden by default; shown when daemon and plugin versions differ. */
       .stale-banner {
         font-size: 12px;
-        color: #7d4e00;
-        background: #fef9c3;
+        background: var(--figma-color-bg-warning-tertiary, #fef9c3);
+        color: var(--figma-color-text-warning, #7d4e00);
         border-radius: 4px;
         padding: var(--sp-1) var(--sp-2);
-        margin-bottom: var(--sp-2);
       }
 
-      /* === META GROUP ==================================================== */
-      .meta-section {
-        margin-bottom: var(--sp-5);
-      }
-
-      /* Two-column grid: label column auto-sized, value fills the rest. */
-      .meta-list {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        column-gap: var(--sp-3);
-        row-gap: var(--sp-1);
-        margin: 0 0 var(--sp-2);
+      /* === ICON BUTTONS ================================================== */
+      /* Base: square, centered content, 6px radius, smooth hover. */
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: opacity 0.15s;
+        flex-shrink: 0;
         padding: 0;
       }
-
-      /* display:contents removes the row div from layout; dt/dd become grid items. */
-      .meta-row {
-        display: contents;
+      .icon-btn:hover {
+        opacity: 0.85;
       }
 
-      .meta-row dt {
+      /* Ghost variant: transparent fill, subtle border. */
+      .ghost-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--icon);
+      }
+
+      /* Brand variant: filled background, on-brand icon colour. */
+      .brand-btn {
+        background: var(--bg-brand);
+        border: none;
+        color: var(--text-onbrand);
+      }
+
+      /* === FILE ROW ====================================================== */
+      .file-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+
+      .row-label {
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--text-secondary);
-        align-self: baseline;
+        flex-shrink: 0;
       }
 
-      .meta-row dd {
+      .file-name {
         font-size: 14px;
         color: var(--text);
-        margin: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         min-width: 0;
       }
 
-      /* === CONNECT BUTTON ================================================ */
-      .connect-btn {
-        display: block;
-        width: 100%;
-        font-size: 14px;
-        font-weight: 500;
-        font-family: var(--ff-body);
-        padding: var(--sp-2) var(--sp-4);
-        background: var(--bg-brand);
-        color: var(--text-onbrand);
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        margin-bottom: var(--sp-4);
+      /* === SESSION ROW =================================================== */
+      .session-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
       }
 
-      /* === TASTE PROFILE CONTROL ========================================= */
+      #session-line {
+        font-size: 14px;
+        color: var(--text);
+      }
+
+      /* === BACK BUTTON =================================================== */
+      .back-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sp-1);
+        font-size: 12px;
+        font-family: var(--ff-body);
+        color: var(--text-secondary);
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: var(--sp-1) 0;
+        border-radius: 4px;
+        transition: opacity 0.15s;
+        align-self: flex-start;
+      }
+      .back-btn:hover {
+        opacity: 0.7;
+      }
+
+      /* === FORM CONTROLS ================================================= */
       .control-section {
-        margin-bottom: var(--sp-5);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-1);
       }
 
       .control-label {
@@ -198,7 +254,6 @@
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--text-secondary);
-        margin-bottom: var(--sp-1);
       }
 
       #profile,
@@ -219,7 +274,7 @@
         display: none;
       }
 
-      /* Validation hint: shown when the port field value is outside 1–65535. */
+      /* Validation hint: shown when the port field value is outside 1-65535. */
       .field-hint {
         font-size: 12px;
         color: var(--c-offline);
@@ -229,7 +284,9 @@
 
       /* === ACTIVITY LOG ================================================== */
       .log-section {
-        margin-bottom: var(--sp-5);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-1);
       }
 
       /* Reusable label style: 12px uppercase, muted. */
@@ -239,7 +296,7 @@
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--text-secondary);
-        margin: 0 0 var(--sp-1);
+        margin: 0;
       }
 
       #activity-log {
@@ -256,75 +313,61 @@
       .log-entry {
         line-height: 1.6;
       }
-
-      /* === COPY BUTTON =================================================== */
-      .copy-btn {
-        font-size: 12px;
-        font-family: var(--ff-body);
-        color: var(--text);
-        background: var(--border);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 1px var(--sp-2);
-        cursor: pointer;
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-
-      /* === ADVANCED DISCLOSURE =========================================== */
-      details.advanced-section {
-        margin-bottom: var(--sp-5);
-      }
-
-      details.advanced-section > summary {
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--text-secondary);
-        cursor: pointer;
-        list-style: none;
-        margin-bottom: var(--sp-2);
-      }
-
-      details.advanced-section > summary::-webkit-details-marker {
-        display: none;
-      }
     </style>
   </head>
   <body>
-    <!-- Header: wordmark, version, spacer, connection status in one row. -->
-    <header class="panel-header">
-      <span class="wordmark">turbofig</span>
-      <span class="header-version">v<span id="plugin-version"></span></span>
-      <span class="header-spacer" style="flex:1"></span>
-      <span id="conn-status">Connecting...</span>
-    </header>
+    <!-- Main screen: wordmark, connection status, file row, session row. -->
+    <section id="screen-main" class="screen active">
+      <header class="panel-header">
+        <span class="wordmark">turbofig</span>
+        <span class="header-version">v<span id="plugin-version"></span></span>
+        <span class="header-spacer"></span>
+        <span id="conn-status" role="status" aria-live="polite">Connecting...</span>
+        <button id="nav-advanced" class="icon-btn ghost-btn" type="button" aria-label="Advanced settings" title="Advanced settings">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.929 2.929l1.06 1.06M9.011 9.011l1.06 1.06M2.929 11.071l1.06-1.06M9.011 4.989l1.06-1.06" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </header>
 
-    <!-- Stale warning: visible only when daemon and plugin versions differ. -->
-    <div id="stale-warning" class="stale-banner" role="alert" style="display:none"></div>
+      <!-- Stale warning: visible only when daemon and plugin versions differ. -->
+      <div id="stale-warning" class="stale-banner" role="alert" style="display:none"></div>
 
-    <!-- File identity and session: grouped tightly by proximity. -->
-    <section class="meta-section" aria-label="File and session">
-      <dl class="meta-list">
-        <div class="meta-row">
-          <dt>File</dt>
-          <dd style="display:flex;align-items:center;gap:var(--sp-2);">
-            <span id="file-line" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">No file</span>
-            <button id="copy-filekey" class="copy-btn" type="button" style="display:none">Copy</button>
-          </dd>
-        </div>
-        <div class="meta-row" id="session-row" style="display:none">
-          <dt>Session</dt>
-          <dd id="session-line"></dd>
-        </div>
-      </dl>
-      <button id="copy-connect" class="connect-btn" type="button" style="display:none">Copy prompt to connect Claude</button>
+      <!-- File identity: name, copy file key, copy connect prompt. -->
+      <div class="file-row">
+        <span class="row-label">File</span>
+        <span id="file-line" class="file-name">No file</span>
+        <button id="copy-filekey" class="icon-btn ghost-btn" type="button" style="display:none" aria-label="Copy file key" title="Copy file key">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <rect x="2.5" y="4" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 4V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button id="copy-connect" class="icon-btn brand-btn" type="button" style="display:none" aria-label="Copy prompt to connect Claude" title="Copy prompt to connect Claude">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M5.5 8.5a3 3 0 0 0 4 0l1.5-1.5A3 3 0 0 0 6.757 2.757L5.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M8.5 5.5a3 3 0 0 0-4 0L3 7a3 3 0 0 0 4.243 4.243L8.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Session row: visible only when a Claude session is active. -->
+      <div id="session-row" class="session-row" style="display:none">
+        <span class="row-label">Session</span>
+        <span id="session-line"></span>
+      </div>
     </section>
 
-    <!-- Advanced: collapsed by default. Taste, log, and port are rarely changed. -->
-    <details class="advanced-section">
-      <summary>Advanced</summary>
+    <!-- Advanced screen: taste profile, activity log, daemon port. -->
+    <section id="screen-advanced" class="screen">
+      <button id="nav-back" class="back-btn" type="button" aria-label="Back">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M9 11L5 7l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Back
+      </button>
+
       <!-- Taste profile: a single control, labelled clearly. -->
       <section class="control-section" aria-label="Taste profile">
         <label class="control-label" for="profile">Taste profile</label>
@@ -337,18 +380,20 @@
         </select>
         <input id="customProfile" type="text" placeholder="Enter profile id" />
       </section>
+
       <!-- Activity log: monospace, fixed height, scrollable. -->
       <section class="log-section" aria-label="Activity">
         <p class="section-label">Activity</p>
         <div id="activity-log" role="log" aria-live="polite"></div>
       </section>
+
       <!-- Daemon port: the WebSocket port the plugin connects to. -->
       <section class="control-section" aria-label="Daemon port">
         <label class="control-label" for="port-field">Daemon port</label>
         <input id="port-field" type="number" min="1" max="65535" value="18847" />
         <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
       </section>
-    </details>
+    </section>
 
     <script>__UI_BUNDLE__</script>
   </body>

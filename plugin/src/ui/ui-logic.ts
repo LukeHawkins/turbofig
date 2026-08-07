@@ -168,39 +168,6 @@ export function wsUrlForPort(port: number): string {
   return `ws://localhost:${port}`;
 }
 
-/** Result of a pairing computation: whether a Claude session drives this file, and a label. */
-export interface PairingResult {
-  paired: boolean;
-  label: string;
-}
-
-/** Result of formatting the fileKey display row. */
-export interface FileKeyDisplay {
-  /** Full, untruncated fileKey. Empty string when no file is active. */
-  key: string;
-  /** Short hint for targeting this file from Claude. Empty when no file is active. */
-  hint: string;
-  /** CSS display value for the fileKey row: "flex" when a file is active, else "none". */
-  rowDisplay: "flex" | "none";
-  /** CSS display value for the hint: "block" when a file is active, else "none". */
-  hintDisplay: "block" | "none";
-}
-
-/**
- * Returns the full fileKey, a short targeting hint, and the CSS display values
- * for the row and hint. Returns empty strings and "none" when fileKey is empty
- * (no active file). The key is never truncated.
- */
-export function formatFileKeyHint(fileKey: string): FileKeyDisplay {
-  if (!fileKey) return { key: "", hint: "", rowDisplay: "none", hintDisplay: "none" };
-  return {
-    key: fileKey,
-    hint: "Target this file from Claude using its fileKey.",
-    rowDisplay: "flex",
-    hintDisplay: "block",
-  };
-}
-
 /**
  * Returns a self-bootstrapping connect prompt for Claude Code.
  * The prompt names the MCP HTTP port and the file key so a user can paste it
@@ -217,23 +184,10 @@ export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
 }
 
 /**
- * Returns the pairing state between a Claude session and this file.
- * Empty sessionId means no session drives this file: paired is false.
- * Non-empty sessionId means a session is active: paired is true.
- * Truncates the session id to 12 characters with "..." when it is longer.
- * Includes the file name in the label when fileName is non-empty.
+ * Returns the panel dimensions for the given screen name.
+ * main: compact status view (300 x 200). advanced: full settings view (300 x 440).
  */
-export function formatPairing(sessionId: string, fileName: string): PairingResult {
-  if (!sessionId) {
-    return {
-      paired: false,
-      label: "Not paired: no Claude session is driving this file yet.",
-    };
-  }
-  const shortId = sessionId.length > 12 ? `${sessionId.slice(0, 12)}...` : sessionId;
-  const filePart = fileName ? ` on ${fileName}` : "";
-  return {
-    paired: true,
-    label: `Paired with session ${shortId}${filePart}.`,
-  };
+export function screenSize(name: "main" | "advanced"): { width: number; height: number } {
+  if (name === "advanced") return { width: 300, height: 440 };
+  return { width: 300, height: 200 };
 }

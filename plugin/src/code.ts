@@ -143,7 +143,7 @@ function emitFileInfo(): void {
 if ((globalThis as Record<string, unknown>).figma !== undefined) {
   // themeColors makes Figma inject the --figma-color-* variables and a
   // figma-light/figma-dark class, so the panel matches the user's theme.
-  figma.showUI(__html__, { width: 300, height: 360, themeColors: true });
+  figma.showUI(__html__, { width: 300, height: 200, themeColors: true });
 
   /* Send FILE_INFO to the UI so it can identify the file to the daemon on connect. */
   emitFileInfo();
@@ -188,6 +188,12 @@ if ((globalThis as Record<string, unknown>).figma !== undefined) {
             figma.ui.postMessage({ type: "PORT", port: saved });
           }
         });
+        break;
+      case "RESIZE":
+        /* Resize the plugin panel to the dimensions requested by the UI. */
+        if (msg.width > 0 && msg.height > 0) {
+          figma.ui.resize(msg.width, msg.height);
+        }
         break;
       default:
         break;
