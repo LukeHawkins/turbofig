@@ -6,6 +6,7 @@
   "main": "dist/code.js",
   "ui": "dist/ui.html",
   "documentAccess": "dynamic-page",
+  "enablePrivatePluginApi": true,
   "networkAccess": {
     "allowedDomains": ["*"],
     "reasoning": "Connects to the local Turbofig daemon over a WebSocket on a user-configurable port. Figma rejects a wildcard port (ws://localhost:*), so allow-all is the only value that covers any configured port."
