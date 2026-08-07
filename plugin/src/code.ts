@@ -13,8 +13,8 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  effectiveProfileId,
   isInboundMessage,
-  readProfileId,
   safeResult,
   serializeNode,
   wrapUserCode,
@@ -134,7 +134,7 @@ export async function handleScreenshot(
 /** Posts a FILE_INFO message to the UI with the current file identity and profile. */
 function emitFileInfo(): void {
   figma.ui.postMessage(
-    buildFileInfo(figma.fileKey ?? "", figma.root.name, readProfileId(figma.root)),
+    buildFileInfo(figma.fileKey ?? "", figma.root.name, effectiveProfileId(figma.root)),
   );
 }
 

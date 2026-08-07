@@ -242,6 +242,17 @@ export function readProfileId(root: PluginDataStore): string {
 }
 
 /**
+ * Returns the effective taste profile id for a file.
+ * An unset profile defaults to "impeccable", the same default the daemon
+ * injects as tf.taste. This keeps FILE_INFO, the panel selector, the status
+ * report, and the injected tf.taste all consistent when the user never changed
+ * the profile. An explicit "none" is preserved (it disables injection).
+ */
+export function effectiveProfileId(root: PluginDataStore): string {
+  return readProfileId(root) || "impeccable";
+}
+
+/**
  * Writes the given profile id to the Figma document root.
  * Pass figma.root directly; it satisfies the PluginDataStore shape.
  * An empty string is rejected: the function returns without writing.

@@ -10,6 +10,7 @@ import {
   buildSelection,
   buildSetProfile,
   DEPRECATION_PREAMBLE,
+  effectiveProfileId,
   isDaemonMessage,
   isInboundMessage,
   MAX_SELECTION_DEPTH,
@@ -544,6 +545,25 @@ describe("profile store helpers", () => {
     const store = makeMockStore();
     applySetProfile(store, "minimal");
     expect(readProfileId(store)).toBe("minimal");
+  });
+
+  test("effectiveProfileId defaults to impeccable when no profile is set", () => {
+    const store = makeMockStore();
+    // Nothing written: the effective profile is the injected default.
+    expect(readProfileId(store)).toBe("");
+    expect(effectiveProfileId(store)).toBe("impeccable");
+  });
+
+  test("effectiveProfileId returns the stored id when one is set", () => {
+    const store = makeMockStore();
+    applySetProfile(store, "editorial");
+    expect(effectiveProfileId(store)).toBe("editorial");
+  });
+
+  test("effectiveProfileId preserves an explicit none", () => {
+    const store = makeMockStore();
+    applySetProfile(store, "none");
+    expect(effectiveProfileId(store)).toBe("none");
   });
 
   test("buildFileInfo round-trip: SET_PROFILE -> setPluginData -> FILE_INFO carries profileId", () => {

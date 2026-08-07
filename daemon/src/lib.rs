@@ -323,6 +323,15 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// Resolve a stored profile id to the id `run_execute` injects as `tf.taste` (empty or unknown becomes `impeccable`, `none` stays `none`, a known id stays itself), so `turbofig_status` never reports "no profile" while impeccable is actually injected.
+    pub fn resolve_profile_id(&self, profile_id: &str) -> String {
+        match profile_id {
+            "none" => "none".to_owned(),
+            id if self.profiles.contains_key(id) => id.to_owned(),
+            _ => "impeccable".to_owned(),
+        }
+    }
+
     /// Return the JS source to inject before user code and an optional warning.
     ///
     /// Rules:
@@ -576,7 +585,10 @@ pub async fn run_status(
         return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
     }
 
-    let profile_id = state.connection_profile(conn_id);
+    // Report the resolved profile (what run_execute injects as tf.taste), not
+    // the raw stored value, so status never says "no profile" while impeccable
+    // is in fact injected.
+    let profile_id = state.resolve_profile_id(&state.connection_profile(conn_id));
 
     match tokio::time::timeout(state.request_timeout, rx).await {
         Ok(Ok(result)) => {
@@ -1955,6 +1967,24 @@ mod tests {
             plugin["profileId"],
             json!("editorial"),
             "profileId must match what was stored"
+        );
+    }
+
+    #[test]
+    fn resolve_profile_id_reports_effective_profile() {
+        let state = AppState::new();
+        assert_eq!(
+            state.resolve_profile_id(""),
+            "impeccable",
+            "empty -> impeccable"
+        );
+        assert_eq!(state.resolve_profile_id("impeccable"), "impeccable");
+        assert_eq!(state.resolve_profile_id("editorial"), "editorial");
+        assert_eq!(state.resolve_profile_id("none"), "none", "none stays none");
+        assert_eq!(
+            state.resolve_profile_id("does-not-exist"),
+            "impeccable",
+            "unknown -> impeccable"
         );
     }
 
