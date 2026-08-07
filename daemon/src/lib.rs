@@ -1277,9 +1277,15 @@ pub async fn serve_with_state(
 // ── WebSocket server ──────────────────────────────────────────────────────────
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
-/// Returns a JSON string: `{"type":"WELCOME","version":"<crate version>"}`.
+/// Returns a JSON string with `type`, `version`, and `mcpPort` fields.
+/// `mcpPort` is the HTTP MCP port so the plugin panel can show a ready-to-paste connect prompt.
 pub(crate) fn welcome_message() -> String {
-    json!({"type": "WELCOME", "version": env!("CARGO_PKG_VERSION")}).to_string()
+    json!({
+        "type": "WELCOME",
+        "version": env!("CARGO_PKG_VERSION"),
+        "mcpPort": port_from_env()
+    })
+    .to_string()
 }
 
 /// Handle an upgraded WebSocket connection from the Figma plugin.
@@ -2640,7 +2646,8 @@ mod tests {
 
     #[test]
     fn welcome_message_has_correct_type_and_version() {
-        // The helper must return JSON with type == "WELCOME" and version == the crate version.
+        // The helper must return JSON with type == "WELCOME", version == the crate version,
+        // and mcpPort == the MCP HTTP port.
         let msg = welcome_message();
         let v: Value = serde_json::from_str(&msg).expect("welcome_message must be valid JSON");
         assert_eq!(v["type"], json!("WELCOME"), "type must be WELCOME");
@@ -2648,6 +2655,15 @@ mod tests {
             v["version"],
             json!(env!("CARGO_PKG_VERSION")),
             "version must match CARGO_PKG_VERSION"
+        );
+        assert!(
+            v["mcpPort"].is_number(),
+            "mcpPort must be present and numeric"
+        );
+        assert_eq!(
+            v["mcpPort"].as_u64(),
+            Some(u64::from(port_from_env())),
+            "mcpPort must equal port_from_env()"
         );
     }
 

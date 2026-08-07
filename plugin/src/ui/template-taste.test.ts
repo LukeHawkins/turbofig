@@ -97,4 +97,8 @@ describe("template.html: panel model", () => {
   test("filekey-row element is present in the template", () => {
     expect(template).toContain('id="filekey-row"');
   });
+
+  test("copy-connect button is present in the template", () => {
+    expect(template).toContain('id="copy-connect"');
+  });
 });

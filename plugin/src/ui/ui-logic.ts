@@ -202,6 +202,21 @@ export function formatFileKeyHint(fileKey: string): FileKeyDisplay {
 }
 
 /**
+ * Returns a self-bootstrapping connect prompt for Claude Code.
+ * The prompt names the MCP HTTP port and the file key so a user can paste it
+ * directly into Claude Code without any manual configuration.
+ * Returns an empty string when fileKey is empty (no active file).
+ */
+export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
+  if (!fileKey) return "";
+  return [
+    `Edit this Figma file with turbofig (local daemon on port ${mcpPort}).`,
+    `GET http://127.0.0.1:${mcpPort}/ for the tools and file-bridge protocol.`,
+    `Target this file: fileKey "${fileKey}".`,
+  ].join("\n");
+}
+
+/**
  * Returns the pairing state between a Claude session and this file.
  * Empty sessionId means no session drives this file: paired is false.
  * Non-empty sessionId means a session is active: paired is true.

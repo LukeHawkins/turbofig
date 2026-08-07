@@ -3,6 +3,7 @@ import {
   appendLog,
   connStateFromEvent,
   daemonMessageAction,
+  formatConnectPrompt,
   formatFileKeyHint,
   formatFileLine,
   formatLogEntry,
@@ -517,5 +518,42 @@ describe("formatFileKeyHint", () => {
     const r = formatFileKeyHint(key);
     expect(r.key).not.toContain("...");
     expect(r.key.length).toBe(key.length);
+  });
+});
+
+describe("formatConnectPrompt", () => {
+  test("returns empty string when fileKey is empty", () => {
+    expect(formatConnectPrompt("", 18846)).toBe("");
+  });
+
+  test("output contains the fileKey", () => {
+    const result = formatConnectPrompt("ABC123fileKey", 18846);
+    expect(result).toContain("ABC123fileKey");
+  });
+
+  test("output contains the port number", () => {
+    const result = formatConnectPrompt("someKey", 19999);
+    expect(result).toContain("19999");
+  });
+
+  test("output does not contain the default port when a different port is passed", () => {
+    const result = formatConnectPrompt("someKey", 19999);
+    expect(result).not.toContain("18846");
+  });
+
+  test("output contains the self-describe URL with the correct port", () => {
+    const result = formatConnectPrompt("someKey", 19999);
+    expect(result).toContain("http://127.0.0.1:19999/");
+  });
+
+  test("output contains the word fileKey", () => {
+    const result = formatConnectPrompt("someKey", 18846);
+    expect(result).toContain("fileKey");
+  });
+
+  test("output is three lines joined by newlines", () => {
+    const result = formatConnectPrompt("someKey", 18846);
+    const lines = result.split("\n");
+    expect(lines.length).toBe(3);
   });
 });

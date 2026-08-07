@@ -622,6 +622,14 @@ describe("isDaemonMessage: WELCOME branch", () => {
   test("rejects WELCOME with a numeric version", () => {
     expect(isDaemonMessage({ type: "WELCOME", version: 1 })).toBe(false);
   });
+
+  test("accepts WELCOME with mcpPort present (new daemon)", () => {
+    expect(isDaemonMessage({ type: "WELCOME", version: "0.11.0", mcpPort: 18846 })).toBe(true);
+  });
+
+  test("accepts WELCOME without mcpPort (older daemon, back-compat)", () => {
+    expect(isDaemonMessage({ type: "WELCOME", version: "0.10.0" })).toBe(true);
+  });
 });
 
 describe("isDaemonMessage: sessionId on request messages", () => {

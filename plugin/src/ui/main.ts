@@ -10,6 +10,7 @@ import {
   appendLog,
   connStateFromEvent,
   daemonMessageAction,
+  formatConnectPrompt,
   formatFileKeyHint,
   formatFileLine,
   formatLogEntry,
@@ -29,6 +30,9 @@ declare const __PLUGIN_VERSION__: string;
 /** Active daemon port. Updated when PORT arrives from the main thread. */
 let currentPort = 18847;
 
+/** MCP HTTP port received from the daemon on WELCOME. Default matches TURBOFIG_MCP_PORT default. */
+let daemonMcpPort = 18846;
+
 // Resolve panel elements once on load.
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
 const fileLineEl = document.getElementById("file-line") as HTMLElement;
@@ -44,6 +48,7 @@ const portHintEl = document.getElementById("port-hint") as HTMLElement;
 const filekeyRowEl = document.getElementById("filekey-row") as HTMLElement;
 const filekeyValueEl = document.getElementById("filekey-value") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
+const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
 const filekeyHintEl = document.getElementById("filekey-hint") as HTMLElement;
 
 /** Maximum number of entries kept in the activity log. */
@@ -77,6 +82,7 @@ function updateFileDisplay(): void {
     const { key, hint, rowDisplay, hintDisplay } = formatFileKeyHint(latestFileInfo.fileKey);
     if (filekeyValueEl) filekeyValueEl.textContent = key;
     if (filekeyRowEl) filekeyRowEl.style.display = rowDisplay;
+    if (copyConnectBtn) copyConnectBtn.style.display = key ? "inline-block" : "none";
     if (filekeyHintEl) {
       filekeyHintEl.textContent = hint;
       filekeyHintEl.style.display = hintDisplay;
@@ -84,6 +90,7 @@ function updateFileDisplay(): void {
   } else {
     fileLineEl.textContent = "No file";
     if (filekeyRowEl) filekeyRowEl.style.display = "none";
+    if (copyConnectBtn) copyConnectBtn.style.display = "none";
     if (filekeyHintEl) filekeyHintEl.style.display = "none";
   }
 }
@@ -175,6 +182,27 @@ if (copyFilekeyBtn) {
   };
 }
 
+/* Copy the connect prompt to the clipboard on click. Give brief feedback. */
+if (copyConnectBtn) {
+  copyConnectBtn.onclick = () => {
+    if (navigator.clipboard && latestFileInfo) {
+      const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort);
+      if (!prompt) return;
+      navigator.clipboard
+        .writeText(prompt)
+        .then(() => {
+          copyConnectBtn.textContent = "Copied";
+          setTimeout(() => {
+            copyConnectBtn.textContent = "Copy prompt";
+          }, 1500);
+        })
+        .catch(() => {
+          /* Clipboard write failed; no action needed. */
+        });
+    }
+  };
+}
+
 /* Commit the port on change (blur or Enter).
    Invalid input shows the hint and resets the field to the last valid port. */
 portFieldEl.onchange = () => {
@@ -227,9 +255,10 @@ function connect(): void {
     const action = daemonMessageAction(parsed.type as string);
     /* The UI selector owns SET_PROFILE. Drop it if the daemon sends it. */
     if (action === "drop") return;
-    /* Consume WELCOME: store the daemon version and check for a stale mismatch. */
+    /* Consume WELCOME: store the daemon version and MCP port; check for a stale mismatch. */
     if (action === "welcome") {
       daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
+      daemonMcpPort = typeof parsed.mcpPort === "number" ? parsed.mcpPort : 18846;
       const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
       if (staleWarningEl) {
         staleWarningEl.textContent = warning;

@@ -51,6 +51,8 @@ export interface PortMessage {
 export interface WelcomeMessage {
   type: "WELCOME";
   version: string;
+  /** HTTP MCP port the daemon is listening on. Present in daemon v0.11+. Absent in older daemons. */
+  mcpPort?: number;
 }
 
 /** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */
