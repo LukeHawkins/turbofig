@@ -53,16 +53,19 @@ The plugin dispatches on a `{type}` field in each message:
 
 | Type | Direction | Description |
 |---|---|---|
-| `FILE_INFO` | plugin to daemon | Sent on connect: fileKey and root name (Phase 2) |
-| `STATUS` | daemon to plugin | Liveness ping carrying a `requestId` (Phase 2) |
+| `READY` | UI to main thread | Sent once, on load; the main thread replies with `FILE_INFO` and `PORT` (Phase 12) |
+| `FILE_INFO` | plugin to daemon | Sent on connect, and again on a detected file rename: fileKey and root name (Phase 2) |
+| `STATUS` | daemon to plugin | Liveness ping carrying a `requestId`; bypasses the job queue (Phase 2) |
 | `RESULT` | plugin to daemon | Reply carrying the matching `requestId` (Phase 2) |
-| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS (Phase 3) |
-| `GET_SELECTION` | daemon to plugin | Return compact selection info (Phase 3) |
-| `SCREENSHOT` | daemon to plugin | Export PNG (Phase 3) |
+| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS; queued, honours `timeoutMs` (Phase 3) |
+| `GET_SELECTION` | daemon to plugin | Return compact selection info; queued (Phase 3) |
+| `SCREENSHOT` | daemon to plugin | Export PNG; queued (Phase 3) |
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
-`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope before user code runs: the sync-to-async deprecation preamble (runs first), and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message and never crash the plugin.
+`EXECUTE`, `GET_SELECTION` and `SCREENSHOT` run one at a time, FIFO, through a single queue in the main thread (`createDispatcher` in `code.ts`), so two overlapping jobs can never interleave and create duplicate nodes. `STATUS`, `SET_PORT`, `RESIZE` and `READY` bypass the queue and run immediately. Every queued reply is capped at 16 MiB (`capResultMessage`); an oversized reply becomes an `ok:false` error naming the size instead of reaching the WebSocket. An `EXECUTE` carrying `timeoutMs` races the job against a timer and replies with a timeout error if the job is still running; a synchronous infinite loop in the user's code cannot be interrupted this way, since JavaScript is single-threaded.
+
+`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope before user code runs: the sync-to-async deprecation preamble (runs first), and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message (with a line/column relative to the user's own code, adjusted for the preamble) and never crash the plugin.
 
 ## Routing registry (Phase 4)
 
