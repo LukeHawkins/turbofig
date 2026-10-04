@@ -55,11 +55,13 @@ pub async fn run_screenshot(
     };
 
     let scale = scale.clamp(MIN_SCALE, MAX_SCALE);
+    let timeout_ms = state.request_timeout.as_millis().min(u128::from(u64::MAX)) as u64;
     let request = json!({
         "type": "SCREENSHOT",
         "scale": scale,
         "nodeId": node_id,
-        "sessionId": session_id.unwrap_or("")
+        "sessionId": session_id.unwrap_or(""),
+        "timeoutMs": timeout_ms
     });
 
     let (id, outcome) = call_plugin(state, conn_id, &tx, request, state.request_timeout).await;

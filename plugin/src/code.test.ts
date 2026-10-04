@@ -472,4 +472,74 @@ describe("createDispatcher", () => {
     expect(() => dispatch(null)).not.toThrow();
     expect(() => dispatch({ type: "NOT_A_REAL_TYPE" })).not.toThrow();
   });
+
+  test("a job already past its deadline when dequeued never runs, and replies 'expired in the queue'", async () => {
+    const posted: { requestId?: number; ok?: boolean; error?: string }[] = [];
+    const dispatch = createDispatcher(makeMockFigma(), (m) =>
+      posted.push(m as { requestId?: number; ok?: boolean; error?: string }),
+    );
+    dispatch({
+      type: "EXECUTE",
+      requestId: 1,
+      code: "await new Promise((r) => setTimeout(r, 50)); return 1;",
+    });
+    // Enqueued right behind job 1: its 10ms deadline is stamped now, and
+    // elapses long before job 1 finishes and job 2 reaches the front.
+    dispatch({ type: "GET_SELECTION", requestId: 2, timeoutMs: 10 });
+    await new Promise((r) => setTimeout(r, 100));
+    const second = posted.find((m) => m.requestId === 2);
+    expect(second?.ok).toBe(false);
+    expect(second?.error).toContain("expired in the queue");
+  });
+
+  test("GET_SELECTION and SCREENSHOT race against timeoutMs too, not only EXECUTE", async () => {
+    const mockNode = {
+      id: "1:5",
+      width: 10,
+      height: 10,
+      async exportAsync() {
+        await new Promise((r) => setTimeout(r, 200));
+        return new Uint8Array([]);
+      },
+    };
+    const figma = makeMockFigma({
+      currentPage: { selection: [mockNode] },
+      base64Encode: () => "",
+    });
+    const posted: { requestId?: number; ok?: boolean; error?: string }[] = [];
+    const dispatch = createDispatcher(figma, (m) =>
+      posted.push(m as { requestId?: number; ok?: boolean; error?: string }),
+    );
+    dispatch({ type: "SCREENSHOT", requestId: 9, timeoutMs: 20 });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.ok).toBe(false);
+    expect(posted[0]?.error).toContain("timed out");
+    expect(posted[0]?.requestId).toBe(9);
+  });
+
+  test("defaults the queue budget to 30000ms when timeoutMs is absent", async () => {
+    const posted: { requestId?: number; ok?: boolean }[] = [];
+    const dispatch = createDispatcher(makeMockFigma(), (m) =>
+      posted.push(m as { requestId?: number; ok?: boolean }),
+    );
+    dispatch({ type: "GET_SELECTION", requestId: 11 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted[0]?.requestId).toBe(11);
+    expect(posted[0]?.ok).toBe(true);
+  });
+
+  test("a throwing post on one job does not drop every later queued job", async () => {
+    let calls = 0;
+    const posted: { requestId?: number }[] = [];
+    const dispatch = createDispatcher(makeMockFigma(), (m) => {
+      calls++;
+      if (calls === 1) throw new Error("boom");
+      posted.push(m as { requestId?: number });
+    });
+    dispatch({ type: "EXECUTE", requestId: 1, code: "return 1;" });
+    dispatch({ type: "EXECUTE", requestId: 2, code: "return 2;" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(posted.map((m) => m.requestId)).toEqual([2]);
+  });
 });

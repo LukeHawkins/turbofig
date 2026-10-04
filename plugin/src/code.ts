@@ -60,6 +60,26 @@ function userCodePosition(err: unknown): { line: number; column: number } | null
 }
 
 /**
+ * Default milliseconds budget (queue wait + run time) for a queued job whose
+ * daemon-supplied timeoutMs is missing or non-positive.
+ */
+const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
+
+/**
+ * Largest delay setTimeout accepts before it overflows a 32-bit signed int
+ * and fires almost immediately instead of waiting. A daemon-supplied
+ * timeoutMs is clamped to this independently of the daemon's own clamp
+ * (TURBOFIG_REQUEST_TIMEOUT_MS), since the plugin cannot trust the daemon
+ * never to send an oversized value.
+ */
+const MAX_SETTIMEOUT_MS = 2 ** 31 - 1;
+
+/** Clamps a milliseconds delay to the largest value setTimeout accepts. */
+function clampTimeoutMs(ms: number): number {
+  return Math.min(ms, MAX_SETTIMEOUT_MS);
+}
+
+/**
  * Validates and persists a daemon WebSocket port.
  * Returns the saved port when valid (integer, 1–65535), or null when invalid.
  * Extracted for testability without a live Figma environment.
@@ -115,7 +135,7 @@ export async function handleExecute(
           `job timed out in the plugin after ${timeoutMs}ms; it may still be running; a retry is not idempotent`,
         ),
       );
-    }, timeoutMs);
+    }, clampTimeoutMs(timeoutMs));
   });
   return Promise.race([run(), timeout]);
 }
@@ -204,6 +224,33 @@ async function emitStoredPort(figma: PluginAPI, post: (msg: unknown) => void): P
 }
 
 /**
+ * Builds a ResultMessage for a job that expired while still waiting in the
+ * queue: it never ran, so a retry is unconditionally safe.
+ */
+function queueExpiredResult(requestId: number): ResultMessage {
+  return buildExecuteError(requestId, "expired in the queue; the job did not run; a retry is safe");
+}
+
+/**
+ * Builds a ResultMessage for a job whose combined queue-wait-plus-run budget
+ * elapsed while it was actually running: unlike queueExpiredResult, the job
+ * may still be executing, so a retry is not idempotent.
+ */
+function queueRunTimeoutResult(requestId: number, ms: number): ResultMessage {
+  return buildExecuteError(
+    requestId,
+    `job timed out after ${ms}ms (queue wait + run time); it may still be running; a retry is not idempotent`,
+  );
+}
+
+/** Resolves with queueRunTimeoutResult after `ms`, to race against a running job. */
+function queueRunTimeout(requestId: number, ms: number): Promise<ResultMessage> {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(queueRunTimeoutResult(requestId, ms)), clampTimeoutMs(ms));
+  });
+}
+
+/**
  * Builds the onmessage dispatcher for the plugin main thread.
  * Exported for testing without a live Figma environment: pass a mock
  * PluginAPI and a `post` sink in place of figma.ui.postMessage.
@@ -213,6 +260,14 @@ async function emitStoredPort(figma: PluginAPI, post: (msg: unknown) => void): P
  * creating duplicate nodes. STATUS, SET_PORT, RESIZE and READY bypass the
  * queue and run immediately. A queued reply is capped at 16 MiB
  * (capResultMessage) before it reaches `post`.
+ *
+ * Each queued job carries a deadline stamped at enqueue time (when the
+ * daemon's message was received), not at the moment it reaches the front of
+ * the queue: a job that already queued past its own timeoutMs never runs at
+ * all, and replies ok:false immediately instead of running late. A job that
+ * is still within its deadline when it starts races against the remaining
+ * time, so GET_SELECTION and SCREENSHOT (not only EXECUTE) can never hang
+ * the queue forever on a stuck exportAsync/getNodeByIdAsync.
  */
 export function createDispatcher(
   figma: PluginAPI,
@@ -221,8 +276,34 @@ export function createDispatcher(
   // Chained promise: each queued job runs only after the previous one settles.
   let queueTail: Promise<void> = Promise.resolve();
 
-  function enqueue(job: () => Promise<ResultMessage>): void {
-    queueTail = queueTail.then(() => job().then((reply) => post(capResultMessage(reply))));
+  async function runQueuedJob(
+    requestId: number,
+    deadline: number,
+    job: () => Promise<ResultMessage>,
+  ): Promise<ResultMessage> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return queueExpiredResult(requestId);
+    return Promise.race([job(), queueRunTimeout(requestId, remaining)]);
+  }
+
+  function enqueue(
+    requestId: number,
+    timeoutMs: number | undefined,
+    job: () => Promise<ResultMessage>,
+  ): void {
+    const budget =
+      typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : DEFAULT_QUEUE_TIMEOUT_MS;
+    const deadline = Date.now() + clampTimeoutMs(budget);
+    queueTail = queueTail
+      .then(() => runQueuedJob(requestId, deadline, job))
+      .then((reply) => post(capResultMessage(reply)))
+      .catch(() => {
+        // A prior link's job or post threw: swallow it here so queueTail
+        // always settles back to resolved. Without this, one throw leaves
+        // queueTail permanently rejected and every later .then() in the
+        // chain (i.e. every later queued job) is skipped and silently
+        // dropped instead of running.
+      });
   }
 
   return (raw: unknown): void => {
@@ -241,14 +322,14 @@ export function createDispatcher(
       case "EXECUTE": {
         // Build the tf namespace bound to this live PluginAPI instance.
         const tf = createTf(figma);
-        enqueue(() => handleExecute(figma, tf, msg));
+        enqueue(msg.requestId, msg.timeoutMs, () => handleExecute(figma, tf, msg));
         break;
       }
       case "GET_SELECTION":
-        enqueue(() => handleGetSelection(figma, msg));
+        enqueue(msg.requestId, msg.timeoutMs, () => handleGetSelection(figma, msg));
         break;
       case "SCREENSHOT":
-        enqueue(() => handleScreenshot(figma, msg));
+        enqueue(msg.requestId, msg.timeoutMs, () => handleScreenshot(figma, msg));
         break;
       case "SET_PORT":
         /* Validate and persist the port; send PORT back so the UI can reconnect. */

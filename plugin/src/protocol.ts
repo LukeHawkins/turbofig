@@ -97,6 +97,12 @@ export interface GetSelectionMessage {
   depth?: number;
   /** The MCP session that issued the call. Empty string for file-bridge requests. */
   sessionId?: string;
+  /**
+   * Milliseconds budget for this job: queue wait plus run time combined,
+   * measured from when the plugin received it. The plugin defaults to
+   * 30000 when absent.
+   */
+  timeoutMs?: number;
 }
 
 /** Sent by the daemon to the plugin to request a PNG screenshot of a node. */
@@ -107,6 +113,12 @@ export interface ScreenshotMessage {
   nodeId?: string;
   /** The MCP session that issued the call. Empty string for file-bridge requests. */
   sessionId?: string;
+  /**
+   * Milliseconds budget for this job: queue wait plus run time combined,
+   * measured from when the plugin received it. The plugin defaults to
+   * 30000 when absent.
+   */
+  timeoutMs?: number;
 }
 
 /** A single selected Figma node, serialised for the selection response. */
@@ -185,10 +197,14 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return (
         typeof msg.requestId === "number" &&
         (msg.fields === undefined || isStringArray(msg.fields)) &&
-        (msg.depth === undefined || typeof msg.depth === "number")
+        (msg.depth === undefined || typeof msg.depth === "number") &&
+        (msg.timeoutMs === undefined || typeof msg.timeoutMs === "number")
       );
     case "SCREENSHOT":
-      return typeof msg.requestId === "number";
+      return (
+        typeof msg.requestId === "number" &&
+        (msg.timeoutMs === undefined || typeof msg.timeoutMs === "number")
+      );
     case "SET_PORT":
       return typeof msg.port === "number";
     case "RESIZE":

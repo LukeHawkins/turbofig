@@ -729,6 +729,24 @@ describe("isInboundMessage", () => {
     expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, depth: "2" })).toBe(false);
   });
 
+  test("accepts GET_SELECTION with a numeric timeoutMs", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, timeoutMs: 20000 })).toBe(true);
+  });
+
+  test("rejects GET_SELECTION with a non-numeric timeoutMs", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, timeoutMs: "20000" })).toBe(
+      false,
+    );
+  });
+
+  test("accepts SCREENSHOT with a numeric timeoutMs", () => {
+    expect(isInboundMessage({ type: "SCREENSHOT", requestId: 1, timeoutMs: 20000 })).toBe(true);
+  });
+
+  test("rejects SCREENSHOT with a non-numeric timeoutMs", () => {
+    expect(isInboundMessage({ type: "SCREENSHOT", requestId: 1, timeoutMs: "20000" })).toBe(false);
+  });
+
   test("accepts READY", () => {
     expect(isInboundMessage({ type: "READY" })).toBe(true);
   });

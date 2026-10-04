@@ -35,13 +35,39 @@ fn request_timeout_or(raw: Option<&str>, default_ms: u64) -> Duration {
         .unwrap_or_else(|| Duration::from_millis(default_ms))
 }
 
+/// Largest request timeout the daemon ever honours: 10 minutes.
+/// `timeoutMs` is forwarded to the plugin, which passes it to a JS
+/// `setTimeout`; a value above `2^31 - 1` ms overflows that call and fires
+/// almost immediately instead of waiting. 600000 ms is far below that limit
+/// and is already an unreasonably long single-call wait, so this clamp can
+/// never be the thing standing between a real caller and a real answer.
+const MAX_REQUEST_TIMEOUT_MS: u64 = 600_000;
+
+/// Clamp a request timeout to `MAX_REQUEST_TIMEOUT_MS`, logging a warning
+/// when the clamp actually changes the value. Split out from
+/// `request_timeout_from_env` so it is testable without touching the
+/// process environment.
+fn clamp_request_timeout(d: Duration) -> Duration {
+    let max = Duration::from_millis(MAX_REQUEST_TIMEOUT_MS);
+    if d > max {
+        eprintln!(
+            "Turbofig: TURBOFIG_REQUEST_TIMEOUT_MS ({}ms) exceeds the {}ms maximum; clamping",
+            d.as_millis(),
+            MAX_REQUEST_TIMEOUT_MS
+        );
+        max
+    } else {
+        d
+    }
+}
+
 /// Read the plugin reply timeout from `TURBOFIG_REQUEST_TIMEOUT_MS`.
-/// Default is 30000 ms.
+/// Default is 30000 ms. Clamped to `MAX_REQUEST_TIMEOUT_MS`.
 pub fn request_timeout_from_env() -> Duration {
-    request_timeout_or(
+    clamp_request_timeout(request_timeout_or(
         std::env::var("TURBOFIG_REQUEST_TIMEOUT_MS").ok().as_deref(),
         30_000,
-    )
+    ))
 }
 
 /// Resolve the bridge directory from optional env string values.
@@ -126,6 +152,30 @@ mod tests {
         assert_eq!(
             request_timeout_or(Some("0"), 30_000),
             Duration::from_millis(30_000)
+        );
+    }
+
+    #[test]
+    fn clamp_request_timeout_leaves_a_value_at_or_under_the_max_unchanged() {
+        assert_eq!(
+            clamp_request_timeout(Duration::from_millis(MAX_REQUEST_TIMEOUT_MS)),
+            Duration::from_millis(MAX_REQUEST_TIMEOUT_MS)
+        );
+        assert_eq!(
+            clamp_request_timeout(Duration::from_millis(5_000)),
+            Duration::from_millis(5_000)
+        );
+    }
+
+    #[test]
+    fn clamp_request_timeout_clamps_a_value_above_the_max() {
+        assert_eq!(
+            clamp_request_timeout(Duration::from_millis(MAX_REQUEST_TIMEOUT_MS + 1)),
+            Duration::from_millis(MAX_REQUEST_TIMEOUT_MS)
+        );
+        assert_eq!(
+            clamp_request_timeout(Duration::from_secs(u64::MAX / 2000)),
+            Duration::from_millis(MAX_REQUEST_TIMEOUT_MS)
         );
     }
 

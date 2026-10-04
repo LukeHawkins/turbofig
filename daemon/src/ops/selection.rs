@@ -33,7 +33,12 @@ pub async fn run_get_selection(
         Err(e) => return route_error_to_json(e),
     };
 
-    let mut request = json!({"type": "GET_SELECTION", "sessionId": session_id.unwrap_or("")});
+    let timeout_ms = state.request_timeout.as_millis().min(u128::from(u64::MAX)) as u64;
+    let mut request = json!({
+        "type": "GET_SELECTION",
+        "sessionId": session_id.unwrap_or(""),
+        "timeoutMs": timeout_ms
+    });
     if let Some(f) = fields {
         request["fields"] = json!(f);
     }
