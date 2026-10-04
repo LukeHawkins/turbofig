@@ -1,72 +1,253 @@
-# Turbofig Benchmark Harness
+# Turbofig Benchmark
 
-This harness measures the transport cost (approximate tokens in and out) and wall-time of scripted design jobs driven through the file-bridge.
+An exact reproduction guide for comparing turbofig against `figma-console-mcp`.
+Every number this harness reports is either an exact wire byte count or a real
+Claude Code token count. Nothing here is estimated or invented: see
+`DECISIONS.md` #31 for why that line was redrawn.
 
-## What the harness measures
+## What this measures
 
-- **Tokens in**: token count of each job payload sent to the daemon (approximate: `ceil(chars / 4)`).
-- **Tokens out**: token count of the JSON result returned by the daemon.
-- **Wall-time**: elapsed milliseconds from writing the inbox file to reading the outbox file.
+Two separate, honestly-labelled layers:
 
-The file-bridge is the mechanism under measurement. The harness does not measure Figma rendering time or network latency beyond the daemon.
+- **Transport layer** (`bench/harness.ts`): exact request/response bytes and
+  wall-clock time per job, for one target per run. Never a `chars / 4`
+  estimate: every byte count is `Buffer.byteLength` of the real bytes sent or
+  received.
+- **Agent layer** (`bench/agent.ts`): the token cost of a real headless
+  Claude Code session using a target's MCP tools, including the fixed
+  per-session cost of loading that target's tool schemas (the transport layer
+  cannot see this cost; the payload itself never carries it).
+
+Only one Figma plugin runs per file at a time, so the harness benchmarks
+exactly one target per invocation. `bench/compare.ts` merges the separate
+reports back together.
+
+## Targets
+
+| Target | What it is | Default endpoint |
+|---|---|---|
+| `turbofig-mcp` | turbofig over MCP HTTP, tool `turbofig_execute` | `http://127.0.0.1:18846/mcp` |
+| `turbofig-bridge` | turbofig over its file bridge (the primary agent path) | `~/.turbofig/inbox` -> `outbox` |
+| `console-mcp` | `figma-console-mcp` over MCP HTTP, tool `figma_execute` | `http://127.0.0.1:3846/mcp` |
 
 ## Scenarios
 
-| Scenario | Jobs | Description |
-|----------|------|-------------|
-| `webpage` | 5 | Marketing page: page setup, nav, hero, feature grid, footer. |
-| `deck20` | 3 | 20-slide deck built in three batched execute calls. |
+| Scenario | Label | Targets | Description |
+|---|---|---|---|
+| `webpage` | transport + helpers | turbofig only | Marketing page via `tf.*` helpers: page setup, nav, hero, feature grid, footer. |
+| `webpage-plain` | transport | all three | Same page, built with only the plain Figma Plugin API. |
+| `deck20` | transport + helpers | turbofig only | 20-slide deck via `tf.*` helpers, in three batched execute calls. |
+| `deck20-plain` | transport | all three | Same deck, built with only the plain Plugin API. |
+| `read-selection` | transport | all three | Create and select one rectangle, then read the selection. |
+| `read-screenshot` | transport | all three | Create and select one rectangle, then screenshot it. |
 
-## How to run (dry-run, no daemon required)
+A **transport** scenario is a fair fight: the same plain-API code runs on
+every target, so the comparison measures the transport, not turbofig's
+helper library. A **transport + helpers** scenario shows what the helper
+library adds on top, and only runs against turbofig (console-mcp has no
+equivalent library, so running it there would measure the wrong thing).
+
+Every scenario run creates its own fresh page (named `bench-<scenario>`)
+and deletes it afterwards. It never renames, edits, or touches whatever
+page or content the user already has open.
+
+## Prerequisites
+
+- Bun (`bun --version`). `bun install` once at the repo root.
+- Figma Desktop, with **two** separate Figma files open for a same-session
+  comparison (one plugin runs per file; see "Switching plugins" below). A
+  blank file is fine; the harness creates and removes its own page.
+- turbofig built: `cargo build --release` (or `cargo build` for a debug run).
+- For the `console-mcp` target: a working `figma-console-mcp` install with a
+  Figma personal access token. The owner's own reference setup lives outside
+  this repo, at `console-mcp-setup/` (`./start.sh`, which runs `supergateway` in
+  front of `figma-console-mcp` on port 3846 by default; see `console-mcp-setup/.env`
+  and `console-mcp-setup/setup.sh` in that checkout).
+- For the agent layer (`bench/agent.ts`): the `claude` CLI on `PATH`. Every
+  invocation spends real Claude Code usage — never loop it without intent.
+
+## Starting each target
+
+**turbofig-bridge and turbofig-mcp** (the daemon serves both over one process):
+
+1. `cargo run --release` (or the installed `turbofig` binary) from the repo root.
+2. In Figma Desktop, open the file you want to benchmark, then
+   **Plugins -> Development -> turbofig** to connect its WebSocket.
+3. The daemon now serves `turbofig-bridge` via `~/.turbofig/` and
+   `turbofig-mcp` via `http://127.0.0.1:18846/mcp`, for whichever file has the
+   plugin connected. Use `--file-key <key>` on the harness if more than one
+   file has the plugin connected at once (copy the key from the plugin panel).
+
+**console-mcp:**
+
+1. In your `figma-console-mcp` checkout (e.g. `console-mcp-setup/`): `./start.sh`
+   (needs `.env` with `FIGMA_ACCESS_TOKEN` set; see that repo's `setup.sh`
+   if `.env` does not exist yet).
+2. In Figma Desktop, open the file you want to benchmark, then
+   **Plugins -> Development -> Figma Console MCP Bridge**.
+3. `console-mcp` now serves `http://127.0.0.1:3846/mcp` for that file.
+
+### Switching plugins between targets
+
+Only one development plugin can hold the WebSocket connection for a given
+Figma file at a time. To compare turbofig against console-mcp:
+
+- Use two separate files, one per plugin, running both targets at once, **or**
+- Use one file and switch: close the running plugin's panel (or stop the
+  daemon/gateway), start the other plugin, then run the harness again with
+  the new `--target`.
+
+Two files is faster for a side-by-side comparison session; one file is
+closer to a real user's single-file workflow.
+
+## Commands, in order
 
 ```sh
-bun bench/harness.ts --dry-run
-bun bench/harness.ts --dry-run --scenario webpage
-bun bench/harness.ts --dry-run --scenario deck20 --out report.json
+# Once per machine
+bun install
+
+# 1. turbofig over the file bridge (daemon + plugin running, see above)
+bun bench/harness.ts --target turbofig-bridge --scenario all --runs 10 \
+  --machine "MacBook Pro M3" --macos "15.1" --figma-version "<fill in>" \
+  --daemon-version "<fill in>" --file "<fill in>" \
+  --out out/turbofig-bridge.json
+
+# 2. turbofig over MCP HTTP (same daemon, same or a second file)
+bun bench/harness.ts --target turbofig-mcp --scenario all --runs 10 \
+  --out out/turbofig-mcp.json
+
+# 3. console-mcp over MCP HTTP (figma-console-mcp running, its plugin connected)
+bun bench/harness.ts --target console-mcp --scenario all --runs 10 \
+  --out out/console-mcp.json
+
+# 4. Merge all three into one comparison table
+bun bench/compare.ts \
+  --report out/turbofig-bridge.json \
+  --report out/turbofig-mcp.json \
+  --report out/console-mcp.json \
+  --out out/compare.json
+
+# 5. Optional: the agent layer (spends real Claude Code usage)
+bun bench/agent.ts --runs 5 --out out/agent-report.json
 ```
 
-The `--dry-run` flag uses a stub transport that returns a canned result without writing to disk or contacting the daemon. Use it to verify the harness and inspect token counts.
+`--scenario all` skips any scenario the current `--target` does not support
+(for example, `webpage` is skipped for `console-mcp`) rather than failing.
+Run `--scenario <name>` for one scenario at a time instead.
 
-## How to run live (daemon must be running)
-
-Start the daemon and open a Figma file with the plugin connected. Then run:
+### Dry run (no daemon, no Figma, no console-mcp)
 
 ```sh
-bun bench/harness.ts --scenario webpage
-bun bench/harness.ts --scenario all --out results.json
-bun bench/harness.ts --scenario deck20 --bridge-dir /custom/path
+bun bench/harness.ts --dry-run --scenario webpage-plain --runs 1
+bun bench/agent.ts --dry-run --runs 1
 ```
 
-The harness writes each job to `~/.turbofig/inbox/<id>.json` and polls `~/.turbofig/outbox/<id>.json` for the result.
+`--dry-run` uses a stub transport that never contacts a daemon or Figma file.
+It reports real byte counts for the canned job payloads, so it is useful for
+sanity-checking a scenario's request size, but every timing field is
+meaningless under the stub (`wallMs` is always 0). `bun bench/agent.ts
+--dry-run` only prints the exact `claude` commands it would run; it never
+spawns `claude`.
+
+## Reading a report
+
+Each `--out` file is a `BenchReport[]`, one element per scenario run:
+
+- `valid` / `invalidReason`: `false` with a reason the moment any job in any
+  iteration fails. An invalid run must never be read as a fast, cheap result.
+- `jobStats[i].coldMs`: the first iteration's wall time for job `i` (JIT,
+  cache warm-up, cold connection).
+- `jobStats[i].warmMedianMs` / `warmP95Ms`: timing across every iteration
+  after the first.
+- `totalRequestBytes` / `totalResponseBytes`: exact wire bytes across every
+  job in the scenario (summed from `jobStats`, which take their byte counts
+  from the first iteration that recorded that job; payload size does not
+  vary run to run).
+- `machine`: whatever you passed via `--machine`/`--macos`/`--figma-version`/
+  `--daemon-version`/`--file`. Fill these in on every real run; a bare number
+  with no machine context is not reproducible.
 
 ## Baseline comparison
 
-Save a baseline with `--out`:
-
 ```sh
-bun bench/harness.ts --dry-run --scenario webpage --out baseline.json
+bun bench/harness.ts --target turbofig-bridge --scenario webpage-plain --runs 1 \
+  --baseline bench/baseline.json --max-ratio 1.2
 ```
 
-Compare a later run against it with `--baseline`:
+`bench/baseline.json` ships as a **static payload-size snapshot** (see its
+`note` field): a `--dry-run` record of `webpage-plain`'s request/response
+bytes, with every timing field `null`. It is a size reference, not a timing
+claim. `--max-ratio <n>` turns the comparison into an actual gate: the
+process exits non-zero when the measured ratio of
+`(requestBytes + responseBytes)` exceeds `n`, or when the run itself is
+invalid. Replace `bench/baseline.json` with a real `--out` report (same
+`BenchReport` shape) once a live baseline exists, so the CI gate compares
+against a real number instead of a static snapshot.
 
-```sh
-bun bench/harness.ts --dry-run --scenario webpage --baseline baseline.json
-```
+## Comparing across targets
 
-The harness prints the ratio `this run / baseline` for total tokens. A ratio below 1.0 means the new run used fewer tokens. This is the seam Phase 5 uses for its provisional read comparison.
+`bench/compare.ts` groups the `--out` files from separate target runs by
+scenario and prints one row per target: validity, total bytes, summed cold
+time, summed warm-median time. An invalid run prints as `INVALID: <reason>`
+and is excluded from the byte ratio, so a failed job can never leak a
+flattering number into a published comparison.
 
-## CLI options
+## Known limits
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--scenario <name\|all>` | `all` | Scenario to run: `webpage`, `deck20`, or `all`. |
-| `--bridge-dir <path>` | `~/.turbofig` | Override the bridge directory. |
-| `--out <file.json>` | (none) | Write the full JSON report to this file. |
-| `--dry-run` | false | Use a stub transport. No daemon required. |
-| `--baseline <file.json>` | (none) | Compare total tokens against a saved baseline. |
+- **Only one target benchmarked per invocation.** This is a hard Figma
+  constraint (one plugin per file), not a shortcut; it is why `compare.ts`
+  exists as a separate merge step.
+- **console-mcp has no multi-file routing and no status-equivalent tool.**
+  Scenarios that need either are scoped to turbofig only (see the Scenarios
+  table). `--file-key` is a no-op for `console-mcp`.
+- **MCP HTTP and the file bridge measure different kinds of round trip** (a
+  network request with SSE parsing vs. a local filesystem write and watch).
+  That difference is exactly what `turbofig-mcp` vs. `turbofig-bridge` is
+  measuring; do not read it as a bug.
+- **Real Figma variance.** Cold/warm/p95 numbers depend on the local
+  machine, the Figma Desktop version, and current Figma app load. Always
+  record `--machine`/`--macos`/`--figma-version`/`--daemon-version`/`--file`
+  on a run meant for publication.
+- **`bench/agent.ts` spends real Claude Code usage.** Never run it in a loop
+  without deliberate intent; use `--dry-run` to check the commands first.
+- **CI gap.** `.github/workflows/*.yml` still runs
+  `bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json`
+  (old scenario name, no `--max-ratio`, and `--dry-run` only ever checks
+  payload size, never a live run). The scenario name needs to become
+  `webpage-plain` (matching `bench/baseline.json`) and the step needs a
+  `--max-ratio` to actually fail on a regression; `.github/` is outside this
+  change's scope, so this is a flagged follow-up, not a silent gap.
 
 ## Running the tests
 
 ```sh
-bun test bench/harness.test.ts
+bun test bench/
 ```
+
+## Manual run checklist (about 30 minutes, Figma Desktop open)
+
+1. `bun install` at the repo root. (1 min)
+2. Build the daemon: `cargo build --release`. (2-5 min, first build)
+3. Open Figma Desktop with a blank or scratch file. Run
+   **Plugins -> Development -> turbofig**. Start the daemon:
+   `cargo run --release`. Confirm the plugin panel shows "Connected". (2 min)
+4. Run the two turbofig targets:
+   `bun bench/harness.ts --target turbofig-bridge --scenario all --runs 10 --out out/turbofig-bridge.json`
+   then
+   `bun bench/harness.ts --target turbofig-mcp --scenario all --runs 10 --out out/turbofig-mcp.json`.
+   (8-10 min; `read-screenshot` and the two `-plain` builds are the slowest jobs)
+5. Stop the turbofig plugin panel (or close that file). Start your
+   `figma-console-mcp` checkout's gateway (e.g. `./start.sh` in `console-mcp-setup/`).
+   Open the same or a second Figma file and run
+   **Plugins -> Development -> Figma Console MCP Bridge**. (3 min)
+6. Run the console-mcp target:
+   `bun bench/harness.ts --target console-mcp --scenario all --runs 10 --out out/console-mcp.json`.
+   (5-7 min; only the `-plain` and `read-*` scenarios apply)
+7. Merge: `bun bench/compare.ts --report out/turbofig-bridge.json --report out/turbofig-mcp.json --report out/console-mcp.json --out out/compare.json`. (1 min)
+8. Read `out/compare.json` (or the printed table) for the byte and timing
+   comparison. Every number that goes into the README or a LinkedIn post
+   must trace back to a file under `out/`, with the machine/Figma/daemon
+   version fields filled in. (2 min)
+9. Optional, separate budget: `bun bench/agent.ts --runs 5 --out out/agent-report.json`
+   for the real token-cost comparison. This step spends Claude Code usage;
+   decide deliberately whether to run it. (5-10 min)
