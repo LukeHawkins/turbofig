@@ -16,7 +16,17 @@ Two separate, honestly-labelled layers:
 - **Agent layer** (`bench/agent.ts`): the token cost of a real headless
   Claude Code session using a target's MCP tools, including the fixed
   per-session cost of loading that target's tool schemas (the transport layer
-  cannot see this cost; the payload itself never carries it).
+  cannot see this cost; the payload itself never carries it). Each session
+  runs with `--tools ""` (no built-in tool at all, never `bypassPermissions`,
+  which only skips the prompt and leaves Bash/Write loaded) plus
+  `--allowedTools` naming only that target's own MCP tool, so the session can
+  reach nothing but the tool under test. Report the published input-token
+  figure as `totalInputTokens` (raw input + cache-creation + cache-read),
+  never `inputTokens` alone: most of a tool schema's real cost sits in the
+  cache fields, not the uncached remainder. The "create-frame" task verifies
+  its claimed result through the target's own tool (and deletes it
+  afterwards) before counting the run as a success, so a hallucinated "done"
+  is never counted as one.
 
 Only one Figma plugin runs per file at a time, so the harness benchmarks
 exactly one target per invocation. `bench/compare.ts` merges the separate
@@ -40,6 +50,17 @@ reports back together.
 | `deck20-plain` | transport | all three | Same deck, built with only the plain Plugin API. |
 | `read-selection` | transport | all three | Create and select one rectangle, then read the selection. |
 | `read-screenshot` | transport | all three | Create and select one rectangle, then screenshot it. |
+
+`read-screenshot` asks turbofig for an inline, undownscaled image
+(`returnMode: "inline"`, `fullRes: true`), matching console-mcp's
+`figma_take_screenshot`, which always fetches and returns the image inline
+as base64. Without this, turbofig's default file mode returns a ~100-byte
+path and console-mcp returns the whole image, which is not a like-for-like
+comparison. `read-selection` asks console-mcp's `figma_get_selection` with
+`verbose: true`, the closest match to turbofig's `fields: ["fills"]`
+request; console-mcp's verbose mode also returns strokes, effects, and more
+that the narrower turbofig request does not, so the two byte counts still
+are not exactly equal (see "Known limits").
 
 A **transport** scenario is a fair fight: the same plain-API code runs on
 every target, so the comparison measures the transport, not turbofig's
@@ -155,10 +176,15 @@ Each `--out` file is a `BenchReport[]`, one element per scenario run:
 
 - `valid` / `invalidReason`: `false` with a reason the moment any job in any
   iteration fails. An invalid run must never be read as a fast, cheap result.
+- `failedIterations`: count of iterations where any job, setup, or teardown
+  failed, out of `runs`. Always 0 on a valid run.
 - `jobStats[i].coldMs`: the first iteration's wall time for job `i` (JIT,
-  cache warm-up, cold connection).
+  cache warm-up, cold connection). `null` when that iteration's job itself
+  failed: a failed call's wall time is not a real timing.
 - `jobStats[i].warmMedianMs` / `warmP95Ms`: timing across every iteration
-  after the first.
+  after the first that succeeded. A failed iteration's wall time is excluded
+  from both, so it can never look like a fast, cheap run.
+- `jobStats[i].failures`: count of iterations where job `i` itself failed.
 - `totalRequestBytes` / `totalResponseBytes`: exact wire bytes across every
   job in the scenario (summed from `jobStats`, which take their byte counts
   from the first iteration that recorded that job; payload size does not
@@ -179,10 +205,17 @@ bun bench/harness.ts --target turbofig-bridge --scenario webpage-plain --runs 1 
 bytes, with every timing field `null`. It is a size reference, not a timing
 claim. `--max-ratio <n>` turns the comparison into an actual gate: the
 process exits non-zero when the measured ratio of
-`(requestBytes + responseBytes)` exceeds `n`, or when the run itself is
-invalid. Replace `bench/baseline.json` with a real `--out` report (same
-`BenchReport` shape) once a live baseline exists, so the CI gate compares
-against a real number instead of a static snapshot.
+`(requestBytes + responseBytes)` exceeds `n`, when the run itself is
+invalid, or when no ratio could be computed at all (missing/malformed
+baseline file, a scenario/target mismatch, or an invalid baseline total) —
+`--max-ratio` never passes silently just because a comparison could not be
+made. `--baseline` accepts either shape: a single `BenchReport` object (the
+committed `bench/baseline.json` shape) or a `BenchReport[]` (whatever
+`--out` writes, including a live multi-scenario report). When the file is an
+array, the entry matching the current run's scenario and target is used.
+Replace `bench/baseline.json` with a real `--out` report once a live
+baseline exists, so the CI gate compares against a real number instead of a
+static snapshot.
 
 ## Comparing across targets
 
@@ -210,6 +243,14 @@ flattering number into a published comparison.
   on a run meant for publication.
 - **`bench/agent.ts` spends real Claude Code usage.** Never run it in a loop
   without deliberate intent; use `--dry-run` to check the commands first.
+- **`read-selection` is not exactly equal across targets.** console-mcp's
+  `verbose: true` returns more fields (strokes, effects, and more) than
+  turbofig's narrower `fields: ["fills"]` request. The byte counts favour
+  whichever side returns less, not necessarily the faster transport; read
+  the per-job byte counts, not only the total, before publishing this one.
+- **`--runs` must be a positive integer.** `--runs 0` or a non-numeric value
+  is rejected at startup rather than silently producing an empty, trivially
+  passing report.
 - **CI gap.** `.github/workflows/*.yml` still runs
   `bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json`
   (old scenario name, no `--max-ratio`, and `--dry-run` only ever checks
