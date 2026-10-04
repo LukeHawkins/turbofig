@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "turbofig": {
+      "type": "http",
+      "url": "http://127.0.0.1:18846/mcp"
+    }
+  }
+}
