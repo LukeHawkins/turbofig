@@ -69,4 +69,4 @@ jobs:
         run: cd plugin && bun run build
 
       - name: Benchmark dry-run
-        run: bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json
+        run: bun bench/harness.ts --dry-run --scenario webpage-plain --baseline bench/baseline.json --max-ratio 1.2
