@@ -4,13 +4,13 @@ import {
   connStateFromEvent,
   daemonMessageAction,
   formatConnectPrompt,
-  formatFileLine,
   formatLogEntry,
   formatSession,
   isDaemonStale,
   isRequestType,
   mainMessageAction,
   parsePort,
+  portMessageAction,
   screenSize,
   staleWarning,
   wsUrlForPort,
@@ -92,38 +92,6 @@ describe("connStateFromEvent", () => {
       const r = connStateFromEvent(event, attempt);
       expect(r.label.length).toBeGreaterThan(0);
     }
-  });
-});
-
-describe("formatFileLine", () => {
-  test("returns name with shortened key for full inputs", () => {
-    const result = formatFileLine("ABCDEF1234567890", "My Design");
-    expect(result).toBe("My Design (ABCDEF12)");
-  });
-
-  test("returns truncated key when name is empty", () => {
-    const result = formatFileLine("ABCDEF12EXTRA", "");
-    expect(result).toBe("ABCDEF12");
-  });
-
-  test("returns just the name when fileKey is empty", () => {
-    const result = formatFileLine("", "My Design");
-    expect(result).toBe("My Design");
-  });
-
-  test("returns No file when both are empty", () => {
-    const result = formatFileLine("", "");
-    expect(result).toBe("No file");
-  });
-
-  test("handles a short key without truncation", () => {
-    const result = formatFileLine("ABC", "File");
-    expect(result).toBe("File (ABC)");
-  });
-
-  test("key exactly 8 characters is not truncated", () => {
-    const result = formatFileLine("12345678", "Doc");
-    expect(result).toBe("Doc (12345678)");
   });
 });
 
@@ -353,19 +321,19 @@ describe("parsePort", () => {
 
 describe("wsUrlForPort", () => {
   test("returns the default daemon URL for port 18847", () => {
-    expect(wsUrlForPort(18847)).toBe("ws://localhost:18847");
+    expect(wsUrlForPort(18847)).toBe("ws://127.0.0.1:18847");
   });
 
   test("returns a URL for a custom port", () => {
-    expect(wsUrlForPort(8080)).toBe("ws://localhost:8080");
+    expect(wsUrlForPort(8080)).toBe("ws://127.0.0.1:8080");
   });
 
   test("returns a URL for port 1", () => {
-    expect(wsUrlForPort(1)).toBe("ws://localhost:1");
+    expect(wsUrlForPort(1)).toBe("ws://127.0.0.1:1");
   });
 
   test("returns a URL for port 65535", () => {
-    expect(wsUrlForPort(65535)).toBe("ws://localhost:65535");
+    expect(wsUrlForPort(65535)).toBe("ws://127.0.0.1:65535");
   });
 });
 
@@ -408,6 +376,21 @@ describe("mainMessageAction", () => {
   test("relays other main-thread messages over the socket", () => {
     expect(mainMessageAction("RESULT")).toBe("relay");
     expect(mainMessageAction("SET_PORT")).toBe("relay");
+  });
+});
+
+describe("portMessageAction", () => {
+  test("the first PORT ever received connects, regardless of the port values", () => {
+    expect(portMessageAction(false, 18847, 18847)).toBe("connect");
+    expect(portMessageAction(false, 18847, 9000)).toBe("connect");
+  });
+
+  test("a later PORT naming a different port reconnects", () => {
+    expect(portMessageAction(true, 18847, 9000)).toBe("reconnect");
+  });
+
+  test("a later PORT naming the same port does nothing", () => {
+    expect(portMessageAction(true, 18847, 18847)).toBe("none");
   });
 });
 

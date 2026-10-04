@@ -35,18 +35,6 @@ export function connStateFromEvent(event: WsEvent, attempt: number): ConnStateRe
 }
 
 /**
- * Returns a compact display line for the active file.
- * Shows the file name and the first 8 characters of the file key.
- * Returns "No file" when both inputs are empty.
- */
-export function formatFileLine(fileKey: string, name: string): string {
-  if (!name && !fileKey) return "No file";
-  if (!name) return fileKey.slice(0, 8);
-  if (!fileKey) return name;
-  return `${name} (${fileKey.slice(0, 8)})`;
-}
-
-/**
  * Returns a display string for the active MCP session id.
  * Returns "No active session" when sessionId is empty.
  * Truncates ids longer than 12 characters with "..." appended.
@@ -85,6 +73,24 @@ export function mainMessageAction(type: string): "port" | "fileinfo" | "relay" {
   if (type === "PORT") return "port";
   if (type === "FILE_INFO") return "fileinfo";
   return "relay";
+}
+
+/**
+ * Decides what the UI should do with an incoming PORT message.
+ * "connect": the first PORT ever received (the reply to the on-load READY
+ * handshake) - open the first socket.
+ * "reconnect": a later PORT naming a different port (the user changed it) -
+ * close the old socket and open a new one.
+ * "none": a later PORT naming the same port - nothing to do.
+ */
+export function portMessageAction(
+  hasConnectedOnce: boolean,
+  currentPort: number,
+  newPort: number,
+): "connect" | "reconnect" | "none" {
+  if (!hasConnectedOnce) return "connect";
+  if (newPort !== currentPort) return "reconnect";
+  return "none";
 }
 
 /**
@@ -145,10 +151,10 @@ export function parsePort(input: string): number | null {
 
 /**
  * Returns the WebSocket URL for the given port.
- * Always connects to localhost at the specified port.
+ * Always connects to 127.0.0.1, which is the address the daemon binds.
  */
 export function wsUrlForPort(port: number): string {
-  return `ws://localhost:${port}`;
+  return `ws://127.0.0.1:${port}`;
 }
 
 /**
@@ -164,7 +170,7 @@ export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
 
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 150). advanced: full settings view (300 x 440).
+ * main: compact status view (300 x 150). advanced: full settings view (300 x 240).
  * about: project info view (300 x 375).
  */
 export function screenSize(name: "main" | "advanced" | "about"): { width: number; height: number } {

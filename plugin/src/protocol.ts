@@ -510,3 +510,11 @@ export const DEPRECATION_PREAMBLE = `"use strict";
 export function wrapUserCode(code: string): string {
   return `${DEPRECATION_PREAMBLE}\n${code}`;
 }
+
+/**
+ * Number of lines the preamble occupies in a wrapUserCode result, before the
+ * user's own code starts. Derived from DEPRECATION_PREAMBLE so the two values
+ * can never drift apart. Subtract this from a line number reported against
+ * wrapped source to recover the line in the user's original code.
+ */
+export const PREAMBLE_LINE_OFFSET = DEPRECATION_PREAMBLE.split("\n").length;

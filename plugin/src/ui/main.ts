@@ -5,7 +5,7 @@
  */
 
 import type { FileInfoMessage } from "../protocol";
-import { backoffDelayMs } from "../protocol";
+import { backoffDelayMs, isDaemonMessage } from "../protocol";
 import {
   appendLog,
   connStateFromEvent,
@@ -16,6 +16,7 @@ import {
   isRequestType,
   mainMessageAction,
   parsePort,
+  portMessageAction,
   screenSize,
   staleWarning,
   wsUrlForPort,
@@ -62,6 +63,8 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let daemonVersion = "";
 let activeSessionId = "";
 let activityLog: string[] = [];
+/** True once the first PORT (the reply to READY) has arrived and connect() has run. */
+let hasConnectedOnce = false;
 
 const CONN_LABELS: Record<string, string> = {
   connected: "Connected to daemon",
@@ -97,15 +100,22 @@ function updateSessionDisplay(): void {
   }
 }
 
-/** Re-renders the activity log container and scrolls to the newest entry at the bottom. */
-function renderActivityLog(): void {
+/**
+ * Appends one entry to the activity log container and scrolls to it.
+ * Appends only the new row instead of clearing and rebuilding the whole
+ * container, so the aria-live region announces just the new entry: a full
+ * rebuild on every event made a screen reader re-read up to LOG_CAP entries
+ * each time. Trims old rows from the top once the log is over LOG_CAP, to
+ * match the trimmed `activityLog` array.
+ */
+function appendActivityLogEntry(entry: string): void {
   if (!activityLogEl) return;
-  activityLogEl.textContent = "";
-  for (const entry of activityLog) {
-    const row = document.createElement("div");
-    row.className = "log-entry";
-    row.textContent = entry;
-    activityLogEl.appendChild(row);
+  const row = document.createElement("div");
+  row.className = "log-entry";
+  row.textContent = entry;
+  activityLogEl.appendChild(row);
+  while (activityLogEl.childElementCount > LOG_CAP) {
+    activityLogEl.firstElementChild?.remove();
   }
   activityLogEl.scrollTop = activityLogEl.scrollHeight;
 }
@@ -159,6 +169,9 @@ function showScreen(name: "main" | "advanced" | "about"): void {
 /* Copy the full fileKey to the clipboard on click. Show a check icon for brief feedback. */
 if (copyFilekeyBtn) {
   copyFilekeyBtn.addEventListener("click", () => {
+    // A second click while the check icon is still showing must not capture
+    // that icon as the "original" to restore: it would freeze on the check.
+    if (copyFilekeyBtn.classList.contains("copied")) return;
     const key = latestFileInfo?.fileKey;
     if (!key) return;
     if (clipboardCopy(key)) {
@@ -170,6 +183,7 @@ if (copyFilekeyBtn) {
 /* Copy the connect prompt to the clipboard on click. Show a check icon for brief feedback. */
 if (copyConnectBtn) {
   copyConnectBtn.addEventListener("click", () => {
+    if (copyConnectBtn.classList.contains("copied")) return;
     if (!latestFileInfo) return;
     const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort);
     if (!prompt) return;
@@ -242,12 +256,17 @@ function connect(): void {
 
   /* Forward daemon request messages to the main thread. */
   socket.onmessage = (event: MessageEvent) => {
-    let parsed: Record<string, unknown>;
+    let candidate: unknown;
     try {
-      parsed = JSON.parse(event.data as string) as Record<string, unknown>;
+      candidate = JSON.parse(event.data as string);
     } catch {
       return;
     }
+    // A JSON `null`, a number, or a malformed payload would otherwise throw
+    // on `.type` below. isDaemonMessage rejects anything that is not one of
+    // the known daemon-to-plugin message shapes.
+    if (!isDaemonMessage(candidate)) return;
+    const parsed = candidate as unknown as Record<string, unknown>;
     const action = daemonMessageAction(parsed.type as string);
     /* Consume WELCOME: store the daemon version and MCP port; check for a stale mismatch. */
     if (action === "welcome") {
@@ -267,14 +286,16 @@ function connect(): void {
       activeSessionId = parsed.sessionId;
       updateSessionDisplay();
     }
-    /* Append request types to the activity log. */
+    /* Append request types to the activity log. activityLog is the source of
+       truth for the cap; the DOM append is purely incremental (see
+       appendActivityLogEntry) so aria-live announces only the new entry. */
     if (isRequestType(parsed.type as string)) {
       activityLog = appendLog(
         activityLog,
         formatLogEntry(parsed.type as string, Date.now()),
         LOG_CAP,
       );
-      renderActivityLog();
+      appendActivityLogEntry(activityLog[activityLog.length - 1] as string);
     }
     parent.postMessage({ pluginMessage: parsed }, "*");
   };
@@ -295,11 +316,18 @@ window.onmessage = (event: MessageEvent) => {
   if (!msg || typeof msg !== "object") return;
   const m = msg as Record<string, unknown>;
   const action = mainMessageAction(m.type as string);
-  /* PORT: update the port field and reconnect when the port changes. */
+  /* PORT: update the port field, then connect (first arrival) or reconnect
+     (port changed after an earlier connect). PORT is a reply to the READY
+     handshake sent on load, so this is also the first connect. */
   if (action === "port") {
     const newPort = typeof m.port === "number" ? m.port : 18847;
     if (portFieldEl) portFieldEl.value = String(newPort);
-    if (newPort !== currentPort) {
+    const next = portMessageAction(hasConnectedOnce, currentPort, newPort);
+    if (next === "connect") {
+      hasConnectedOnce = true;
+      currentPort = newPort;
+      connect();
+    } else if (next === "reconnect") {
       currentPort = newPort;
       /* Detach onclose before closing so the old socket does not schedule a reconnect. */
       if (ws) {
@@ -330,7 +358,11 @@ window.onmessage = (event: MessageEvent) => {
 // Show the plugin version immediately on load.
 if (pluginVersionEl) pluginVersionEl.textContent = __PLUGIN_VERSION__;
 
-connect();
+/* Tell the main thread the UI is ready. It replies with FILE_INFO and PORT;
+   the PORT handler above makes the first connect() call once that arrives.
+   This handshake means the UI can never connect with a stale default port
+   nor miss the file identity (see createDispatcher in code.ts). */
+parent.postMessage({ pluginMessage: { type: "READY" } }, "*");
 parent.postMessage(
   { pluginMessage: { type: "RESIZE", width: 300, height: screenSize("main").height } },
   "*",
