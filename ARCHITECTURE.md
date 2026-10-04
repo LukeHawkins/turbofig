@@ -34,13 +34,28 @@ locked-down clients that cannot use curl or a native MCP server. See
 
 The daemon is a single Rust process. It runs three servers as three `tokio::spawn` tasks that share one `Arc<AppState>`:
 
-- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. Each tool reads the `mcp-session-id` from the HTTP request parts and maps the session to a plugin connection by `fileKey` (Phase 4).
-- **WebSocket server** (port 18847): holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect. The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000) stops a silent plugin from hanging a call. The daemon holds one connection per open file in a `conn_id`-keyed registry. On socket close it drops only that connection and fails only that connection's in-flight requests at once, so other files keep working.
-- **File-bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It claims each job (removes the inbox file) before running it, and runs each job in its own task so one slow job never blocks the loop. The ops are `status`, `execute`, `get_selection`, and `screenshot`. Screenshot file-mode writes the PNG into `outbox/<requestId>.png` (`AppState.screenshot_dir`) and returns its path; a subagent reads it. The outbox is ephemeral: the daemon reuses request-id filenames across restarts, so read a screenshot promptly.
+- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. Each tool reads the `mcp-session-id` from the HTTP request parts and maps the session to a plugin connection by `fileKey` (Phase 4). `allowed_hosts` is pinned explicitly to `localhost`, `127.0.0.1`, `::1` rather than left to `rmcp`'s default, so a future crate upgrade cannot silently widen the daemon's DNS-rebinding guard.
+- **WebSocket server** (port 18847): holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect. The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000) stops a silent plugin from hanging a call; `EXECUTE` additionally carries that timeout to the plugin as `timeoutMs` and the daemon itself waits `timeoutMs + 1000ms`, so the plugin's own "I gave up" reply usually beats the daemon's bare timeout (see `DECISIONS.md`). The daemon holds one connection per open file in a `conn_id`-keyed registry; at most one live connection may hold a given `fileKey`, so a reconnect or a second window on the same file evicts the older connection instead of leaving both ambiguous. A `RESULT` only resolves the pending request if it arrives on the same connection the request was sent to, so one connection can never forge another's reply. Message and frame size are capped at 32 MiB; a keepalive ping goes out every 15s and a connection with no pong in 45s is dropped. On socket close the daemon drops only that connection and fails only that connection's in-flight requests at once, so other files keep working.
+- **File-bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It parses each job into the same typed parameter structs the MCP tools use (one `#[serde(tag = "op")]` enum, so a bad field fails to parse the same way for both transports), claims it (removes the inbox file), deletes any stale same-id outbox result, and runs it in its own task so one slow job never blocks the loop. The ops are `status`, `execute`, `get_selection`, and `screenshot`. Screenshot file-mode writes the PNG into `outbox/<requestId>-<nanos>.png` (`AppState.screenshot_dir`) and returns its path; a subagent reads it. The outbox is a drop box, not storage: a backstop sweep deletes results and PNGs older than 24h. An inbox entry that never reads or parses (a bad write, an unreadable file, a non-UTF-8 name) gets one error result after a short grace window and is then left alone, instead of being retried and re-logged forever.
 
-Each capability has one shared `run_*` routine. Both the MCP tool and the file-bridge op call the same routine: `run_status`, `run_execute`, `run_get_selection`, and `run_screenshot`. This is the pattern Phase 2 set with `run_status`.
+Each capability has one shared `run_*` routine, all funnelled through one send/await/timeout/cancel helper (`plugin_call::call_plugin`). Both the MCP tool and the file-bridge op call the same routine: `run_status`, `run_execute`, `run_get_selection`, and `run_screenshot`.
 
 The daemon is always-on. A launchd service starts it at login and `KeepAlive` restarts it on crash. It is decoupled from any client session, so a client disconnect or session end never stops it.
+
+### Module layout (`daemon/src/`)
+
+| Module | Holds |
+|---|---|
+| `lib.rs` | Crate docs, `mod` declarations, re-exports only |
+| `config.rs` | Env-driven settings: ports, request timeout, bridge dir |
+| `state.rs` | `AppState`, the connection registry, session pairing, the pending-request map |
+| `routing.rs` | `RouteError`, `resolve_route` |
+| `plugin_call.rs` | The one register/send/await/timeout/cancel path all four ops share, plus the pending-cleanup drop guard |
+| `ops/` | `status.rs`, `execute.rs`, `selection.rs`, `screenshot.rs` (the four `run_*` routines), `budget.rs` (context-firewall size warnings) |
+| `image.rs` | A cheap PNG header probe (`probe_dims`) kept separate from the expensive decode/resize/encode path (`resize_png`), so a screenshot that needs no resize never pays for either |
+| `mcp.rs` | MCP tool parameter structs, `TurbofigHandler`, `HELP_TEXT`, `build_router`, the Origin-rejection middleware |
+| `ws.rs` | `handle_socket`, the WS Origin check, keepalive ping/pong, `serve_ws` |
+| `bridge/mod.rs`, `bridge/job.rs` | The inbox scan loop; `job.rs`'s typed `Job` enum reuses the MCP param structs |
 
 ## Plugin
 
@@ -57,7 +72,7 @@ The plugin dispatches on a `{type}` field in each message:
 | `FILE_INFO` | plugin to daemon | Sent on connect, and again on a detected file rename: fileKey and root name (Phase 2) |
 | `STATUS` | daemon to plugin | Liveness ping carrying a `requestId`; bypasses the job queue (Phase 2) |
 | `RESULT` | plugin to daemon | Reply carrying the matching `requestId` (Phase 2) |
-| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS; queued, honours `timeoutMs` (Phase 3) |
+| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS; queued (Phase 3). Carries `timeoutMs`: the plugin must stop waiting and reply `ok:false` at that point; the daemon itself waits `timeoutMs + 1000ms` |
 | `GET_SELECTION` | daemon to plugin | Return compact selection info; queued (Phase 3) |
 | `SCREENSHOT` | daemon to plugin | Export PNG; queued (Phase 3) |
 
@@ -74,7 +89,9 @@ The daemon keeps a connection registry keyed by two dimensions:
 - `mcp-session-id`: assigned at the MCP `initialize` call; identifies a Claude session.
 - `fileKey`: sent by the plugin on connect; identifies an open Figma file.
 
-Each MCP session is paired to a `fileKey` by an explicit pick or the sole connected plugin. `resolve_route` picks the target connection by explicit `fileKey`, then the session pairing, then the sole named connection. It returns a clear error for no plugin, ambiguous target, or a not-connected file. A socket close cancels only that connection's in-flight requests. The registry handles N sessions and N files concurrently, fully isolated.
+Each MCP session is paired to a `fileKey` by an explicit pick or the sole connected plugin. `resolve_route` picks the target connection by explicit `fileKey`, then the session pairing, then the sole named connection. It returns a clear error for no plugin, ambiguous target, or a not-connected file. A session pairing is pruned after 24h of inactivity and capped at 1000 entries, so a long-running daemon's session map cannot grow forever. A socket close cancels only that connection's in-flight requests. The registry handles N sessions and N files concurrently, fully isolated.
+
+At most one live connection may hold a given `fileKey` at a time: `set_connection_info` evicts the older connection (and cancels its in-flight requests) when a new one claims a `fileKey` already in the registry. This covers a reconnect and a second window on the same file; routing always lands on the newest connection instead of reporting it as ambiguous.
 
 ## Helper layer
 
