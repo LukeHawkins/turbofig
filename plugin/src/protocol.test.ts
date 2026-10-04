@@ -7,13 +7,17 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  capResultMessage,
   DEPRECATION_PREAMBLE,
+  encodeBase64,
   isDaemonMessage,
   isInboundMessage,
+  MAX_RESULT_BYTES,
   MAX_SELECTION_DEPTH,
   safeResult,
   serializeNode,
   toSelectionItem,
+  utf8ByteLength,
   wrapUserCode,
 } from "./protocol";
 
@@ -170,6 +174,81 @@ describe("safeResult", () => {
     expect(safeResult(42)).toBe(42);
     expect(safeResult("hello")).toBe("hello");
     expect(safeResult(null)).toBe(null);
+  });
+
+  test('undefined becomes null, not the string "undefined"', () => {
+    expect(safeResult(undefined)).toBe(null);
+  });
+
+  test("a nested undefined property is omitted, as plain JSON.stringify does", () => {
+    expect(safeResult({ a: 1, b: undefined })).toEqual({ a: 1 });
+  });
+
+  test("a Uint8Array becomes a base64 string", () => {
+    const bytes = new Uint8Array([104, 105]); // "hi"
+    expect(safeResult(bytes)).toBe(encodeBase64(bytes));
+  });
+
+  test("an ArrayBuffer becomes a base64 string", () => {
+    const buf = new Uint8Array([104, 105]).buffer;
+    expect(safeResult(buf)).toBe(encodeBase64(new Uint8Array(buf)));
+  });
+
+  test("a Uint8Array nested in an object is base64-encoded in place", () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const result = safeResult({ png: bytes }) as { png: string };
+    expect(result.png).toBe(encodeBase64(bytes));
+  });
+});
+
+describe("encodeBase64", () => {
+  test("encodes an empty array as an empty string", () => {
+    expect(encodeBase64(new Uint8Array([]))).toBe("");
+  });
+
+  test('encodes a known value correctly ("hi" -> aGk=)', () => {
+    expect(encodeBase64(new Uint8Array([104, 105]))).toBe("aGk=");
+  });
+
+  test("encodes a 3-byte-aligned value with no padding", () => {
+    expect(encodeBase64(new Uint8Array([104, 105, 33]))).toBe("aGkh");
+  });
+});
+
+describe("utf8ByteLength", () => {
+  test("counts ASCII as 1 byte per character", () => {
+    expect(utf8ByteLength("abc")).toBe(3);
+  });
+
+  test("counts a multi-byte character correctly", () => {
+    expect(utf8ByteLength("é")).toBe(2);
+  });
+
+  test("counts a surrogate-pair character (emoji) as 4 bytes", () => {
+    expect(utf8ByteLength("😀")).toBe(4);
+  });
+});
+
+describe("capResultMessage", () => {
+  test("returns a small message unchanged", () => {
+    const msg = buildExecuteSuccess(1, { a: 1 });
+    expect(capResultMessage(msg)).toBe(msg);
+  });
+
+  test("replaces an oversized message with an ok:false error, same requestId", () => {
+    const huge = "x".repeat(MAX_RESULT_BYTES + 1);
+    const msg = buildExecuteSuccess(5, huge);
+    const capped = capResultMessage(msg);
+    expect(capped.ok).toBe(false);
+    expect(capped.requestId).toBe(5);
+    expect(capped.error).toContain("result too large");
+    expect(capped.error).toContain("16 MiB");
+  });
+
+  test("a message at exactly the cap is not replaced", () => {
+    // Build a message whose JSON serialization is at or under the cap.
+    const msg = buildExecuteSuccess(2, "x".repeat(100));
+    expect(capResultMessage(msg)).toBe(msg);
   });
 });
 
@@ -410,6 +489,33 @@ describe("serializeNode", () => {
     expect("proxy" in result).toBe(false);
   });
 
+  test("a field whose getter throws is skipped, and the rest of the node still serialises", () => {
+    // Mirrors a dynamic-page getter (e.g. mainComponent) throwing on a non-instance node.
+    const node = { ...baseNode };
+    Object.defineProperty(node, "mainComponent", {
+      enumerable: true,
+      get() {
+        throw new Error("mainComponent is only valid on an instance");
+      },
+    });
+    expect(() => serializeNode(node, ["mainComponent"], 0)).not.toThrow();
+    const result = serializeNode(node, ["mainComponent"], 0);
+    expect("mainComponent" in result).toBe(false);
+    expect(result.id).toBe("1:1");
+  });
+
+  test("a throwing field does not stop other requested fields from being copied", () => {
+    const node = { ...baseNode, visible: true };
+    Object.defineProperty(node, "mainComponent", {
+      enumerable: true,
+      get() {
+        throw new Error("boom");
+      },
+    });
+    const result = serializeNode(node, ["mainComponent", "visible"], 0);
+    expect(result.visible).toBe(true);
+  });
+
   test("depth clamps at MAX_SELECTION_DEPTH (pass 99, assert it stops at the cap)", () => {
     // Build a node tree that is MAX_SELECTION_DEPTH + 2 levels deep.
     let deepest: Record<string, unknown> = {
@@ -583,6 +689,48 @@ describe("isInboundMessage", () => {
 
   test("rejects SET_PORT with a string port", () => {
     expect(isInboundMessage({ type: "SET_PORT", port: "18847" })).toBe(false);
+  });
+
+  test("accepts EXECUTE with a numeric timeoutMs", () => {
+    expect(
+      isInboundMessage({ type: "EXECUTE", requestId: 1, code: "return 1;", timeoutMs: 5000 }),
+    ).toBe(true);
+  });
+
+  test("rejects EXECUTE with a non-numeric timeoutMs", () => {
+    expect(
+      isInboundMessage({ type: "EXECUTE", requestId: 1, code: "return 1;", timeoutMs: "5000" }),
+    ).toBe(false);
+  });
+
+  test("accepts GET_SELECTION with a string[] fields array", () => {
+    expect(
+      isInboundMessage({ type: "GET_SELECTION", requestId: 1, fields: ["visible", "opacity"] }),
+    ).toBe(true);
+  });
+
+  test("rejects GET_SELECTION when fields contains a non-string", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, fields: ["ok", 2] })).toBe(
+      false,
+    );
+  });
+
+  test("rejects GET_SELECTION when fields is not an array", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, fields: "visible" })).toBe(
+      false,
+    );
+  });
+
+  test("accepts GET_SELECTION with a numeric depth", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, depth: 2 })).toBe(true);
+  });
+
+  test("rejects GET_SELECTION with a non-numeric depth", () => {
+    expect(isInboundMessage({ type: "GET_SELECTION", requestId: 1, depth: "2" })).toBe(false);
+  });
+
+  test("accepts READY", () => {
+    expect(isInboundMessage({ type: "READY" })).toBe(true);
   });
 });
 

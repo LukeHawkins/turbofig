@@ -43,6 +43,17 @@ export interface ResizeMessage {
 }
 
 /**
+ * Sent by the plugin UI iframe to the plugin main thread once, on load.
+ * The main thread replies with FILE_INFO and PORT. This handshake replaces an
+ * eager bootstrap send, so the UI never misses either message, and the main
+ * thread can re-announce FILE_INFO later on the same channel (e.g. after a
+ * file rename). Never forwarded over the WebSocket.
+ */
+export interface ReadyMessage {
+  type: "READY";
+}
+
+/**
  * Sent by the daemon on connect after it receives FILE_INFO.
  * The UI must store the version and must not forward this message to the main thread.
  */
@@ -66,6 +77,12 @@ export interface ExecuteMessage {
   type: "EXECUTE";
   requestId: number;
   code: string;
+  /**
+   * Milliseconds to wait before the plugin gives up on this job and replies
+   * ok:false. A synchronous infinite loop in the user code cannot be
+   * interrupted (JS is single-threaded): this is a documented limit, not a bug.
+   */
+  timeoutMs?: number;
   /** The MCP session that issued the call. Empty string for file-bridge requests. */
   sessionId?: string;
 }
@@ -138,11 +155,17 @@ export type InboundMessage =
   | GetSelectionMessage
   | ScreenshotMessage
   | SetPortMessage
-  | ResizeMessage;
+  | ResizeMessage
+  | ReadyMessage;
+
+/** Returns true when `x` is an array whose members are all strings. */
+function isStringArray(x: unknown): x is string[] {
+  return Array.isArray(x) && x.every((v) => typeof v === "string");
+}
 
 /**
  * Returns true when `x` is a well-formed inbound message for the plugin main thread.
- * Accepts STATUS, EXECUTE, GET_SELECTION, and SCREENSHOT.
+ * Accepts STATUS, EXECUTE, GET_SELECTION, SCREENSHOT, SET_PORT, RESIZE, and READY.
  * Rejects outbound-only types: FILE_INFO and RESULT.
  */
 export function isInboundMessage(x: unknown): x is InboundMessage {
@@ -153,24 +176,34 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
     case "STATUS":
       return typeof msg.requestId === "number";
     case "EXECUTE":
-      return typeof msg.requestId === "number" && typeof msg.code === "string";
+      return (
+        typeof msg.requestId === "number" &&
+        typeof msg.code === "string" &&
+        (msg.timeoutMs === undefined || typeof msg.timeoutMs === "number")
+      );
     case "GET_SELECTION":
-      return typeof msg.requestId === "number";
+      return (
+        typeof msg.requestId === "number" &&
+        (msg.fields === undefined || isStringArray(msg.fields)) &&
+        (msg.depth === undefined || typeof msg.depth === "number")
+      );
     case "SCREENSHOT":
       return typeof msg.requestId === "number";
     case "SET_PORT":
       return typeof msg.port === "number";
     case "RESIZE":
       return typeof msg.width === "number" && typeof msg.height === "number";
+    case "READY":
+      return true;
     default:
       return false;
   }
 }
 
 /**
- * Returns true when `x` is a well-formed message for the plugin main thread.
- * These types all arrive from the daemon over the WebSocket. Use this guard
- * before the main thread handles any inbound message.
+ * Returns true when `x` is a well-formed message on the daemon <-> plugin
+ * WebSocket. The UI iframe holds that socket, so this guards the UI's
+ * onmessage handler before it relays a parsed payload to the main thread.
  */
 export function isDaemonMessage(x: unknown): x is DaemonMessage {
   if (typeof x !== "object" || x === null) return false;
@@ -288,7 +321,15 @@ export function serializeNode(
     for (const field of fields) {
       // The depth mechanism owns children; never let fields bypass the depth cap.
       if (field === "children") continue;
-      const val = node[field];
+      // A Figma node property can be a getter that throws under dynamic-page
+      // (e.g. mainComponent on a non-instance). Isolate the read so one bad
+      // field cannot fail the whole GET_SELECTION response.
+      let val: unknown;
+      try {
+        val = node[field];
+      } catch {
+        continue;
+      }
       if (val === undefined || typeof val === "function") continue;
       if (
         val === null ||
@@ -341,16 +382,97 @@ export function buildScreenshot(
   return { type: "RESULT", requestId, ok: true, png, w, h };
 }
 
+/** Base64 alphabet, RFC 4648 standard (with padding). */
+const BASE64_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * Encodes bytes as base64.
+ * Hand-rolled (no btoa/Buffer): the Figma plugin main thread sandbox does not
+ * guarantee either, and this must also run under bun test.
+ */
+export function encodeBase64(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i] ?? 0;
+    const b1 = bytes[i + 1];
+    const b2 = bytes[i + 2];
+    const triple = (b0 << 16) | ((b1 ?? 0) << 8) | (b2 ?? 0);
+    out += BASE64_CHARS[(triple >> 18) & 0x3f];
+    out += BASE64_CHARS[(triple >> 12) & 0x3f];
+    out += b1 === undefined ? "=" : BASE64_CHARS[(triple >> 6) & 0x3f];
+    out += b2 === undefined ? "=" : BASE64_CHARS[triple & 0x3f];
+  }
+  return out;
+}
+
+/**
+ * Returns the UTF-8 byte length of a string.
+ * Hand-rolled (no TextEncoder): same sandbox-portability reason as encodeBase64.
+ */
+export function utf8ByteLength(str: string): number {
+  let bytes = 0;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      bytes += 4;
+      i++; // consume the low surrogate half of the pair
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/** JSON.stringify replacer: base64-encodes a Uint8Array or ArrayBuffer in place. */
+function replaceBinary(_key: string, val: unknown): unknown {
+  if (val instanceof Uint8Array) return encodeBase64(val);
+  if (val instanceof ArrayBuffer) return encodeBase64(new Uint8Array(val));
+  return val;
+}
+
 /**
  * Returns a JSON-serializable form of value.
- * On failure (e.g. circular reference) it falls back to String(value).
+ * `undefined` becomes `null` (JSON has no `undefined`; the old behaviour sent
+ * the literal string "undefined"). A Uint8Array or ArrayBuffer (e.g. from
+ * `tf.export`) is base64-encoded, matching the `png` field convention used
+ * elsewhere in this protocol. On failure (e.g. a circular reference) it falls
+ * back to String(value).
  */
 export function safeResult(value: unknown): unknown {
+  if (value === undefined) return null;
+  let json: string | undefined;
   try {
-    return JSON.parse(JSON.stringify(value));
+    json = JSON.stringify(value, replaceBinary);
   } catch {
     return String(value);
   }
+  if (json === undefined) return String(value);
+  return JSON.parse(json);
+}
+
+/** Maximum size, in bytes, of a serialized RESULT message. See capResultMessage. */
+export const MAX_RESULT_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Returns `msg` unchanged when it serializes at or under MAX_RESULT_BYTES.
+ * Otherwise returns an error RESULT with the same requestId, so an oversized
+ * EXECUTE/GET_SELECTION/SCREENSHOT reply never reaches the WebSocket.
+ * This is the single enforcement point for the protocol's 16 MiB result cap.
+ */
+export function capResultMessage(msg: ResultMessage): ResultMessage {
+  let json: string;
+  try {
+    json = JSON.stringify(msg);
+  } catch {
+    return msg; // a handler never builds a circular ResultMessage; defensive only
+  }
+  const bytes = utf8ByteLength(json);
+  if (bytes <= MAX_RESULT_BYTES) return msg;
+  const mib = (bytes / (1024 * 1024)).toFixed(1);
+  return buildExecuteError(
+    msg.requestId,
+    `result too large (${mib} MiB > 16 MiB); return less data or use file mode`,
+  );
 }
 
 /**
