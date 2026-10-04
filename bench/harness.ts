@@ -51,7 +51,11 @@ export interface IterationRecord {
   records: JobRecord[];
 }
 
-/** Per-job timing distribution across all warm iterations. */
+/** Per-job timing distribution across all warm iterations. coldMs and the
+ * warm stats are computed from ok iterations only: a failed job's wallMs is
+ * not a real timing (it may have failed fast, e.g. a connection refusal),
+ * so it never pollutes cold/warm/median/p95. `failures` is the count of
+ * iterations where this job failed, reported alongside instead. */
 export interface JobStat {
   index: number;
   coldMs: number | null;
@@ -59,6 +63,7 @@ export interface JobStat {
   warmP95Ms: number | null;
   requestBytes: number;
   responseBytes: number;
+  failures: number;
 }
 
 /** Full report written to --out file. One shape, used for both a live report
@@ -79,6 +84,10 @@ export interface BenchReport {
   jobStats: JobStat[];
   totalRequestBytes: number;
   totalResponseBytes: number;
+  /** Count of iterations where any job, setup, or teardown failed. Always 0
+   * on a valid run. Reported so an invalid run's scale of failure is visible
+   * without reading every iteration's records by hand. */
+  failedIterations: number;
   iterations: IterationRecord[];
   machine: Record<string, string | null>;
   timestamp: string;
@@ -115,21 +124,26 @@ export function summarizeJobs(iterations: IterationRecord[], jobCount: number): 
     const warmTimes: number[] = [];
     let requestBytes = coldRecord?.requestBytes ?? 0;
     let responseBytes = coldRecord?.responseBytes ?? 0;
+    let failures = coldRecord && !coldRecord.ok ? 1 : 0;
     for (const iter of iterations.slice(1)) {
       const rec = iter.records.find((r) => r.role === "job" && r.index === i);
-      if (rec) {
-        warmTimes.push(rec.wallMs);
-        requestBytes = requestBytes || rec.requestBytes;
-        responseBytes = responseBytes || rec.responseBytes;
+      if (!rec) continue;
+      if (!rec.ok) {
+        failures++;
+        continue;
       }
+      warmTimes.push(rec.wallMs);
+      requestBytes = requestBytes || rec.requestBytes;
+      responseBytes = responseBytes || rec.responseBytes;
     }
     stats.push({
       index: i,
-      coldMs: coldRecord ? coldRecord.wallMs : null,
+      coldMs: coldRecord?.ok ? coldRecord.wallMs : null,
       warmMedianMs: warmTimes.length > 0 ? median(warmTimes) : null,
       warmP95Ms: warmTimes.length > 0 ? p95(warmTimes) : null,
       requestBytes,
       responseBytes,
+      failures,
     });
   }
   return stats;
@@ -296,7 +310,7 @@ const DEFAULT_RUNS = 10;
  * itself never clips a slower-but-successful call short. */
 const DEFAULT_TIMEOUT_MS = 45_000;
 
-function parseArgs(args: string[]): ResolvedArgs {
+export function parseArgs(args: string[]): ResolvedArgs {
   let scenarioName = "all";
   let target: TargetId | null = null;
   let bridgeDir = join(homedir(), ".turbofig");
@@ -330,8 +344,13 @@ function parseArgs(args: string[]): ResolvedArgs {
     } else if (arg === "--bridge-dir" && args[i + 1]) bridgeDir = args[++i];
     else if (arg === "--mcp-url" && args[i + 1]) mcpUrl = args[++i];
     else if (arg === "--file-key" && args[i + 1]) fileKey = args[++i];
-    else if (arg === "--runs" && args[i + 1]) runs = Number.parseInt(args[++i], 10);
-    else if (arg === "--timeout" && args[i + 1]) timeoutMs = Number.parseInt(args[++i], 10);
+    else if (arg === "--runs" && args[i + 1]) {
+      const raw = args[++i];
+      runs = Number.parseInt(raw, 10);
+      if (!Number.isInteger(runs) || String(runs) !== raw.trim() || runs < 1) {
+        throw new Error(`--runs must be an integer of 1 or more, got "${raw}".`);
+      }
+    } else if (arg === "--timeout" && args[i + 1]) timeoutMs = Number.parseInt(args[++i], 10);
     else if (arg === "--out" && args[i + 1]) outFile = args[++i];
     else if (arg === "--dry-run") dryRun = true;
     else if (arg === "--baseline" && args[i + 1]) baselineFile = args[++i];
@@ -366,15 +385,37 @@ function parseArgs(args: string[]): ResolvedArgs {
 function printReport(report: BenchReport): void {
   console.log(`\nScenario: ${report.scenario} (${report.label}) on ${report.target}`);
   console.log(`  Runs       : ${report.runs}${report.valid ? "" : " -- INVALID"}`);
-  if (!report.valid) console.log(`  Invalid    : ${report.invalidReason}`);
+  if (!report.valid) {
+    console.log(`  Invalid    : ${report.invalidReason}`);
+    console.log(`  Failed iterations: ${report.failedIterations} of ${report.runs}`);
+  }
   console.log(`  Req bytes  : ${report.totalRequestBytes}`);
   console.log(`  Resp bytes : ${report.totalResponseBytes}`);
   for (const stat of report.jobStats) {
     console.log(
       `  Job ${stat.index}: cold ${stat.coldMs ?? "-"}ms, warm median ${stat.warmMedianMs ?? "-"}ms, ` +
-        `warm p95 ${stat.warmP95Ms ?? "-"}ms, req ${stat.requestBytes}B, resp ${stat.responseBytes}B`,
+        `warm p95 ${stat.warmP95Ms ?? "-"}ms, req ${stat.requestBytes}B, resp ${stat.responseBytes}B` +
+        `${stat.failures > 0 ? `, failures ${stat.failures}` : ""}`,
     );
   }
+}
+
+/** A baseline file can hold one BenchReport (e.g. the committed static
+ * `bench/baseline.json` snapshot) or a BenchReport[] (whatever `--out`
+ * wrote, including a live multi-scenario report used as a baseline). Both
+ * shapes are accepted so a live `--out` file never has to be hand-unwrapped
+ * to serve as a `--baseline`. When the file is an array, the entry whose
+ * scenario and target match the current report is used; if none match, the
+ * first entry is used so the existing mismatch message still fires. */
+export function pickBaselineReport(parsed: unknown, report: BenchReport): BenchReport | null {
+  const candidates: BenchReport[] = Array.isArray(parsed)
+    ? (parsed as BenchReport[])
+    : [parsed as BenchReport];
+  if (candidates.length === 0) return null;
+  const match = candidates.find(
+    (c) => c && c.scenario === report.scenario && c.target === report.target,
+  );
+  return match ?? candidates[0] ?? null;
 }
 
 /** Prints the baseline comparison and returns the numeric ratio, or null when
@@ -387,11 +428,16 @@ async function printBaseline(report: BenchReport, baselineFile: string): Promise
     console.log(`\nBaseline file not found: ${baselineFile}. Skipping comparison.`);
     return null;
   }
-  let baseline: BenchReport;
+  let parsed: unknown;
   try {
-    baseline = (await file.json()) as BenchReport;
+    parsed = await file.json();
   } catch {
     console.log("\nMalformed baseline, skipping.");
+    return null;
+  }
+  const baseline = pickBaselineReport(parsed, report);
+  if (!baseline) {
+    console.log("\nMalformed baseline (empty), skipping.");
     return null;
   }
   console.log(`\nBaseline comparison (${baselineFile}):`);
@@ -446,6 +492,7 @@ async function main(): Promise<void> {
     const jobStats = summarizeJobs(iterations, scenario.jobs.length);
     const totalRequestBytes = jobStats.reduce((sum, s) => sum + s.requestBytes, 0);
     const totalResponseBytes = jobStats.reduce((sum, s) => sum + s.responseBytes, 0);
+    const failedIterations = iterations.filter((it) => !it.valid).length;
 
     const report: BenchReport = {
       scenario: name,
@@ -458,6 +505,7 @@ async function main(): Promise<void> {
       jobStats,
       totalRequestBytes,
       totalResponseBytes,
+      failedIterations,
       iterations,
       machine: args.machine,
       timestamp: new Date().toISOString(),
@@ -471,9 +519,18 @@ async function main(): Promise<void> {
     }
     if (args.baselineFile) {
       const ratio = await printBaseline(report, args.baselineFile);
-      if (args.maxRatio !== null && ratio !== null && ratio > args.maxRatio) {
-        console.error(`  FAIL: ratio ${ratio} exceeds --max-ratio ${args.maxRatio}`);
-        process.exitCode = 1;
+      if (args.maxRatio !== null) {
+        if (ratio === null) {
+          // --max-ratio turns the baseline comparison into a gate: a ratio
+          // that could not be computed at all (missing/malformed baseline,
+          // scenario/target mismatch, no valid baseline total) must fail
+          // loudly, never pass silently as if nothing needed checking.
+          console.error("  FAIL: --max-ratio set but no ratio could be computed");
+          process.exitCode = 1;
+        } else if (ratio > args.maxRatio) {
+          console.error(`  FAIL: ratio ${ratio} exceeds --max-ratio ${args.maxRatio}`);
+          process.exitCode = 1;
+        }
       }
     }
     reports.push(report);

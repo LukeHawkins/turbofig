@@ -24,10 +24,12 @@ function fakeReport(overrides: Partial<BenchReport>): BenchReport {
         warmP95Ms: 60,
         requestBytes: 200,
         responseBytes: 20,
+        failures: 0,
       },
     ],
     totalRequestBytes: 200,
     totalResponseBytes: 20,
+    failedIterations: 0,
     iterations: [],
     machine: {},
     timestamp: new Date().toISOString(),
@@ -64,6 +66,7 @@ describe("buildComparison", () => {
           warmP95Ms: 60,
           requestBytes: 1,
           responseBytes: 1,
+          failures: 0,
         },
         {
           index: 1,
@@ -72,6 +75,7 @@ describe("buildComparison", () => {
           warmP95Ms: null,
           requestBytes: 1,
           responseBytes: 1,
+          failures: 0,
         },
       ],
     });

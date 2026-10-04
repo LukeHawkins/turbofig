@@ -9,6 +9,8 @@ import {
   compareToBaseline,
   median,
   p95,
+  parseArgs,
+  pickBaselineReport,
   runScenarioAgainstTarget,
   summarizeJobs,
 } from "./harness.js";
@@ -101,6 +103,26 @@ describe("summarizeJobs", () => {
     expect(stats[0].requestBytes).toBe(123);
     expect(stats[0].responseBytes).toBe(456);
   });
+
+  it("excludes a failed iteration's job timing from cold/warm/p95 and counts it as a failure", () => {
+    const iterations = [
+      fakeIteration(0, [100]), // cold, ok
+      fakeIteration(1, [50], { allOk: false }), // warm, failed: must not pollute warm stats
+      fakeIteration(2, [60]), // warm, ok
+    ];
+    const stats = summarizeJobs(iterations, 1);
+    expect(stats[0].coldMs).toBe(100);
+    expect(stats[0].warmMedianMs).toBe(60);
+    expect(stats[0].failures).toBe(1);
+  });
+
+  it("reports a null coldMs when the cold iteration's job itself failed", () => {
+    const iterations = [fakeIteration(0, [100], { allOk: false }), fakeIteration(1, [60])];
+    const stats = summarizeJobs(iterations, 1);
+    expect(stats[0].coldMs).toBeNull();
+    expect(stats[0].warmMedianMs).toBe(60);
+    expect(stats[0].failures).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -119,6 +141,7 @@ function fakeReport(overrides: Partial<BenchReport> = {}): BenchReport {
     jobStats: [],
     totalRequestBytes: 100,
     totalResponseBytes: 50,
+    failedIterations: 0,
     iterations: [],
     machine: {},
     timestamp: new Date().toISOString(),
@@ -156,6 +179,57 @@ describe("compareToBaseline", () => {
     const report = fakeReport();
     const baseline = fakeReport({ totalRequestBytes: -10, totalResponseBytes: 0 });
     expect(compareToBaseline(report, baseline)).toBe("no valid baseline total");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickBaselineReport (accept a single BenchReport or a BenchReport[])
+// ---------------------------------------------------------------------------
+
+describe("pickBaselineReport", () => {
+  it("accepts a single BenchReport object (the static baseline.json shape)", () => {
+    const report = fakeReport();
+    const baseline = fakeReport({ totalRequestBytes: 999 });
+    expect(pickBaselineReport(baseline, report)).toEqual(baseline);
+  });
+
+  it("accepts a BenchReport[] (the --out shape) and picks the matching scenario/target", () => {
+    const report = fakeReport({ scenario: "deck20", target: "turbofig-mcp" });
+    const other = fakeReport({ scenario: "webpage", target: "turbofig-bridge" });
+    const match = fakeReport({ scenario: "deck20", target: "turbofig-mcp", totalRequestBytes: 42 });
+    expect(pickBaselineReport([other, match], report)).toEqual(match);
+  });
+
+  it("falls back to the first entry when no array entry matches, so the mismatch message still fires", () => {
+    const report = fakeReport({ scenario: "deck20", target: "turbofig-mcp" });
+    const first = fakeReport({ scenario: "webpage", target: "turbofig-bridge" });
+    expect(pickBaselineReport([first], report)).toEqual(first);
+  });
+
+  it("returns null for an empty array", () => {
+    expect(pickBaselineReport([], fakeReport())).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseArgs --runs validation
+// ---------------------------------------------------------------------------
+
+describe("parseArgs --runs validation", () => {
+  it("throws for a non-numeric --runs", () => {
+    expect(() => parseArgs(["--dry-run", "--runs", "abc"])).toThrow(/integer of 1 or more/);
+  });
+
+  it("throws for --runs 0", () => {
+    expect(() => parseArgs(["--dry-run", "--runs", "0"])).toThrow(/integer of 1 or more/);
+  });
+
+  it("throws for a negative --runs", () => {
+    expect(() => parseArgs(["--dry-run", "--runs", "-3"])).toThrow(/integer of 1 or more/);
+  });
+
+  it("accepts a positive integer --runs", () => {
+    expect(parseArgs(["--dry-run", "--runs", "5"]).runs).toBe(5);
   });
 });
 
