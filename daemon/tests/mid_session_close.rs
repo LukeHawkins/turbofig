@@ -6,6 +6,9 @@
 //!
 //! All ports are ephemeral. Synchronisation waits on observable state.
 
+mod common;
+
+use common::wait_until;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,7 +53,12 @@ async fn start_stack() -> (u16, String, Arc<turbofig::AppState>) {
 /// A background task owns the socket and keeps it alive. The plugin replies to
 /// every EXECUTE frame with `{"ok":true,"result":{"from":<reply_tag>}}`.
 /// To close a plugin deliberately, connect a raw socket and drop it instead.
-async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static str) {
+async fn connect_mock_plugin(
+    ws_port: u16,
+    state: &Arc<turbofig::AppState>,
+    file_key: &str,
+    reply_tag: &'static str,
+) {
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
         .await
         .expect("mock plugin connect");
@@ -65,7 +73,11 @@ async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static s
         .expect("send FILE_INFO");
 
     // Wait for registration to propagate.
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    let found = wait_for_file_key(state, file_key).await;
+    assert!(
+        found,
+        "{file_key} must register before connect_mock_plugin returns"
+    );
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = ws.next().await {
@@ -372,7 +384,7 @@ async fn test_fk1_close_does_not_disturb_session_b_paired_to_fk2() {
     let (ws_port, base_url, state) = start_stack().await;
 
     // Connect fk2 as a long-lived mock plugin.
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Connect fk1 as a raw socket for deliberate close.
     let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
@@ -419,8 +431,14 @@ async fn test_fk1_close_does_not_disturb_session_b_paired_to_fk2() {
         )
         .await;
     });
-    // Small yield so resolve_route records the pairing.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait until resolve_route has recorded the pairing, rather than
+    // guessing how long that takes on this runner.
+    wait_until(
+        || state.session_lookup(&session_a).as_deref() == Some("fk1"),
+        3000,
+        "session A to pair to fk1",
+    )
+    .await;
 
     // Pair session B to fk2 via HTTP. fk2 replies, so this succeeds.
     let pair_b = call_execute(&client, &base_url, &session_b, Some("fk2")).await;
@@ -460,7 +478,7 @@ async fn test_concurrent_call_to_fk2_succeeds_while_fk1_hangs_and_closes() {
     let (ws_port, base_url, state) = start_stack().await;
 
     // Connect fk2 as a long-lived mock plugin.
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Connect fk1 as a raw socket that will NOT reply to EXECUTE frames.
     // Closing it mid-call exercises in-flight isolation.
@@ -508,8 +526,14 @@ async fn test_concurrent_call_to_fk2_succeeds_while_fk1_hangs_and_closes() {
         call_execute(&client_fk1, &base_url_fk1, &session_fk1_clone, Some("fk1")).await
     });
 
-    // Small delay so the in-flight request is registered before we close.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Wait until the in-flight request is registered before we close, rather
+    // than guessing how long that takes on this runner.
+    wait_until(
+        || state.pending_len() >= 1,
+        3000,
+        "fk1 request to register as pending",
+    )
+    .await;
 
     // Close fk1. The daemon must cancel the pending request.
     drop(fk1_ws);

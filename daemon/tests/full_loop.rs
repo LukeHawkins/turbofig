@@ -10,11 +10,14 @@
 //! Figma file, then drive the same three ops. These tests cover the routing and
 //! the result shapes without a live Figma.
 
+mod common;
+
+use common::{poll_file, wait_for_file_key};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -36,20 +39,6 @@ fn parse_sse_data(body: &str) -> serde_json::Value {
             .unwrap_or_else(|e| panic!("SSE data line is not valid JSON ({e}):\n{data}"));
     }
     panic!("No non-empty 'data:' line found in SSE body:\n{body}");
-}
-
-/// Poll for a file to appear, up to `deadline_ms` milliseconds.
-async fn poll_file(path: &PathBuf, deadline_ms: u64) -> String {
-    let deadline = Instant::now() + Duration::from_millis(deadline_ms);
-    loop {
-        if Instant::now() >= deadline {
-            panic!("Timed out waiting for {}", path.display());
-        }
-        match tokio::fs::read_to_string(path).await {
-            Ok(contents) => return contents,
-            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
-        }
-    }
 }
 
 /// Write a job file to inbox and return the expected outbox path.
@@ -82,7 +71,7 @@ async fn spawn_ws(state: Arc<turbofig::AppState>) -> SocketAddr {
 ///   EXECUTE        -> creates a frame, returns `{id:"1:5", type:"FRAME"}`.
 ///   GET_SELECTION  -> returns that frame as the one selected node.
 ///   SCREENSHOT     -> returns a base64 PNG (bytes "hello").
-async fn spawn_design_plugin(ws_addr: SocketAddr) {
+async fn spawn_design_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
     let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
         .await
         .expect("mock plugin connect");
@@ -93,7 +82,7 @@ async fn spawn_design_plugin(ws_addr: SocketAddr) {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(state, "F1", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -135,7 +124,7 @@ async fn test_full_loop_over_bridge() {
     let state = Arc::new(turbofig::AppState::new());
 
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_design_plugin(ws_addr).await;
+    spawn_design_plugin(ws_addr, &state).await;
     tokio::spawn({
         let state = state.clone();
         let dir = tmp.path().to_path_buf();
@@ -211,7 +200,7 @@ async fn test_full_loop_over_http_mcp() {
                 .expect("serve_with_state error");
         }
     });
-    spawn_design_plugin(ws_addr).await;
+    spawn_design_plugin(ws_addr, &state).await;
 
     let base_url = format!("http://{http_addr}");
     let client = reqwest::Client::builder()
@@ -334,7 +323,7 @@ async fn test_full_loop_over_http_mcp() {
 
 /// Spawn a mock plugin that, on GET_SELECTION, echoes the fields and depth it
 /// received back inside the result so the test can assert the daemon forwarded them.
-async fn spawn_echo_plugin(ws_addr: SocketAddr) {
+async fn spawn_echo_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
     let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
         .await
         .expect("mock echo plugin connect");
@@ -345,7 +334,7 @@ async fn spawn_echo_plugin(ws_addr: SocketAddr) {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(state, "Echo", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -386,7 +375,7 @@ async fn spawn_echo_plugin(ws_addr: SocketAddr) {
 async fn test_get_selection_default_no_fields_no_depth() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_echo_plugin(ws_addr).await;
+    spawn_echo_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_get_selection(&state, None, None, None, None).await;
     assert_eq!(
@@ -412,7 +401,7 @@ async fn test_get_selection_default_no_fields_no_depth() {
 async fn test_get_selection_fields_and_depth_forwarded() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_echo_plugin(ws_addr).await;
+    spawn_echo_plugin(ws_addr, &state).await;
 
     let fields = vec!["opacity".to_owned(), "visible".to_owned()];
     let result = turbofig::run_get_selection(&state, None, None, Some(&fields), Some(2)).await;
@@ -436,7 +425,7 @@ async fn test_get_selection_fields_and_depth_forwarded() {
 /// Spawn a mock plugin whose EXECUTE reply carries a large `result` string
 /// (well over the 20 000-byte read budget) so the budget warning fires.
 /// The small-result variant reuses spawn_design_plugin, which returns a small object.
-async fn spawn_large_result_plugin(ws_addr: SocketAddr) {
+async fn spawn_large_result_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
     let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
         .await
         .expect("mock large-result plugin connect");
@@ -447,7 +436,7 @@ async fn spawn_large_result_plugin(ws_addr: SocketAddr) {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(state, "Big", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -476,7 +465,7 @@ async fn spawn_large_result_plugin(ws_addr: SocketAddr) {
 async fn test_execute_large_result_has_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_large_result_plugin(ws_addr).await;
+    spawn_large_result_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_execute(&state, None, None, "any code").await;
     assert_eq!(
@@ -501,7 +490,7 @@ async fn test_execute_small_result_has_no_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
     // spawn_design_plugin returns {"id": "1:5", "type": "FRAME"} — well under budget.
-    spawn_design_plugin(ws_addr).await;
+    spawn_design_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_execute(&state, None, None, "return figma.createFrame().id;").await;
     assert_eq!(
@@ -520,7 +509,7 @@ async fn test_execute_small_result_has_no_warning() {
 async fn test_get_selection_depth_clamps_at_daemon() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_echo_plugin(ws_addr).await;
+    spawn_echo_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_get_selection(&state, None, None, None, Some(99)).await;
     assert_eq!(
@@ -539,7 +528,7 @@ async fn test_get_selection_depth_clamps_at_daemon() {
 
 /// Spawn a mock plugin whose GET_SELECTION reply carries a selection payload
 /// well over the 20 000-byte read budget so the warning fires.
-async fn spawn_large_selection_plugin(ws_addr: SocketAddr) {
+async fn spawn_large_selection_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
     let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
         .await
         .expect("mock large-selection plugin connect");
@@ -550,7 +539,7 @@ async fn spawn_large_selection_plugin(ws_addr: SocketAddr) {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(state, "BigSel", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -590,7 +579,7 @@ async fn spawn_large_selection_plugin(ws_addr: SocketAddr) {
 async fn test_get_selection_large_result_has_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_large_selection_plugin(ws_addr).await;
+    spawn_large_selection_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_get_selection(&state, None, None, None, None).await;
     assert_eq!(
@@ -615,7 +604,7 @@ async fn test_get_selection_small_result_has_no_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
     // spawn_design_plugin returns a single small item - well under the 20 000-byte budget.
-    spawn_design_plugin(ws_addr).await;
+    spawn_design_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_get_selection(&state, None, None, None, None).await;
     assert_eq!(
@@ -636,7 +625,7 @@ async fn test_get_selection_small_result_has_no_warning() {
 /// The string is valid base64 but not a valid PNG. The downscale pass-through
 /// returns the same bytes; re-encoding them gives a base64 string well over the
 /// 100 000-byte inline budget so the warning fires.
-async fn spawn_large_screenshot_plugin(ws_addr: SocketAddr) {
+async fn spawn_large_screenshot_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
     let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
         .await
         .expect("mock large-screenshot plugin connect");
@@ -647,7 +636,7 @@ async fn spawn_large_screenshot_plugin(ws_addr: SocketAddr) {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(state, "BigShot", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -679,7 +668,7 @@ async fn spawn_large_screenshot_plugin(ws_addr: SocketAddr) {
 async fn test_screenshot_inline_large_has_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    spawn_large_screenshot_plugin(ws_addr).await;
+    spawn_large_screenshot_plugin(ws_addr, &state).await;
 
     let result =
         turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, false).await;
@@ -705,7 +694,7 @@ async fn test_screenshot_inline_small_has_no_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
     // spawn_design_plugin returns "aGVsbG8=" (b"hello" base64) - well under budget.
-    spawn_design_plugin(ws_addr).await;
+    spawn_design_plugin(ws_addr, &state).await;
 
     let result =
         turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, false).await;

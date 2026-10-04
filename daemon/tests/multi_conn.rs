@@ -41,7 +41,12 @@ async fn start_ws_stack() -> (u16, Arc<turbofig::AppState>) {
 ///
 /// A background task owns the socket and keeps it open for the whole test. To
 /// close a plugin deliberately, connect a raw socket directly and drop it.
-async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static str) {
+async fn connect_mock_plugin(
+    ws_port: u16,
+    state: &Arc<turbofig::AppState>,
+    file_key: &str,
+    reply_tag: &'static str,
+) {
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
         .await
         .expect("mock plugin connect");
@@ -56,7 +61,11 @@ async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static s
         .expect("send FILE_INFO");
 
     // Wait for registration to propagate before returning.
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    let found = wait_for_file_key(state, file_key).await;
+    assert!(
+        found,
+        "{file_key} must register before connect_mock_plugin returns"
+    );
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = ws.next().await {
@@ -141,8 +150,8 @@ async fn test_two_plugins_registered_concurrently() {
     let (ws_port, state) = start_ws_stack().await;
 
     // Connect both plugins. Each call waits for its own registration.
-    connect_mock_plugin(ws_port, "fk1", "fk1-reply").await;
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk1", "fk1-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Both must appear in list_connections at the same time.
     let count = wait_for_connections(&state, 2).await;
@@ -170,8 +179,8 @@ async fn test_two_plugins_registered_concurrently() {
 async fn test_concurrent_routing_no_cross_talk() {
     let (ws_port, state) = start_ws_stack().await;
 
-    connect_mock_plugin(ws_port, "fk1", "fk1-reply").await;
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk1", "fk1-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Wait until both plugins are registered before routing.
     let count = wait_for_connections(&state, 2).await;
@@ -216,7 +225,7 @@ async fn test_fk2_survives_fk1_close() {
     let (ws_port, state) = start_ws_stack().await;
 
     // Connect fk2 first. It stays open for the full test.
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Connect fk1 as a raw socket so we can close it deliberately.
     let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
@@ -303,7 +312,7 @@ async fn test_timeout_isolation_two_connections() {
     tokio::spawn(async move { while let Some(Ok(_)) = fk1_ws.next().await {} });
 
     // Connect fk2 as a normal replying plugin.
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Wait until both plugins are registered in observable state.
     let found_fk1 = wait_for_file_key(&state, "fk1").await;

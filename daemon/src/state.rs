@@ -244,8 +244,9 @@ impl AppState {
     }
 
     /// Look up the file key paired to an MCP session, if any and not expired.
-    /// An expired pairing is pruned on read.
-    pub(crate) fn session_lookup(&self, sid: &str) -> Option<String> {
+    /// An expired pairing is pruned on read. Public so an integration test can
+    /// poll for "the pairing landed" instead of a fixed sleep.
+    pub fn session_lookup(&self, sid: &str) -> Option<String> {
         let mut guard = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match guard.get(sid) {
             Some((fk, at)) if at.elapsed() < SESSION_TTL => Some(fk.clone()),
@@ -344,11 +345,13 @@ impl AppState {
         guard.retain(|_, (cid, _)| *cid != conn_id);
     }
 
-    /// Number of currently pending requests. Test-only: lets a test observe
-    /// that a cancelled or dropped call actually cleared its pending entry,
-    /// without the pending map itself being part of the public API.
-    #[cfg(test)]
-    pub(crate) fn pending_len(&self) -> usize {
+    /// Number of currently pending requests. Lets a test observe that a
+    /// cancelled or dropped call actually cleared its pending entry, or that
+    /// an in-flight request has been registered, without the pending map
+    /// itself being part of the day-to-day public API. Public (not
+    /// `cfg(test)`-gated) so an integration test in `daemon/tests/` can poll
+    /// it too, not only a unit test compiled inside this crate.
+    pub fn pending_len(&self) -> usize {
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
