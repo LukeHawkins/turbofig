@@ -48,6 +48,13 @@ port `18847`, and a file-bridge at `~/.turbofig`. Override ports with
 After any change under `plugin/src/`, rebuild with `cd plugin && bun run
 build` before you test in Figma.
 
+## Versioning
+
+The version lives in one place, the `[workspace.package]` version in the
+root `Cargo.toml`. To bump it everywhere (daemon, both `package.json`
+files, `Cargo.lock`, and the changelog), run `bun scripts/bump-version.ts
+<x.y.z>`. Never hand-edit a version field.
+
 ## Run all tests and checks
 
 These are the same commands CI runs:
