@@ -2,6 +2,7 @@ import { createTf } from "./helpers";
 import type {
   ExecuteMessage,
   GetSelectionMessage,
+  InboundMessage,
   ResultMessage,
   ScreenshotMessage,
 } from "./protocol";
@@ -12,7 +13,9 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  capResultMessage,
   isInboundMessage,
+  PREAMBLE_LINE_OFFSET,
   safeResult,
   serializeNode,
   wrapUserCode,
@@ -22,6 +25,38 @@ import {
 interface ClientStorage {
   getAsync(key: string): Promise<unknown>;
   setAsync(key: string, value: unknown): Promise<void>;
+}
+
+/**
+ * Returns a plain string message from a thrown value.
+ * Handles an Error (reads .message), a thrown primitive (e.g. throw "boom"),
+ * and anything else via String(). Never throws itself.
+ */
+function errorMessageOf(err: unknown): string {
+  return err != null && typeof err === "object" && "message" in err
+    ? String((err as { message: unknown }).message)
+    : String(err);
+}
+
+/**
+ * Finds a `line:column` position in an error's stack trace and adjusts the
+ * line by PREAMBLE_LINE_OFFSET, so the reported position is relative to the
+ * user's own code rather than the preamble-wrapped eval source.
+ * Returns null when the stack carries no recognisable position, or when the
+ * adjusted line would fall before the start of the user's code.
+ */
+function userCodePosition(err: unknown): { line: number; column: number } | null {
+  const stack =
+    err != null && typeof err === "object" && "stack" in err
+      ? String((err as { stack: unknown }).stack)
+      : "";
+  const match = stack.match(/:(\d+):(\d+)/);
+  if (!match) return null;
+  const rawLine = Number(match[1]);
+  const column = Number(match[2]);
+  const line = rawLine - PREAMBLE_LINE_OFFSET;
+  if (!Number.isFinite(line) || !Number.isFinite(column) || line < 1) return null;
+  return { line, column };
 }
 
 /**
@@ -39,28 +74,50 @@ export async function applySetPort(storage: ClientStorage, port: number): Promis
  * Handles an EXECUTE message. Runs user code in an async function with figma and tf in scope.
  * Returns a success ResultMessage, or an error ResultMessage when the code throws.
  * Never rejects: a thrown non-Error value (e.g. throw "boom") becomes an error message.
+ *
+ * When msg.timeoutMs is set, the plugin stops waiting at that point and replies
+ * ok:false with a timeout error. A synchronous infinite loop in the user code
+ * cannot be interrupted this way (JavaScript is single-threaded, so the timer
+ * never fires until the loop yields); that is a documented limit, not a bug.
  */
 export async function handleExecute(
   figma: PluginAPI,
   tf: ReturnType<typeof createTf>,
   msg: ExecuteMessage,
 ): Promise<ResultMessage> {
-  const { requestId, code } = msg;
+  const { requestId, code, timeoutMs } = msg;
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
     ...args: string[]
   ) => (...args: unknown[]) => Promise<unknown>;
-  try {
-    // Build and run the user code in an async function with figma and tf in scope.
-    const fn = new AsyncFunction("figma", "tf", wrapUserCode(code));
-    const result = await fn(figma, tf);
-    return buildExecuteSuccess(requestId, safeResult(result));
-  } catch (err) {
-    const message =
-      err != null && typeof err === "object" && "message" in err
-        ? String((err as { message: unknown }).message)
-        : String(err);
-    return buildExecuteError(requestId, message);
-  }
+
+  const run = async (): Promise<ResultMessage> => {
+    try {
+      // Build and run the user code in an async function with figma and tf in scope.
+      const fn = new AsyncFunction("figma", "tf", wrapUserCode(code));
+      const result = await fn(figma, tf);
+      return buildExecuteSuccess(requestId, safeResult(result));
+    } catch (err) {
+      const pos = userCodePosition(err);
+      const message = pos
+        ? `${errorMessageOf(err)} (line ${pos.line}, column ${pos.column})`
+        : errorMessageOf(err);
+      return buildExecuteError(requestId, message);
+    }
+  };
+
+  if (typeof timeoutMs !== "number" || timeoutMs <= 0) return run();
+
+  const timeout = new Promise<ResultMessage>((resolve) => {
+    setTimeout(() => {
+      resolve(
+        buildExecuteError(
+          requestId,
+          `job timed out in the plugin after ${timeoutMs}ms; it may still be running; a retry is not idempotent`,
+        ),
+      );
+    }, timeoutMs);
+  });
+  return Promise.race([run(), timeout]);
 }
 
 /**
@@ -79,11 +136,7 @@ export async function handleGetSelection(
     );
     return buildSelection(requestId, items as Parameters<typeof buildSelection>[1]);
   } catch (err) {
-    const message =
-      err != null && typeof err === "object" && "message" in err
-        ? String((err as { message: unknown }).message)
-        : String(err);
-    return buildExecuteError(requestId, message);
+    return buildExecuteError(requestId, errorMessageOf(err));
   }
 }
 
@@ -113,7 +166,11 @@ export async function handleScreenshot(
     }
     // Safe cast: node has exportAsync, width, height after the guard above.
     const exportable = node as unknown as SceneNode & ExportMixin;
-    const scale = typeof msg.scale === "number" && msg.scale > 0 ? msg.scale : 1;
+    // Clamp scale to the documented range: Figma rejects an out-of-range
+    // constraint, and an unbounded scale can produce an export far past the
+    // result size cap.
+    const requested = typeof msg.scale === "number" && msg.scale > 0 ? msg.scale : 1;
+    const scale = Math.min(4, Math.max(0.1, requested));
     const bytes = await exportable.exportAsync({
       format: "PNG",
       constraint: { type: "SCALE", value: scale },
@@ -121,64 +178,88 @@ export async function handleScreenshot(
     const png = figma.base64Encode(bytes);
     return buildScreenshot(requestId, png, exportable.width, exportable.height);
   } catch (err) {
-    const message =
-      err != null && typeof err === "object" && "message" in err
-        ? String((err as { message: unknown }).message)
-        : String(err);
-    return buildExecuteError(requestId, message);
+    return buildExecuteError(requestId, errorMessageOf(err));
   }
 }
 
-/** Posts a FILE_INFO message to the UI with the current file identity. */
-function emitFileInfo(): void {
-  figma.ui.postMessage(buildFileInfo(figma.fileKey ?? "", figma.root.name));
+/** Posts a FILE_INFO message with the current file identity via the given sink. */
+function emitFileInfo(figma: PluginAPI, post: (msg: unknown) => void): void {
+  post(buildFileInfo(figma.fileKey ?? "", figma.root.name));
 }
 
-// Plugin bootstrap. Guard with a globalThis check so this file is importable in unit tests.
-// In the Figma sandbox, globalThis.figma is the PluginAPI. Outside it, the block is skipped.
-if ((globalThis as Record<string, unknown>).figma !== undefined) {
-  // themeColors makes Figma inject the --figma-color-* variables and a
-  // figma-light/figma-dark class, so the panel matches the user's theme.
-  figma.showUI(__html__, { width: 300, height: 150, themeColors: true });
+/** Reads the stored daemon port (falling back to the default) and posts it via the given sink. */
+async function emitStoredPort(figma: PluginAPI, post: (msg: unknown) => void): Promise<void> {
+  let stored: unknown;
+  try {
+    stored = await figma.clientStorage.getAsync("turbofig:wsPort");
+  } catch {
+    // clientStorage is unavailable or the read failed; fall back to the default port.
+    stored = undefined;
+  }
+  const port =
+    typeof stored === "number" && Number.isInteger(stored) && stored >= 1 && stored <= 65535
+      ? stored
+      : 18847;
+  post({ type: "PORT", port });
+}
 
-  /* Send FILE_INFO to the UI so it can identify the file to the daemon on connect. */
-  emitFileInfo();
+/**
+ * Builds the onmessage dispatcher for the plugin main thread.
+ * Exported for testing without a live Figma environment: pass a mock
+ * PluginAPI and a `post` sink in place of figma.ui.postMessage.
+ *
+ * EXECUTE, GET_SELECTION and SCREENSHOT run one at a time, FIFO, through a
+ * single queue: the protocol contract that stops interleaved jobs from
+ * creating duplicate nodes. STATUS, SET_PORT, RESIZE and READY bypass the
+ * queue and run immediately. A queued reply is capped at 16 MiB
+ * (capResultMessage) before it reaches `post`.
+ */
+export function createDispatcher(
+  figma: PluginAPI,
+  post: (msg: unknown) => void,
+): (raw: unknown) => void {
+  // Chained promise: each queued job runs only after the previous one settles.
+  let queueTail: Promise<void> = Promise.resolve();
 
-  /* Read the stored port and send it to the UI. The UI connects after receiving PORT. */
-  void (async () => {
-    const stored = await figma.clientStorage.getAsync("turbofig:wsPort");
-    const port =
-      typeof stored === "number" && Number.isInteger(stored) && stored >= 1 && stored <= 65535
-        ? stored
-        : 18847;
-    figma.ui.postMessage({ type: "PORT", port });
-  })();
+  function enqueue(job: () => Promise<ResultMessage>): void {
+    queueTail = queueTail.then(() => job().then((reply) => post(capResultMessage(reply))));
+  }
 
-  figma.ui.onmessage = (msg: unknown) => {
-    if (!isInboundMessage(msg)) return;
+  return (raw: unknown): void => {
+    if (!isInboundMessage(raw)) return;
+    const msg: InboundMessage = raw;
     switch (msg.type) {
+      case "READY":
+        /* The UI sends this once, on load. Reply with the file identity and
+           the stored port so neither message can be missed by a late listener. */
+        emitFileInfo(figma, post);
+        void emitStoredPort(figma, post);
+        break;
       case "STATUS":
-        figma.ui.postMessage(buildResult(msg, figma.fileKey ?? "", figma.root.name));
+        post(buildResult(msg, figma.fileKey ?? "", figma.root.name));
         break;
       case "EXECUTE": {
         // Build the tf namespace bound to this live PluginAPI instance.
         const tf = createTf(figma);
-        void handleExecute(figma, tf, msg).then((reply) => figma.ui.postMessage(reply));
+        enqueue(() => handleExecute(figma, tf, msg));
         break;
       }
       case "GET_SELECTION":
-        void handleGetSelection(figma, msg).then((reply) => figma.ui.postMessage(reply));
+        enqueue(() => handleGetSelection(figma, msg));
         break;
       case "SCREENSHOT":
-        void handleScreenshot(figma, msg).then((reply) => figma.ui.postMessage(reply));
+        enqueue(() => handleScreenshot(figma, msg));
         break;
       case "SET_PORT":
         /* Validate and persist the port; send PORT back so the UI can reconnect. */
-        void applySetPort(figma.clientStorage, msg.port).then((saved) => {
-          if (saved !== null) {
-            figma.ui.postMessage({ type: "PORT", port: saved });
-          }
-        });
+        applySetPort(figma.clientStorage, msg.port)
+          .then((saved) => {
+            if (saved !== null) post({ type: "PORT", port: saved });
+          })
+          .catch(() => {
+            // Persisting the port failed (e.g. clientStorage quota/unavailable);
+            // the UI keeps its current port and the user can retry.
+          });
         break;
       case "RESIZE":
         /* Resize the plugin panel to the dimensions requested by the UI. */
@@ -190,4 +271,38 @@ if ((globalThis as Record<string, unknown>).figma !== undefined) {
         break;
     }
   };
+}
+
+/** How often to poll for a file rename, in milliseconds. A plain property read, not an API call. */
+const FILE_NAME_POLL_MS = 5000;
+
+/**
+ * Polls figma.root.name and re-emits FILE_INFO when it changes (a file rename).
+ * The Plugin API has no change event for the document/file name, only for
+ * node properties, so a cheap interval poll is the only practical option.
+ */
+function watchFileName(figma: PluginAPI, post: (msg: unknown) => void): void {
+  let lastName = figma.root.name;
+  setInterval(() => {
+    if (figma.root.name !== lastName) {
+      lastName = figma.root.name;
+      emitFileInfo(figma, post);
+    }
+  }, FILE_NAME_POLL_MS);
+}
+
+// Plugin bootstrap. Guard with a globalThis check so this file is importable in unit tests.
+// In the Figma sandbox, globalThis.figma is the PluginAPI. Outside it, the block is skipped.
+if ((globalThis as Record<string, unknown>).figma !== undefined) {
+  // themeColors makes Figma inject the --figma-color-* variables and a
+  // figma-light/figma-dark class, so the panel matches the user's theme.
+  figma.showUI(__html__, { width: 300, height: 150, themeColors: true });
+
+  /* The UI sends READY once it has loaded; the dispatcher replies with
+     FILE_INFO and PORT. This handshake means the UI can never miss either
+     message, and the main thread can re-announce FILE_INFO later
+     (see watchFileName) on the same channel. */
+  figma.ui.onmessage = createDispatcher(figma, (msg) => figma.ui.postMessage(msg));
+
+  watchFileName(figma, (msg) => figma.ui.postMessage(msg));
 }
