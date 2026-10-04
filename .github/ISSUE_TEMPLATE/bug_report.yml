@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a problem with turbofig
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Fill in as much as you can.
+        For a security issue, use the private reporting process in
+        `SECURITY.md` instead of this form.
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Output of `sw_vers -productVersion`
+      placeholder: "15.1"
+    validations:
+      required: true
+
+  - type: input
+    id: figma-version
+    attributes:
+      label: Figma Desktop version
+      description: Figma menu > About Figma
+      placeholder: "124.x"
+    validations:
+      required: true
+
+  - type: input
+    id: turbofig-version
+    attributes:
+      label: Turbofig version
+      description: The daemon version shown in the plugin panel, or `turbofig --version`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mcp-client
+    attributes:
+      label: MCP client
+      description: How you connect to the daemon
+      options:
+        - File-bridge (Claude Code or similar, file writes only)
+        - Native MCP client
+        - curl / raw HTTP
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: status-output
+    attributes:
+      label: turbofig_status output
+      description: Call `turbofig_status` (or GET the HTTP port) and paste the result
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did, what you expected, and what happened instead
+      placeholder: |
+        1. Start the daemon with ...
+        2. Load the plugin and run ...
+        3. Call turbofig_execute with ...
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Daemon stdout/stderr, plugin console output, or the activity log from the panel
+      render: shell

@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest an idea for turbofig
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Turbofig keeps a locked, four-tool surface by design (`turbofig_execute`,
+        `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`). See
+        `DECISIONS.md` #1. A request to add a fifth tool is unlikely to be
+        accepted; a request to extend `execute` or the helper library usually
+        fits better.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the gap or pain point, not just the feature
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you would like to see, and why it fits the locked tool surface
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other way to solve this, including workarounds you already tried
