@@ -2,6 +2,9 @@
 //!
 //! Each test uses a tempfile temp dir so the real ~/.turbofig is never touched.
 
+mod common;
+
+use common::{poll_file, wait_for_file_key};
 use futures_util::{SinkExt, StreamExt};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,21 +12,6 @@ use std::time::{Duration, Instant};
 use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Poll for a file to appear, up to `deadline_ms` milliseconds.
-/// Returns the file contents when found, or panics on timeout.
-async fn poll_file(path: &PathBuf, deadline_ms: u64) -> String {
-    let deadline = Instant::now() + Duration::from_millis(deadline_ms);
-    loop {
-        if Instant::now() >= deadline {
-            panic!("Timed out waiting for {}", path.display());
-        }
-        match tokio::fs::read_to_string(path).await {
-            Ok(contents) => return contents,
-            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
-        }
-    }
-}
 
 /// Write a job file to inbox and return the expected outbox path.
 async fn write_job(dir: &tempfile::TempDir, id: &str, body: serde_json::Value) -> PathBuf {
@@ -75,7 +63,7 @@ async fn spawn_mock_plugin(
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(&state, "abc", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -135,8 +123,8 @@ async fn test_bridge_status_roundtrip_with_plugin() {
         .await
         .expect("send FILE_INFO");
 
-    // Allow FILE_INFO to be registered.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for FILE_INFO to be registered.
+    wait_for_file_key(&state, "abc123", common::WAIT_DEADLINE_MS).await;
 
     // Spawn a task that auto-replies to STATUS frames.
     tokio::spawn(async move {
@@ -285,13 +273,23 @@ async fn test_bridge_malformed_json() {
 /// One slow job (a status call to a silent plugin) must not block another job.
 ///
 /// The bridge claims and spawns each job, so two jobs run concurrently. With a
-/// per-request timeout of 400 ms, two jobs finish together in about 400 ms, not
-/// the ~800 ms a sequential loop would take. This test is timing-sensitive by
-/// nature; the threshold keeps a wide margin.
+/// per-request timeout of `TIMEOUT`, two jobs finish together in about one
+/// timeout, not the ~2x a sequential loop would take.
+///
+/// This test is timing-sensitive by nature. `TIMEOUT` is deliberately large
+/// (1 s, not the 400 ms an earlier version used) so the fixed scheduling
+/// overhead of spawning two servers and two outbox polls (which does not
+/// shrink on a slow runner, it only grows) stays a small fraction of the
+/// budget. The upper bound checks for "about one timeout", well short of the
+/// "about two timeouts" a regression to sequential processing would take;
+/// the lower bound checks the job really waited out the timeout rather than
+/// passing by accident.
 #[tokio::test]
 async fn test_bridge_services_jobs_concurrently() {
+    const TIMEOUT: Duration = Duration::from_millis(1000);
+
     let tmp = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_millis(400)));
+    let state = Arc::new(turbofig::AppState::with_timeout(TIMEOUT));
 
     // Bind and spawn the WS server, then connect a plugin that never replies.
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -314,7 +312,7 @@ async fn test_bridge_services_jobs_concurrently() {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(&state, "s", common::WAIT_DEADLINE_MS).await;
     // Keep the socket open but never reply to STATUS.
     tokio::spawn(async move { while let Some(Ok(_)) = plugin_ws.next().await {} });
 
@@ -325,12 +323,16 @@ async fn test_bridge_services_jobs_concurrently() {
     let out_b = write_job(&tmp, "job_b", serde_json::json!({"op": "status"})).await;
 
     let start = Instant::now();
-    let _ = poll_file(&out_a, 3000).await;
-    let _ = poll_file(&out_b, 3000).await;
+    let _ = poll_file(&out_a, 10_000).await;
+    let _ = poll_file(&out_b, 10_000).await;
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(700),
+        elapsed >= TIMEOUT - Duration::from_millis(50),
+        "job must wait out the timeout, not return early, took {elapsed:?}"
+    );
+    assert!(
+        elapsed < TIMEOUT + TIMEOUT / 2,
         "two jobs must run concurrently (about one timeout), took {elapsed:?}"
     );
 }
@@ -515,7 +517,7 @@ async fn spawn_mock_plugin_with_key(
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(&state, file_key, common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -707,7 +709,7 @@ async fn spawn_mock_plugin_keyed(
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(&state, file_key, common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -860,7 +862,7 @@ async fn test_bridge_get_selection_fields_and_depth_forwarded() {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for_file_key(&state, "echo", common::WAIT_DEADLINE_MS).await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
