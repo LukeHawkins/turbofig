@@ -77,11 +77,9 @@ pub fn request_timeout_from_env() -> Duration {
 
 /// An active plugin connection.
 /// Holds the file key, the document name, and a sender for outbound JSON messages.
-/// profile_id is empty until FILE_INFO arrives with a profileId field.
 pub struct PluginConn {
     pub file_key: String,
     pub name: String,
-    pub profile_id: String,
     pub tx: mpsc::UnboundedSender<String>,
 }
 
@@ -132,109 +130,11 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Directory where screenshot PNGs are written in file mode, if configured.
     screenshot_dir: Option<std::path::PathBuf>,
-    /// Built-in taste profiles keyed by profile ID.
-    /// Each value is the JS source to inject before user code.
-    profiles: HashMap<String, String>,
-}
-
-/// Return the built-in taste profiles embedded at compile time.
-fn builtin_profiles() -> HashMap<String, String> {
-    let mut profiles = HashMap::new();
-    profiles.insert(
-        "impeccable".to_owned(),
-        include_str!("../../skills/profiles/impeccable.js").to_owned(),
-    );
-    profiles.insert(
-        "editorial".to_owned(),
-        include_str!("../../skills/profiles/editorial.js").to_owned(),
-    );
-    profiles.insert(
-        "minimal".to_owned(),
-        include_str!("../../skills/profiles/minimal.js").to_owned(),
-    );
-    profiles
-}
-
-/// Build a profile map starting from the built-in profiles.
-/// When `dir` is Some and exists, load every `.js` file in it as an additional
-/// profile keyed by the file stem. A built-in id always wins over a custom file
-/// of the same name. Unreadable files are logged to stderr and skipped.
-fn load_profiles(dir: Option<&std::path::Path>) -> HashMap<String, String> {
-    let mut profiles = builtin_profiles();
-    let Some(dir) = dir else {
-        return profiles;
-    };
-    if !dir.exists() {
-        return profiles;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return profiles;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("js") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        // "none" is a reserved id that disables injection. Reject it before reading.
-        if stem == "none" {
-            eprintln!(
-                "Turbofig: skipped profile {}: 'none' is reserved (it disables injection)",
-                path.display()
-            );
-            continue;
-        }
-        // Built-in ids win. Log the collision so it is visible instead of silent.
-        if profiles.contains_key(stem) {
-            eprintln!(
-                "Turbofig: skipped profile {}: built-in '{}' wins over custom file",
-                path.display(),
-                stem
-            );
-            continue;
-        }
-        let source = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                // Report an unreadable file. Do not confuse it later with an
-                // unknown id: the resolve path warns "unknown profile" only for
-                // ids that were never registered, not for files that failed here.
-                eprintln!("Turbofig: failed to read profile {}: {e}", path.display());
-                continue;
-            }
-        };
-        // A valid profile file must define a `taste` constant.
-        // A file without it would throw an opaque ReferenceError at eval time.
-        if !source.contains("taste") {
-            eprintln!(
-                "Turbofig: skipped profile {}: file does not contain 'taste' (no const taste definition found)",
-                path.display()
-            );
-            continue;
-        }
-        profiles.insert(stem.to_owned(), source);
-    }
-    profiles
-}
-
-/// Return the profiles directory from `TURBOFIG_PROFILES_DIR`.
-/// Default: `~/.turbofig/profiles` (derived from the bridge base directory).
-pub fn profiles_dir_from_env() -> std::path::PathBuf {
-    match std::env::var("TURBOFIG_PROFILES_DIR") {
-        Ok(val) => std::path::PathBuf::from(val),
-        Err(_) => bridge_dir_from_env().join("profiles"),
-    }
 }
 
 impl AppState {
     /// Private constructor. All public constructors delegate here.
-    fn build(
-        timeout: Duration,
-        screenshot_dir: Option<std::path::PathBuf>,
-        profiles: HashMap<String, String>,
-    ) -> Self {
+    fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
             conn_counter: AtomicU64::new(1),
@@ -243,32 +143,23 @@ impl AppState {
             counter: AtomicU64::new(1),
             request_timeout: timeout,
             screenshot_dir,
-            profiles,
         }
     }
 
     /// Create a new AppState. Reads the timeout from TURBOFIG_REQUEST_TIMEOUT_MS.
     /// Sets screenshot_dir to `~/.turbofig/outbox`.
-    /// Loads custom profiles from `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles`).
     pub fn new() -> Self {
         Self::build(
             request_timeout_from_env(),
             Some(bridge_dir_from_env().join("outbox")),
-            load_profiles(Some(&profiles_dir_from_env())),
         )
     }
 
     /// Create a new AppState with an explicit request timeout.
     /// Use this in tests to set a short timeout without touching global env.
-    /// Sets screenshot_dir to None. Loads built-in profiles only.
+    /// Sets screenshot_dir to None.
     pub fn with_timeout(d: Duration) -> Self {
-        Self::build(d, None, load_profiles(None))
-    }
-
-    /// Create a new AppState with a custom profiles directory.
-    /// Uses the env timeout and no screenshot dir. Use in tests that inject profiles.
-    pub fn with_profiles_dir(dir: std::path::PathBuf) -> Self {
-        Self::build(request_timeout_from_env(), None, load_profiles(Some(&dir)))
+        Self::build(d, None)
     }
 
     /// Return a clone of the screenshot output directory, if configured.
@@ -289,73 +180,19 @@ impl AppState {
             PluginConn {
                 file_key: String::new(),
                 name: String::new(),
-                profile_id: String::new(),
                 tx,
             },
         );
         conn_id
     }
 
-    /// Update the file_key, name, and profile_id for an existing connection.
+    /// Update the file_key and name for an existing connection.
     /// Call this when FILE_INFO arrives.
-    pub fn set_connection_info(
-        &self,
-        conn_id: u64,
-        file_key: String,
-        name: String,
-        profile_id: String,
-    ) {
+    pub fn set_connection_info(&self, conn_id: u64, file_key: String, name: String) {
         let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = guard.get_mut(&conn_id) {
             conn.file_key = file_key;
             conn.name = name;
-            conn.profile_id = profile_id;
-        }
-    }
-
-    /// Return the profile_id for the given connection.
-    /// Returns an empty string when the connection is gone or has no profile set.
-    pub fn connection_profile(&self, conn_id: u64) -> String {
-        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .get(&conn_id)
-            .map(|c| c.profile_id.clone())
-            .unwrap_or_default()
-    }
-
-    /// Resolve a stored profile id to the id `run_execute` injects as `tf.taste` (empty or unknown becomes `impeccable`, `none` stays `none`, a known id stays itself), so `turbofig_status` never reports "no profile" while impeccable is actually injected.
-    pub fn resolve_profile_id(&self, profile_id: &str) -> String {
-        match profile_id {
-            "none" => "none".to_owned(),
-            id if self.profiles.contains_key(id) => id.to_owned(),
-            _ => "impeccable".to_owned(),
-        }
-    }
-
-    /// Return the JS source to inject before user code and an optional warning.
-    ///
-    /// Rules:
-    /// - `""` or `"impeccable"` -> impeccable JS, no warning.
-    /// - `"none"` -> empty string, no warning (injection disabled).
-    /// - a known built-in id -> that profile JS, no warning.
-    /// - any other non-empty id -> impeccable JS, warning naming the unknown id.
-    pub fn resolve_profile_js(&self, profile_id: &str) -> (String, Option<String>) {
-        match profile_id {
-            "" | "impeccable" => (
-                self.profiles.get("impeccable").cloned().unwrap_or_default(),
-                None,
-            ),
-            "none" => (String::new(), None),
-            id => {
-                if let Some(js) = self.profiles.get(id) {
-                    (js.clone(), None)
-                } else {
-                    (
-                        self.profiles.get("impeccable").cloned().unwrap_or_default(),
-                        Some(format!("unknown profile '{id}'; using impeccable")),
-                    )
-                }
-            }
         }
     }
 
@@ -585,11 +422,6 @@ pub async fn run_status(
         return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
     }
 
-    // Report the resolved profile (what run_execute injects as tf.taste), not
-    // the raw stored value, so status never says "no profile" while impeccable
-    // is in fact injected.
-    let profile_id = state.resolve_profile_id(&state.connection_profile(conn_id));
-
     match tokio::time::timeout(state.request_timeout, rx).await {
         Ok(Ok(result)) => {
             let fk = result
@@ -608,8 +440,7 @@ pub async fn run_status(
                 "plugin": {
                     "connected": true,
                     "fileKey": fk,
-                    "name": nm,
-                    "profileId": profile_id
+                    "name": nm
                 },
                 "plugins": plugins
             })
@@ -628,8 +459,7 @@ pub async fn run_status(
                     "connected": true,
                     "responsive": false,
                     "fileKey": fk,
-                    "name": name,
-                    "profileId": profile_id
+                    "name": name
                 },
                 "plugins": plugins
             })
@@ -702,18 +532,9 @@ pub async fn run_execute(
         Err(e) => return route_error_to_json(e),
     };
 
-    // Resolve the taste profile for this connection and build the injected code.
-    let profile_id = state.connection_profile(conn_id);
-    let (profile_js, profile_warning) = state.resolve_profile_js(&profile_id);
-    let injected_code = if profile_js.is_empty() {
-        code.to_owned()
-    } else {
-        format!("tf.taste = (() => {{\n{profile_js}\nreturn taste;\n}})();\n{code}")
-    };
-
     let id = state.next_request_id();
     let rx = state.register_pending(id, conn_id);
-    let request = json!({"type": "EXECUTE", "requestId": id, "code": injected_code, "sessionId": session_id.unwrap_or("")});
+    let request = json!({"type": "EXECUTE", "requestId": id, "code": code, "sessionId": session_id.unwrap_or("")});
 
     if tx.send(request.to_string()).is_err() {
         state.cancel_pending(id);
@@ -726,25 +547,18 @@ pub async fn run_execute(
                 let result = reply.get("result").cloned().unwrap_or(Value::Null);
                 let len = serde_json::to_string(&result).map(|s| s.len()).unwrap_or(0);
                 let resp = json!({"ok": true, "result": result});
-                // Combine the read-budget warning with the profile warning.
-                let combined = match (read_budget_warning(len), profile_warning) {
-                    (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-                    (a, b) => a.or(b),
-                };
-                with_warning(resp, combined)
+                with_warning(resp, read_budget_warning(len))
             } else {
                 let error = reply
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("eval failed")
                     .to_owned();
-                let resp = json!({"ok": false, "error": error});
-                with_warning(resp, profile_warning)
+                json!({"ok": false, "error": error})
             }
         }
         Ok(Err(_)) => {
-            let resp = json!({"ok": false, "error": "plugin disconnected"});
-            with_warning(resp, profile_warning)
+            json!({"ok": false, "error": "plugin disconnected"})
         }
         Err(_elapsed) => {
             state.cancel_pending(id);
@@ -1331,13 +1145,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_owned();
-                            // profileId is optional. Absent means no profile set yet.
-                            let profile_id = json
-                                .get("profileId")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_owned();
-                            state.set_connection_info(conn_id, file_key, name, profile_id);
+                            state.set_connection_info(conn_id, file_key, name);
                             // Push WELCOME so the plugin UI can display version/session info.
                             // Ignore send errors: the write task may have already exited.
                             let _ = tx.send(welcome_message());
@@ -1513,12 +1321,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(tx);
-        state.set_connection_info(
-            conn_id,
-            "fk1".to_owned(),
-            "File 1".to_owned(),
-            String::new(),
-        );
+        state.set_connection_info(conn_id, "fk1".to_owned(), "File 1".to_owned());
 
         let result = state.resolve_route(None, None);
         assert!(result.is_ok(), "expected Ok");
@@ -1533,12 +1336,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(tx);
-        state.set_connection_info(
-            conn_id,
-            "fk1".to_owned(),
-            "File 1".to_owned(),
-            String::new(),
-        );
+        state.set_connection_info(conn_id, "fk1".to_owned(), "File 1".to_owned());
 
         // First call with session: auto-pick and record pairing.
         let result = state.resolve_route(Some("session-a"), None);
@@ -1560,8 +1358,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
-        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned(), String::new());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
 
         match state.resolve_route(None, None) {
             Err(RouteError::Ambiguous(fks)) => {
@@ -1579,7 +1377,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
 
         let (conn_id, _tx, fk, _nm) = state
             .resolve_route(None, Some(""))
@@ -1596,8 +1394,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned(), String::new());
-        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned(), String::new());
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
 
         // No target: two named connections means ambiguous, never a panic.
         match state.resolve_route(None, None) {
@@ -1623,8 +1421,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
-        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned(), String::new());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
 
         // Explicit fk2 with a session: must return fk2 and record pairing.
         let result = state.resolve_route(Some("session-x"), Some("fk2"));
@@ -1644,7 +1442,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn = state.add_connection(tx);
-        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned(), String::new());
+        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned());
 
         // Establish a pairing first.
         let _ = state.resolve_route(Some("session-y"), Some("fk1"));
@@ -1707,8 +1505,8 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         let conn2 = state.add_connection(tx2);
-        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned(), String::new());
-        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned(), String::new());
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
 
         let connections = state.list_connections();
         assert_eq!(connections.len(), 2, "both connections must be listed");
@@ -1887,788 +1685,6 @@ mod tests {
         assert_eq!(result, val, "non-object value must be returned unchanged");
     }
 
-    // profile_id registry tests
-
-    #[test]
-    fn set_connection_info_stores_profile_id_and_connection_profile_returns_it() {
-        // Add a connection, set info with a profile, then read the profile back.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (tx, _rx) = mpsc::unbounded_channel::<String>();
-        let conn = state.add_connection(tx);
-        state.set_connection_info(
-            conn,
-            "fk".to_owned(),
-            "name".to_owned(),
-            "editorial".to_owned(),
-        );
-        assert_eq!(state.connection_profile(conn), "editorial");
-    }
-
-    #[test]
-    fn connection_profile_returns_empty_for_unknown_conn_id() {
-        // A conn_id that was never registered must return an empty string.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        assert_eq!(state.connection_profile(9999), "");
-    }
-
-    #[test]
-    fn connection_profile_returns_empty_after_remove_connection() {
-        // A removed connection must return an empty profile, not panic.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (tx, _rx) = mpsc::unbounded_channel::<String>();
-        let conn = state.add_connection(tx);
-        state.set_connection_info(
-            conn,
-            "fk".to_owned(),
-            "name".to_owned(),
-            "editorial".to_owned(),
-        );
-        state.remove_connection(conn);
-        assert_eq!(state.connection_profile(conn), "");
-    }
-
-    #[tokio::test]
-    async fn run_status_connected_reply_contains_profile_id() {
-        // Spin up a real WS connection so run_status can complete the STATUS round-trip.
-        // Mirror the pattern used in the integration-style status tests elsewhere.
-        use tokio::sync::mpsc as tmpsc;
-
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-
-        // Simulate a plugin: register a connection with a profile, add it to the registry.
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-profile".to_owned(),
-            "Profile File".to_owned(),
-            "editorial".to_owned(),
-        );
-
-        // Spawn a task that reads the STATUS request and replies with a RESULT.
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse STATUS request");
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                state_clone.resolve(
-                    req_id,
-                    json!({"fileKey": "fk-profile", "name": "Profile File"}),
-                );
-            }
-        });
-
-        let result = run_status(&state, None, None).await;
-
-        assert_eq!(result["ok"], json!(true), "ok must be true");
-        let plugin = &result["plugin"];
-        assert_eq!(plugin["connected"], json!(true), "must be connected");
-        assert_eq!(
-            plugin["profileId"],
-            json!("editorial"),
-            "profileId must match what was stored"
-        );
-    }
-
-    #[test]
-    fn resolve_profile_id_reports_effective_profile() {
-        let state = AppState::new();
-        assert_eq!(
-            state.resolve_profile_id(""),
-            "impeccable",
-            "empty -> impeccable"
-        );
-        assert_eq!(state.resolve_profile_id("impeccable"), "impeccable");
-        assert_eq!(state.resolve_profile_id("editorial"), "editorial");
-        assert_eq!(state.resolve_profile_id("none"), "none", "none stays none");
-        assert_eq!(
-            state.resolve_profile_id("does-not-exist"),
-            "impeccable",
-            "unknown -> impeccable"
-        );
-    }
-
-    // resolve_profile_js unit tests
-
-    #[test]
-    fn resolve_profile_js_empty_returns_impeccable_no_warning() {
-        // An empty profile_id must return the impeccable JS with no warning.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (js, warn) = state.resolve_profile_js("");
-        assert!(
-            js.contains("const taste"),
-            "impeccable JS must contain 'const taste'"
-        );
-        assert!(
-            js.contains("impeccable"),
-            "impeccable JS must mention impeccable"
-        );
-        assert!(warn.is_none(), "no warning for empty profile_id");
-    }
-
-    #[test]
-    fn resolve_profile_js_impeccable_returns_impeccable_no_warning() {
-        // An explicit "impeccable" id must return the impeccable JS with no warning.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (js, warn) = state.resolve_profile_js("impeccable");
-        assert!(
-            js.contains("const taste"),
-            "impeccable JS must contain 'const taste'"
-        );
-        assert!(warn.is_none(), "no warning for impeccable");
-    }
-
-    #[test]
-    fn resolve_profile_js_none_returns_empty_no_warning() {
-        // The "none" id must return an empty string and no warning.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (js, warn) = state.resolve_profile_js("none");
-        assert!(js.is_empty(), "none must return empty string");
-        assert!(warn.is_none(), "no warning for none");
-    }
-
-    #[test]
-    fn resolve_profile_js_known_builtin_returns_that_profile_no_warning() {
-        // A known built-in id other than impeccable must return that profile with no warning.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (js, warn) = state.resolve_profile_js("editorial");
-        assert!(
-            js.contains("const taste"),
-            "editorial JS must contain 'const taste'"
-        );
-        assert!(
-            js.contains("editorial"),
-            "editorial JS must mention editorial"
-        );
-        assert!(warn.is_none(), "no warning for known profile");
-    }
-
-    #[test]
-    fn resolve_profile_js_unknown_returns_impeccable_with_warning() {
-        // An unknown id must return the impeccable JS and a warning naming the unknown id.
-        let state = AppState::with_timeout(Duration::from_millis(100));
-        let (js, warn) = state.resolve_profile_js("bogus");
-        assert!(
-            js.contains("const taste"),
-            "fallback JS must contain 'const taste'"
-        );
-        assert!(js.contains("impeccable"), "fallback JS must be impeccable");
-        let w = warn.expect("warning must be present for unknown id");
-        assert!(w.contains("bogus"), "warning must name the unknown id");
-        assert!(w.contains("impeccable"), "warning must mention impeccable");
-    }
-
-    // run_execute profile-injection integration tests
-
-    #[tokio::test]
-    async fn run_execute_injects_named_profile_into_code() {
-        // A connection with profile "editorial" must receive the editorial JS prepended to
-        // user code. The sent EXECUTE frame's code field must contain "const taste" and
-        // "editorial".
-        use tokio::sync::mpsc as tmpsc;
-
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-editorial".to_owned(),
-            "Editorial File".to_owned(),
-            "editorial".to_owned(),
-        );
-
-        let state_clone = state.clone();
-        // Answer the pending execute so run_execute returns cleanly.
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
-                // Verify injection before answering.
-                let code = req["code"].as_str().expect("code field");
-                assert!(
-                    code.contains("const taste"),
-                    "code must contain 'const taste'"
-                );
-                assert!(code.contains("editorial"), "code must contain 'editorial'");
-                assert!(
-                    code.contains("tf.taste"),
-                    "code must assign profile to tf.taste"
-                );
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                state_clone.resolve(req_id, json!({"ok": true, "result": "done"}));
-            }
-        });
-
-        let result = run_execute(&state, None, None, "return 1;").await;
-        assert_eq!(result["ok"], json!(true), "execute must succeed");
-    }
-
-    #[tokio::test]
-    async fn run_execute_unknown_profile_uses_impeccable_and_sets_warning() {
-        // A connection with an unknown profile must receive the impeccable JS and the
-        // returned JSON must carry a "warning" field mentioning "impeccable".
-        use tokio::sync::mpsc as tmpsc;
-
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-bogus".to_owned(),
-            "Bogus File".to_owned(),
-            "bogus".to_owned(),
-        );
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
-                let code = req["code"].as_str().expect("code field");
-                // The impeccable profile must have been injected.
-                assert!(
-                    code.contains("impeccable"),
-                    "code must contain impeccable marker"
-                );
-                assert!(
-                    code.contains("tf.taste"),
-                    "code must assign profile to tf.taste"
-                );
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                state_clone.resolve(req_id, json!({"ok": true, "result": null}));
-            }
-        });
-
-        let result = run_execute(&state, None, None, "return 2;").await;
-        assert_eq!(result["ok"], json!(true), "execute must succeed");
-        let warning = result["warning"].as_str().expect("warning must be present");
-        assert!(
-            warning.contains("impeccable"),
-            "warning must mention impeccable"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_execute_none_profile_sends_user_code_unmodified() {
-        // A connection with profile "none" must send the user code without any injection.
-        // The EXECUTE frame's code must equal the original user code exactly.
-        use tokio::sync::mpsc as tmpsc;
-
-        let user_code = "return 42;";
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-none".to_owned(),
-            "None File".to_owned(),
-            "none".to_owned(),
-        );
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
-                let code = req["code"].as_str().expect("code field");
-                assert!(
-                    !code.contains("const taste"),
-                    "none profile must not inject taste"
-                );
-                assert!(
-                    !code.contains("tf.taste"),
-                    "none profile must not assign tf.taste"
-                );
-                assert_eq!(code, user_code, "code must equal the original user code");
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                state_clone.resolve(req_id, json!({"ok": true, "result": 42}));
-            }
-        });
-
-        let result = run_execute(&state, None, None, user_code).await;
-        assert_eq!(result["ok"], json!(true), "execute must succeed");
-    }
-
-    #[tokio::test]
-    async fn run_execute_eval_failure_still_carries_profile_warning() {
-        // An unknown profile must attach its warning even when the eval fails.
-        use tokio::sync::mpsc as tmpsc;
-
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-bogus".to_owned(),
-            "Bogus File".to_owned(),
-            "bogus".to_owned(),
-        );
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                // Reply with an eval failure.
-                state_clone.resolve(req_id, json!({"ok": false, "error": "boom"}));
-            }
-        });
-
-        let result = run_execute(&state, None, None, "throw new Error('boom');").await;
-        assert_eq!(result["ok"], json!(false), "execute must report failure");
-        assert_eq!(result["error"], json!("boom"), "error passes through");
-        let warning = result["warning"].as_str().expect("warning must be present");
-        assert!(
-            warning.contains("impeccable"),
-            "eval-failure reply must still carry the profile warning"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_execute_merges_budget_and_profile_warnings() {
-        // A large result under an unknown profile must carry BOTH warnings, joined.
-        use tokio::sync::mpsc as tmpsc;
-
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-bogus".to_owned(),
-            "Bogus File".to_owned(),
-            "bogus".to_owned(),
-        );
-
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                // A result over the read budget forces the budget warning.
-                let big = "x".repeat(READ_BUDGET_BYTES + 100);
-                state_clone.resolve(req_id, json!({"ok": true, "result": big}));
-            }
-        });
-
-        let result = run_execute(&state, None, None, "return 'big';").await;
-        assert_eq!(result["ok"], json!(true), "execute must succeed");
-        let warning = result["warning"].as_str().expect("warning must be present");
-        assert!(
-            warning.contains("budget"),
-            "must carry the read-budget warning"
-        );
-        assert!(
-            warning.contains("impeccable"),
-            "must carry the profile warning"
-        );
-        assert!(warning.contains("; "), "the two warnings must be joined");
-    }
-
-    // Custom profiles directory tests
-
-    #[test]
-    fn custom_profile_loaded_from_dir() {
-        // A .js file in the profiles dir must be loadable by its stem.
-        // Built-ins must still resolve from the same instance.
-        use tempfile::TempDir;
-        let dir = TempDir::new().expect("create temp dir");
-        let js = r#"const taste = {id:"myfancy"};"#;
-        std::fs::write(dir.path().join("myfancy.js"), js).expect("write profile");
-
-        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
-
-        let (profile_js, warn) = state.resolve_profile_js("myfancy");
-        assert!(
-            profile_js.contains("myfancy"),
-            "custom profile must contain the expected content"
-        );
-        assert!(warn.is_none(), "no warning for a valid custom profile");
-
-        // Built-ins must still work.
-        let (imp_js, imp_warn) = state.resolve_profile_js("impeccable");
-        assert!(
-            imp_js.contains("const taste"),
-            "impeccable must still resolve"
-        );
-        assert!(imp_warn.is_none(), "no warning for impeccable");
-
-        let (ed_js, ed_warn) = state.resolve_profile_js("editorial");
-        assert!(
-            ed_js.contains("const taste"),
-            "editorial must still resolve"
-        );
-        assert!(ed_warn.is_none(), "no warning for editorial");
-
-        let (min_js, min_warn) = state.resolve_profile_js("minimal");
-        assert!(min_js.contains("const taste"), "minimal must still resolve");
-        assert!(min_warn.is_none(), "no warning for minimal");
-    }
-
-    #[test]
-    fn builtin_wins_over_custom_collision() {
-        // A custom file named impeccable.js must NOT override the real built-in.
-        use tempfile::TempDir;
-        let dir = TempDir::new().expect("create temp dir");
-        let sentinel = r#"const taste = {id:"SENTINEL"};"#;
-        std::fs::write(dir.path().join("impeccable.js"), sentinel).expect("write sentinel profile");
-
-        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
-
-        let (js, warn) = state.resolve_profile_js("impeccable");
-        assert!(
-            !js.contains("SENTINEL"),
-            "built-in must win; SENTINEL must not appear"
-        );
-        assert!(warn.is_none(), "no warning for impeccable");
-    }
-
-    #[test]
-    fn repo_profiles_dir_has_only_three_builtins() {
-        // The public repo ships exactly three profiles: impeccable, editorial, minimal.
-        // No private packs may be committed alongside them.
-        use std::collections::HashSet;
-        let profiles_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../skills/profiles");
-        let entries = std::fs::read_dir(profiles_path).expect("skills/profiles must exist");
-        let stems: HashSet<String> = entries
-            .flatten()
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("js") {
-                    p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let expected: HashSet<String> = ["impeccable", "editorial", "minimal"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            stems, expected,
-            "skills/profiles must contain exactly the three built-in profiles"
-        );
-    }
-
-    // Phase 8 scenario: two files run isolated profiles, survive reconnect, support
-    // "none" disable, support a custom profile, and the public build carries no private packs.
-
-    #[tokio::test]
-    async fn phase8_two_files_run_isolated_profiles() {
-        use std::collections::HashSet;
-        use tempfile::TempDir;
-        use tokio::sync::mpsc as tmpsc;
-
-        // Build a state with one custom profile: brandx.
-        let dir = TempDir::new().expect("create temp dir");
-        let brandx_js = r#"const taste = {id:"brandx"};"#;
-        std::fs::write(dir.path().join("brandx.js"), brandx_js).expect("write brandx profile");
-        let state = Arc::new(AppState::with_profiles_dir(dir.path().to_path_buf()));
-
-        // --- Step 1: register two connections with different profiles. ---
-        let (tx_a, mut rx_a) = tmpsc::unbounded_channel::<String>();
-        let conn_a = state.add_connection(tx_a);
-        state.set_connection_info(
-            conn_a,
-            "fkA".to_owned(),
-            "File A".to_owned(),
-            "editorial".to_owned(),
-        );
-
-        let (tx_b, mut rx_b) = tmpsc::unbounded_channel::<String>();
-        let conn_b = state.add_connection(tx_b);
-        state.set_connection_info(
-            conn_b,
-            "fkB".to_owned(),
-            "File B".to_owned(),
-            "minimal".to_owned(),
-        );
-
-        // --- Step 2: run execute on each file and verify profile isolation. ---
-
-        // File A must carry the editorial profile.
-        let state_a = state.clone();
-        let handle_a =
-            tokio::spawn(
-                async move { run_execute(&state_a, None, Some("fkA"), "return 'a';").await },
-            );
-
-        // Answer A's plugin request and assert the frame.
-        let msg_a = rx_a.recv().await.expect("A must send a frame");
-        let req_a: Value = serde_json::from_str(&msg_a).expect("parse A EXECUTE frame");
-        let code_a = req_a["code"].as_str().expect("A code field");
-        assert!(
-            code_a.contains("editorial"),
-            "file A code must contain 'editorial'"
-        );
-        assert!(
-            code_a.contains("const taste"),
-            "file A code must contain 'const taste'"
-        );
-        assert!(
-            code_a.contains("tf.taste"),
-            "file A code must assign profile to tf.taste"
-        );
-        assert!(
-            !code_a.contains("minimal"),
-            "file A code must NOT contain 'minimal'"
-        );
-        let rid_a = req_a["requestId"].as_u64().expect("A requestId");
-        state.resolve(rid_a, json!({"ok": true, "result": null}));
-        handle_a.await.expect("A task must complete");
-
-        // File B must carry the minimal profile and must not carry the editorial profile.
-        let state_b = state.clone();
-        let handle_b =
-            tokio::spawn(
-                async move { run_execute(&state_b, None, Some("fkB"), "return 'b';").await },
-            );
-
-        let msg_b = rx_b.recv().await.expect("B must send a frame");
-        let req_b: Value = serde_json::from_str(&msg_b).expect("parse B EXECUTE frame");
-        let code_b = req_b["code"].as_str().expect("B code field");
-        assert!(
-            code_b.contains("minimal"),
-            "file B code must contain 'minimal'"
-        );
-        assert!(
-            code_b.contains("tf.taste"),
-            "file B code must assign profile to tf.taste"
-        );
-        assert!(
-            !code_b.contains("editorial"),
-            "file B code must NOT contain 'editorial'"
-        );
-        let rid_b = req_b["requestId"].as_u64().expect("B requestId");
-        state.resolve(rid_b, json!({"ok": true, "result": null}));
-        handle_b.await.expect("B task must complete");
-
-        // --- Step 3: reconnect file A and verify the profile persists. ---
-        state.remove_connection(conn_a);
-        let (tx_a2, mut rx_a2) = tmpsc::unbounded_channel::<String>();
-        let conn_a2 = state.add_connection(tx_a2);
-        // Same file key and profile as before.
-        state.set_connection_info(
-            conn_a2,
-            "fkA".to_owned(),
-            "File A".to_owned(),
-            "editorial".to_owned(),
-        );
-
-        let state_a2 = state.clone();
-        let handle_a2 =
-            tokio::spawn(
-                async move { run_execute(&state_a2, None, Some("fkA"), "return 'a2';").await },
-            );
-
-        let msg_a2 = rx_a2
-            .recv()
-            .await
-            .expect("A2 must send a frame after reconnect");
-        let req_a2: Value = serde_json::from_str(&msg_a2).expect("parse A2 EXECUTE frame");
-        let code_a2 = req_a2["code"].as_str().expect("A2 code field");
-        assert!(
-            code_a2.contains("editorial"),
-            "profile must survive reconnect on file A"
-        );
-        let rid_a2 = req_a2["requestId"].as_u64().expect("A2 requestId");
-        state.resolve(rid_a2, json!({"ok": true, "result": null}));
-        handle_a2.await.expect("A2 task must complete");
-
-        // --- Step 4: disable profile on B with "none". ---
-        let user_code_b = "return 'none';";
-        state.set_connection_info(
-            conn_b,
-            "fkB".to_owned(),
-            "File B".to_owned(),
-            "none".to_owned(),
-        );
-
-        let state_b2 = state.clone();
-        let handle_b2 =
-            tokio::spawn(
-                async move { run_execute(&state_b2, None, Some("fkB"), user_code_b).await },
-            );
-
-        let msg_b2 = rx_b.recv().await.expect("B must send a frame after none");
-        let req_b2: Value = serde_json::from_str(&msg_b2).expect("parse B2 EXECUTE frame");
-        let code_b2 = req_b2["code"].as_str().expect("B2 code field");
-        assert_eq!(
-            code_b2, user_code_b,
-            "none profile must send user code unmodified"
-        );
-        assert!(
-            !code_b2.contains("const taste"),
-            "none profile must not inject taste"
-        );
-        assert!(
-            !code_b2.contains("tf.taste"),
-            "none profile must not assign tf.taste"
-        );
-        let rid_b2 = req_b2["requestId"].as_u64().expect("B2 requestId");
-        state.resolve(rid_b2, json!({"ok": true, "result": null}));
-        handle_b2.await.expect("B2 task must complete");
-
-        // --- Step 5: switch file A to the custom brandx profile. ---
-        state.set_connection_info(
-            conn_a2,
-            "fkA".to_owned(),
-            "File A".to_owned(),
-            "brandx".to_owned(),
-        );
-
-        let state_a3 = state.clone();
-        let handle_a3 = tokio::spawn(async move {
-            run_execute(&state_a3, None, Some("fkA"), "return 'brandx';").await
-        });
-
-        let msg_a3 = rx_a2.recv().await.expect("A must send a frame for brandx");
-        let req_a3: Value = serde_json::from_str(&msg_a3).expect("parse A3 EXECUTE frame");
-        let code_a3 = req_a3["code"].as_str().expect("A3 code field");
-        assert!(
-            code_a3.contains("brandx"),
-            "custom brandx profile must be injected on file A"
-        );
-        assert!(
-            code_a3.contains("tf.taste"),
-            "custom brandx profile must assign to tf.taste"
-        );
-        let rid_a3 = req_a3["requestId"].as_u64().expect("A3 requestId");
-        state.resolve(rid_a3, json!({"ok": true, "result": null}));
-        handle_a3.await.expect("A3 task must complete");
-
-        // --- Step 6: the public build carries no private packs. ---
-        // This mirrors repo_profiles_dir_has_only_three_builtins inline.
-        let profiles_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../skills/profiles");
-        let entries = std::fs::read_dir(profiles_path).expect("skills/profiles must exist");
-        let stems: HashSet<String> = entries
-            .flatten()
-            .filter_map(|e| {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some("js") {
-                    p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let expected: HashSet<String> = ["impeccable", "editorial", "minimal"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert_eq!(
-            stems, expected,
-            "public repo must contain exactly the three built-in profiles; no private packs"
-        );
-    }
-
-    // Robustness tests for load_profiles guards and the disconnected branch.
-
-    #[test]
-    fn reserved_none_profile_not_loaded() {
-        // A file named none.js must not register because "none" disables injection.
-        // After construction, resolve_profile_js("none") must return empty JS and no warning.
-        use tempfile::TempDir;
-        let dir = TempDir::new().expect("create temp dir");
-        std::fs::write(dir.path().join("none.js"), r#"const taste = {id:"none"};"#)
-            .expect("write none.js");
-
-        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
-        let (js, warn) = state.resolve_profile_js("none");
-        assert!(
-            js.is_empty(),
-            "none must still return empty JS (injection disabled); got: {js:?}"
-        );
-        assert!(warn.is_none(), "none must not produce a warning");
-    }
-
-    #[test]
-    fn profile_without_taste_token_is_skipped() {
-        // A .js file that does not contain the word "taste" must not register.
-        // Resolving its stem must fall back to impeccable with the unknown-profile warning.
-        use tempfile::TempDir;
-        let dir = TempDir::new().expect("create temp dir");
-        std::fs::write(dir.path().join("bad.js"), "const x = 1;").expect("write bad.js");
-
-        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
-        let (js, warn) = state.resolve_profile_js("bad");
-        assert!(
-            js.contains("const taste"),
-            "fallback must be impeccable, which defines const taste"
-        );
-        let warning = warn.expect("unknown-profile warning must be present");
-        assert!(
-            warning.contains("impeccable"),
-            "warning must mention impeccable; got: {warning:?}"
-        );
-    }
-
-    #[test]
-    fn valid_custom_profile_still_loads_with_taste_token() {
-        // A .js file that contains "taste" must register and resolve without a warning.
-        // This mirrors custom_profile_loaded_from_dir but focuses on the taste guard.
-        use tempfile::TempDir;
-        let dir = TempDir::new().expect("create temp dir");
-        std::fs::write(
-            dir.path().join("brandq.js"),
-            r#"const taste = {id:"brandq",radius:4};"#,
-        )
-        .expect("write brandq.js");
-
-        let state = AppState::with_profiles_dir(dir.path().to_path_buf());
-        let (js, warn) = state.resolve_profile_js("brandq");
-        assert!(
-            js.contains("brandq"),
-            "custom profile must be loaded; got: {js:?}"
-        );
-        assert!(warn.is_none(), "no warning for a valid custom profile");
-    }
-
-    #[tokio::test]
-    async fn run_execute_disconnected_branch_carries_profile_warning() {
-        // An unknown profile on a connection whose oneshot sender is cancelled
-        // (simulating plugin disconnect) must return
-        // error == "plugin disconnected" AND a warning mentioning "impeccable".
-        use tokio::sync::mpsc as tmpsc;
-
-        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
-        let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-disc".to_owned(),
-            "Disc File".to_owned(),
-            "unknown_disc_profile".to_owned(),
-        );
-
-        // Receive the EXECUTE frame and cancel the pending request instead of
-        // resolving it. This drops the oneshot sender, so run_execute gets Ok(Err(_)).
-        let state_clone = state.clone();
-        tokio::spawn(async move {
-            if let Some(msg) = plugin_rx.recv().await {
-                let req: Value = serde_json::from_str(&msg).expect("parse EXECUTE frame");
-                let req_id = req["requestId"].as_u64().expect("requestId");
-                state_clone.cancel_pending(req_id);
-            }
-        });
-
-        let result = run_execute(&state, None, None, "return 99;").await;
-        assert_eq!(
-            result["ok"],
-            json!(false),
-            "disconnected must report ok:false"
-        );
-        assert_eq!(
-            result["error"],
-            json!("plugin disconnected"),
-            "error must be 'plugin disconnected'"
-        );
-        let warning = result["warning"]
-            .as_str()
-            .expect("warning must be present on the disconnected branch");
-        assert!(
-            warning.contains("impeccable"),
-            "disconnected warning must mention impeccable; got: {warning:?}"
-        );
-    }
-
     // WELCOME message and sessionId tests.
 
     #[test]
@@ -2705,12 +1721,7 @@ mod tests {
         let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
         let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-sid".to_owned(),
-            "Session File".to_owned(),
-            "none".to_owned(),
-        );
+        state.set_connection_info(conn_id, "fk-sid".to_owned(), "Session File".to_owned());
 
         let state_clone = state.clone();
         tokio::spawn(async move {
@@ -2748,12 +1759,7 @@ mod tests {
         let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
         let (plugin_tx, mut plugin_rx) = tmpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(plugin_tx);
-        state.set_connection_info(
-            conn_id,
-            "fk-nosid".to_owned(),
-            "No Session File".to_owned(),
-            "none".to_owned(),
-        );
+        state.set_connection_info(conn_id, "fk-nosid".to_owned(), "No Session File".to_owned());
 
         let state_clone = state.clone();
         tokio::spawn(async move {

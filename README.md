@@ -107,29 +107,11 @@ One Rust daemon process runs three servers: an HTTP MCP endpoint, a WebSocket se
 | `turbofig_execute` | Run arbitrary Figma Plugin API JS in the connected file |
 | `turbofig_get_selection` | Return the current selection as a compact shaped object |
 | `turbofig_screenshot` | Export a PNG of the file or a node (downscaled by default) |
-| `turbofig_status` | Return connection state and the active taste profile |
+| `turbofig_status` | Return connection state |
 
 All capability flows through `execute`. The tool surface is locked at four.
 
 Each tool accepts an optional `fileKey` to target one of several open files. Omit it to use the paired or sole connected file.
-
----
-
-## Taste profiles
-
-Turbofig injects a taste profile into every `execute` call. The profile sets spacing, type, palette, and anti-slop rules for the active file. The AI reads `tf.taste` and applies them.
-
-Three built-in profiles ship with turbofig. Swap them per file from the plugin panel.
-
-| Profile | Character |
-|---|---|
-| `impeccable` (default) | Neutral, precise, anti-slop floor |
-| `editorial` | Asymmetric, dense, expressive type |
-| `minimal` | Genuinely restrained, anti-slop floor preserved |
-
-The choice persists in the Figma document. One daemon serves many files. Each file runs its own profile.
-
-To add a custom profile, drop a `.js` file in `~/.turbofig/profiles/`. The daemon loads it by stem name at startup.
 
 ---
 
@@ -149,7 +131,6 @@ daemon/
 helpers/
   tf/                # tf.* craft namespace injected into every eval
 skills/
-  profiles/          # impeccable.js, editorial.js, minimal.js
   design.md          # Brief → plan → parallel builder subagents → QA → refine
 ```
 
@@ -160,7 +141,7 @@ Ports are a product contract, not a dev convention:
 | HTTP MCP | `18846` | `TURBOFIG_MCP_PORT` |
 | WebSocket | `18847` | `TURBOFIG_WS_PORT` |
 
-Other env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default `30000`), `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`), `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles`).
+Other env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default `30000`), `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`).
 
 ---
 

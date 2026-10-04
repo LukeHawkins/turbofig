@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  applySetProfile,
   backoffDelayMs,
   buildExecuteError,
   buildExecuteSuccess,
@@ -8,13 +7,10 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
-  buildSetProfile,
   DEPRECATION_PREAMBLE,
-  effectiveProfileId,
   isDaemonMessage,
   isInboundMessage,
   MAX_SELECTION_DEPTH,
-  readProfileId,
   safeResult,
   serializeNode,
   toSelectionItem,
@@ -23,9 +19,7 @@ import {
 
 describe("isDaemonMessage", () => {
   test("accepts a valid FILE_INFO message", () => {
-    expect(
-      isDaemonMessage({ type: "FILE_INFO", fileKey: "abc123", name: "My File", profileId: "" }),
-    ).toBe(true);
+    expect(isDaemonMessage({ type: "FILE_INFO", fileKey: "abc123", name: "My File" })).toBe(true);
   });
 
   test("accepts a valid STATUS message", () => {
@@ -473,156 +467,20 @@ describe("buildScreenshot", () => {
 });
 
 describe("buildFileInfo", () => {
-  test("returns a FILE_INFO carrying fileKey, name, and profileId", () => {
-    const msg = buildFileInfo("key1", "Design File", "minimal");
+  test("returns a FILE_INFO carrying fileKey and name", () => {
+    const msg = buildFileInfo("key1", "Design File");
     expect(msg.type).toBe("FILE_INFO");
     expect(msg.fileKey).toBe("key1");
     expect(msg.name).toBe("Design File");
-    expect(msg.profileId).toBe("minimal");
   });
 
   test("result passes the isDaemonMessage guard", () => {
-    expect(isDaemonMessage(buildFileInfo("k", "n", ""))).toBe(true);
+    expect(isDaemonMessage(buildFileInfo("k", "n"))).toBe(true);
   });
 
-  test("accepts an empty profileId string", () => {
-    const msg = buildFileInfo("k", "n", "");
-    expect(msg.profileId).toBe("");
-  });
-});
-
-describe("isDaemonMessage: SET_PROFILE branch", () => {
-  test("accepts a well-formed SET_PROFILE message", () => {
-    expect(isDaemonMessage({ type: "SET_PROFILE", profileId: "minimal" })).toBe(true);
-  });
-
-  test("accepts a SET_PROFILE with an empty profileId string", () => {
-    expect(isDaemonMessage({ type: "SET_PROFILE", profileId: "" })).toBe(true);
-  });
-
-  test("rejects SET_PROFILE missing profileId", () => {
-    expect(isDaemonMessage({ type: "SET_PROFILE" })).toBe(false);
-  });
-
-  test("rejects SET_PROFILE with a numeric profileId", () => {
-    expect(isDaemonMessage({ type: "SET_PROFILE", profileId: 42 })).toBe(false);
-  });
-
-  test("FILE_INFO with profileId passes the guard", () => {
-    expect(
-      isDaemonMessage({ type: "FILE_INFO", fileKey: "f", name: "n", profileId: "minimal" }),
-    ).toBe(true);
-  });
-
-  test("FILE_INFO missing profileId is rejected", () => {
-    expect(isDaemonMessage({ type: "FILE_INFO", fileKey: "f", name: "n" })).toBe(false);
-  });
-});
-
-describe("profile store helpers", () => {
-  /** Builds an in-memory PluginDataStore for testing. */
-  function makeMockStore(): {
-    getPluginData(key: string): string;
-    setPluginData(key: string, value: string): void;
-  } {
-    const data: Record<string, string> = {};
-    return {
-      getPluginData(key: string): string {
-        return key in data ? data[key] : "";
-      },
-      setPluginData(key: string, value: string): void {
-        data[key] = value;
-      },
-    };
-  }
-
-  test("readProfileId returns empty string when no profile is set", () => {
-    const store = makeMockStore();
-    expect(readProfileId(store)).toBe("");
-  });
-
-  test("applySetProfile writes a profileId that readProfileId then returns", () => {
-    const store = makeMockStore();
-    applySetProfile(store, "minimal");
-    expect(readProfileId(store)).toBe("minimal");
-  });
-
-  test("effectiveProfileId defaults to impeccable when no profile is set", () => {
-    const store = makeMockStore();
-    // Nothing written: the effective profile is the injected default.
-    expect(readProfileId(store)).toBe("");
-    expect(effectiveProfileId(store)).toBe("impeccable");
-  });
-
-  test("effectiveProfileId returns the stored id when one is set", () => {
-    const store = makeMockStore();
-    applySetProfile(store, "editorial");
-    expect(effectiveProfileId(store)).toBe("editorial");
-  });
-
-  test("effectiveProfileId preserves an explicit none", () => {
-    const store = makeMockStore();
-    applySetProfile(store, "none");
-    expect(effectiveProfileId(store)).toBe("none");
-  });
-
-  test("buildFileInfo round-trip: SET_PROFILE -> setPluginData -> FILE_INFO carries profileId", () => {
-    // Simulate the SET_PROFILE -> applySetProfile -> emitFileInfo path.
-    const store = makeMockStore();
-    applySetProfile(store, "minimal");
-    const msg = buildFileInfo("k", "n", readProfileId(store));
-    expect(msg.profileId).toBe("minimal");
-    expect(isDaemonMessage(msg)).toBe(true);
-  });
-
-  test("overwriting a profile replaces the previous value", () => {
-    const store = makeMockStore();
-    applySetProfile(store, "minimal");
-    applySetProfile(store, "vibrant");
-    expect(readProfileId(store)).toBe("vibrant");
-  });
-});
-
-describe("buildSetProfile", () => {
-  /** Minimal in-memory PluginDataStore for testing. */
-  function makeMockStore(): {
-    getPluginData(key: string): string;
-    setPluginData(key: string, value: string): void;
-  } {
-    const data: Record<string, string> = {};
-    return {
-      getPluginData(key: string): string {
-        return key in data ? data[key] : "";
-      },
-      setPluginData(key: string, value: string): void {
-        data[key] = value;
-      },
-    };
-  }
-
-  // One parameterised test covers all known profile ids including a custom one.
-  for (const id of ["impeccable", "editorial", "minimal", "none", "my-brand"]) {
-    test(`returns { type: "SET_PROFILE", profileId: "${id}" } and passes isDaemonMessage`, () => {
-      const msg = buildSetProfile(id);
-      expect(msg).toEqual({ type: "SET_PROFILE", profileId: id });
-      expect(isDaemonMessage(msg)).toBe(true);
-    });
-  }
-
-  test("applySetProfile does not write when profileId is an empty string", () => {
-    const store = makeMockStore();
-    applySetProfile(store, "");
-    expect(readProfileId(store)).toBe("");
-  });
-
-  test("value-flow: buildSetProfile -> applySetProfile -> readProfileId -> buildFileInfo carries profileId", () => {
-    const store = makeMockStore();
-    const profileId = buildSetProfile("minimal").profileId;
-    applySetProfile(store, profileId);
-    expect(readProfileId(store)).toBe("minimal");
-    const fileInfo = buildFileInfo("k", "n", readProfileId(store));
-    expect(fileInfo.profileId).toBe("minimal");
-    expect(isDaemonMessage(fileInfo)).toBe(true);
+  test("accepts an empty fileKey string", () => {
+    const msg = buildFileInfo("", "n");
+    expect(msg.fileKey).toBe("");
   });
 });
 
@@ -695,14 +553,8 @@ describe("isInboundMessage", () => {
     expect(isInboundMessage({ type: "SCREENSHOT", requestId: 3 })).toBe(true);
   });
 
-  test("accepts SET_PROFILE", () => {
-    expect(isInboundMessage({ type: "SET_PROFILE", profileId: "minimal" })).toBe(true);
-  });
-
   test("rejects FILE_INFO (outbound only)", () => {
-    expect(isInboundMessage({ type: "FILE_INFO", fileKey: "k", name: "n", profileId: "" })).toBe(
-      false,
-    );
+    expect(isInboundMessage({ type: "FILE_INFO", fileKey: "k", name: "n" })).toBe(false);
   });
 
   test("rejects RESULT (outbound only)", () => {

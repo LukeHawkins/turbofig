@@ -9,10 +9,8 @@ import {
   formatSession,
   isDaemonStale,
   isRequestType,
-  KNOWN_PROFILES,
   mainMessageAction,
   parsePort,
-  profileToSelectValue,
   screenSize,
   staleWarning,
   wsUrlForPort,
@@ -148,38 +146,6 @@ describe("formatSession", () => {
 
   test("truncates long id with ...", () => {
     expect(formatSession("abcdefghijklmnopq")).toBe("abcdefghijkl...");
-  });
-});
-
-describe("profileToSelectValue", () => {
-  test("known profiles return their id as value with isCustom false", () => {
-    for (const id of KNOWN_PROFILES) {
-      const r = profileToSelectValue(id);
-      expect(r.value).toBe(id);
-      expect(r.isCustom).toBe(false);
-    }
-  });
-
-  test("unknown profile id returns custom with isCustom true", () => {
-    const r = profileToSelectValue("my-brand");
-    expect(r.value).toBe("custom");
-    expect(r.isCustom).toBe(true);
-  });
-
-  test("empty string is not a known id and returns custom", () => {
-    const r = profileToSelectValue("");
-    expect(r.value).toBe("custom");
-    expect(r.isCustom).toBe(true);
-  });
-
-  test("impeccable is a known profile", () => {
-    const r = profileToSelectValue("impeccable");
-    expect(r.isCustom).toBe(false);
-  });
-
-  test("minimal is a known profile", () => {
-    const r = profileToSelectValue("minimal");
-    expect(r.isCustom).toBe(false);
   });
 });
 
@@ -413,17 +379,12 @@ describe("isRequestType", () => {
 
   test("rejects non-request types", () => {
     expect(isRequestType("WELCOME")).toBe(false);
-    expect(isRequestType("SET_PROFILE")).toBe(false);
     expect(isRequestType("RESULT")).toBe(false);
     expect(isRequestType("")).toBe(false);
   });
 });
 
 describe("daemonMessageAction", () => {
-  test("drops SET_PROFILE so the daemon cannot drive the profile", () => {
-    expect(daemonMessageAction("SET_PROFILE")).toBe("drop");
-  });
-
   test("consumes WELCOME locally", () => {
     expect(daemonMessageAction("WELCOME")).toBe("welcome");
   });
@@ -446,7 +407,7 @@ describe("mainMessageAction", () => {
 
   test("relays other main-thread messages over the socket", () => {
     expect(mainMessageAction("RESULT")).toBe("relay");
-    expect(mainMessageAction("SET_PROFILE")).toBe("relay");
+    expect(mainMessageAction("SET_PORT")).toBe("relay");
   });
 });
 

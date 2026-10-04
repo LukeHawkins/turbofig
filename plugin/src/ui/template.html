@@ -419,8 +419,6 @@
         align-items: flex-start;
       }
 
-      #profile,
-      #customProfile,
       #port-field {
         width: 100%;
         font-size: 14px;
@@ -430,11 +428,6 @@
         border-radius: 4px;
         background: var(--bg);
         color: var(--text);
-      }
-
-      #customProfile {
-        margin-top: var(--sp-1);
-        display: none;
       }
 
       /* Validation hint: shown when the port field value is outside 1-65535. */
@@ -521,7 +514,7 @@
       </div>
     </section>
 
-    <!-- Advanced screen: taste profile, activity log, daemon port. -->
+    <!-- Advanced screen: activity log, daemon port. -->
     <section id="screen-advanced" class="screen">
       <button id="nav-back" class="back-btn" type="button" aria-label="Back">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -530,28 +523,14 @@
         Back
       </button>
 
-      <!-- Taste and Port inline -->
+      <!-- Port -->
       <div class="controls-row">
-        <section class="control-section" aria-label="Taste" style="flex:1;min-width:0">
-          <label class="control-label" for="profile" data-tooltip="Design taste profile injected as tf.taste in eval code. Controls palette, spacing, and type defaults.">Taste</label>
-          <select id="profile">
-            <option value="impeccable">Impeccable</option>
-            <option value="editorial">Editorial</option>
-            <option value="minimal">Minimal</option>
-            <option value="none">None</option>
-            <option value="custom">Custom</option>
-          </select>
-        </section>
-
         <section class="control-section" aria-label="Port" style="flex:1;min-width:0">
           <label class="control-label" for="port-field" data-tooltip="WebSocket port the plugin connects to. Default: 18847.">Port</label>
           <input id="port-field" type="number" min="1" max="65535" value="18847" />
           <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
         </section>
       </div>
-
-      <!-- Custom profile input: shown only when Custom is selected -->
-      <input id="customProfile" type="text" placeholder="Enter profile id" />
 
       <!-- Activity log -->
       <section class="log-section" aria-label="Activity">

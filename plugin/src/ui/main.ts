@@ -16,7 +16,6 @@ import {
   isRequestType,
   mainMessageAction,
   parsePort,
-  profileToSelectValue,
   screenSize,
   staleWarning,
   wsUrlForPort,
@@ -38,8 +37,6 @@ const sessionRowEl = document.getElementById("session-row") as HTMLElement;
 const pluginVersionEl = document.getElementById("plugin-version") as HTMLElement;
 const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
 const activityLogEl = document.getElementById("activity-log") as HTMLElement;
-const profileSel = document.getElementById("profile") as HTMLSelectElement;
-const customInput = document.getElementById("customProfile") as HTMLInputElement;
 const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
@@ -113,22 +110,6 @@ function renderActivityLog(): void {
   activityLogEl.scrollTop = activityLogEl.scrollHeight;
 }
 
-/** Returns the current profile id selected in the panel. */
-function getSelectedProfileId(): string {
-  if (profileSel.value === "custom") {
-    return customInput.value.trim();
-  }
-  return profileSel.value;
-}
-
-/** Posts SET_PROFILE to the main thread with the current selector value. */
-function postSetProfile(): void {
-  parent.postMessage(
-    { pluginMessage: { type: "SET_PROFILE", profileId: getSelectedProfileId() } },
-    "*",
-  );
-}
-
 /**
  * Copies text to the clipboard using a hidden textarea.
  * Returns true when the copy succeeded, false otherwise.
@@ -174,27 +155,6 @@ function showScreen(name: "main" | "advanced" | "about"): void {
   const { width, height } = screenSize(name);
   parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
 }
-
-profileSel.onchange = () => {
-  if (profileSel.value === "custom") {
-    /* Show the custom field and wait for the user to commit an id.
-       Do not post yet: an empty custom id resolves to impeccable and
-       would snap the select off "custom" while the user is typing. */
-    customInput.style.display = "block";
-    customInput.focus();
-    return;
-  }
-  customInput.style.display = "none";
-  postSetProfile();
-};
-
-/* Commit the custom id on change (blur or Enter), not on each keystroke.
-   This stops a mid-typing FILE_INFO echo from reformatting the control. */
-customInput.onchange = () => {
-  if (profileSel.value === "custom" && customInput.value.trim() !== "") {
-    postSetProfile();
-  }
-};
 
 /* Copy the full fileKey to the clipboard on click. Show a check icon for brief feedback. */
 if (copyFilekeyBtn) {
@@ -289,8 +249,6 @@ function connect(): void {
       return;
     }
     const action = daemonMessageAction(parsed.type as string);
-    /* The UI selector owns SET_PROFILE. Drop it if the daemon sends it. */
-    if (action === "drop") return;
     /* Consume WELCOME: store the daemon version and MCP port; check for a stale mismatch. */
     if (action === "welcome") {
       daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
@@ -357,16 +315,6 @@ window.onmessage = (event: MessageEvent) => {
   if (action === "fileinfo") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
-    /* Reflect the current profile in the selector. Default to impeccable. */
-    const pid = typeof m.profileId === "string" && m.profileId !== "" ? m.profileId : "impeccable";
-    const { value, isCustom } = profileToSelectValue(pid);
-    profileSel.value = value;
-    if (isCustom) {
-      customInput.value = typeof m.profileId === "string" ? m.profileId : "";
-      customInput.style.display = "block";
-    } else {
-      customInput.style.display = "none";
-    }
     /* If already connected, send FILE_INFO now so it reaches the daemon. */
     if (ws && ws.readyState === 1 /* OPEN */) {
       ws.send(JSON.stringify(m));

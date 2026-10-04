@@ -8,19 +8,6 @@ export interface FileInfoMessage {
   type: "FILE_INFO";
   fileKey: string;
   name: string;
-  /** Active taste profile for this file. Empty string when no profile is set. */
-  profileId: string;
-}
-
-/**
- * Sent by the plugin UI iframe to the plugin main thread to set the active
- * taste profile for the file. This message is local to the plugin. The UI must
- * never forward it over the WebSocket to the daemon. It shares the main thread
- * inbound channel with daemon messages, so `isDaemonMessage` guards it too.
- */
-export interface SetProfileMessage {
-  type: "SET_PROFILE";
-  profileId: string;
 }
 
 /**
@@ -139,8 +126,7 @@ export type DaemonMessage =
   | ExecuteMessage
   | GetSelectionMessage
   | ScreenshotMessage
-  | ResultMessage
-  | SetProfileMessage;
+  | ResultMessage;
 
 /**
  * Union of messages the plugin main thread can receive.
@@ -151,13 +137,12 @@ export type InboundMessage =
   | ExecuteMessage
   | GetSelectionMessage
   | ScreenshotMessage
-  | SetProfileMessage
   | SetPortMessage
   | ResizeMessage;
 
 /**
  * Returns true when `x` is a well-formed inbound message for the plugin main thread.
- * Accepts STATUS, EXECUTE, GET_SELECTION, SCREENSHOT, and SET_PROFILE only.
+ * Accepts STATUS, EXECUTE, GET_SELECTION, and SCREENSHOT.
  * Rejects outbound-only types: FILE_INFO and RESULT.
  */
 export function isInboundMessage(x: unknown): x is InboundMessage {
@@ -173,8 +158,6 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return typeof msg.requestId === "number";
     case "SCREENSHOT":
       return typeof msg.requestId === "number";
-    case "SET_PROFILE":
-      return typeof msg.profileId === "string";
     case "SET_PORT":
       return typeof msg.port === "number";
     case "RESIZE":
@@ -186,9 +169,8 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
 
 /**
  * Returns true when `x` is a well-formed message for the plugin main thread.
- * Most types arrive from the daemon over the WebSocket. `SET_PROFILE` arrives
- * from the plugin UI iframe. Use this guard before the main thread handles any
- * inbound message.
+ * These types all arrive from the daemon over the WebSocket. Use this guard
+ * before the main thread handles any inbound message.
  */
 export function isDaemonMessage(x: unknown): x is DaemonMessage {
   if (typeof x !== "object" || x === null) return false;
@@ -196,11 +178,7 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
   if (typeof msg.type !== "string") return false;
   switch (msg.type) {
     case "FILE_INFO":
-      return (
-        typeof msg.fileKey === "string" &&
-        typeof msg.name === "string" &&
-        typeof msg.profileId === "string"
-      );
+      return typeof msg.fileKey === "string" && typeof msg.name === "string";
     case "WELCOME":
       return typeof msg.version === "string";
     case "STATUS":
@@ -213,62 +191,17 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
       return typeof msg.requestId === "number";
     case "RESULT":
       return typeof msg.requestId === "number";
-    case "SET_PROFILE":
-      return typeof msg.profileId === "string";
     default:
       return false;
   }
 }
 
-/** Plugin-data key used to persist the active taste profile per Figma file. */
-export const PROFILE_KEY = "turbofig:profile";
-
 /**
- * Minimal interface for reading and writing Figma plugin data.
- * Matches the shape of figma.root (and any FrameNode / DocumentNode).
- * Use this in unit tests with a plain in-memory object.
- */
-export interface PluginDataStore {
-  getPluginData(key: string): string;
-  setPluginData(key: string, value: string): void;
-}
-
-/**
- * Returns the active taste profile id stored on the Figma document root.
- * Returns an empty string when no profile has been set (Figma returns "" for unset keys).
- */
-export function readProfileId(root: PluginDataStore): string {
-  return root.getPluginData(PROFILE_KEY);
-}
-
-/**
- * Returns the effective taste profile id for a file.
- * An unset profile defaults to "impeccable", the same default the daemon
- * injects as tf.taste. This keeps FILE_INFO, the panel selector, the status
- * report, and the injected tf.taste all consistent when the user never changed
- * the profile. An explicit "none" is preserved (it disables injection).
- */
-export function effectiveProfileId(root: PluginDataStore): string {
-  return readProfileId(root) || "impeccable";
-}
-
-/**
- * Writes the given profile id to the Figma document root.
- * Pass figma.root directly; it satisfies the PluginDataStore shape.
- * An empty string is rejected: the function returns without writing.
- * "none" is a valid non-empty id and is written normally.
- */
-export function applySetProfile(root: PluginDataStore, profileId: string): void {
-  if (profileId === "") return;
-  root.setPluginData(PROFILE_KEY, profileId);
-}
-
-/**
- * Builds a FILE_INFO message for the given file key, document name, and profile id.
+ * Builds a FILE_INFO message for the given file key and document name.
  * Use this in the plugin main thread to post file identity to the UI.
  */
-export function buildFileInfo(fileKey: string, name: string, profileId: string): FileInfoMessage {
-  return { type: "FILE_INFO", fileKey, name, profileId };
+export function buildFileInfo(fileKey: string, name: string): FileInfoMessage {
+  return { type: "FILE_INFO", fileKey, name };
 }
 
 /**
@@ -285,15 +218,6 @@ export function buildResult(status: StatusMessage, fileKey: string, name: string
  */
 export function backoffDelayMs(attempt: number): number {
   return Math.min(500 * 2 ** Math.max(0, attempt), 30000);
-}
-
-/**
- * Builds a SET_PROFILE message for the given profile id.
- * Post this to the plugin main thread to change the active taste profile.
- * Do not send it over the WebSocket.
- */
-export function buildSetProfile(profileId: string): SetProfileMessage {
-  return { type: "SET_PROFILE", profileId };
 }
 
 /**

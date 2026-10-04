@@ -6,14 +6,12 @@ import type {
   ScreenshotMessage,
 } from "./protocol";
 import {
-  applySetProfile,
   buildExecuteError,
   buildExecuteSuccess,
   buildFileInfo,
   buildResult,
   buildScreenshot,
   buildSelection,
-  effectiveProfileId,
   isInboundMessage,
   safeResult,
   serializeNode,
@@ -131,11 +129,9 @@ export async function handleScreenshot(
   }
 }
 
-/** Posts a FILE_INFO message to the UI with the current file identity and profile. */
+/** Posts a FILE_INFO message to the UI with the current file identity. */
 function emitFileInfo(): void {
-  figma.ui.postMessage(
-    buildFileInfo(figma.fileKey ?? "", figma.root.name, effectiveProfileId(figma.root)),
-  );
+  figma.ui.postMessage(buildFileInfo(figma.fileKey ?? "", figma.root.name));
 }
 
 // Plugin bootstrap. Guard with a globalThis check so this file is importable in unit tests.
@@ -175,11 +171,6 @@ if ((globalThis as Record<string, unknown>).figma !== undefined) {
         break;
       case "SCREENSHOT":
         void handleScreenshot(figma, msg).then((reply) => figma.ui.postMessage(reply));
-        break;
-      case "SET_PROFILE":
-        /* Store the new profile id in the document, then re-emit FILE_INFO. */
-        applySetProfile(figma.root, msg.profileId);
-        emitFileInfo();
         break;
       case "SET_PORT":
         /* Validate and persist the port; send PORT back so the UI can reconnect. */

@@ -47,23 +47,22 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 The plugin has two threads, as required by the Figma plugin model:
 
 - **Main thread** (`plugin/src/code.ts`): runs in the Figma sandbox. Has access to the Figma Plugin API. Receives messages from the UI thread and executes Figma API calls.
-- **UI thread** (`plugin/src/ui/` → built to `dist/ui.html`): runs in a sandboxed iframe. Holds the WebSocket connection to the daemon. Relays messages between the daemon and the main thread via `parent.postMessage` / `figma.ui.onmessage`. The panel has three screens toggled by `.screen`/`.active` class swap, each with its own `figma.ui.resize` call via a `RESIZE` message: **main** (300×200, default, wordmark + status + file row + footer nav), **advanced** (300×440, taste profile selector + activity log + port field), **about** (300×260, large wordmark + tagline + description + repo/author links). The header wordmark uses a pure-CSS motion ghost effect (`text-shadow` with `color-mix(in srgb, var(--text) N%, transparent)`) so it is theme-aware without JS — light and dark mode both work via the injected `--figma-color-*` tokens. All font-size values must be on the impeccable type scale (12, 14, 16, 20, 25, 31, 39, 49, 61 px); the test suite enforces this automatically.
+- **UI thread** (`plugin/src/ui/` → built to `dist/ui.html`): runs in a sandboxed iframe. Holds the WebSocket connection to the daemon. Relays messages between the daemon and the main thread via `parent.postMessage` / `figma.ui.onmessage`. The panel has three screens toggled by `.screen`/`.active` class swap, each with its own `figma.ui.resize` call via a `RESIZE` message: **main** (300×150, default, wordmark + status + file row + footer nav), **advanced** (300×240, activity log + port field), **about** (300×375, large wordmark + tagline + description + repo/author links). The header wordmark uses a pure-CSS motion ghost effect (`text-shadow` with `color-mix(in srgb, var(--text) N%, transparent)`) so it is theme-aware without JS — light and dark mode both work via the injected `--figma-color-*` tokens.
 
 The plugin dispatches on a `{type}` field in each message:
 
 | Type | Direction | Description |
 |---|---|---|
-| `FILE_INFO` | plugin to daemon | Sent on connect and after a profile change: fileKey, root name, and `profileId` (Phase 2; `profileId` added Phase 8) |
+| `FILE_INFO` | plugin to daemon | Sent on connect: fileKey and root name (Phase 2) |
 | `STATUS` | daemon to plugin | Liveness ping carrying a `requestId` (Phase 2) |
 | `RESULT` | plugin to daemon | Reply carrying the matching `requestId` (Phase 2) |
 | `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS (Phase 3) |
 | `GET_SELECTION` | daemon to plugin | Return compact selection info (Phase 3) |
 | `SCREENSHOT` | daemon to plugin | Export PNG (Phase 3) |
-| `SET_PROFILE` | UI iframe to plugin main thread | Writes the profile id to `figma.root.setPluginData("turbofig:profile", id)` then re-emits `FILE_INFO` with the updated `profileId` (Phase 8) |
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
-`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Three things are injected into the eval scope before user code runs: the sync-to-async deprecation preamble (runs first), the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`), and the active file's taste profile (`tf.taste`). The daemon wraps the profile in an IIFE and assigns the result to `tf.taste` before appending user code. So generated code calls `figma.*`, `tf.*`, and `tf.taste.*` directly. Eval errors return a clean message and never crash the plugin.
+`EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope before user code runs: the sync-to-async deprecation preamble (runs first), and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message and never crash the plugin.
 
 ## Routing registry (Phase 4)
 
@@ -85,7 +84,6 @@ The `tf` namespace is a compact JS craft library injected into every eval. Sourc
 - Variables: `getVariable`, `setVariableValue`, `readVariableValue`.
 - Export: `export`.
 - Utilities: `skipInvisible`, `findAll`, `commit`.
-- Runtime-injected: `tf.taste` (the active file's taste profile; set by the daemon before user code runs).
 
 All functions use the async Figma API surface required by `documentAccess: dynamic-page`.
 
@@ -97,7 +95,7 @@ Idempotency pattern for re-runnable sections: `findOrCreate(parent, name, factor
 
 ## Skill layer
 
-`skills/` (Phase 7+): the design-worker recipes and swappable per-file taste profiles. Profiles live in `skills/profiles/`. Three built-ins ship with the product: the impeccable default, editorial, and minimal. Custom profiles go in `TURBOFIG_PROFILES_DIR` (default `~/.turbofig/profiles`); the daemon scans that directory at startup. Each open file tracks its active profile via plugin data. The daemon prepends the active profile to the eval payload as `tf.taste`.
+`skills/` (Phase 7+): the design-worker recipes, led by `design.md` (the `/design` command).
 
 ## Ports
 
@@ -118,4 +116,3 @@ Both are overridable via `TURBOFIG_MCP_PORT` and `TURBOFIG_WS_PORT` environment 
 | `TURBOFIG_WS_PORT` | 18847 | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |
-| `TURBOFIG_PROFILES_DIR` | `~/.turbofig/profiles` | Scanned at daemon startup for custom `.js` taste profiles |

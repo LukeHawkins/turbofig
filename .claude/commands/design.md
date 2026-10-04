@@ -15,10 +15,10 @@ Parse `$ARGUMENTS` and extract:
 - **Purpose.** What the design is for and who will use it.
 - **Tone.** Formal, playful, minimal, bold, etc.
 - **Key sections.** Named page sections the design must contain (for example: Nav, Hero, Features, Pricing, Footer).
-- **Palette.** Hex values from the brief win. If the brief gives no hex values, use the active profile's `tf.taste.palette` (read from `profile.json` after the Profile step below). Only when the profile is `none` or its `palette` field is absent, derive a restrained neutral-forward palette from the tone. Never default to a generic purple. Obey the profile restraint rule: one brand colour plus neutrals per view.
+- **Palette.** Hex values from the brief win. If the brief gives no hex values, derive a restrained neutral-forward palette from the tone: one brand colour plus neutrals per view. Never default to a generic purple.
 - **Type.** Font family and weight choices if provided; otherwise default to Inter with Bold headings and Regular body.
 - **Reference material.** Moodboard image paths and reference URLs. Delegate reading of any moodboard image to a subagent that returns only a compact colour and mood summary. Do not load images into the main context.
-- **Profile.** Call `turbofig_status` and read `plugin.profileId`. Record the profile id for the whole job. Then run one `turbofig_execute` eval to read the active profile's constants from `tf.taste`: `return { spacing: tf.taste.spacing, type: tf.taste.type, grid: tf.taste.grid, contrast: tf.taste.contrast, hierarchy: tf.taste.hierarchy, restraint: tf.taste.restraint, blocklist: tf.taste.blocklist, palette: tf.taste.palette };`. Persist the result to `~/.turbofig/design/<job-id>/profile.json`. If `profileId` is `none`, `tf.taste` is undefined; write `{ "profileId": "none" }` and skip all profile constraints. If the profile id is not a known value, the daemon uses `impeccable` as the fallback.
+- **Spacing and grid.** Pick an 8px baseline spacing scale and a 12-column grid (margin and gutter sized to the target frame width) for the whole job, unless the brief specifies otherwise. Record both in the plan so every section and the QA pass share one system.
 
 If the brief is too vague to infer key sections, derive a sensible default structure (for example: Nav, Hero, Features, Footer) and proceed.
 
@@ -35,7 +35,7 @@ For each section, record:
 - `layout`: direction (`VERTICAL` or `HORIZONTAL`), gap, padding, and fixed width if known.
 - `content`: bullet list of child elements (text nodes, rects, cards, etc.) with copy and sizes.
 - `palette_tokens`: the 2-4 hex values this section uses from the palette.
-- `type_tokens`: font family/weight/size for each text role in this section.
+- `type_tokens`: font family/weight/size for each text role in this section, drawn from one modular type scale shared across the whole job.
 - `depends_on`: names of sections that must exist before this one (for example a sticky nav may depend on nothing; a pricing card may depend on a shared token frame). Leave empty if none.
 
 Persist two files:
@@ -56,7 +56,7 @@ Give each builder subagent ONLY:
 - A pointer to `helpers/tf-api.md`. Do not paste the file; pass the path.
 - The job id and the file-bridge protocol. Each builder must use its OWN unique bridge job id for the inbox/outbox filenames: `<design-job-id>-<SectionName>-<random4>` (for example `20260805-a3f7-HeroSection-b2c9`). Two builders sharing the same id would overwrite each other's inbox file.
 - The idempotency rule: use `tf.findOrCreate` to get or create the root section frame, then call `tf.clear` on it to remove all existing children before rebuilding. `findOrCreate` alone protects only the section frame; `tf.clear` before rebuilding makes a re-run fully safe.
-- A pointer to `~/.turbofig/design/<job-id>/profile.json`. Each builder must read this file and use its `spacing` scale, `type` scale, and `grid` values when placing and sizing nodes. The builder must also apply the profile's `hierarchy` rules (controlling visual emphasis and heading depth) and `restraint` rules (controlling what to remove or avoid) when designing the section. When the section spec gives no explicit hex values, the builder must take `palette_tokens` from `profile.json`'s `palette` field. When `profile.json` contains `{ "profileId": "none" }`, skip all profile constraints including `hierarchy`, `restraint`, and `palette`.
+- The job's shared spacing scale, grid (columns, gutter, margin), and type scale from the plan. Each builder must place and size nodes using only these values, keep a clear visual hierarchy (headings larger than body text, a clear entry point per section), and apply restraint (no clutter, no overlapping elements, no dead whitespace, no generic anti-slop patterns such as default drop shadows or purple gradients).
 
   ```js
   const s = await tf.findOrCreate(figma.currentPage, 'HeroSection', factory);
@@ -108,29 +108,27 @@ Dispatch a QA subagent for each target. Give each QA subagent ONLY:
 
 - The section name and node id (or the root container node id for the full-page check).
 - The job id and the file-bridge protocol.
-- A pointer to `~/.turbofig/design/<job-id>/profile.json`.
+- The job's shared spacing scale, grid, and type scale from the plan.
 - The QA rubric (copy it verbatim into the subagent prompt):
 
-  > Score the design against these criteria. Read profile.json before scoring. Report each objective check as pass or fail with the measured value.
+  > Score the design against these criteria. Report each check as pass or fail with the measured value.
   >
-  > **Objective checks (profile-driven):**
-  > 1. Grid adherence: element x positions and widths align to the profile `grid.columns`, `grid.gutter`, and `grid.margin`. Measure at least five elements. Report as: `pass` or `fail: <element> at x=<n>px, expected <m>px`.
-  > 2. Type-scale conformance: all text node sizes come from the profile `type.scale`. Report each text node using a size not in the scale as: `fail: <element> uses <n>px, not in scale`.
-  > 3. Contrast/AA: text-on-background contrast meets `contrast.bodyMin` for body text and `contrast.largeMin` for large text. Report each failing pair as: `fail: <element> measured <ratio>:1, required <min>:1`.
-  > 4. Spacing rhythm: all gaps and padding values come from the profile `spacing` scale. Report each value not in the scale.
-  > 5. Blocklist: none of the profile `blocklist` anti-slop patterns appear. Report each pattern found.
-  >
-  > When profile.json contains `{ "profileId": "none" }`, skip checks 1 to 5. Apply checks 6 and 7 to all runs.
+  > **Objective checks:**
+  > 1. Grid adherence: element x positions and widths align to the job's grid columns, gutter, and margin. Measure at least five elements. Report as: `pass` or `fail: <element> at x=<n>px, expected <m>px`.
+  > 2. Type-scale conformance: all text node sizes come from the job's type scale. Report each text node using a size not in the scale as: `fail: <element> uses <n>px, not in scale`.
+  > 3. Contrast/AA: text-on-background contrast meets WCAG AA (4.5:1 for body text, 3:1 for large text). Report each failing pair as: `fail: <element> measured <ratio>:1, required <min>:1`.
+  > 4. Spacing rhythm: all gaps and padding values come from the job's spacing scale. Report each value not in the scale.
+  > 5. Blocklist: no generic anti-slop patterns appear (default drop shadows, purple gradients, lorem ipsum, stock-photo placeholders). Report each pattern found.
   >
   > **Qualitative checks:**
-  > 6. Visual hierarchy: read the profile's `hierarchy` rules from profile.json and verify each rule is satisfied. When profile.json is `{ "profileId": "none" }`, apply the generic rule: headings are clearly larger than body text and the eye has a clear entry point.
-  > 7. Restraint: read the profile's `restraint` rules from profile.json and verify each rule is satisfied. When profile.json is `{ "profileId": "none" }`, apply the generic rule: no clutter, no element overlap, no text hidden behind other elements, no dead whitespace larger than the design intent.
+  > 6. Visual hierarchy: headings are clearly larger than body text and the eye has a clear entry point.
+  > 7. Restraint: no clutter, no element overlap, no text hidden behind other elements, no dead whitespace larger than the design intent.
 
 Each QA subagent must:
 
 1. Request a `screenshot` via the file-bridge: `{ "op": "screenshot", "nodeId": "<id>", "scale": 2, "return": "file" }`.
 2. Poll for the outbox file (0.2 s intervals, up to 50 tries). Read the PNG from the path in the outbox result.
-3. Read profile.json. Score the design against all seven criteria.
+3. Score the design against all seven criteria, using the job's spacing scale, grid, and type scale given in the prompt.
 4. Return a SHORT TEXT verdict only:
    - `pass` if all criteria are met.
    - List objective check results first (checks 1 to 5), then qualitative check results (checks 6 and 7). For each failure, give the measured value and a specific fix. For example: `3. Contrast/AA fail: body text #888888 on #FFFFFF measured 3.5:1, required 4.5:1. Fix: change fill to #767676 or darker.`

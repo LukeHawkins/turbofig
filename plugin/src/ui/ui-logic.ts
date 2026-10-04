@@ -34,21 +34,6 @@ export function connStateFromEvent(event: WsEvent, attempt: number): ConnStateRe
   return { state: "reconnecting", label: "Reconnecting..." };
 }
 
-/** Known profile ids that map to named select options. */
-export const KNOWN_PROFILES: readonly string[] = ["impeccable", "editorial", "minimal", "none"];
-
-/**
- * Maps a profile id to the select element value and a flag for the custom input.
- * Returns { value: profileId, isCustom: false } for known profiles.
- * Returns { value: "custom", isCustom: true } for unknown profile ids.
- */
-export function profileToSelectValue(profileId: string): { value: string; isCustom: boolean } {
-  if (KNOWN_PROFILES.includes(profileId)) {
-    return { value: profileId, isCustom: false };
-  }
-  return { value: "custom", isCustom: true };
-}
-
 /**
  * Returns a compact display line for the active file.
  * Shows the file name and the first 8 characters of the file key.
@@ -82,12 +67,10 @@ export function isRequestType(type: string): boolean {
 
 /**
  * Decides how the UI handles a message received from the daemon over the socket.
- * "drop": the daemon must not drive this. Ignore it (SET_PROFILE).
  * "welcome": consume it locally to read the daemon version (WELCOME).
  * "relay": forward it to the main thread (requests and everything else).
  */
-export function daemonMessageAction(type: string): "drop" | "welcome" | "relay" {
-  if (type === "SET_PROFILE") return "drop";
+export function daemonMessageAction(type: string): "welcome" | "relay" {
   if (type === "WELCOME") return "welcome";
   return "relay";
 }

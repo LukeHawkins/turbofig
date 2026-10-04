@@ -13,7 +13,3 @@ Example job: `{"op":"execute","fileKey":"<key>","code":"return figma.root.name;"
 ## MCP (fallback)
 
 Plain local HTTP on port 18846, not HTTPS. Use curl, never a web-fetch tool (it forces HTTPS and fails). `POST http://127.0.0.1:18846/mcp`. The four tools mirror the ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`, each with an optional `fileKey`.
-
-## Taste
-
-Each file has an active taste profile (default `impeccable`) injected as `tf.taste`. Generated designs must obey it.
