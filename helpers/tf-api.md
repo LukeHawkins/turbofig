@@ -2,6 +2,8 @@
 
 `tf` is a helper namespace available in every `turbofig_execute` eval, alongside the `figma` global. The plugin runs under `documentAccess: dynamic-page`, so use async Figma APIs where required. Prefer `tf.*` over raw Figma node calls: it is shorter, handles font loading, and normalises common options.
 
+If you drive `tf.*` code through the file-bridge, give every job file a unique id. Reusing an id while the first job is still running does not get a result: the daemon leaves the duplicate in the inbox, untouched, until the first job finishes.
+
 ---
 
 ## Function reference

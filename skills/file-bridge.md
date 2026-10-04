@@ -25,6 +25,8 @@ Default bridge folder: `~/.turbofig`. Override with `TURBOFIG_BRIDGE_DIR`.
 
 The daemon removes the inbox file after it runs. It writes the outbox file atomically, so a read never sees a partial file.
 
+**The id must be unique per job, not just per client.** Never reuse an id while a job with that id may still be running. If a reused id arrives while the first job with that id is still in flight, the daemon leaves the new file untouched in the inbox until the first job finishes, instead of racing both against the same outbox file. The duplicate then runs normally on a later scan.
+
 ## Reliability
 
 Write the whole job file in one operation. The daemon wakes on a filesystem event and reads the inbox file. If a wake catches a half-written file, the JSON does not parse yet, so the daemon leaves the file and retries on the next wake. So one complete write per job is the contract, and you do not write a second sentinel file.

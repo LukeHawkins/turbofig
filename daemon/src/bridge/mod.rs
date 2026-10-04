@@ -147,9 +147,23 @@ async fn run_bridge_loop(
     let mut backstop = tokio::time::interval(BACKSTOP);
     let mut first_seen: HashMap<String, Instant> = HashMap::new();
     let mut given_up: HashSet<String> = HashSet::new();
+    // Job ids currently claimed and running in their own tokio::spawn task.
+    // Shared with those tasks (not just this loop) so a duplicate id written
+    // while the first is still running is recognised even though the scan
+    // itself never awaits the job.
+    let in_flight: Arc<std::sync::Mutex<HashSet<String>>> =
+        Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     // Scan once at startup for any job left in inbox before the watch began.
-    scan_and_service(inbox, outbox, state, &mut first_seen, &mut given_up).await;
+    scan_and_service(
+        inbox,
+        outbox,
+        state,
+        &mut first_seen,
+        &mut given_up,
+        &in_flight,
+    )
+    .await;
 
     loop {
         // Wake on a filesystem event or the backstop tick, whichever is first.
@@ -170,7 +184,15 @@ async fn run_bridge_loop(
         if is_backstop {
             prune_old_outbox(outbox).await;
         }
-        scan_and_service(inbox, outbox, state, &mut first_seen, &mut given_up).await;
+        scan_and_service(
+            inbox,
+            outbox,
+            state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
     }
 }
 
@@ -256,6 +278,7 @@ async fn scan_and_service(
     state: &Arc<AppState>,
     first_seen: &mut HashMap<String, Instant>,
     given_up: &mut HashSet<String>,
+    in_flight: &Arc<std::sync::Mutex<HashSet<String>>>,
 ) {
     let mut entries = match tokio::fs::read_dir(inbox).await {
         Ok(e) => e,
@@ -321,19 +344,29 @@ async fn scan_and_service(
                     }
                 };
 
+                // The file read and parsed as JSON, so this is not a
+                // half-written file: a schema-invalid Job (a bad field, an
+                // unknown op) is a complete, final answer, not a "maybe
+                // still being written" state. Fail it at once rather than
+                // waiting out PARSE_GRACE plus the backstop: the grace
+                // window exists only to tolerate a write still in flight.
                 let job = match Job::parse(&raw) {
                     Ok(j) => j,
                     Err(e) => {
-                        handle_unready(
-                            &path,
-                            &key,
-                            job_id.as_deref(),
-                            e,
-                            outbox,
-                            first_seen,
-                            given_up,
-                        )
-                        .await;
+                        first_seen.remove(&key);
+                        given_up.remove(&key);
+                        if let Err(e) = tokio::fs::remove_file(&path).await {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                eprintln!(
+                                    "Turbofig bridge: could not remove invalid job {path:?}: {e}"
+                                );
+                            }
+                        }
+                        if let Some(id) = job_id.as_deref() {
+                            delete_stale_result(outbox, id).await;
+                            let result = serde_json::json!({"ok": false, "error": e});
+                            write_result(outbox, id, result).await;
+                        }
                         continue;
                     }
                 };
@@ -349,6 +382,20 @@ async fn scan_and_service(
                     let _ = tokio::fs::remove_file(&path).await;
                     continue;
                 };
+
+                // A client that reuses an id while the first job with that id
+                // is still running must never have this scan touch the
+                // in-flight job's .tmp file or its eventual result. The
+                // simplest race-free answer: leave the duplicate in the
+                // inbox untouched. It is claimed normally on a later scan,
+                // once the in-flight id has been removed below.
+                if in_flight
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&job_id)
+                {
+                    continue;
+                }
 
                 // Claim the complete job by removing the inbox file.
                 if let Err(e) = tokio::fs::remove_file(&path).await {
@@ -366,13 +413,24 @@ async fn scan_and_service(
                 // writes its own.
                 delete_stale_result(outbox, &job_id).await;
 
+                in_flight
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(job_id.clone());
+
                 // Run the claimed job in its own task so a slow job does not
                 // stall the scan.
                 let outbox_owned = outbox.to_path_buf();
                 let state = state.clone();
+                let in_flight = in_flight.clone();
+                let in_flight_id = job_id.clone();
                 tokio::spawn(async move {
                     let result = process_job(job, &state, &outbox_owned).await;
                     write_result(&outbox_owned, &job_id, result).await;
+                    in_flight
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&in_flight_id);
                 });
             }
             Ok(None) => break,
@@ -608,9 +666,18 @@ mod tests {
         )));
         let mut first_seen = HashMap::new();
         let mut given_up = HashSet::new();
+        let in_flight = Arc::new(std::sync::Mutex::new(HashSet::new()));
 
         // First scan: within grace, nothing written yet, file still present.
-        scan_and_service(&inbox, &outbox, &state, &mut first_seen, &mut given_up).await;
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
         assert!(
             inbox.join("bad.json").exists(),
             "must not claim within grace"
@@ -620,7 +687,15 @@ mod tests {
 
         // Second scan: grace has elapsed. Must give up: write an error result,
         // remove the inbox file, and remember it in given_up.
-        scan_and_service(&inbox, &outbox, &state, &mut first_seen, &mut given_up).await;
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
         assert!(
             !inbox.join("bad.json").exists(),
             "the bad file must be removed"
@@ -638,8 +713,118 @@ mod tests {
 
         // A third scan must not touch it again: no new write, no panic, no
         // re-insertion into first_seen.
-        scan_and_service(&inbox, &outbox, &state, &mut first_seen, &mut given_up).await;
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
         assert!(!first_seen.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn a_schema_invalid_job_fails_at_once_without_waiting_out_the_parse_grace() {
+        // Valid JSON, invalid Job schema (unknown op): must get one error
+        // result on the very first scan, never the PARSE_GRACE wait that a
+        // half-written file needs.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inbox = tmp.path().join("inbox");
+        let outbox = tmp.path().join("outbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&outbox).await.unwrap();
+        tokio::fs::write(inbox.join("job1.json"), br#"{"op":"delete_everything"}"#)
+            .await
+            .unwrap();
+
+        let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
+            100,
+        )));
+        let mut first_seen = HashMap::new();
+        let mut given_up = HashSet::new();
+        let in_flight = Arc::new(std::sync::Mutex::new(HashSet::new()));
+
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
+
+        assert!(
+            !inbox.join("job1.json").exists(),
+            "a schema-invalid job must be claimed on the first scan"
+        );
+        let result = tokio::fs::read_to_string(outbox.join("job1.json"))
+            .await
+            .expect("error result written on the first scan");
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(v["ok"], serde_json::json!(false));
+        assert!(
+            first_seen.is_empty(),
+            "a schema-invalid job must never enter the parse-grace bookkeeping"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_job_id_still_in_flight_is_left_in_the_inbox_untouched() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inbox = tmp.path().join("inbox");
+        let outbox = tmp.path().join("outbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&outbox).await.unwrap();
+        tokio::fs::write(inbox.join("dup.json"), br#"{"op":"status"}"#)
+            .await
+            .unwrap();
+
+        let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
+            100,
+        )));
+        let mut first_seen = HashMap::new();
+        let mut given_up = HashSet::new();
+        let in_flight = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        // Simulate a first job with this id already running.
+        in_flight.lock().unwrap().insert("dup".to_owned());
+
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
+
+        assert!(
+            inbox.join("dup.json").exists(),
+            "a duplicate id still in flight must be left in the inbox, not claimed or answered"
+        );
+        assert!(
+            !outbox.join("dup.json").exists(),
+            "a duplicate id still in flight must not get its own result written"
+        );
+
+        // The first job finishes; its id is no longer in flight.
+        in_flight.lock().unwrap().remove("dup");
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
+        assert!(
+            !inbox.join("dup.json").exists(),
+            "once the id is free, a later scan must claim the duplicate normally"
+        );
     }
 
     #[tokio::test]

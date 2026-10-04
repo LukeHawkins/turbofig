@@ -165,7 +165,7 @@ export function wsUrlForPort(port: number): string {
  */
 export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
   if (!fileKey) return "";
-  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ~/.turbofig/inbox/<id>.json → read ~/.turbofig/outbox/<id>.json. Ops: status|execute|get_selection|screenshot. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
+  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ~/.turbofig/inbox/<unique-id>.json (id unique per job) → read ~/.turbofig/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
 }
 
 /**
