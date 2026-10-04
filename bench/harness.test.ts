@@ -1,175 +1,105 @@
 /**
- * Unit tests for bench/harness.ts pure functions.
+ * Unit tests for bench/harness.ts pure functions and run orchestration.
  * Run with: bun test bench/harness.test.ts
  */
 
 import { describe, expect, it } from "bun:test";
-import type { BaselineReport, RunSummary } from "./harness.js";
+import type { BenchReport, IterationRecord } from "./harness.js";
 import {
   compareToBaseline,
-  estimateTokens,
-  jobTokens,
-  type RunRecord,
-  runScenario,
-  summarizeRun,
+  median,
+  p95,
+  runScenarioAgainstTarget,
+  summarizeJobs,
 } from "./harness.js";
-import type { BridgeJob, Scenario } from "./scenarios.js";
+import type { BridgeJob } from "./scenarios.js";
+import type { SubmitResult, Transport } from "./transports.js";
 
 // ---------------------------------------------------------------------------
-// estimateTokens
+// median / p95
 // ---------------------------------------------------------------------------
 
-describe("estimateTokens", () => {
-  it("returns 0 for empty string", () => {
-    expect(estimateTokens("")).toBe(0);
+describe("median", () => {
+  it("returns the single value for a one-element array", () => {
+    expect(median([42])).toBe(42);
   });
 
-  it("returns 1 for 4 characters", () => {
-    expect(estimateTokens("abcd")).toBe(1);
+  it("averages the two middle values for an even-length array", () => {
+    expect(median([10, 20, 30, 40])).toBe(25);
   });
 
-  it("rounds up when characters do not divide evenly by 4", () => {
-    // 5 chars => ceil(5/4) = 2
-    expect(estimateTokens("abcde")).toBe(2);
+  it("returns the middle value for an odd-length array", () => {
+    expect(median([5, 1, 9])).toBe(5);
+  });
+});
+
+describe("p95", () => {
+  it("returns the single value for a one-element array", () => {
+    expect(p95([42])).toBe(42);
   });
 
-  it("returns 1 for 1 to 4 characters", () => {
-    // ceil(1/4) = 1, ceil(3/4) = 1
-    expect(estimateTokens("a")).toBe(1);
-    expect(estimateTokens("abc")).toBe(1);
+  it("returns the highest value when all ranks point past the array", () => {
+    expect(p95([1, 2, 3, 4])).toBe(4);
   });
 
-  it("returns exact integer when chars divide evenly", () => {
-    // 12 chars => ceil(12/4) = 3
-    expect(estimateTokens("abcdefghijkl")).toBe(3);
+  it("picks the nearest-rank value for a larger array", () => {
+    const values = Array.from({ length: 20 }, (_, i) => i + 1); // 1..20
+    // ceil(0.95 * 20) - 1 = 18 -> values[18] = 19
+    expect(p95(values)).toBe(19);
   });
 });
 
 // ---------------------------------------------------------------------------
-// jobTokens
+// summarizeJobs
 // ---------------------------------------------------------------------------
 
-describe("jobTokens", () => {
-  it("counts tokens from the JSON-serialised job", () => {
-    const job: BridgeJob = { op: "execute", code: "tf.noop()" };
-    // JSON.stringify => '{"op":"execute","code":"tf.noop()"}' = 35 chars => ceil(35/4) = 9
-    const serialised = JSON.stringify(job);
-    expect(jobTokens(job)).toBe(Math.ceil(serialised.length / 4));
+function fakeIteration(
+  iteration: number,
+  jobTimes: number[],
+  opts: { bytes?: [number, number][]; allOk?: boolean } = {},
+): IterationRecord {
+  const records = jobTimes.map((wallMs, index) => ({
+    role: "job" as const,
+    index,
+    ok: opts.allOk ?? true,
+    wallMs,
+    requestBytes: opts.bytes?.[index]?.[0] ?? 10,
+    responseBytes: opts.bytes?.[index]?.[1] ?? 20,
+  }));
+  return { iteration, cold: iteration === 0, valid: records.every((r) => r.ok), records };
+}
+
+describe("summarizeJobs", () => {
+  it("takes coldMs from iteration 0 only", () => {
+    const iterations = [fakeIteration(0, [100]), fakeIteration(1, [50]), fakeIteration(2, [60])];
+    const stats = summarizeJobs(iterations, 1);
+    expect(stats[0].coldMs).toBe(100);
   });
 
-  it("handles a status job with no code field", () => {
-    const job: BridgeJob = { op: "status" };
-    const serialised = JSON.stringify(job);
-    expect(jobTokens(job)).toBe(Math.ceil(serialised.length / 4));
-  });
-
-  it("includes fileKey when present", () => {
-    const jobWithKey: BridgeJob = { op: "screenshot", fileKey: "abc123" };
-    const jobWithout: BridgeJob = { op: "screenshot" };
-    // Job with key serialises to more chars.
-    expect(jobTokens(jobWithKey)).toBeGreaterThan(jobTokens(jobWithout));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// summarizeRun
-// ---------------------------------------------------------------------------
-
-describe("summarizeRun", () => {
-  it("returns zeroed summary for empty records", () => {
-    const summary = summarizeRun([]);
-    expect(summary.tokensIn).toBe(0);
-    expect(summary.tokensOut).toBe(0);
-    expect(summary.totalTokens).toBe(0);
-    expect(summary.wallMs).toBe(0);
-    expect(summary.count).toBe(0);
-  });
-
-  it("sums all fields across records", () => {
-    const records: RunRecord[] = [
-      { tokensIn: 10, tokensOut: 5, wallMs: 100 },
-      { tokensIn: 20, tokensOut: 8, wallMs: 200 },
+  it("computes warm median and p95 from iterations after the first", () => {
+    const iterations = [
+      fakeIteration(0, [999]),
+      fakeIteration(1, [10]),
+      fakeIteration(2, [20]),
+      fakeIteration(3, [30]),
     ];
-    const summary = summarizeRun(records);
-    expect(summary.tokensIn).toBe(30);
-    expect(summary.tokensOut).toBe(13);
-    expect(summary.totalTokens).toBe(43);
-    expect(summary.wallMs).toBe(300);
-    expect(summary.count).toBe(2);
+    const stats = summarizeJobs(iterations, 1);
+    expect(stats[0].warmMedianMs).toBe(20);
+    expect(stats[0].warmP95Ms).toBe(30);
   });
 
-  it("sets totalTokens to tokensIn + tokensOut", () => {
-    const records: RunRecord[] = [{ tokensIn: 7, tokensOut: 3, wallMs: 50 }];
-    const summary = summarizeRun(records);
-    expect(summary.totalTokens).toBe(summary.tokensIn + summary.tokensOut);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// runScenario with stub transport
-// ---------------------------------------------------------------------------
-
-describe("runScenario", () => {
-  it("returns count matching number of jobs in scenario", async () => {
-    const fixedResult = { ok: true };
-    const stub = {
-      async submit(_job: BridgeJob) {
-        return { result: fixedResult, wallMs: 0 };
-      },
-    };
-
-    const twoJobScenario: Scenario = {
-      name: "test",
-      jobs: [
-        { op: "execute", code: "tf.a()" },
-        { op: "execute", code: "tf.b()" },
-      ],
-    };
-
-    const { summary, records } = await runScenario(twoJobScenario, stub);
-    expect(summary.count).toBe(2);
-    expect(records.length).toBe(2);
+  it("returns null cold/warm stats when no iterations are given", () => {
+    const stats = summarizeJobs([], 1);
+    expect(stats[0].coldMs).toBeNull();
+    expect(stats[0].warmMedianMs).toBeNull();
+    expect(stats[0].warmP95Ms).toBeNull();
   });
 
-  it("accumulates tokensIn from each job and tokensOut from each result", async () => {
-    const fixedResult = { ok: true };
-    const stub = {
-      async submit(_job: BridgeJob) {
-        return { result: fixedResult, wallMs: 0 };
-      },
-    };
-
-    const job1: BridgeJob = { op: "execute", code: "tf.alpha()" };
-    const job2: BridgeJob = { op: "execute", code: "tf.beta()" };
-
-    const scenario: Scenario = { name: "test2", jobs: [job1, job2] };
-
-    const { summary } = await runScenario(scenario, stub);
-
-    const expectedIn = jobTokens(job1) + jobTokens(job2);
-    const expectedOut = estimateTokens(JSON.stringify(fixedResult)) * 2;
-
-    expect(summary.tokensIn).toBe(expectedIn);
-    expect(summary.tokensOut).toBe(expectedOut);
-    expect(summary.totalTokens).toBe(expectedIn + expectedOut);
-  });
-
-  it("records wallMs from the stub transport per job", async () => {
-    const stub = {
-      async submit(_job: BridgeJob) {
-        return { result: { ok: true }, wallMs: 42 };
-      },
-    };
-
-    const scenario: Scenario = {
-      name: "timing",
-      jobs: [{ op: "status" }, { op: "status" }],
-    };
-
-    const { summary, records } = await runScenario(scenario, stub);
-    expect(records[0].wallMs).toBe(42);
-    expect(records[1].wallMs).toBe(42);
-    expect(summary.wallMs).toBe(84);
+  it("carries request and response bytes from the first iteration with a record", () => {
+    const iterations = [fakeIteration(0, [10], { bytes: [[123, 456]] })];
+    const stats = summarizeJobs(iterations, 1);
+    expect(stats[0].requestBytes).toBe(123);
+    expect(stats[0].responseBytes).toBe(456);
   });
 });
 
@@ -177,61 +107,168 @@ describe("runScenario", () => {
 // compareToBaseline
 // ---------------------------------------------------------------------------
 
+function fakeReport(overrides: Partial<BenchReport> = {}): BenchReport {
+  return {
+    scenario: "webpage",
+    label: "transport + helpers",
+    target: "turbofig-bridge",
+    runs: 10,
+    timeoutMs: 45_000,
+    valid: true,
+    invalidReason: null,
+    jobStats: [],
+    totalRequestBytes: 100,
+    totalResponseBytes: 50,
+    iterations: [],
+    machine: {},
+    timestamp: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 describe("compareToBaseline", () => {
-  const summary: RunSummary = {
-    tokensIn: 60,
-    tokensOut: 40,
-    totalTokens: 100,
-    wallMs: 500,
-    count: 2,
+  it("returns ratio string when scenario and target match", () => {
+    const report = fakeReport({ totalRequestBytes: 60, totalResponseBytes: 40 });
+    const baseline = fakeReport({ totalRequestBytes: 80, totalResponseBytes: 20 });
+    // this total 100 / baseline total 100 = 1.000
+    expect(compareToBaseline(report, baseline)).toBe("1.000");
+  });
+
+  it("returns null when scenario does not match", () => {
+    const report = fakeReport({ scenario: "deck20" });
+    const baseline = fakeReport({ scenario: "webpage" });
+    expect(compareToBaseline(report, baseline)).toBeNull();
+  });
+
+  it("returns null when target does not match", () => {
+    const report = fakeReport({ target: "turbofig-mcp" });
+    const baseline = fakeReport({ target: "turbofig-bridge" });
+    expect(compareToBaseline(report, baseline)).toBeNull();
+  });
+
+  it("returns 'no valid baseline total' when baseline total is zero", () => {
+    const report = fakeReport();
+    const baseline = fakeReport({ totalRequestBytes: 0, totalResponseBytes: 0 });
+    expect(compareToBaseline(report, baseline)).toBe("no valid baseline total");
+  });
+
+  it("returns 'no valid baseline total' when baseline total is negative", () => {
+    const report = fakeReport();
+    const baseline = fakeReport({ totalRequestBytes: -10, totalResponseBytes: 0 });
+    expect(compareToBaseline(report, baseline)).toBe("no valid baseline total");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runScenarioAgainstTarget (mock transport)
+// ---------------------------------------------------------------------------
+
+function mockTransport(result: (job: BridgeJob) => SubmitResult): Transport {
+  return {
+    async submit(job: BridgeJob): Promise<SubmitResult> {
+      return result(job);
+    },
+  };
+}
+
+const okResult: SubmitResult = {
+  result: { ok: true },
+  wallMs: 5,
+  requestBytes: 10,
+  responseBytes: 10,
+  ok: true,
+};
+
+describe("runScenarioAgainstTarget", () => {
+  const scenario = {
+    name: "test",
+    label: "transport" as const,
+    targets: ["turbofig-bridge" as const],
+    pageName: "bench-test",
+    jobs: [
+      { op: "execute" as const, code: "tf.a()" },
+      { op: "execute" as const, code: "tf.b()" },
+    ],
   };
 
-  it("returns ratio string when scenario matches and totalTokens is positive", () => {
-    const baseline: BaselineReport = { scenario: "perf", totalTokens: 200 };
-    const result = compareToBaseline("perf", summary, baseline);
-    // 100 / 200 = 0.500
-    expect(result).toBe("0.500");
+  it("runs setup, every job, and teardown each iteration", async () => {
+    const transport = mockTransport(() => okResult);
+    const { iterations, valid } = await runScenarioAgainstTarget(scenario, transport, 2, undefined);
+    expect(valid).toBe(true);
+    expect(iterations).toHaveLength(2);
+    for (const iter of iterations) {
+      expect(iter.records.map((r) => r.role)).toEqual(["setup", "job", "job", "teardown"]);
+    }
   });
 
-  it("returns null when scenario name does not match baseline scenario", () => {
-    const baseline: BaselineReport = { scenario: "other", totalTokens: 200 };
-    const result = compareToBaseline("perf", summary, baseline);
-    expect(result).toBeNull();
+  it("marks the run invalid and records the reason when a job fails", async () => {
+    let call = 0;
+    const transport = mockTransport((job) => {
+      call++;
+      if (job.code === "tf.b()") {
+        return {
+          result: { ok: false, error: "boom" },
+          wallMs: 1,
+          requestBytes: 1,
+          responseBytes: 1,
+          ok: false,
+        };
+      }
+      return okResult;
+    });
+    const { valid, invalidReason } = await runScenarioAgainstTarget(
+      scenario,
+      transport,
+      1,
+      undefined,
+    );
+    expect(valid).toBe(false);
+    expect(invalidReason).toContain("job 1 failed");
+    expect(call).toBeGreaterThan(0);
   });
 
-  it("returns 'no valid baseline total' when totalTokens is zero", () => {
-    const baseline: BaselineReport = { scenario: "perf", totalTokens: 0 };
-    const result = compareToBaseline("perf", summary, baseline);
-    expect(result).toBe("no valid baseline total");
+  it("skips the scenario jobs and teardown when setup fails, but does not throw", async () => {
+    const transport = mockTransport((job) => {
+      if (job.code?.includes("createPage")) {
+        return {
+          result: { ok: false, error: "no plugin" },
+          wallMs: 1,
+          requestBytes: 1,
+          responseBytes: 1,
+          ok: false,
+        };
+      }
+      return okResult;
+    });
+    const { iterations, valid } = await runScenarioAgainstTarget(scenario, transport, 1, undefined);
+    expect(valid).toBe(false);
+    expect(iterations[0].records).toHaveLength(1);
+    expect(iterations[0].records[0].role).toBe("setup");
   });
 
-  it("returns 'no valid baseline total' when totalTokens is negative", () => {
-    const baseline: BaselineReport = { scenario: "perf", totalTokens: -10 };
-    const result = compareToBaseline("perf", summary, baseline);
-    expect(result).toBe("no valid baseline total");
+  it("records a transport exception as a failed job instead of throwing", async () => {
+    const transport: Transport = {
+      async submit(): Promise<SubmitResult> {
+        throw new Error("network down");
+      },
+    };
+    const { valid, invalidReason } = await runScenarioAgainstTarget(
+      scenario,
+      transport,
+      1,
+      undefined,
+    );
+    expect(valid).toBe(false);
+    expect(invalidReason).toContain("network down");
   });
 
-  it("returns 'no valid baseline total' when totalTokens is NaN", () => {
-    // Force a NaN value to simulate a corrupt baseline field.
-    const baseline = { scenario: "perf", totalTokens: Number.NaN } as BaselineReport;
-    const result = compareToBaseline("perf", summary, baseline);
-    expect(result).toBe("no valid baseline total");
-  });
-
-  it("does not divide when totalTokens is missing (not a number)", () => {
-    // Simulate a baseline file missing the field entirely.
-    const baseline = { scenario: "perf", totalTokens: undefined } as unknown as BaselineReport;
-    const result = compareToBaseline("perf", summary, baseline);
-    expect(result).toBe("no valid baseline total");
-  });
-
-  it("ratio value is never NaN or Infinity", () => {
-    const baseline: BaselineReport = { scenario: "perf", totalTokens: 50 };
-    const result = compareToBaseline("perf", summary, baseline);
-    // 100 / 50 = 2.000
-    expect(result).toBe("2.000");
-    const asNumber = Number(result);
-    expect(Number.isFinite(asNumber)).toBe(true);
-    expect(Number.isNaN(asNumber)).toBe(false);
+  it("passes fileKey through to every job when given", async () => {
+    const seenKeys: (string | undefined)[] = [];
+    const transport = mockTransport((job) => {
+      seenKeys.push(job.fileKey);
+      return okResult;
+    });
+    await runScenarioAgainstTarget(scenario, transport, 1, "abc123");
+    expect(seenKeys.every((k) => k === "abc123")).toBe(true);
   });
 });
