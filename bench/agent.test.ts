@@ -24,6 +24,15 @@ describe("buildArgs", () => {
     expect(argv[idx + 1]).toBe(`mcp__${cfg.serverName}__*`);
   });
 
+  it('disables the built-in tool set with --tools "" instead of bypassPermissions', () => {
+    const argv = buildArgs(cfg, task);
+    const idx = argv.indexOf("--tools");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(argv[idx + 1]).toBe("");
+    expect(argv).not.toContain("bypassPermissions");
+    expect(argv).not.toContain("--permission-mode");
+  });
+
   it("passes --output-format json", () => {
     const argv = buildArgs(cfg, task);
     const idx = argv.indexOf("--output-format");
@@ -47,6 +56,11 @@ describe("formatCommand", () => {
     const cmd = formatCommand(["--bare"]);
     expect(cmd).toBe("claude --bare");
   });
+
+  it('quotes an empty string argument (--tools "") instead of dropping it silently', () => {
+    const cmd = formatCommand(["--tools", ""]);
+    expect(cmd).toBe('claude --tools ""');
+  });
 });
 
 describe("parseResult", () => {
@@ -63,14 +77,32 @@ describe("parseResult", () => {
         cache_read_input_tokens: 0,
       },
     });
-    const record = parseResult("turbofig-mcp", "trivial", 0, stdout);
+    const record = parseResult("turbofig-mcp", "trivial", 0, stdout, {
+      exitCode: 0,
+      stderr: "",
+    });
     expect(record.ok).toBe(true);
     expect(record.inputTokens).toBe(1500);
     expect(record.outputTokens).toBe(80);
     expect(record.cacheCreationTokens).toBe(900);
+    expect(record.cacheReadTokens).toBe(0);
+    expect(record.totalInputTokens).toBe(2400);
     expect(record.numTurns).toBe(2);
     expect(record.durationMs).toBe(4200);
+    expect(record.exitCode).toBe(0);
     expect(record.error).toBeNull();
+  });
+
+  it("marks ok false when the process exit code is non-zero even if the JSON claims success", () => {
+    const stdout = JSON.stringify({ is_error: false, duration_ms: 100 });
+    const record = parseResult("turbofig-mcp", "trivial", 0, stdout, {
+      exitCode: 1,
+      stderr: "some warning",
+    });
+    expect(record.ok).toBe(false);
+    expect(record.exitCode).toBe(1);
+    expect(record.stderr).toBe("some warning");
+    expect(record.error).toContain("exited with code 1");
   });
 
   it("marks ok false and carries the result text as the error when is_error is true", () => {
