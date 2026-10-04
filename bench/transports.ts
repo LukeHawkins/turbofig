@@ -8,10 +8,10 @@
  * (token cost of a real Claude Code session) lives in agent.ts.
  */
 
+import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import type { BridgeJob } from "./scenarios.js";
 
 /** One job's measured outcome. Bytes are exact wire sizes, never estimated. */
@@ -233,7 +233,9 @@ export const consoleMcpAdapter: McpAdapter = {
           arguments: dropUndefined({ nodeId: job.nodeId, format: "png", scale: job.scale ?? 2 }),
         };
       case "status":
-        throw new Error("console-mcp has no status-equivalent tool; omit status jobs for this target");
+        throw new Error(
+          "console-mcp has no status-equivalent tool; omit status jobs for this target",
+        );
     }
   },
   isOk: defaultIsOk,
