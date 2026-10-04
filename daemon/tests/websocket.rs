@@ -1825,11 +1825,15 @@ async fn test_oversize_ws_message_drops_the_connection() {
     );
 }
 
-/// A reconnect (or a second window) on the same fileKey must evict the older
-/// connection: routing always prefers the newest, and the old connection's
-/// in-flight request fails instead of hanging out its full timeout.
+/// A reconnect (or a second window) on the same fileKey must not evict the
+/// older connection: both stay registered, so a later FILE_INFO from either
+/// one (e.g. both re-announcing a file rename) can never knock out the
+/// other. `state.list_connections()` is the raw registry view and lists
+/// both; routing itself (`connections_named`/`resolve_route`) is what
+/// dedupes to the newest, and that is covered in state.rs/routing.rs's own
+/// unit tests.
 #[tokio::test]
-async fn test_reconnect_same_file_key_evicts_the_older_connection() {
+async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral WS port");
@@ -1866,13 +1870,14 @@ async fn test_reconnect_same_file_key_evicts_the_older_connection() {
     let conns = state.list_connections();
     assert_eq!(
         conns.len(),
-        1,
-        "only the newest connection for a reused fileKey must remain registered"
+        2,
+        "both connections sharing a fileKey must stay registered"
     );
-    assert_eq!(
-        conns[0].2, "Second",
-        "the surviving connection must be the newest"
-    );
+    let names: Vec<&str> = conns.iter().map(|(_, _, nm)| nm.as_str()).collect();
+    assert!(names.contains(&"First") && names.contains(&"Second"));
+    // The routing-facing dedupe (newest conn_id wins) is covered by
+    // connections_named's own unit tests in state.rs/routing.rs; it is
+    // pub(crate), so not reachable from this integration test.
 
     // The old socket is still physically open; make sure it does not panic
     // anything when it later closes.

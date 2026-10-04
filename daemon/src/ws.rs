@@ -107,7 +107,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 }
 
 /// Dispatch one parsed inbound frame by `type`. Never panics on malformed input.
+///
+/// Ignores every frame from a conn_id no longer in the registry: a message
+/// that arrives just after its own connection closed (or, in principle, a
+/// forged conn_id) must never touch state on behalf of a connection that is
+/// not actually live.
 fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<String>, conn_id: u64) {
+    if !state.connection_exists(conn_id) {
+        return;
+    }
     match json.get("type").and_then(|t| t.as_str()) {
         Some("FILE_INFO") => {
             let file_key = json
@@ -219,5 +227,41 @@ mod tests {
         assert!(!ws_origin_allowed(Some(
             &axum::http::HeaderValue::from_static("https://evil.example")
         )));
+    }
+
+    #[test]
+    fn dispatch_ignores_file_info_from_an_unregistered_conn_id() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let msg = json!({"type": "FILE_INFO", "fileKey": "fk1", "name": "Ghost"});
+        dispatch(&msg, &state, &tx, 999);
+        assert!(
+            state.list_connections().is_empty(),
+            "an unregistered conn_id must not create a connection entry"
+        );
+    }
+
+    #[test]
+    fn dispatch_ignores_result_from_an_unregistered_conn_id() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let real_conn = state.add_connection(tx.clone());
+        state.set_connection_info(real_conn, "fk1".to_owned(), "Real".to_owned());
+        let (id, mut pending_rx) = state
+            .register_pending_if_connected(real_conn)
+            .expect("real connection live");
+
+        // A different, unregistered conn_id claims the same request id.
+        let msg = json!({"type": "RESULT", "requestId": id, "ok": true});
+        dispatch(&msg, &state, &tx, 999);
+
+        assert!(
+            pending_rx.try_recv().is_err(),
+            "a RESULT from an unregistered conn_id must not resolve a pending request"
+        );
     }
 }

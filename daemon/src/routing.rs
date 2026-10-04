@@ -41,9 +41,11 @@ pub(crate) fn route_error_to_json(e: RouteError) -> Value {
 /// Only connections whose file_key is non-empty count as valid targets.
 /// A just-connected socket with no FILE_INFO is not a valid target.
 ///
-/// At most one live connection can ever hold a given file_key (state.rs
-/// evicts the older one on reconnect), so this never needs to break a tie
-/// between two connections for the same file.
+/// Two live connections may share a file_key (a reconnect, or a second
+/// window on the same file): `state.connections_named()` already dedupes
+/// that down to the newest (highest conn_id) entry, so this never needs to
+/// break a tie itself, and a closed newest connection naturally falls back
+/// to an older one still open.
 pub(crate) fn resolve_route(
     state: &AppState,
     session_id: Option<&str>,
@@ -245,9 +247,10 @@ mod tests {
 
     #[test]
     fn resolve_route_reconnect_same_file_key_auto_picks_the_newest() {
-        // A reconnect (or a second window) on the same file evicts the older
-        // connection in state.rs, so routing always lands on the newest one
-        // without ever reporting Ambiguous for a single logical file.
+        // A reconnect (or a second window) on the same file does not evict
+        // the older connection; state.rs dedupes connections_named() down to
+        // the newest one, so routing lands on it without ever reporting
+        // Ambiguous for a single logical file.
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
@@ -258,8 +261,54 @@ mod tests {
 
         let (conn_id, _tx, fk, nm) =
             resolve_route(&state, None, None).expect("single live file must auto-pick");
-        assert_eq!(conn_id, conn2, "the surviving (newest) connection must win");
+        assert_eq!(conn_id, conn2, "the newest connection must win");
         assert_eq!(fk, "dup");
         assert_eq!(nm, "Second");
+    }
+
+    #[test]
+    fn resolve_route_falls_back_to_the_older_connection_when_the_newest_closes() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+
+        state.remove_connection(conn2);
+
+        let (conn_id, _tx, fk, nm) = resolve_route(&state, None, None)
+            .expect("the older connection must still be a valid route target");
+        assert_eq!(conn_id, conn1);
+        assert_eq!(fk, "dup");
+        assert_eq!(nm, "First");
+    }
+
+    #[test]
+    fn resolve_route_ambiguous_list_dedupes_repeated_file_keys() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let (tx3, _rx3) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        let conn3 = state.add_connection(tx3);
+        state.set_connection_info(conn1, "fk1".to_owned(), "A".to_owned());
+        state.set_connection_info(conn2, "fk1".to_owned(), "B".to_owned());
+        state.set_connection_info(conn3, "fk2".to_owned(), "C".to_owned());
+
+        match resolve_route(&state, None, None) {
+            Err(RouteError::Ambiguous(fks)) => {
+                assert_eq!(
+                    fks.len(),
+                    2,
+                    "two connections sharing fk1 must dedupe to one entry"
+                );
+                assert!(fks.contains(&"fk1".to_owned()));
+                assert!(fks.contains(&"fk2".to_owned()));
+            }
+            other => panic!("expected Ambiguous, got ok={}", other.is_ok()),
+        }
     }
 }

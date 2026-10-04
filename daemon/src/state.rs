@@ -59,9 +59,12 @@ pub struct PluginConn {
 /// Shared daemon state passed to the MCP HTTP server, the WS server, and the bridge.
 pub struct AppState {
     /// Registry of all active WebSocket connections.
-    /// One entry per connected plugin. The file_key is empty until FILE_INFO arrives.
-    /// At most one live connection may hold a given non-empty file_key: a
-    /// reconnect or a second window on the same file evicts the older entry.
+    /// One entry per connected plugin. The file_key is empty until FILE_INFO
+    /// arrives. Two live connections may hold the same non-empty file_key at
+    /// once (a reconnect, or a second window on the same file): neither is
+    /// evicted, so neither one's in-flight jobs are ever cancelled by the
+    /// other connecting. `connections_named` is the routing-facing view that
+    /// dedupes a shared file_key down to the newest (highest conn_id) entry.
     connections: Mutex<HashMap<u64, PluginConn>>,
     /// Allocates stable connection IDs.
     conn_counter: AtomicU64,
@@ -116,6 +119,17 @@ impl AppState {
         self.screenshot_dir.clone()
     }
 
+    /// Returns true when `conn_id` is still a live, registered connection.
+    /// Call this before acting on any inbound frame tagged with a conn_id:
+    /// a message that arrives after its connection has already closed must
+    /// be ignored, not applied to a stale or reused id.
+    pub(crate) fn connection_exists(&self, conn_id: u64) -> bool {
+        self.connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&conn_id)
+    }
+
     /// Register a new WebSocket connection. Returns a stable connection ID.
     /// The file_key and name start empty and are set when FILE_INFO arrives.
     pub(crate) fn add_connection(&self, tx: mpsc::UnboundedSender<String>) -> u64 {
@@ -142,34 +156,18 @@ impl AppState {
     /// length) before it is ever stored or returned in status output: the
     /// plugin side is untrusted input.
     ///
-    /// At most one live connection may hold a given non-empty file_key. If
-    /// another connection already holds `file_key`, it is evicted from the
-    /// registry and its in-flight requests are cancelled, so the newest
-    /// connection (a reconnect, or a second window on the same file) always
-    /// wins routing.
+    /// Two live connections may hold the same non-empty file_key at once (a
+    /// reconnect, or a second window on the same file re-announcing after a
+    /// rename): neither evicts the other. `connections_named` resolves which
+    /// one routing prefers. A conn_id no longer in the registry (the socket
+    /// already closed) is a silent no-op: a message from a dead connection
+    /// must never resurrect an entry.
     pub(crate) fn set_connection_info(&self, conn_id: u64, file_key: String, name: String) {
         let name = sanitize_name(&name);
-        let evicted = {
-            let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
-            let stale_id = if file_key.is_empty() {
-                None
-            } else {
-                guard
-                    .iter()
-                    .find(|(id, c)| **id != conn_id && c.file_key == file_key)
-                    .map(|(id, _)| *id)
-            };
-            if let Some(stale_id) = stale_id {
-                guard.remove(&stale_id);
-            }
-            if let Some(conn) = guard.get_mut(&conn_id) {
-                conn.file_key = file_key;
-                conn.name = name;
-            }
-            stale_id
-        };
-        if let Some(stale_id) = evicted {
-            self.cancel_pending_for_conn(stale_id);
+        let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(conn) = guard.get_mut(&conn_id) {
+            conn.file_key = file_key;
+            conn.name = name;
         }
     }
 
@@ -203,33 +201,45 @@ impl AppState {
         }
     }
 
-    /// Return named connections (non-empty file_key only) sorted by
-    /// (file_key, conn_id) for deterministic routing and status output.
+    /// Return named connections (non-empty file_key only), deduped by
+    /// file_key: when two live connections share a key (a reconnect, or a
+    /// second window on the same file), only the newest (highest conn_id)
+    /// survives into this list, so routing and the Ambiguous/status lists
+    /// never show the same file twice. Sorted by (file_key, conn_id) for
+    /// deterministic output.
     pub(crate) fn connections_named(
         &self,
     ) -> Vec<(u64, mpsc::UnboundedSender<String>, String, String)> {
         let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
-        let mut v: Vec<_> = connections
-            .iter()
-            .filter(|(_, c)| !c.file_key.is_empty())
-            .map(|(id, c)| (*id, c.tx.clone(), c.file_key.clone(), c.name.clone()))
+        let mut newest: HashMap<String, (u64, mpsc::UnboundedSender<String>, String)> =
+            HashMap::new();
+        for (id, c) in connections.iter() {
+            if c.file_key.is_empty() {
+                continue;
+            }
+            let keep = match newest.get(&c.file_key) {
+                Some((existing_id, _, _)) => *id > *existing_id,
+                None => true,
+            };
+            if keep {
+                newest.insert(c.file_key.clone(), (*id, c.tx.clone(), c.name.clone()));
+            }
+        }
+        let mut v: Vec<_> = newest
+            .into_iter()
+            .map(|(fk, (id, tx, name))| (id, tx, fk, name))
             .collect();
         v.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
         v
     }
 
-    /// Return all named connections as JSON objects for status and error responses.
+    /// Return all named connections as JSON objects for status and error
+    /// responses. Dedupes a shared file_key the same way `connections_named`
+    /// does, so status output never lists the same file twice.
     pub(crate) fn named_connections_json(&self) -> Vec<Value> {
-        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
-        let mut named: Vec<(&str, &str)> = guard
-            .values()
-            .filter(|c| !c.file_key.is_empty())
-            .map(|c| (c.file_key.as_str(), c.name.as_str()))
-            .collect();
-        named.sort_by(|a, b| a.0.cmp(b.0));
-        named
+        self.connections_named()
             .into_iter()
-            .map(|(fk, name)| serde_json::json!({"fileKey": fk, "name": name}))
+            .map(|(_, _, fk, name)| serde_json::json!({"fileKey": fk, "name": name}))
             .collect()
     }
 
@@ -425,34 +435,132 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnecting_same_file_key_evicts_the_older_connection() {
+    async fn two_connections_on_the_same_file_key_both_stay_registered() {
         // Two windows on the same file, or a reconnect before the old socket
-        // dies: the newer connection must evict the older one from the
-        // registry so routing always prefers it, and the old one's in-flight
-        // requests fail fast instead of waiting out the full timeout.
+        // dies: neither connection evicts the other, so a later FILE_INFO
+        // from either one (e.g. after both re-announce on a file rename)
+        // never knocks the other out of the registry.
         let state = AppState::with_timeout(Duration::from_millis(100));
         let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
 
-        let (_id, pending_rx) = state
+        let (_id, mut pending_rx) = state
             .register_pending_if_connected(conn1)
-            .expect("conn1 live before eviction");
+            .expect("conn1 live");
 
         let conn2 = state.add_connection(tx2);
         state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
 
         let connections = state.list_connections();
-        assert_eq!(connections.len(), 1, "the older connection must be evicted");
         assert_eq!(
-            connections[0].0, conn2,
-            "the surviving connection must be the newest"
+            connections.len(),
+            2,
+            "both connections must stay registered"
         );
 
         assert!(
-            pending_rx.await.is_err(),
-            "the evicted connection's pending request must be cancelled"
+            pending_rx.try_recv().is_err(),
+            "conn1's in-flight request must not be resolved or cancelled yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn connecting_a_second_window_on_the_same_file_key_does_not_cancel_the_olders_in_flight_jobs(
+    ) {
+        let state = AppState::with_timeout(Duration::from_millis(200));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+        let (id, rx) = state
+            .register_pending_if_connected(conn1)
+            .expect("conn1 live");
+
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+
+        // The older connection's in-flight job must still be answerable: no
+        // eviction ever cancelled it.
+        state.resolve(id, conn1, json!({"ok": true}));
+        let val = rx
+            .await
+            .expect("conn1's in-flight job must not be cancelled");
+        assert_eq!(val["ok"], json!(true));
+    }
+
+    #[test]
+    fn connections_named_dedupes_by_file_key_keeping_the_newest_conn_id() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        // The older connection (lower conn_id) re-announces after the newer
+        // one: call order must not matter, only conn_id.
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+
+        let named = state.connections_named();
+        assert_eq!(named.len(), 1, "a shared file_key must dedupe to one entry");
+        assert_eq!(
+            named[0].0, conn2,
+            "the highest conn_id must win regardless of announce order"
+        );
+        assert_eq!(
+            state.list_connections().len(),
+            2,
+            "both connections still coexist"
+        );
+    }
+
+    #[test]
+    fn connections_named_falls_back_to_the_older_connection_when_the_newest_closes() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+
+        state.remove_connection(conn2);
+
+        let named = state.connections_named();
+        assert_eq!(named.len(), 1);
+        assert_eq!(
+            named[0].0, conn1,
+            "routing must fall back to the older, still-open window"
+        );
+    }
+
+    #[test]
+    fn named_connections_json_dedupes_by_file_key() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx1, _rx1) = mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
+        state.set_connection_info(conn2, "dup".to_owned(), "Second".to_owned());
+
+        let json = state.named_connections_json();
+        assert_eq!(
+            json.len(),
+            1,
+            "status output must not list the same file key twice"
+        );
+    }
+
+    #[test]
+    fn set_connection_info_on_an_unregistered_conn_id_is_a_no_op() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        // No add_connection call: 42 is never registered.
+        state.set_connection_info(42, "fk1".to_owned(), "Ghost".to_owned());
+        assert!(
+            state.list_connections().is_empty(),
+            "a message from an unregistered conn_id must not create an entry"
         );
     }
 
