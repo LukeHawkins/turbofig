@@ -287,6 +287,7 @@ interface ResolvedArgs {
   outFile: string | null;
   dryRun: boolean;
   baselineFile: string | null;
+  maxRatio: number | null;
   machine: Record<string, string | null>;
 }
 
@@ -306,6 +307,7 @@ function parseArgs(args: string[]): ResolvedArgs {
   let outFile: string | null = null;
   let dryRun = false;
   let baselineFile: string | null = null;
+  let maxRatio: number | null = null;
   const machine: Record<string, string | null> = {
     machine: null,
     macos: null,
@@ -333,6 +335,7 @@ function parseArgs(args: string[]): ResolvedArgs {
     else if (arg === "--out" && args[i + 1]) outFile = args[++i];
     else if (arg === "--dry-run") dryRun = true;
     else if (arg === "--baseline" && args[i + 1]) baselineFile = args[++i];
+    else if (arg === "--max-ratio" && args[i + 1]) maxRatio = Number.parseFloat(args[++i]);
     else if (arg === "--machine" && args[i + 1]) machine.machine = args[++i];
     else if (arg === "--macos" && args[i + 1]) machine.macos = args[++i];
     else if (arg === "--figma-version" && args[i + 1]) machine.figmaVersion = args[++i];
@@ -355,6 +358,7 @@ function parseArgs(args: string[]): ResolvedArgs {
     outFile,
     dryRun,
     baselineFile,
+    maxRatio,
     machine,
   };
 }
@@ -373,18 +377,22 @@ function printReport(report: BenchReport): void {
   }
 }
 
-async function printBaseline(report: BenchReport, baselineFile: string): Promise<void> {
+/** Prints the baseline comparison and returns the numeric ratio, or null when
+ * no ratio could be computed (missing/malformed file, scenario/target
+ * mismatch, or an invalid baseline total). --max-ratio uses the return value
+ * to turn this from a printed number into an actual CI gate. */
+async function printBaseline(report: BenchReport, baselineFile: string): Promise<number | null> {
   const file = Bun.file(baselineFile);
   if (!(await file.exists())) {
     console.log(`\nBaseline file not found: ${baselineFile}. Skipping comparison.`);
-    return;
+    return null;
   }
   let baseline: BenchReport;
   try {
     baseline = (await file.json()) as BenchReport;
   } catch {
     console.log("\nMalformed baseline, skipping.");
-    return;
+    return null;
   }
   console.log(`\nBaseline comparison (${baselineFile}):`);
   const ratio = compareToBaseline(report, baseline);
@@ -393,11 +401,14 @@ async function printBaseline(report: BenchReport, baselineFile: string): Promise
       `  Scenario/target mismatch: baseline is "${baseline.scenario}"/"${baseline.target}", ` +
         `this run is "${report.scenario}"/"${report.target}". Skipping ratio.`,
     );
-  } else if (ratio === "no valid baseline total") {
-    console.log("  no valid baseline total");
-  } else {
-    console.log(`  Ratio (this / baseline) for req+resp bytes: ${ratio}`);
+    return null;
   }
+  if (ratio === "no valid baseline total") {
+    console.log("  no valid baseline total");
+    return null;
+  }
+  console.log(`  Ratio (this / baseline) for req+resp bytes: ${ratio}`);
+  return Number.parseFloat(ratio);
 }
 
 async function main(): Promise<void> {
@@ -452,7 +463,19 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
     };
     printReport(report);
-    if (args.baselineFile) await printBaseline(report, args.baselineFile);
+    if (!report.valid) {
+      // A run with any failed job is invalid regardless of --max-ratio: a
+      // failed job can look artificially fast and cheap, so it must never
+      // pass a regression gate silently.
+      process.exitCode = 1;
+    }
+    if (args.baselineFile) {
+      const ratio = await printBaseline(report, args.baselineFile);
+      if (args.maxRatio !== null && ratio !== null && ratio > args.maxRatio) {
+        console.error(`  FAIL: ratio ${ratio} exceeds --max-ratio ${args.maxRatio}`);
+        process.exitCode = 1;
+      }
+    }
     reports.push(report);
 
     // Write a partial report after every scenario, not only at the end, so a
