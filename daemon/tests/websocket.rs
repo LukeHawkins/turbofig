@@ -5,8 +5,11 @@
 //! full turbofig_status round-trip through a mock plugin.
 //! No port 18847 is ever hardcoded here.
 
+mod common;
+
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use common::wait_until;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,8 +70,17 @@ async fn test_ws_file_info_registers_plugin() {
         .await
         .expect("send FILE_INFO");
 
-    // Allow the server a short time to process the frame.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for the server to process the frame.
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register after FILE_INFO",
+    )
+    .await;
 
     // The plugin must now be registered with the correct key and name.
     assert_eq!(
@@ -80,8 +92,13 @@ async fn test_ws_file_info_registers_plugin() {
     // Drop the client to trigger a socket close.
     drop(ws);
 
-    // Allow the server a short time to run clear_plugin.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for the server to run clear_plugin.
+    wait_until(
+        || state.plugin_snapshot().is_none(),
+        common::WAIT_DEADLINE_MS,
+        "plugin to clear after socket close",
+    )
+    .await;
 
     // The plugin must now be cleared.
     assert_eq!(
@@ -127,7 +144,16 @@ async fn test_ws_unknown_message_type_is_ignored() {
         .await
         .expect("send FILE_INFO after unknown type");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register after an unknown message type",
+    )
+    .await;
 
     assert_eq!(
         state.plugin_snapshot(),
@@ -181,8 +207,17 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
         .await
         .expect("send FILE_INFO");
 
-    // Allow the WS server to process FILE_INFO.
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    // Wait for the WS server to process FILE_INFO.
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "silent-plugin to register",
+    )
+    .await;
 
     // Spawn a task that keeps the connection open but discards all incoming frames.
     tokio::spawn(async move { while let Some(Ok(_)) = plugin_ws.next().await {} });
@@ -332,8 +367,17 @@ async fn test_turbofig_status_routes_through_plugin() {
         .await
         .expect("send FILE_INFO");
 
-    // Allow the WS server to process FILE_INFO.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for the WS server to process FILE_INFO.
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "abc123 to register",
+    )
+    .await;
 
     // Spawn the mock plugin responder: reply to every STATUS frame with RESULT.
     tokio::spawn(async move {
@@ -506,7 +550,16 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     ws1.send(TtMessage::Text(file_info.to_string()))
         .await
         .expect("send FILE_INFO (1)");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register on first connect",
+    )
+    .await;
     assert_eq!(
         state.plugin_snapshot(),
         Some(("F1".to_owned(), "Deck File".to_owned())),
@@ -515,7 +568,12 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
 
     // Figma closes: drop the socket. The registry clears.
     drop(ws1);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until(
+        || state.plugin_snapshot().is_none(),
+        common::WAIT_DEADLINE_MS,
+        "plugin to clear when the socket drops",
+    )
+    .await;
     assert_eq!(
         state.plugin_snapshot(),
         None,
@@ -529,7 +587,16 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     ws2.send(TtMessage::Text(file_info.to_string()))
         .await
         .expect("send FILE_INFO (2)");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to re-pair after a Figma restart",
+    )
+    .await;
     assert_eq!(
         state.plugin_snapshot(),
         Some(("F1".to_owned(), "Deck File".to_owned())),
@@ -556,7 +623,16 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     ws3.send(TtMessage::Text(file_info.to_string()))
         .await
         .expect("send FILE_INFO (3)");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state_b
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to re-pair after a daemon restart",
+    )
+    .await;
     assert_eq!(
         state_b.plugin_snapshot(),
         Some(("F1".to_owned(), "Deck File".to_owned())),
@@ -612,8 +688,17 @@ async fn test_turbofig_execute_routes_through_plugin() {
         .await
         .expect("send FILE_INFO");
 
-    // Allow the WS server to process FILE_INFO.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for the WS server to process FILE_INFO.
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     // Spawn the mock plugin responder: reply to every EXECUTE frame with RESULT.
     tokio::spawn(async move {
@@ -784,8 +869,17 @@ async fn test_turbofig_get_selection_routes_through_plugin() {
         .await
         .expect("send FILE_INFO");
 
-    // Allow the WS server to process FILE_INFO.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait for the WS server to process FILE_INFO.
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     // Spawn the mock plugin responder: reply to every GET_SELECTION frame with RESULT.
     tokio::spawn(async move {
@@ -954,7 +1048,16 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
         .await
         .expect("send FILE_INFO");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     // Spawn the mock plugin: reply to every SCREENSHOT frame with a fixed RESULT.
     tokio::spawn(async move {
@@ -1106,7 +1209,16 @@ async fn test_run_screenshot_file_mode_writes_png() {
         .await
         .expect("send FILE_INFO");
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     // Spawn the mock plugin: reply to SCREENSHOT frames with a fixed base64 payload.
     // "aGVsbG8=" is the base64 encoding of b"hello".
@@ -1234,7 +1346,16 @@ async fn spawn_screenshot_plugin(state: Arc<turbofig::AppState>, png: &'static s
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -1341,7 +1462,16 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     // The plugin waits for one STATUS frame, then drops the socket (no reply).
     tokio::spawn(async move {
@@ -1472,7 +1602,16 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     // The mock plugin models a thrown eval: EXECUTE gets ok:false with an error.
     // STATUS still replies normally so the follow-up liveness check passes.
@@ -1648,7 +1787,16 @@ async fn test_run_screenshot_real_png_is_downscaled() {
         ))
         .await
         .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
 
     let b64_for_plugin = png_b64.clone();
     tokio::spawn(async move {
@@ -1797,7 +1945,16 @@ async fn test_oversize_ws_message_drops_the_connection() {
     ))
     .await
     .expect("send FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "big to register",
+    )
+    .await;
     assert_eq!(
         state.plugin_snapshot(),
         Some(("big".to_owned(), "Big File".to_owned())),
@@ -1855,7 +2012,17 @@ async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
     ))
     .await
     .expect("send first FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .list_connections()
+                .iter()
+                .any(|(_, fk, nm)| fk == "dup" && nm == "First")
+        },
+        common::WAIT_DEADLINE_MS,
+        "first dup connection to register",
+    )
+    .await;
 
     let (mut ws2, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
         .await
@@ -1865,7 +2032,17 @@ async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
     ))
     .await
     .expect("send second FILE_INFO");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until(
+        || {
+            state
+                .list_connections()
+                .iter()
+                .any(|(_, fk, nm)| fk == "dup" && nm == "Second")
+        },
+        common::WAIT_DEADLINE_MS,
+        "second dup connection to register",
+    )
+    .await;
 
     let conns = state.list_connections();
     assert_eq!(
@@ -1883,5 +2060,10 @@ async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
     // anything when it later closes.
     drop(ws1);
     drop(ws2);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_until(
+        || state.list_connections().is_empty(),
+        common::WAIT_DEADLINE_MS,
+        "both dup connections to deregister after close",
+    )
+    .await;
 }
