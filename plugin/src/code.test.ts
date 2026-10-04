@@ -22,9 +22,9 @@ describe("showUI bootstrap", () => {
     expect(src).toContain("themeColors: true");
   });
 
-  test("uses the compact main-screen height (200) as the initial panel height", () => {
+  test("uses the compact main-screen height (150) as the initial panel height", () => {
     // Matches the screenSize("main") value so the panel opens at the correct size.
-    expect(src).toContain("height: 200");
+    expect(src).toContain("height: 150");
   });
 
   test("handles RESIZE messages from the UI", () => {

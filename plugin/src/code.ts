@@ -143,7 +143,7 @@ function emitFileInfo(): void {
 if ((globalThis as Record<string, unknown>).figma !== undefined) {
   // themeColors makes Figma inject the --figma-color-* variables and a
   // figma-light/figma-dark class, so the panel matches the user's theme.
-  figma.showUI(__html__, { width: 300, height: 200, themeColors: true });
+  figma.showUI(__html__, { width: 300, height: 150, themeColors: true });
 
   /* Send FILE_INFO to the UI so it can identify the file to the daemon on connect. */
   emitFileInfo();

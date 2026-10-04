@@ -48,6 +48,10 @@
       }
 
       /* === BASE ========================================================== */
+      html {
+        height: 100%;
+      }
+
       body {
         font-family: var(--ff-body);
         font-size: 14px;
@@ -58,6 +62,7 @@
         padding: var(--sp-4);
         display: flex;
         flex-direction: column;
+        min-height: 100%;
       }
 
       /* === SCREENS ======================================================= */
@@ -69,6 +74,7 @@
       }
       .screen.active {
         display: flex;
+        flex: 1;
       }
 
       /* === HEADER ======================================================== */
@@ -82,7 +88,7 @@
 
       .wordmark {
         font-family: var(--ff-display);
-        font-size: 14px;
+        font-size: 20px;
         font-weight: 900;
         letter-spacing: -0.05em;
         line-height: 1;
@@ -91,10 +97,10 @@
            color-mix() derives the shadow colour from the live theme token,
            so light and dark mode both work without any JS. */
         text-shadow:
-          6px  0 0 color-mix(in srgb, var(--text) 44%, transparent),
-          11px 0 0 color-mix(in srgb, var(--text) 22%, transparent),
-          17px 0 0 color-mix(in srgb, var(--text) 10%, transparent),
-          24px 0 0 color-mix(in srgb, var(--text) 4%,  transparent);
+          8px  0 0 color-mix(in srgb, var(--text) 44%, transparent),
+          15px 0 0 color-mix(in srgb, var(--text) 22%, transparent),
+          23px 0 0 color-mix(in srgb, var(--text) 10%, transparent),
+          32px 0 0 color-mix(in srgb, var(--text) 4%,  transparent);
       }
 
       .header-version {
@@ -110,12 +116,12 @@
       /* === PANEL FOOTER ===================================================== */
       /* Sits at the bottom of the main screen via margin-top: auto. */
       .panel-footer {
-        margin-top: auto;
+        margin-top: var(--sp-2);
         display: flex;
-        justify-content: space-between;
+        justify-content: center;
         align-items: center;
+        gap: var(--sp-4);
         padding-top: var(--sp-2);
-        border-top: 1px solid var(--border);
       }
 
       .text-btn {
@@ -129,6 +135,8 @@
         border-radius: 4px;
         transition: color 0.15s;
         letter-spacing: 0.01em;
+        text-decoration: underline;
+        text-underline-offset: 2px;
       }
       .text-btn:hover {
         color: var(--text);
@@ -184,6 +192,15 @@
       }
       .about-link:hover {
         color: var(--text);
+      }
+
+      .about-plain {
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: var(--ff-body);
       }
 
       /* === CONNECTION STATUS ============================================= */
@@ -251,9 +268,33 @@
         transition: opacity 0.15s;
         flex-shrink: 0;
         padding: 0;
+        position: relative;
       }
       .icon-btn:hover {
         opacity: 0.85;
+      }
+
+      /* CSS tooltip: appears above the button on hover. */
+      .icon-btn[data-tooltip]::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: calc(100% + 6px);
+        right: 0;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        font-size: 12px;
+        white-space: nowrap;
+        padding: 3px 7px;
+        border-radius: 10px;
+        pointer-events: none;
+        z-index: 10;
+        opacity: 0;
+        transition: opacity 0.1s;
+      }
+      .icon-btn[data-tooltip]:hover::after {
+        opacity: 1;
       }
 
       /* Ghost variant: transparent fill, subtle border. */
@@ -336,12 +377,46 @@
       }
 
       .control-label {
-        display: block;
+        display: inline-block;
+        position: relative;
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
         color: var(--text-secondary);
+      }
+
+      .control-label[data-tooltip]::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        font-size: 12px;
+        white-space: normal;
+        max-width: 200px;
+        line-height: 1.4;
+        text-transform: none;
+        letter-spacing: normal;
+        font-weight: normal;
+        padding: 3px 7px;
+        border-radius: 10px;
+        pointer-events: none;
+        z-index: 10;
+        opacity: 0;
+        transition: opacity 0.1s;
+      }
+      .control-label[data-tooltip]:hover::after {
+        opacity: 1;
+      }
+
+      .controls-row {
+        display: flex;
+        gap: var(--sp-3);
+        align-items: flex-start;
       }
 
       #profile,
@@ -409,24 +484,23 @@
       <header class="panel-header">
         <span class="wordmark">turbofig</span>
         <span class="header-spacer"></span>
-        <span id="conn-status" role="status" aria-live="polite">Connecting...</span>
         <span class="header-version">v<span id="plugin-version"></span></span>
       </header>
 
       <!-- Stale warning: visible only when daemon and plugin versions differ. -->
       <div id="stale-warning" class="stale-banner" role="alert" style="display:none"></div>
 
-      <!-- File identity: name, copy file key, copy connect prompt. -->
+      <!-- Connection status and copy buttons. -->
       <div class="file-row">
-        <span class="row-label">File</span>
-        <span id="file-line" class="file-name">No file</span>
-        <button id="copy-filekey" class="icon-btn ghost-btn" type="button" style="display:none" aria-label="Copy file key" title="Copy file key">
+        <span id="conn-status" role="status" aria-live="polite">Connecting...</span>
+        <span class="header-spacer"></span>
+        <button id="copy-filekey" class="icon-btn ghost-btn" type="button" style="display:none" aria-label="Copy file key" data-tooltip="Copy file key">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <rect x="2.5" y="4" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
             <path d="M5 4V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
-        <button id="copy-connect" class="icon-btn brand-btn" type="button" style="display:none" aria-label="Copy prompt to connect Claude" title="Copy prompt to connect Claude">
+        <button id="copy-connect" class="icon-btn brand-btn" type="button" style="display:none" aria-label="Copy Claude connect prompt" data-tooltip="Copy connect prompt">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M5.5 8.5a3 3 0 0 0 4 0l1.5-1.5A3 3 0 0 0 6.757 2.757L5.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             <path d="M8.5 5.5a3 3 0 0 0-4 0L3 7a3 3 0 0 0 4.243 4.243L8.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -443,7 +517,7 @@
       <!-- Footer: text nav links pushed to the bottom of the panel. -->
       <div class="panel-footer">
         <button id="nav-about" class="text-btn" type="button">About</button>
-        <button id="nav-more" class="text-btn" type="button">More</button>
+        <button id="nav-more" class="text-btn" type="button">Advanced</button>
       </div>
     </section>
 
@@ -456,30 +530,33 @@
         Back
       </button>
 
-      <!-- Taste profile: a single control, labelled clearly. -->
-      <section class="control-section" aria-label="Taste profile">
-        <label class="control-label" for="profile">Taste profile</label>
-        <select id="profile">
-          <option value="impeccable">Impeccable</option>
-          <option value="editorial">Editorial</option>
-          <option value="minimal">Minimal</option>
-          <option value="none">None</option>
-          <option value="custom">Custom</option>
-        </select>
-        <input id="customProfile" type="text" placeholder="Enter profile id" />
-      </section>
+      <!-- Taste and Port inline -->
+      <div class="controls-row">
+        <section class="control-section" aria-label="Taste" style="flex:1;min-width:0">
+          <label class="control-label" for="profile" data-tooltip="Design taste profile injected as tf.taste in eval code. Controls palette, spacing, and type defaults.">Taste</label>
+          <select id="profile">
+            <option value="impeccable">Impeccable</option>
+            <option value="editorial">Editorial</option>
+            <option value="minimal">Minimal</option>
+            <option value="none">None</option>
+            <option value="custom">Custom</option>
+          </select>
+        </section>
 
-      <!-- Activity log: monospace, fixed height, scrollable. -->
+        <section class="control-section" aria-label="Port" style="flex:1;min-width:0">
+          <label class="control-label" for="port-field" data-tooltip="WebSocket port the plugin connects to. Default: 18847.">Port</label>
+          <input id="port-field" type="number" min="1" max="65535" value="18847" />
+          <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
+        </section>
+      </div>
+
+      <!-- Custom profile input: shown only when Custom is selected -->
+      <input id="customProfile" type="text" placeholder="Enter profile id" />
+
+      <!-- Activity log -->
       <section class="log-section" aria-label="Activity">
         <p class="section-label">Activity</p>
         <div id="activity-log" role="log" aria-live="polite"></div>
-      </section>
-
-      <!-- Daemon port: the WebSocket port the plugin connects to. -->
-      <section class="control-section" aria-label="Daemon port">
-        <label class="control-label" for="port-field">Daemon port</label>
-        <input id="port-field" type="number" min="1" max="65535" value="18847" />
-        <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
       </section>
     </section>
 
@@ -495,15 +572,16 @@
       <span class="about-wordmark">turbofig</span>
       <p class="about-tagline">bridge any AI to Figma</p>
 
-      <p class="about-desc">A local daemon that connects AI agents to your Figma files over WebSocket. Always on, always paired. No cloud, no re-pairing.</p>
+      <p class="about-desc">Built to give AI full control of Figma with exceptional speed and token efficiency. You spend less time waiting, and spend fewer tokens in the process.</p>
+      <p class="about-desc">Run the daemon, copy the connect prompt from the main screen, and paste it into any AI with local file access (like Claude Code). Multiple files are supported at once.</p>
 
       <div class="about-links">
         <button class="about-link" type="button" onclick="window.open('https://github.com/lukehawkins/turbofig','_blank')">
-          github.com/lukehawkins/turbofig
+          Setup guide and docs on GitHub
         </button>
-        <button class="about-link" type="button" onclick="window.open('https://lukehawkins.eu','_blank')">
-          Made by Luke Hawkins
-        </button>
+        <div>
+          <span class="about-plain">Made by </span><button class="about-link" type="button" onclick="window.open('https://lukehawkins.eu','_blank')">Luke Hawkins</button>
+        </div>
       </div>
     </section>
 

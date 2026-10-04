@@ -176,20 +176,16 @@ export function wsUrlForPort(port: number): string {
  */
 export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
   if (!fileKey) return "";
-  return [
-    "turbofig (local Figma daemon) drives this file. Prefer the file-bridge: fastest, most token-efficient, no permission prompt. Write a JSON job to ~/.turbofig/inbox/<id>.json, read the result from ~/.turbofig/outbox/<id>.json (any unique <id>).",
-    `Job: {"op":"execute","fileKey":"${fileKey}","code":"return figma.root.name;"}. Ops: status, execute, get_selection, screenshot.`,
-    `MCP fallback only if needed: POST http://127.0.0.1:${mcpPort}/mcp (plain local HTTP, so use curl, never a web-fetch tool or HTTPS).`,
-  ].join("\n");
+  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ~/.turbofig/inbox/<id>.json → read ~/.turbofig/outbox/<id>.json. Ops: status|execute|get_selection|screenshot. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
 }
 
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 200). advanced: full settings view (300 x 440).
- * about: project info view (300 x 260).
+ * main: compact status view (300 x 150). advanced: full settings view (300 x 440).
+ * about: project info view (300 x 375).
  */
 export function screenSize(name: "main" | "advanced" | "about"): { width: number; height: number } {
-  if (name === "advanced") return { width: 300, height: 440 };
-  if (name === "about") return { width: 300, height: 260 };
-  return { width: 300, height: 200 };
+  if (name === "advanced") return { width: 300, height: 240 };
+  if (name === "about") return { width: 300, height: 375 };
+  return { width: 300, height: 150 };
 }

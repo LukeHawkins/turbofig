@@ -6,7 +6,7 @@
 set -euo pipefail
 
 LABEL="eu.lukehawkins.turbofig"
-PLIST_TEMPLATE="$(cd "$(dirname "$0")" && pwd)/eu.lukehawkins.turbofig.plist"
+PLIST_TEMPLATE="$(cd "$(dirname "$0")" && pwd)/turbofig.plist"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 PLIST_DEST="${LAUNCH_AGENTS_DIR}/${LABEL}.plist"
 LOG_DIR="${HOME}/Library/Logs/turbofig"

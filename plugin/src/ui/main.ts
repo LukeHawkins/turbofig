@@ -11,7 +11,6 @@ import {
   connStateFromEvent,
   daemonMessageAction,
   formatConnectPrompt,
-  formatFileLine,
   formatLogEntry,
   formatSession,
   isRequestType,
@@ -34,7 +33,6 @@ let daemonMcpPort = 18846;
 
 // Resolve panel elements once on load.
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
-const fileLineEl = document.getElementById("file-line") as HTMLElement;
 const sessionLineEl = document.getElementById("session-line") as HTMLElement;
 const sessionRowEl = document.getElementById("session-row") as HTMLElement;
 const pluginVersionEl = document.getElementById("plugin-version") as HTMLElement;
@@ -68,28 +66,27 @@ let daemonVersion = "";
 let activeSessionId = "";
 let activityLog: string[] = [];
 
+const CONN_LABELS: Record<string, string> = {
+  connected: "Connected to daemon",
+  offline: "No connection to daemon",
+  connecting: "Connecting...",
+  reconnecting: "Reconnecting...",
+};
+
 /** Updates the connection status element from a WS lifecycle event. */
 function setConnStatus(event: "open" | "close" | "error" | "attempt"): void {
-  const { state, label } = connStateFromEvent(event, attempt);
+  const { state } = connStateFromEvent(event, attempt);
   if (connStatusEl) {
-    connStatusEl.textContent = label;
+    connStatusEl.textContent = CONN_LABELS[state] ?? state;
     connStatusEl.className = state;
   }
 }
 
-/** Refreshes the file display from the latest FILE_INFO. */
+/** Refreshes the copy buttons from the latest FILE_INFO. */
 function updateFileDisplay(): void {
-  if (!fileLineEl) return;
-  if (latestFileInfo) {
-    fileLineEl.textContent = formatFileLine(latestFileInfo.fileKey, latestFileInfo.name);
-    const hasKey = Boolean(latestFileInfo.fileKey);
-    if (copyFilekeyBtn) copyFilekeyBtn.style.display = hasKey ? "" : "none";
-    if (copyConnectBtn) copyConnectBtn.style.display = hasKey ? "" : "none";
-  } else {
-    fileLineEl.textContent = "No file";
-    if (copyFilekeyBtn) copyFilekeyBtn.style.display = "none";
-    if (copyConnectBtn) copyConnectBtn.style.display = "none";
-  }
+  const hasKey = Boolean(latestFileInfo?.fileKey);
+  if (copyFilekeyBtn) copyFilekeyBtn.style.display = hasKey ? "" : "none";
+  if (copyConnectBtn) copyConnectBtn.style.display = hasKey ? "" : "none";
 }
 
 /** Refreshes the session display from the latest active session id. */
@@ -386,3 +383,7 @@ window.onmessage = (event: MessageEvent) => {
 if (pluginVersionEl) pluginVersionEl.textContent = __PLUGIN_VERSION__;
 
 connect();
+parent.postMessage(
+  { pluginMessage: { type: "RESIZE", width: 300, height: screenSize("main").height } },
+  "*",
+);

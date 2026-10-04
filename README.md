@@ -1,16 +1,16 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/wordmark-light.png">
-  <img alt="turbofig wordmark" src="docs/wordmark-light.png" height="40">
-</picture>
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/wordmark-light.png">
+    <img alt="turbofig wordmark" src="docs/wordmark-light.png" height="80">
+  </picture>
+</div>
 
-**Bridge any AI to Figma.**
+Built to give AI full control of Figma with exceptional speed and token efficiency, powered by a Rust daemon. You spend less time waiting, and spend fewer tokens in the process.
 
-> **Status:** In development — not yet released.
+Free and open source. Works on every Figma account — free, paid, and enterprise. Installed locally as a development plugin, so it works even on locked-down corporate Figma accounts.
 
----
-
-Drive Figma from any AI agent. Write a JSON job file. Read the result. No re-pairing, no session management, no extra process to keep alive.
+Figma Desktop required. macOS. MIT licensed.
 
 ![Demo: a brief becomes a full Figma page in minutes](docs/demo.gif)
 
@@ -18,35 +18,89 @@ Drive Figma from any AI agent. Write a JSON job file. Read the result. No re-pai
 
 ## Why
 
-Existing MCP-based Figma tools have two problems.
+- Read and write access to Figma from AI needs a non-native solution. The official Figma MCP is read-only.
+- The third-party solutions (`figma-console-mcp` and others) have real problems. They are slow, they are token-heavy, and the MCP handshake is frustrating to manage.
+- On enterprise Figma accounts, native MCP servers are blocked. You end up with a workaround anyway.
+- On enterprise machines, curl requests prompt for permission. The turbofig file-bridge avoids this. The AI only reads and writes files. It makes no network calls.
+- The result: turbofig is always on and always paired. No handshake. No re-pairing. No curl prompts.
 
-First, they are session-coupled. When your Claude session ends or crashes, the connection dies. You pair again. Mid-job crashes lose work.
+---
 
-Second, they are token-heavy. Full node trees, unscaled screenshots, no batching. Long jobs cost a lot.
+## Quickstart
 
-Turbofig fixes both. A Rust daemon runs at login, always on, independent of any AI session. The plugin reconnects automatically. An `execute` tool runs arbitrary Figma Plugin API JS, so one tool does the work of dozens. Shaped returns, downscaled screenshots, and a helper library cut token use to a fraction of naive approaches.
+### 1. Start the daemon
+
+```bash
+cargo build --release
+./target/release/turbofig
+```
+
+To start the daemon at login, install the launchd service. This step is macOS only.
+
+```bash
+./install/install-macos.sh
+```
+
+The script builds the binary if needed, fills the template, and loads the service.
+
+### 2. Open the plugin in Figma Desktop
+
+Use Figma Desktop, not the web app. In Figma: **Plugins → Development → Import plugin from manifest**. Select `plugin/manifest.json`. Open a file and run the plugin. The panel shows the connection status and the file key.
+
+### 3. Connect your AI
+
+Click the copy button in the plugin panel. Paste the prompt into any AI with local file access. Claude Code is the example. That is it.
+
+<details>
+<summary>Fallback: MCP server</summary>
+
+MCP is a fallback. It is heavier on tokens and it needs a network call. Add this to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "turbofig": {
+      "url": "http://127.0.0.1:18846/mcp"
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Advanced: drive the file-bridge directly</summary>
+
+Write a job file to the inbox:
+
+```bash
+cat > ~/.turbofig/inbox/job-001.json << 'EOF'
+{
+  "op": "execute",
+  "js": "figma.createFrame(); 'done'"
+}
+EOF
+```
+
+Read the result from the outbox:
+
+```bash
+cat ~/.turbofig/outbox/job-001.json
+```
+
+</details>
 
 ---
 
 ## How it works
 
-```
-AI  ──────────────────────────────────────────────────►  Rust daemon  ──WS──►  Figma plugin  ──►  Figma
-    file-bridge  ~/.turbofig/inbox → outbox             :18846 (HTTP MCP)       (eval)
-    MCP HTTP     POST :18846/mcp                        :18847 (WebSocket)
-```
+![How turbofig works](docs/how-it-works.png)
 
-One daemon process runs three servers:
-
-- **HTTP MCP endpoint** (`POST http://127.0.0.1:18846/mcp`). Any MCP-capable client connects here.
-- **WebSocket server** (`:18847`). The Figma plugin holds a permanent connection with infinite-backoff reconnect.
-- **File-bridge**. Write a JSON job to `~/.turbofig/inbox/`. Read the result from `outbox/`. No curl, no MCP client required. This is the primary path — fastest, zero permission prompts, token-light.
-
-A plain `GET http://127.0.0.1:18846` returns a short help payload. An AI told only the port can bootstrap without reading this repo.
+One Rust daemon process runs three servers: an HTTP MCP endpoint, a WebSocket server, and a file-bridge. The file-bridge is the primary path. The AI writes a job file and reads a result file, with no curl. The plugin holds a permanent WebSocket connection with automatic reconnect. One `execute` tool runs any Figma Plugin API JS, so one tool does the work of dozens.
 
 ---
 
-## Four tools
+## Tools
 
 | Tool | What it does |
 |---|---|
@@ -61,70 +115,11 @@ Each tool accepts an optional `fileKey` to target one of several open files. Omi
 
 ---
 
-## Quickstart
-
-### 1. Start the daemon
-
-```bash
-cargo build --release
-./target/release/turbofig-daemon
-```
-
-Or install the launchd service so the daemon starts at login:
-
-```bash
-cp launchd/eu.lukehawkins.turbofig.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist
-```
-
-### 2. Install the plugin in Figma
-
-In Figma: **Plugins → Development → Import plugin from manifest**.
-
-Select `plugin/manifest.json`. The plugin requires `enablePrivatePluginApi: true` to read the file key — this means a dev install for now.
-
-Open a file and run the plugin. The panel shows the connection status and the file key.
-
-### 3. Point an AI at it
-
-**Option A — file-bridge (recommended).** Write a job file:
-
-```bash
-cat > ~/.turbofig/inbox/job-001.json << 'EOF'
-{
-  "op": "execute",
-  "js": "figma.createFrame(); 'done'"
-}
-EOF
-```
-
-Read the result:
-
-```bash
-cat ~/.turbofig/outbox/job-001.json
-```
-
-**Option B — MCP.** Add the MCP server to your AI client config:
-
-```json
-{
-  "mcpServers": {
-    "turbofig": {
-      "url": "http://127.0.0.1:18846/mcp"
-    }
-  }
-}
-```
-
-**Option C — copy the connect prompt.** Click "Copy prompt" in the plugin panel. Paste it into a Claude Code session. The prompt contains the MCP port, the daemon help URL, and this file's key.
-
----
-
 ## Taste profiles
 
 Turbofig injects a taste profile into every `execute` call. The profile sets spacing, type, palette, and anti-slop rules for the active file. The AI reads `tf.taste` and applies them.
 
-Three built-in profiles, swappable per file from the plugin panel:
+Three built-in profiles ship with turbofig. Swap them per file from the plugin panel.
 
 | Profile | Character |
 |---|---|
@@ -132,9 +127,9 @@ Three built-in profiles, swappable per file from the plugin panel:
 | `editorial` | Asymmetric, dense, expressive type |
 | `minimal` | Genuinely restrained, anti-slop floor preserved |
 
-The choice persists in the Figma document. One daemon serves many files; each file runs its own profile.
+The choice persists in the Figma document. One daemon serves many files. Each file runs its own profile.
 
-Add a custom profile: drop a `.js` file in `~/.turbofig/profiles/`. The daemon loads it by stem name at startup.
+To add a custom profile, drop a `.js` file in `~/.turbofig/profiles/`. The daemon loads it by stem name at startup.
 
 ---
 
@@ -158,7 +153,7 @@ skills/
   design.md          # Brief → plan → parallel builder subagents → QA → refine
 ```
 
-**Ports** are a product contract, not a dev convention:
+Ports are a product contract, not a dev convention:
 
 | Server | Default | Env var |
 |---|---|---|
@@ -169,7 +164,6 @@ Other env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default `30000`), `TURBOFIG_BRIDG
 
 ---
 
-## Links
+## License
 
-- [lukehawkins.eu](https://lukehawkins.eu)
-- [github.com/lukehawkins/turbofig](https://github.com/lukehawkins/turbofig)
+MIT. See LICENSE.

@@ -184,16 +184,16 @@ describe("profileToSelectValue", () => {
 });
 
 describe("screenSize", () => {
-  test("main screen returns 300x200", () => {
+  test("main screen returns 300x150", () => {
     const { width, height } = screenSize("main");
     expect(width).toBe(300);
-    expect(height).toBe(200);
+    expect(height).toBe(150);
   });
 
-  test("advanced screen returns 300x440", () => {
+  test("advanced screen returns 300x240", () => {
     const { width, height } = screenSize("advanced");
     expect(width).toBe(300);
-    expect(height).toBe(440);
+    expect(height).toBe(240);
   });
 
   test("main and advanced return different heights", () => {
@@ -204,10 +204,10 @@ describe("screenSize", () => {
     expect(screenSize("main").width).toBe(screenSize("advanced").width);
   });
 
-  test("about screen returns 300x260", () => {
+  test("about screen returns 300x375", () => {
     const { width, height } = screenSize("about");
     expect(width).toBe(300);
-    expect(height).toBe(260);
+    expect(height).toBe(375);
   });
 
   test("about screen height differs from main and advanced", () => {
