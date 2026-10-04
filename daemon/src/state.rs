@@ -333,6 +333,14 @@ impl AppState {
         let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|_, (cid, _)| *cid != conn_id);
     }
+
+    /// Number of currently pending requests. Test-only: lets a test observe
+    /// that a cancelled or dropped call actually cleared its pending entry,
+    /// without the pending map itself being part of the public API.
+    #[cfg(test)]
+    pub(crate) fn pending_len(&self) -> usize {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
 }
 
 impl Default for AppState {

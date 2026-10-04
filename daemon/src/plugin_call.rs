@@ -125,6 +125,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_the_calling_future_cancels_its_pending_entry() {
+        // A caller that drops its own future mid-call (e.g. an MCP client
+        // disconnect) must not leak a pending entry until the full timeout
+        // elapses: PendingGuard must clean it up immediately on drop.
+        let state = Arc::new(AppState::with_timeout(Duration::from_secs(30)));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+
+        let state_for_task = state.clone();
+        let handle = tokio::spawn(async move {
+            // Never replied to, and the timeout is long: this only returns
+            // if the task is aborted first.
+            call_plugin(
+                &state_for_task,
+                conn_id,
+                &tx,
+                json!({"type": "STATUS"}),
+                Duration::from_secs(30),
+            )
+            .await
+        });
+
+        // Give the task a moment to register its pending entry, then abort
+        // it before it ever gets a reply or times out.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            state.pending_len(),
+            1,
+            "the call must have registered a pending entry"
+        );
+        handle.abort();
+        let _ = handle.await;
+
+        // Aborting drops the task's future, which must drop the PendingGuard.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            state.pending_len(),
+            0,
+            "the pending entry must be cancelled promptly, not left until the 30s timeout"
+        );
+    }
+
+    #[tokio::test]
     async fn call_plugin_returns_the_reply() {
         let state = Arc::new(AppState::with_timeout(Duration::from_millis(200)));
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
