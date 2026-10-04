@@ -71,6 +71,11 @@ export interface BenchReport {
   timeoutMs: number;
   valid: boolean;
   invalidReason: string | null;
+  /** Set only on a static, non-live baseline (e.g. a dry-run payload-size
+   * snapshot committed as bench/baseline.json). Names what the numbers do
+   * and do not represent, so nobody mistakes a payload-size snapshot for a
+   * live timing measurement. Absent on every real `--target` run. */
+  note?: string;
   jobStats: JobStat[];
   totalRequestBytes: number;
   totalResponseBytes: number;

@@ -1,4 +1,28 @@
 {
-  "scenario": "webpage",
-  "totalTokens": 1302
+  "scenario": "webpage-plain",
+  "label": "transport",
+  "target": "turbofig-bridge",
+  "runs": 1,
+  "timeoutMs": 45000,
+  "valid": true,
+  "invalidReason": null,
+  "note": "Static payload size, not a live measurement. Generated with `bun bench/harness.ts --dry-run --scenario webpage-plain --runs 1`: the stub transport never contacts a daemon or Figma file, so requestBytes/responseBytes are the real job-payload sizes but every timing field (coldMs, warmMedianMs, warmP95Ms, wallMs) is meaningless under the stub and is set to null here rather than a misleading 0. Replace this file with a live --out report (same BenchReport shape) once a real run exists.",
+  "jobStats": [
+    { "index": 0, "coldMs": null, "warmMedianMs": null, "warmP95Ms": null, "requestBytes": 295, "responseBytes": 11 },
+    { "index": 1, "coldMs": null, "warmMedianMs": null, "warmP95Ms": null, "requestBytes": 1719, "responseBytes": 11 },
+    { "index": 2, "coldMs": null, "warmMedianMs": null, "warmP95Ms": null, "requestBytes": 2679, "responseBytes": 11 },
+    { "index": 3, "coldMs": null, "warmMedianMs": null, "warmP95Ms": null, "requestBytes": 2395, "responseBytes": 11 },
+    { "index": 4, "coldMs": null, "warmMedianMs": null, "warmP95Ms": null, "requestBytes": 1115, "responseBytes": 11 }
+  ],
+  "totalRequestBytes": 8203,
+  "totalResponseBytes": 55,
+  "iterations": [],
+  "machine": {
+    "machine": null,
+    "macos": null,
+    "figmaVersion": null,
+    "daemonVersion": null,
+    "file": null
+  },
+  "timestamp": "2026-10-04T20:36:19.814Z"
 }
