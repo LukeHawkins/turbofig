@@ -226,7 +226,15 @@ export const consoleMcpAdapter: McpAdapter = {
       case "execute":
         return { name: "figma_execute", arguments: { code: job.code } };
       case "get_selection":
-        return { name: "figma_get_selection", arguments: { verbose: false } };
+        // console-mcp has no fields/depth shaping: figma_get_selection's
+        // only knob is verbose, which (see figma-console-mcp
+        // dist/local.js) fetches fills, strokes, effects, and other extra
+        // node props in one extra round trip. The turbofig job in
+        // scenarios.ts asks for fields: ["fills"], so verbose: true is the
+        // closest match available; it also returns strokes/effects/etc
+        // that turbofig's narrower request does not, so the byte counts are
+        // not exactly equal. See bench/README.md "Known limits".
+        return { name: "figma_get_selection", arguments: { verbose: true } };
       case "screenshot":
         return {
           name: "figma_take_screenshot",

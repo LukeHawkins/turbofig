@@ -800,8 +800,19 @@ figma.currentPage.selection = [rect];
     `.trim(),
   },
   {
+    // console-mcp's figma_take_screenshot always fetches the rendered image
+    // and returns it inline as base64 (see figma-console-mcp dist/local.js,
+    // the "Return as MCP image content type" path). turbofig defaults to
+    // file mode (a ~100-byte path), which is not the same shape of
+    // response. returnMode: "inline" and fullRes: true make turbofig return
+    // an undownscaled inline image too, so both targets are compared on the
+    // same kind of payload. See bench/README.md "Known limits" for what
+    // still cannot be made exactly equal (maxDim/scale are not the same
+    // downscale knob; see Known limits).
     op: "screenshot",
     scale: 2,
+    returnMode: "inline",
+    fullRes: true,
   },
 ];
 
