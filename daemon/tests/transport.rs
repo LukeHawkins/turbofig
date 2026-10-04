@@ -640,3 +640,79 @@ async fn test_request_without_origin_header_is_accepted() {
         res.status()
     );
 }
+
+/// A tool call whose op result is `{"ok":false,...}` must come back as an MCP
+/// tool error (`isError: true`), not success: a client must be able to tell
+/// the call failed without string-matching the content body.
+#[tokio::test]
+async fn test_execute_ok_false_sets_is_error() {
+    let base_url = start_server().await;
+    let client = make_client();
+
+    let init_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+        None,
+    )
+    .await;
+    assert!(init_res.status().is_success());
+    let session_id = init_res
+        .headers()
+        .get("mcp-session-id")
+        .expect("mcp-session-id header")
+        .to_str()
+        .expect("valid UTF-8")
+        .to_owned();
+    let init_body = init_res.text().await.expect("read init body");
+    let _ = parse_sse_data(&init_body);
+
+    let notif_res = post_mcp(
+        &client,
+        &base_url,
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
+        Some(&session_id),
+    )
+    .await;
+    assert!(notif_res.status().is_success());
+
+    // No plugin is connected, so turbofig_execute must return ok:false.
+    let tools_res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "turbofig_execute",
+                "arguments": {"code": "return 1;"}
+            }
+        }),
+        Some(&session_id),
+    )
+    .await;
+    assert!(tools_res.status().is_success());
+
+    let tools_body = tools_res.text().await.expect("read tools/call body");
+    let msg = parse_sse_data(&tools_body);
+    assert_eq!(
+        msg["result"]["isError"],
+        json!(true),
+        "an ok:false op result must set isError:true, got: {msg}"
+    );
+    let text_str = msg["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content[0].text must be a string");
+    let text: Value = serde_json::from_str(text_str).expect("content text must be valid JSON");
+    assert_eq!(text["ok"], json!(false));
+}

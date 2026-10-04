@@ -1770,3 +1770,113 @@ async fn test_ws_upgrade_with_null_origin_is_accepted() {
         result.err()
     );
 }
+
+/// A message larger than the server's 32 MiB cap must not be accepted: the
+/// connection drops instead of the daemon buffering an unbounded payload.
+#[tokio::test]
+async fn test_oversize_ws_message_drops_the_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+    let state_srv = state.clone();
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state_srv)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
+        .await
+        .expect("WS connect failed");
+
+    ws.send(TtMessage::Text(
+        serde_json::json!({"type": "FILE_INFO", "fileKey": "big", "name": "Big File"}).to_string(),
+    ))
+    .await
+    .expect("send FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        state.plugin_snapshot(),
+        Some(("big".to_owned(), "Big File".to_owned())),
+        "plugin must be registered before the oversize send"
+    );
+
+    // One text frame well past the 32 MiB server-side cap.
+    let huge = "x".repeat(33 * 1024 * 1024);
+    // The client may itself error on such a large send, or the server may
+    // close the connection after receiving it; either way the registry
+    // must not keep a connection that just blew past the size cap.
+    let _ = ws.send(TtMessage::Text(huge)).await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if state.plugin_snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        state.plugin_snapshot(),
+        None,
+        "an oversize message must drop the connection, not sit buffered forever"
+    );
+}
+
+/// A reconnect (or a second window) on the same fileKey must evict the older
+/// connection: routing always prefers the newest, and the old connection's
+/// in-flight request fails instead of hanging out its full timeout.
+#[tokio::test]
+async fn test_reconnect_same_file_key_evicts_the_older_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_secs(5)));
+    let state_srv = state.clone();
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state_srv)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let (mut ws1, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
+        .await
+        .expect("first connect");
+    ws1.send(TtMessage::Text(
+        serde_json::json!({"type": "FILE_INFO", "fileKey": "dup", "name": "First"}).to_string(),
+    ))
+    .await
+    .expect("send first FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (mut ws2, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
+        .await
+        .expect("second connect");
+    ws2.send(TtMessage::Text(
+        serde_json::json!({"type": "FILE_INFO", "fileKey": "dup", "name": "Second"}).to_string(),
+    ))
+    .await
+    .expect("send second FILE_INFO");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let conns = state.list_connections();
+    assert_eq!(
+        conns.len(),
+        1,
+        "only the newest connection for a reused fileKey must remain registered"
+    );
+    assert_eq!(
+        conns[0].2, "Second",
+        "the surviving connection must be the newest"
+    );
+
+    // The old socket is still physically open; make sure it does not panic
+    // anything when it later closes.
+    drop(ws1);
+    drop(ws2);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+}
