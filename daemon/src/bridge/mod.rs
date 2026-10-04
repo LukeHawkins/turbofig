@@ -72,16 +72,36 @@ const OUTBOX_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// Errors on individual jobs are captured in the result JSON; the loop never
 /// panics.  Only `create_dir_all` and watcher-setup errors propagate.
 ///
-/// `<dir>`, `inbox/`, and `outbox/` are all set to mode 0700 (owner-only), on
-/// both first creation and an existing install, because a job file can carry
-/// arbitrary eval code and a result file can carry the response. Group- or
-/// world-readable bridge directories would let another local user read or
-/// queue jobs.
+/// `inbox/` and `outbox/` are set to mode 0700 (owner-only) by
+/// [`prepare_dirs`], on both first creation and an existing install.
 pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result<()> {
+    let (inbox, outbox) = prepare_dirs(&dir).await?;
+
+    // The watcher callback runs on its own thread. It signals the async loop
+    // through an unbounded channel. A signal means "something changed, rescan".
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.send(());
+        }
+    })
+    .map_err(watcher_io_error)?;
+    watcher
+        .watch(&inbox, RecursiveMode::NonRecursive)
+        .map_err(watcher_io_error)?;
+
+    run_bridge_loop(rx, &inbox, &outbox, &state).await
+}
+
+/// Creates `<dir>/inbox` and `<dir>/outbox` and sets both to mode 0700, then
+/// returns their paths. A job file can carry arbitrary eval code and a result
+/// file can carry the response, so group- or world-readable bridge
+/// directories would let another local user read or queue jobs.
+async fn prepare_dirs(dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
     let inbox = dir.join("inbox");
     let outbox = dir.join("outbox");
 
-    tokio::fs::create_dir_all(&dir).await?;
+    tokio::fs::create_dir_all(dir).await?;
     tokio::fs::create_dir_all(&inbox).await?;
     tokio::fs::create_dir_all(&outbox).await?;
 
@@ -99,20 +119,7 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
         eprintln!("Turbofig bridge: could not set outbox to owner-only: {e}");
     }
 
-    // The watcher callback runs on its own thread. It signals the async loop
-    // through an unbounded channel. A signal means "something changed, rescan".
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = tx.send(());
-        }
-    })
-    .map_err(watcher_io_error)?;
-    watcher
-        .watch(&inbox, RecursiveMode::NonRecursive)
-        .map_err(watcher_io_error)?;
-
-    run_bridge_loop(rx, &inbox, &outbox, &state).await
+    Ok((inbox, outbox))
 }
 
 /// Sets `path` to mode 0700 (owner read/write/execute only, no group or world
@@ -588,15 +595,11 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn serve_bridge_sets_dirs_to_owner_only_on_first_create() {
+    async fn prepare_dirs_sets_dirs_to_owner_only_on_first_create() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let dir = tmp.path().join("fresh");
-        let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
-            100,
-        )));
 
-        let _ =
-            tokio::time::timeout(Duration::from_millis(50), serve_bridge(state, dir.clone())).await;
+        prepare_dirs(&dir).await.expect("prepare bridge dirs");
 
         // `dir` itself is never chmod'd: it can be a pre-existing, shared
         // path the user pointed TURBOFIG_BRIDGE_DIR at. Only the
@@ -615,7 +618,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn serve_bridge_fixes_mode_on_an_existing_too_open_install() {
+    async fn prepare_dirs_fixes_mode_on_an_existing_too_open_install() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().expect("temp dir");
@@ -630,11 +633,7 @@ mod tests {
         std::fs::set_permissions(&outbox, std::fs::Permissions::from_mode(0o777))
             .expect("chmod outbox");
 
-        let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
-            100,
-        )));
-        let _ =
-            tokio::time::timeout(Duration::from_millis(50), serve_bridge(state, dir.clone())).await;
+        prepare_dirs(&dir).await.expect("prepare bridge dirs");
 
         // `dir` keeps whatever mode it had: the daemon does not own it.
         assert_eq!(mode_bits(&dir), 0o777, "dir's mode must be left untouched");
