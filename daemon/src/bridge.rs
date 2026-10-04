@@ -81,12 +81,23 @@ pub fn bridge_dir_from_env() -> PathBuf {
 ///
 /// Errors on individual jobs are captured in the result JSON; the loop never
 /// panics.  Only `create_dir_all` and watcher-setup errors propagate.
+///
+/// `<dir>`, `inbox/`, and `outbox/` are all set to mode 0700 (owner-only), on
+/// both first creation and an existing install, because a job file can carry
+/// arbitrary eval code and a result file can carry the response. Group- or
+/// world-readable bridge directories would let another local user read or
+/// queue jobs.
 pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result<()> {
     let inbox = dir.join("inbox");
     let outbox = dir.join("outbox");
 
+    tokio::fs::create_dir_all(&dir).await?;
     tokio::fs::create_dir_all(&inbox).await?;
     tokio::fs::create_dir_all(&outbox).await?;
+
+    set_owner_only(&dir).await?;
+    set_owner_only(&inbox).await?;
+    set_owner_only(&outbox).await?;
 
     // The watcher callback runs on its own thread. It signals the async loop
     // through an unbounded channel. A signal means "something changed, rescan".
@@ -102,6 +113,22 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
         .map_err(watcher_io_error)?;
 
     run_bridge_loop(rx, &inbox, &outbox, &state).await
+}
+
+/// Sets `path` to mode 0700 (owner read/write/execute only, no group or world
+/// access). Fixes the mode on every startup, so an existing install created
+/// before this check (or loosened by an `umask`) gets corrected, not just a
+/// fresh one.
+#[cfg(unix)]
+async fn set_owner_only(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).await
+}
+
+/// No-op on non-Unix platforms: there is no POSIX mode to set.
+#[cfg(not(unix))]
+async fn set_owner_only(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Run the inbox event loop.
@@ -398,5 +425,86 @@ mod tests {
     fn bridge_dir_explicit_value_wins_over_home() {
         let path = bridge_dir_from_str(Some("/override"), Some("/home/alice"));
         assert_eq!(path, PathBuf::from("/override"));
+    }
+
+    /// Returns the Unix permission bits (the low 9 bits of the mode) for `path`.
+    #[cfg(unix)]
+    fn mode_bits(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_bridge_sets_dirs_to_owner_only_on_first_create() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().join("fresh");
+        let state = Arc::new(crate::AppState::with_timeout(
+            std::time::Duration::from_millis(100),
+        ));
+
+        // serve_bridge runs forever; race it against a short timeout so the
+        // test only needs the directories to exist, not the loop to finish.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            serve_bridge(state, dir.clone()),
+        )
+        .await;
+
+        assert_eq!(mode_bits(&dir), 0o700, "bridge dir must be owner-only");
+        assert_eq!(
+            mode_bits(&dir.join("inbox")),
+            0o700,
+            "inbox must be owner-only"
+        );
+        assert_eq!(
+            mode_bits(&dir.join("outbox")),
+            0o700,
+            "outbox must be owner-only"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_bridge_fixes_mode_on_an_existing_too_open_install() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().join("existing");
+        let inbox = dir.join("inbox");
+        let outbox = dir.join("outbox");
+        tokio::fs::create_dir_all(&inbox).await.expect("inbox");
+        tokio::fs::create_dir_all(&outbox).await.expect("outbox");
+        // Simulate a pre-hardening install: world-readable/writable.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod dir");
+        std::fs::set_permissions(&inbox, std::fs::Permissions::from_mode(0o777))
+            .expect("chmod inbox");
+        std::fs::set_permissions(&outbox, std::fs::Permissions::from_mode(0o777))
+            .expect("chmod outbox");
+
+        let state = Arc::new(crate::AppState::with_timeout(
+            std::time::Duration::from_millis(100),
+        ));
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            serve_bridge(state, dir.clone()),
+        )
+        .await;
+
+        assert_eq!(mode_bits(&dir), 0o700, "an existing dir must be corrected");
+        assert_eq!(
+            mode_bits(&inbox),
+            0o700,
+            "an existing inbox must be corrected"
+        );
+        assert_eq!(
+            mode_bits(&outbox),
+            0o700,
+            "an existing outbox must be corrected"
+        );
     }
 }

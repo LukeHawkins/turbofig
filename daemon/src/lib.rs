@@ -1064,6 +1064,26 @@ async fn help_handler() -> impl IntoResponse {
     )
 }
 
+/// Rejects any HTTP request that carries an Origin header, with 403 Forbidden.
+/// A browser always sends an Origin header on a cross-origin fetch; a non-browser
+/// MCP client (curl, a native MCP client, the file-bridge) sends none. So this
+/// blocks a malicious web page's fetch() from reaching the daemon and driving the
+/// Figma plugin through `turbofig_execute`, without affecting any real caller
+/// (the MCP spec's Origin-validation requirement; see DECISIONS.md).
+async fn reject_browser_origin(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.headers().contains_key(axum::http::header::ORIGIN) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "browser requests are not allowed",
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
 /// Build the axum router with the MCP service mounted at /mcp.
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
     // StreamableHttpServerConfig is #[non_exhaustive], so construct via Default
@@ -1080,6 +1100,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         .route("/", axum::routing::get(help_handler))
         .nest_service("/mcp", service)
         .fallback(help_handler)
+        .layer(axum::middleware::from_fn(reject_browser_origin))
 }
 
 /// Serve the MCP router on the given TCP listener.
@@ -1171,9 +1192,31 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     state.cancel_pending_for_conn(conn_id);
 }
 
+/// Returns true when `origin` is acceptable for the plugin WebSocket.
+/// Accepts a missing Origin header (non-browser clients send none) and the
+/// literal string "null" (the Figma plugin UI runs in a sandboxed iframe,
+/// which the browser reports as a null origin). Rejects every other value.
+fn ws_origin_allowed(origin: Option<&axum::http::HeaderValue>) -> bool {
+    match origin {
+        None => true,
+        Some(v) => v.as_bytes() == b"null",
+    }
+}
+
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// Rejects the upgrade with 403 when the Origin header is present and is
+/// neither absent nor "null", so an arbitrary web page cannot open this socket
+/// and drive the Figma plugin (the MCP spec's Origin-validation requirement).
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    if !ws_origin_allowed(headers.get(axum::http::header::ORIGIN)) {
+        return (axum::http::StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 /// Serve the WebSocket endpoint on the given TCP listener.

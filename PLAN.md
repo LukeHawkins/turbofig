@@ -245,6 +245,7 @@ Goal: robust, testable, cheap to maintain.
 - [ ] Make the benchmark regression guard hard-fail: the CI step (`bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json`, added 2026-08-06) only reports the ratio. Add a `--fail-threshold` flag to the harness and a `deck20` baseline so both scenarios gate CI, not just log.
 - [ ] Enable `clippy::expect_used` and `clippy::unwrap_used` (warn) and remove the request-path `.expect`/`.unwrap` they flag. Deferred from the 2026-08-06 audit because the daemon has many such calls; it is always-on and must not panic on the hot path.
 - [ ] Daemon LOW-priority robustness (2026-08-06 audit): bound the per-connection write channel so a stalled plugin socket cannot grow memory without limit; cap or clean the screenshot outbox PNGs (they accumulate on a long-lived daemon); reconsider clearing a good session pairing when an explicit `fileKey` is not connected.
+- [ ] Per-install token for the WebSocket handshake (2026-10-04, security hardening follow-up): Origin validation (DECISIONS.md, see the 2026-10-04 entry) stops a browser page from opening the plugin socket, but any local process can still connect, since the WS port has no credential. Generate a per-install token on first run, persist it alongside the bridge dir, require it on the WS handshake (header or query param), and have the plugin UI read and send it. Not built yet; scope it when this phase runs.
 
 ## Phase 14: Read-efficiency guidance + file-bridge id safety (spike outcome, pulled forward)
 

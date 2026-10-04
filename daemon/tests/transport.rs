@@ -572,3 +572,71 @@ async fn test_stale_session_after_restart_signals_reinit() {
         "a stale session after restart must return 404, the reinitialize signal"
     );
 }
+
+/// A request carrying an Origin header must be rejected with 403.
+///
+/// A browser always sends Origin on a cross-origin fetch; a non-browser MCP
+/// client (curl, a native MCP client) sends none. This blocks a malicious web
+/// page's fetch() from reaching the daemon, per the MCP spec's Origin
+/// validation requirement, without affecting any real caller.
+#[tokio::test]
+async fn test_request_with_origin_header_is_rejected() {
+    let base_url = start_server().await;
+    let client = make_client();
+
+    let res = client
+        .post(format!("{base_url}/mcp"))
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .header("Origin", "https://evil.example")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("send POST /mcp with Origin");
+
+    assert_eq!(
+        res.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "a request carrying an Origin header must be rejected with 403"
+    );
+}
+
+/// A request with no Origin header (the normal MCP client and curl path) must
+/// still succeed. Guards against the Origin check being too broad.
+#[tokio::test]
+async fn test_request_without_origin_header_is_accepted() {
+    let base_url = start_server().await;
+    let client = make_client();
+
+    let res = post_mcp(
+        &client,
+        &base_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+        None,
+    )
+    .await;
+
+    assert!(
+        res.status().is_success(),
+        "a request with no Origin header must succeed, got HTTP {}",
+        res.status()
+    );
+}

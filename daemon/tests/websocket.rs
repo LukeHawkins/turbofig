@@ -10,6 +10,7 @@ use base64::Engine as _;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -1704,5 +1705,68 @@ async fn test_run_screenshot_real_png_is_downscaled() {
         result_full["h"],
         serde_json::json!(1000u64),
         "h must be original 1000 for fullRes=true: {result_full}"
+    );
+}
+
+/// A WebSocket upgrade request carrying a browser Origin must be rejected
+/// before the upgrade completes. A real browser page cannot open this socket
+/// and drive the Figma plugin through it.
+#[tokio::test]
+async fn test_ws_upgrade_with_browser_origin_is_rejected() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let mut request = format!("ws://127.0.0.1:{}/", addr.port())
+        .into_client_request()
+        .expect("build client request");
+    request.headers_mut().insert(
+        "Origin",
+        "https://evil.example".parse().expect("header value"),
+    );
+
+    let result = connect_async(request).await;
+    assert!(
+        result.is_err(),
+        "a WS upgrade carrying a browser Origin must be rejected, not upgraded"
+    );
+}
+
+/// A WebSocket upgrade request with Origin: null (the Figma plugin UI iframe)
+/// must be accepted. Guards against the Origin check being too strict.
+#[tokio::test]
+async fn test_ws_upgrade_with_null_origin_is_accepted() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let mut request = format!("ws://127.0.0.1:{}/", addr.port())
+        .into_client_request()
+        .expect("build client request");
+    request
+        .headers_mut()
+        .insert("Origin", "null".parse().expect("header value"));
+
+    let result = connect_async(request).await;
+    assert!(
+        result.is_ok(),
+        "a WS upgrade with Origin: null must be accepted, got: {:?}",
+        result.err()
     );
 }
