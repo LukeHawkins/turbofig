@@ -93,6 +93,23 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Poll `condition` until it returns true, or panic with `msg` once
+    /// `deadline_ms` elapses. Replaces a fixed "give it a moment" sleep with
+    /// a wait on the actual state change, so a slow CI runner gets more time
+    /// but a fast one does not wait longer than it needs to.
+    async fn wait_until<F: FnMut() -> bool>(mut condition: F, deadline_ms: u64, msg: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(deadline_ms);
+        loop {
+            if condition() {
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("Timed out waiting for: {msg}");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     #[tokio::test]
     async fn call_plugin_reports_not_connected_for_a_closed_connection() {
         let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
@@ -147,24 +164,24 @@ mod tests {
             .await
         });
 
-        // Give the task a moment to register its pending entry, then abort
-        // it before it ever gets a reply or times out.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(
-            state.pending_len(),
-            1,
-            "the call must have registered a pending entry"
-        );
+        // Wait for the task to register its pending entry, then abort it
+        // before it ever gets a reply or times out.
+        wait_until(
+            || state.pending_len() == 1,
+            5000,
+            "the call to register a pending entry",
+        )
+        .await;
         handle.abort();
         let _ = handle.await;
 
         // Aborting drops the task's future, which must drop the PendingGuard.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(
-            state.pending_len(),
-            0,
-            "the pending entry must be cancelled promptly, not left until the 30s timeout"
-        );
+        wait_until(
+            || state.pending_len() == 0,
+            5000,
+            "the pending entry to be cancelled promptly, not left until the 30s timeout",
+        )
+        .await;
     }
 
     #[tokio::test]

@@ -57,7 +57,12 @@ async fn start_stack() -> (u16, String, Arc<turbofig::AppState>) {
 /// A background task owns the socket. The plugin replies to every EXECUTE
 /// frame with `{"ok":true,"result":{"from":<reply_tag>}}`. The reply loop
 /// serves many EXECUTE frames in sequence without limit.
-async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static str) {
+async fn connect_mock_plugin(
+    ws_port: u16,
+    state: &Arc<turbofig::AppState>,
+    file_key: &str,
+    reply_tag: &'static str,
+) {
     let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
         .await
         .expect("mock plugin connect");
@@ -72,7 +77,21 @@ async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static s
         .expect("send FILE_INFO");
 
     // Wait for registration to propagate before returning.
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if state
+            .list_connections()
+            .iter()
+            .any(|(_, fk, _)| fk == file_key)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{file_key} must register before connect_mock_plugin returns"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     tokio::spawn(async move {
         while let Some(Ok(msg)) = ws.next().await {
@@ -287,8 +306,8 @@ async fn test_two_sessions_two_files_concurrent_and_isolated() {
     let (ws_port, base_url, state) = start_stack().await;
 
     // Connect both mock plugins. Each plugin echoes a distinct tag.
-    connect_mock_plugin(ws_port, "fk1", "fk1-reply").await;
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk1", "fk1-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Wait until both plugins are registered before proceeding.
     let count = wait_for_connections(&state, 2).await;
