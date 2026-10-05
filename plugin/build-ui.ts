@@ -30,8 +30,8 @@ const pluginVersion = pkg.version;
  * Dev convenience: a manually dev-installed plugin (loaded straight from
  * `dist/ui.html` in Figma Desktop) needs a real token to connect, since the
  * daemon's WS upgrade now requires one. Read it from `<home>/token`, where
- * `home` defaults to `~/.turbofig` and honours `TURBOFIG_HOME` /
- * `TURBOFIG_BRIDGE_DIR` the same way the daemon does. If the daemon has never
+ * `home` defaults to `~/.turbofig` and honours `TURBOFIG_BRIDGE_DIR`, the
+ * same env var the daemon reads for its own home. If the daemon has never
  * run, the file does not exist yet: fall back to the placeholder and warn.
  *
  * This keeps the build fully reproducible in CI and in a release build: a
@@ -40,8 +40,7 @@ const pluginVersion = pkg.version;
  * or enters git (`dist/` is gitignored) or the compiled daemon binary.
  */
 function readLocalToken(): string {
-  const home =
-    process.env.TURBOFIG_HOME ?? process.env.TURBOFIG_BRIDGE_DIR ?? join(homedir(), ".turbofig");
+  const home = process.env.TURBOFIG_BRIDGE_DIR ?? join(homedir(), ".turbofig");
   const tokenPath = join(home, "token");
   try {
     const contents = readFileSync(tokenPath, "utf8").trim();
