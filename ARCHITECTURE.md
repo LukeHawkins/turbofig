@@ -224,7 +224,7 @@ come from `clap`.
 | *(none)* | `cmd_run`: starts the daemon detached if not already running, waits for `/health`, then prints the first-run walkthrough or a short status; see below |
 | `serve` | Runs the daemon in the foreground (`run_daemon`): binds both ports, ensures the token, writes/refreshes the plugin files, serves until a subsystem dies |
 | `start` | Starts the daemon detached if not already running, waits for `/health`, prints the version and both ports. Idempotent |
-| `stop` | Stops the running daemon via authenticated `POST /control`, waits for it to go away. A no-op (not an error) if nothing was running |
+| `stop` | Stops the running daemon via authenticated `POST /control`, waits for it to go away. A no-op (not an error) if nothing was running. If `/health` answers but the token file is missing or no longer matches, `/control` cannot authenticate, so `stop` exits 1 and tells the user how to end the process by hand |
 | `status` | A thin client for `GET /health`, printed as a short report |
 | `autostart on` / `autostart off` | Writes or removes the launchd plist (below). Optional: nothing else depends on it |
 | `uninstall [--purge]` | Stops autostart and removes the plist; `--purge` also deletes the known home-directory entries |
@@ -272,8 +272,11 @@ come from `clap`.
   end state. It (a) writes
   `~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`
   (`daemon/src/launchd.rs`'s `plist_contents`): `ProgramArguments` is the
-  *stable* binary path (see below) plus `serve`, `RunAtLoad` and
-  `KeepAlive` both true, `StandardOutPath`/`StandardErrorPath` set to
+  *stable* binary path (see below) plus `serve`, `RunAtLoad` true and
+  `KeepAlive` set to `{SuccessfulExit: false}`, not plain `true`: a clean
+  exit (`turbofig stop`, which always exits 0) leaves the daemon stopped
+  until the next login, while a crash (any non-zero exit) still gets
+  restarted at once. `StandardOutPath`/`StandardErrorPath` set to
   `<home>/daemon.log`, and `EnvironmentVariables` holding
   `TURBOFIG_SUPERVISED=1` plus every other `TURBOFIG_*` variable set in
   `autostart on`'s own environment at the time it ran
@@ -317,15 +320,28 @@ come from `clap`.
   request. If the daemon is unreachable, it says so and suggests
   `turbofig start`.
 
-## `/health`
+## `/health`, `/job`, and `/mcp` auth
+
+`POST /job` and `POST /mcp` now require `Authorization: Bearer <pairing
+token>`, enforced by `mcp.rs`'s `require_bearer_token` middleware, the same
+check `/control` already used. A missing or wrong token gives 401 before
+the request runs a job or reaches a tool. This closes the gap that another
+local macOS account, also able to reach `127.0.0.1`, could otherwise drive
+the Figma plugin through the HTTP port. The file-bridge is unaffected: it
+stays tokenless, protected instead by its `~/.turbofig` directory mode
+(0700).
 
 `GET /health` (same HTTP port as `/mcp`, same Origin and Host checks, see
-`mcp.rs`'s `reject_browser_origin` and the new `reject_bad_host`) returns
-JSON: `version` (`CARGO_PKG_VERSION`), `uptimeSeconds`, and
-`connectedFiles` (one entry per connected file: `fileKey`, `name`,
-`pluginVersion`, and, if the plugin's reported version differs from the
-daemon's, a `warning` of `"reopen the turbofig plugin in Figma"`). Never
-includes the pairing token: `connectedFiles` reuses
+`mcp.rs`'s `reject_browser_origin` and the new `reject_bad_host`) never
+fails with 401; instead its payload now depends on the same bearer token
+(`health_handler`). Without a valid token it returns only `version`
+(`CARGO_PKG_VERSION`) and `uptimeSeconds`: enough to confirm the daemon is
+alive, without naming the open file to an unauthenticated local caller.
+With a valid token it also returns `connectedFiles` (one entry per
+connected file: `fileKey`, `name`, `pluginVersion`, and, if the plugin's
+reported version differs from the daemon's, a `warning` of `"reopen the
+turbofig plugin in Figma"`) and `pid` (`std::process::id()`). Never
+includes the pairing token itself: `connectedFiles` reuses
 `AppState::named_connections_json`, the same JSON `turbofig_status`
 returns, so the two surfaces can never drift. `turbofig_status` gained the
 same `pluginVersion`/`warning` fields on each entry in its `plugins` list.
@@ -350,8 +366,13 @@ with `RouteError::Draining` across all three transports (MCP, WS-routed
 ops, file-bridge; they all call `resolve_route`); waits up to 60s
 (`supervisor::wait_for_drain`, polling `AppState::jobs_in_flight`) for
 in-flight jobs to finish; then waits a further 250ms grace
-(`SUPERVISOR_EXIT_GRACE`) so a just-finished response can flush; then
-exits 0, so launchd's `KeepAlive` starts the new binary. The clock and the
+(`SUPERVISOR_EXIT_GRACE`) so a just-finished response can flush; then exits
+`supervisor::SUPERVISED_RESTART_EXIT_CODE` (75), a non-zero code, so
+launchd's `KeepAlive: {SuccessfulExit: false}` (above) restarts it with the
+new binary rather than leaving it stopped the way a clean `turbofig stop`
+(always exit 0) does. `/control`'s own `restart` action exits the same code
+under supervision, for the same reason (`control.rs`'s `exit_code_for`).
+The clock and the
 path resolver are pure/seamed (`supervisor.rs`) so the decision logic is
 unit tested without a real 30s wait or a real Homebrew upgrade.
 
