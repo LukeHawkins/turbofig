@@ -81,8 +81,14 @@ pub fn ensure_token(home: &Path) -> io::Result<String> {
 /// `path` already exists, the same atomicity `create_new` gave, but without
 /// the 2-step create-then-write window where a concurrent reader could see
 /// a freshly created, still-empty `path`, or a failed write could leave a
-/// short, corrupt token behind. The temp file is always removed afterward,
-/// whether the link succeeded or not.
+/// short, corrupt token behind. The temp file's name carries a random
+/// suffix (not the process id), so two processes started with the same pid
+/// at different times (or a leftover temp file from a process that never
+/// cleaned up) can never collide on the same temp path, which would
+/// otherwise look like "another process won the race" and could also delete
+/// another writer's in-progress temp file on cleanup. The temp file is
+/// always removed afterward, whether the link succeeded or not, unless it
+/// could not even be opened, in which case there is nothing to remove.
 #[cfg(unix)]
 fn create_token_file(path: &Path) -> io::Result<String> {
     use std::io::Write;
@@ -90,15 +96,18 @@ fn create_token_file(path: &Path) -> io::Result<String> {
 
     let token = random_token_hex();
     let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    tmp_name.push(format!(".tmp.{}", random_suffix_hex()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
 
+    // Nothing was created if this open fails, so there is no temp file to
+    // clean up; propagate the error as-is.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp_path)?;
+
     let result = (|| -> io::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)?;
         file.write_all(token.as_bytes())?;
         file.sync_all()?;
         drop(file);
@@ -107,6 +116,16 @@ fn create_token_file(path: &Path) -> io::Result<String> {
 
     let _ = std::fs::remove_file(&tmp_path);
     result.map(|()| token)
+}
+
+/// Generates a short random hex suffix for a temp filename. Not a security
+/// token: collision avoidance only, so a narrower random source than
+/// `random_token_hex`'s full CSPRNG draw is fine here.
+#[cfg(unix)]
+fn random_suffix_hex() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG (getrandom) must be available");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Non-Unix fallback: no POSIX mode to set at creation; still exclusive-create.
@@ -202,6 +221,54 @@ mod tests {
         std::fs::write(tmp.path().join("token"), "preset-token-value").expect("preset token");
         let token = ensure_token(tmp.path()).expect("ensure_token");
         assert_eq!(token, "preset-token-value");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_token_file_never_collides_with_a_leftover_same_pid_temp_file() {
+        // A leftover temp file from an earlier, uncleaned-up run must never
+        // be mistaken for "another process winning the race", and a fresh
+        // call must never delete it: the random suffix guarantees a fresh
+        // temp path every call, unlike the old pid-only name.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("token");
+        let mut leftover_name = path.as_os_str().to_os_string();
+        leftover_name.push(format!(".tmp.{}", std::process::id()));
+        let leftover_path = std::path::PathBuf::from(leftover_name);
+        std::fs::write(&leftover_path, "leftover-from-a-crashed-run").expect("write leftover");
+
+        let token = create_token_file(&path).expect("create_token_file must succeed");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read token"),
+            token,
+            "the real token file must carry the generated token"
+        );
+        assert!(
+            leftover_path.exists(),
+            "an unrelated leftover temp file must survive a later create_token_file call"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_token_file_leaves_no_temp_file_when_open_fails() {
+        // A path inside a directory that does not exist makes the initial
+        // open fail (NotFound), before any temp file is created. There must
+        // be nothing left to clean up, and the error must propagate as-is.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("missing-dir").join("token");
+
+        let err = create_token_file(&path).expect_err("open must fail: parent dir is missing");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "no temp file may be left behind when the open itself failed: {entries:?}"
+        );
     }
 
     #[cfg(unix)]
