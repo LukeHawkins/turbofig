@@ -17,7 +17,7 @@
 
 use crate::state::AppState;
 use crate::supervisor::wait_for_drain;
-use crate::token::constant_time_eq;
+use crate::token::bearer_token_matches;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
@@ -47,16 +47,6 @@ pub(crate) enum ControlAction {
     Stop,
 }
 
-/// Extracts the bearer token from `Authorization: Bearer <token>`.
-/// Returns `None` for a missing header, a non-UTF-8 header, or a header that
-/// does not carry the `Bearer ` prefix.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-}
-
 /// `POST /control` handler.
 ///
 /// Requires `Authorization: Bearer <pairing token>`, checked with
@@ -78,16 +68,10 @@ pub(crate) async fn control_handler(
     headers: HeaderMap,
     Json(req): Json<ControlRequest>,
 ) -> (StatusCode, Json<Value>) {
-    let Some(candidate) = bearer_token(&headers) else {
+    if !bearer_token_matches(&headers, state.token()) {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"ok": false, "error": "missing bearer token"})),
-        );
-    };
-    if !constant_time_eq(candidate, state.token()) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"ok": false, "error": "invalid token"})),
+            Json(json!({"ok": false, "error": "missing or invalid bearer token"})),
         );
     }
 
@@ -130,29 +114,6 @@ pub(crate) async fn control_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bearer_token_reads_the_prefixed_value() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            "Bearer abc123".parse().unwrap(),
-        );
-        assert_eq!(bearer_token(&headers), Some("abc123"));
-    }
-
-    #[test]
-    fn bearer_token_is_none_without_the_prefix() {
-        let mut headers = HeaderMap::new();
-        headers.insert(axum::http::header::AUTHORIZATION, "abc123".parse().unwrap());
-        assert_eq!(bearer_token(&headers), None);
-    }
-
-    #[test]
-    fn bearer_token_is_none_when_absent() {
-        let headers = HeaderMap::new();
-        assert_eq!(bearer_token(&headers), None);
-    }
 
     #[tokio::test]
     async fn a_second_concurrent_control_call_reports_already_in_progress_without_a_second_drain_wait(

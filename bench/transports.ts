@@ -11,8 +11,22 @@
 import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { BridgeJob } from "./scenarios.js";
+
+/**
+ * Reads turbofig's pairing token, trimmed, from `TURBOFIG_BRIDGE_DIR/token`
+ * or `~/.turbofig/token`. The daemon now requires `Authorization: Bearer
+ * <token>` on `/job` and `/mcp` (another local macOS account can otherwise
+ * reach 127.0.0.1 and drive the Figma plugin), so the turbofig MCP transport
+ * below must read and send it.
+ */
+async function readTurbofigToken(): Promise<string> {
+  const dir = process.env.TURBOFIG_BRIDGE_DIR ?? join(homedir(), ".turbofig");
+  const raw = await readFile(join(dir, "token"), "utf8");
+  return raw.trim();
+}
 
 /** One job's measured outcome. Bytes are exact wire sizes, never estimated. */
 export interface SubmitResult {
@@ -268,6 +282,7 @@ function parseSse(text: string): { result?: unknown; error?: unknown } {
 export function mcpTransport(baseUrl: string, adapter: McpAdapter, timeoutMs: number): Transport {
   let sessionId: string | null = null;
   let nextId = 1;
+  let tokenPromise: Promise<string> | null = null;
   const accept = "application/json, text/event-stream";
 
   async function rpc(body: Record<string, unknown>): Promise<{ text: string; headers: Headers }> {
@@ -279,6 +294,13 @@ export function mcpTransport(baseUrl: string, adapter: McpAdapter, timeoutMs: nu
         Accept: accept,
       };
       if (sessionId) headers["mcp-session-id"] = sessionId;
+      // Only turbofig's own endpoint needs the pairing token; console-mcp
+      // has no such gate. A missing/unreadable token file is left to fail
+      // naturally at the daemon (401), not swallowed silently here.
+      if (adapter === turbofigMcpAdapter) {
+        if (!tokenPromise) tokenPromise = readTurbofigToken();
+        headers.Authorization = `Bearer ${await tokenPromise}`;
+      }
       const res = await fetch(baseUrl, {
         method: "POST",
         headers,

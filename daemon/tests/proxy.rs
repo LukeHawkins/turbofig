@@ -37,12 +37,14 @@ fn normalize_tools(tools: &[Value]) -> Vec<(String, Value, Value)> {
 }
 
 async fn http_tools_list() -> Vec<Value> {
+    let state = std::sync::Arc::new(turbofig::AppState::new());
+    let token = state.token().to_owned();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
-        let _ = turbofig::serve(listener).await;
+        let _ = turbofig::serve_with_state(listener, state).await;
     });
 
     let client = reqwest::Client::builder()
@@ -55,6 +57,7 @@ async fn http_tools_list() -> Vec<Value> {
         .post(format!("{base}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .json(&json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -81,6 +84,7 @@ async fn http_tools_list() -> Vec<Value> {
         .post(format!("{base}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .header("mcp-session-id", &session_id)
         .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
         .send()
@@ -91,6 +95,7 @@ async fn http_tools_list() -> Vec<Value> {
         .post(format!("{base}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .header("mcp-session-id", &session_id)
         .json(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
         .send()

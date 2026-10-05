@@ -112,6 +112,7 @@ fn make_client() -> reqwest::Client {
 /// Attaches mcp-session-id when `session_id` is Some.
 async fn post_mcp(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     body: serde_json::Value,
     session_id: Option<&str>,
@@ -120,6 +121,7 @@ async fn post_mcp(
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .json(&body);
     if let Some(id) = session_id {
         builder = builder.header("mcp-session-id", id);
@@ -148,9 +150,10 @@ fn parse_sse_data(body: &str) -> serde_json::Value {
 
 /// Run the MCP initialize + notifications/initialized handshake.
 /// Returns the mcp-session-id issued by the server.
-async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
+async fn mcp_handshake(client: &reqwest::Client, token: &str, base_url: &str) -> String {
     let init_res = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -183,6 +186,7 @@ async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
 
     let notif = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
         Some(&session_id),
@@ -200,6 +204,7 @@ async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
 /// Call turbofig_execute via MCP. Return the parsed tool-output JSON.
 async fn call_execute(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     session_id: &str,
     file_key: Option<&str>,
@@ -211,6 +216,7 @@ async fn call_execute(
 
     let res = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -327,10 +333,11 @@ async fn test_paired_session_returns_error_after_plugin_closes() {
     });
 
     let client = make_client();
-    let session_id = mcp_handshake(&client, &base_url).await;
+    let token = state.token().to_owned();
+    let session_id = mcp_handshake(&client, &token, &base_url).await;
 
     // First call: explicit fileKey=fk1. The session pairs to fk1.
-    let first = call_execute(&client, &base_url, &session_id, Some("fk1")).await;
+    let first = call_execute(&client, &token, &base_url, &session_id, Some("fk1")).await;
     assert_eq!(
         first["ok"],
         serde_json::json!(true),
@@ -353,7 +360,7 @@ async fn test_paired_session_returns_error_after_plugin_closes() {
     // Second call: no fileKey. The session is paired to fk1, which is gone.
     // Expect a prompt ok:false with "not connected" in the error.
     let start = std::time::Instant::now();
-    let second = call_execute(&client, &base_url, &session_id, None).await;
+    let second = call_execute(&client, &token, &base_url, &session_id, None).await;
     let elapsed = start.elapsed();
 
     assert_eq!(
@@ -411,11 +418,12 @@ async fn test_fk1_close_does_not_disturb_session_b_paired_to_fk2() {
     assert!(found_fk2, "fk2 must register");
 
     let client = make_client();
+    let token = state.token().to_owned();
 
     // Session A handshake and pair to fk1.
-    let session_a = mcp_handshake(&client, &base_url).await;
+    let session_a = mcp_handshake(&client, &token, &base_url).await;
     // Session B handshake and pair to fk2.
-    let session_b = mcp_handshake(&client, &base_url).await;
+    let session_b = mcp_handshake(&client, &token, &base_url).await;
 
     // Pair session A to fk1. fk1 is not set up to reply so this times out,
     // but that is fine for this test: the pairing is recorded before the
@@ -443,7 +451,7 @@ async fn test_fk1_close_does_not_disturb_session_b_paired_to_fk2() {
     .await;
 
     // Pair session B to fk2 via HTTP. fk2 replies, so this succeeds.
-    let pair_b = call_execute(&client, &base_url, &session_b, Some("fk2")).await;
+    let pair_b = call_execute(&client, &token, &base_url, &session_b, Some("fk2")).await;
     assert_eq!(
         pair_b["ok"],
         serde_json::json!(true),
@@ -456,7 +464,7 @@ async fn test_fk1_close_does_not_disturb_session_b_paired_to_fk2() {
     assert!(fk1_gone, "fk1 must deregister after socket close");
 
     // Session B must still route to fk2 with no fileKey.
-    let result_b = call_execute(&client, &base_url, &session_b, None).await;
+    let result_b = call_execute(&client, &token, &base_url, &session_b, None).await;
     assert_eq!(
         result_b["ok"],
         serde_json::json!(true),
@@ -507,14 +515,15 @@ async fn test_concurrent_call_to_fk2_succeeds_while_fk1_hangs_and_closes() {
     assert!(found_fk2, "fk2 must register");
 
     let client = make_client();
+    let token = state.token().to_owned();
 
     // Session for fk1 (will hang until fk1 closes).
-    let session_fk1 = mcp_handshake(&client, &base_url).await;
+    let session_fk1 = mcp_handshake(&client, &token, &base_url).await;
     // Session for fk2 (will succeed).
-    let session_fk2 = mcp_handshake(&client, &base_url).await;
+    let session_fk2 = mcp_handshake(&client, &token, &base_url).await;
 
     // Pair session_fk2 to fk2 first.
-    let pair_fk2 = call_execute(&client, &base_url, &session_fk2, Some("fk2")).await;
+    let pair_fk2 = call_execute(&client, &token, &base_url, &session_fk2, Some("fk2")).await;
     assert_eq!(
         pair_fk2["ok"],
         serde_json::json!(true),
@@ -523,10 +532,18 @@ async fn test_concurrent_call_to_fk2_succeeds_while_fk1_hangs_and_closes() {
 
     // Launch a call to fk1 in the background. It will hang until fk1 closes.
     let client_fk1 = make_client();
+    let token_fk1 = token.clone();
     let base_url_fk1 = base_url.clone();
     let session_fk1_clone = session_fk1.clone();
     let fk1_call = tokio::spawn(async move {
-        call_execute(&client_fk1, &base_url_fk1, &session_fk1_clone, Some("fk1")).await
+        call_execute(
+            &client_fk1,
+            &token_fk1,
+            &base_url_fk1,
+            &session_fk1_clone,
+            Some("fk1"),
+        )
+        .await
     });
 
     // Wait until the in-flight request is registered before we close, rather
@@ -558,7 +575,7 @@ async fn test_concurrent_call_to_fk2_succeeds_while_fk1_hangs_and_closes() {
     );
 
     // fk2 must still be reachable.
-    let result_fk2 = call_execute(&client, &base_url, &session_fk2, None).await;
+    let result_fk2 = call_execute(&client, &token, &base_url, &session_fk2, None).await;
     assert_eq!(
         result_fk2["ok"],
         serde_json::json!(true),

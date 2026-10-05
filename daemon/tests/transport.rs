@@ -9,18 +9,21 @@ use tokio::io::AsyncWriteExt;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Bind an ephemeral port, spawn the server, and return the base URL.
-async fn start_server() -> String {
+/// Bind an ephemeral port, spawn the server, and return the base URL and the
+/// shared state (its `token()` is needed to authenticate every /mcp request).
+async fn start_server() -> (String, std::sync::Arc<turbofig::AppState>) {
+    let state = std::sync::Arc::new(turbofig::AppState::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
     let addr = listener.local_addr().expect("read local addr");
+    let server_state = state.clone();
     tokio::spawn(async move {
-        turbofig::serve(listener)
+        turbofig::serve_with_state(listener, server_state)
             .await
             .expect("server error in test");
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), state)
 }
 
 /// Build a reqwest client with a generous timeout so the test never hangs.
@@ -35,6 +38,7 @@ fn make_client() -> reqwest::Client {
 /// Attach an mcp-session-id header when `session_id` is Some.
 async fn post_mcp(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     body: Value,
     session_id: Option<&str>,
@@ -43,6 +47,7 @@ async fn post_mcp(
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .json(&body);
     if let Some(id) = session_id {
         builder = builder.header("mcp-session-id", id);
@@ -85,7 +90,8 @@ fn parse_sse_data(body: &str) -> Value {
 /// Also verifies statefulness: a tools/call without a session ID is rejected.
 #[tokio::test]
 async fn test_mcp_handshake_and_turbofig_status() {
-    let base_url = start_server().await;
+    let (base_url, state) = start_server().await;
+    let token = state.token().to_owned();
     let client = make_client();
 
     // ── step 1: initialize ────────────────────────────────────────────────────
@@ -93,6 +99,7 @@ async fn test_mcp_handshake_and_turbofig_status() {
     // response header.
     let init_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -135,6 +142,7 @@ async fn test_mcp_handshake_and_turbofig_status() {
     // The server acknowledges the handshake.  A 200 or 202 is both acceptable.
     let notif_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -157,6 +165,7 @@ async fn test_mcp_handshake_and_turbofig_status() {
     // response object whose result.content[0] holds the tool output.
     let tools_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -219,6 +228,7 @@ async fn test_mcp_handshake_and_turbofig_status() {
     // path, so tools/call returns a non-success HTTP status.
     let no_session_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -246,12 +256,14 @@ async fn test_mcp_handshake_and_turbofig_status() {
 /// The count must not grow without a deliberate PLAN.md update.
 #[tokio::test]
 async fn test_tools_list_has_exactly_turbofig_status() {
-    let base_url = start_server().await;
+    let (base_url, state) = start_server().await;
+    let token = state.token().to_owned();
     let client = make_client();
 
     // Step 1: initialize to get a session ID.
     let init_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -287,6 +299,7 @@ async fn test_tools_list_has_exactly_turbofig_status() {
     // Step 2: notifications/initialized.
     let notif_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -306,6 +319,7 @@ async fn test_tools_list_has_exactly_turbofig_status() {
     // Step 3: tools/list must return exactly the locked tool surface.
     let list_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -368,11 +382,13 @@ async fn test_tools_list_has_exactly_turbofig_status() {
 /// Per the MCP spec, the server returns HTTP 404 for unknown sessions.
 #[tokio::test]
 async fn test_bogus_session_id_is_rejected() {
-    let base_url = start_server().await;
+    let (base_url, state) = start_server().await;
+    let token = state.token().to_owned();
     let client = make_client();
 
     let res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -407,7 +423,8 @@ async fn test_bogus_session_id_is_rejected() {
 /// any client connection.
 #[tokio::test]
 async fn test_client_disconnect_does_not_stop_daemon() {
-    let base_url = start_server().await;
+    let (base_url, state) = start_server().await;
+    let token = state.token().to_owned();
     let addr = base_url
         .strip_prefix("http://")
         .expect("base_url has http prefix")
@@ -431,6 +448,7 @@ async fn test_client_disconnect_does_not_stop_daemon() {
     let client = make_client();
     let init_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -462,6 +480,7 @@ async fn test_client_disconnect_does_not_stop_daemon() {
 
     let notif_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
         Some(&session_id),
@@ -475,6 +494,7 @@ async fn test_client_disconnect_does_not_stop_daemon() {
 
     let tools_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -516,10 +536,12 @@ async fn test_client_disconnect_does_not_stop_daemon() {
 #[tokio::test]
 async fn test_stale_session_after_restart_signals_reinit() {
     // Instance A: initialize and capture a real, valid session ID.
-    let base_a = start_server().await;
+    let (base_a, state_a) = start_server().await;
+    let token_a = state_a.token().to_owned();
     let client = make_client();
     let init_res = post_mcp(
         &client,
+        &token_a,
         &base_a,
         json!({
             "jsonrpc": "2.0",
@@ -549,12 +571,14 @@ async fn test_stale_session_after_restart_signals_reinit() {
 
     // Instance B: a fresh daemon on a new port. This models a restart: the new
     // instance has an empty session registry and never saw the stale session.
-    let base_b = start_server().await;
+    let (base_b, state_b) = start_server().await;
+    let token_b = state_b.token().to_owned();
     assert_ne!(base_a, base_b, "the two instances must be distinct");
 
     // Present the stale session to instance B. It must reply 404 (reinit signal).
     let res = post_mcp(
         &client,
+        &token_b,
         &base_b,
         json!({
             "jsonrpc": "2.0",
@@ -581,7 +605,7 @@ async fn test_stale_session_after_restart_signals_reinit() {
 /// validation requirement, without affecting any real caller.
 #[tokio::test]
 async fn test_request_with_origin_header_is_rejected() {
-    let base_url = start_server().await;
+    let (base_url, _state) = start_server().await;
     let client = make_client();
 
     let res = client
@@ -614,11 +638,13 @@ async fn test_request_with_origin_header_is_rejected() {
 /// still succeed. Guards against the Origin check being too broad.
 #[tokio::test]
 async fn test_request_without_origin_header_is_accepted() {
-    let base_url = start_server().await;
+    let (base_url, state) = start_server().await;
+    let token = state.token().to_owned();
     let client = make_client();
 
     let res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -646,11 +672,13 @@ async fn test_request_without_origin_header_is_accepted() {
 /// the call failed without string-matching the content body.
 #[tokio::test]
 async fn test_execute_ok_false_sets_is_error() {
-    let base_url = start_server().await;
+    let (base_url, state) = start_server().await;
+    let token = state.token().to_owned();
     let client = make_client();
 
     let init_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",
@@ -678,6 +706,7 @@ async fn test_execute_ok_false_sets_is_error() {
 
     let notif_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
         Some(&session_id),
@@ -688,6 +717,7 @@ async fn test_execute_ok_false_sets_is_error() {
     // No plugin is connected, so turbofig_execute must return ok:false.
     let tools_res = post_mcp(
         &client,
+        &token,
         &base_url,
         json!({
             "jsonrpc": "2.0",

@@ -311,9 +311,11 @@ MCP (fallback)
 --------------
 This is plain local HTTP, not HTTPS. Use curl, never a web-fetch tool.
 POST /mcp (streamable-http, legacy session mode); include the mcp-session-id
-header on every request after initialize. The four tools mirror the ops:
-turbofig_execute, turbofig_get_selection, turbofig_screenshot, turbofig_status.
-Each takes an optional fileKey.
+header on every request after initialize, and an Authorization: Bearer
+<pairing token> header on every request (read the token from
+~/.turbofig/token). The four tools mirror the ops: turbofig_execute,
+turbofig_get_selection, turbofig_screenshot, turbofig_status. Each takes an
+optional fileKey.
 
 Ports (both env-overridable)
 -----------------------------
@@ -383,16 +385,57 @@ async fn reject_bad_host(
 }
 
 /// `GET /health` response shape. Never includes the pairing token: only
-/// `version`, `uptimeSeconds`, and the connected-files list (itself built by
-/// `AppState::named_connections_json`, which never reads the token either).
+/// `version`, `uptimeSeconds`, and, when the caller is authenticated, the
+/// connected-files list (itself built by `AppState::named_connections_json`,
+/// which never reads the token either) and this process's `pid`.
+///
+/// A caller with no bearer token, or the wrong one, gets the reduced payload
+/// (`version` and `uptimeSeconds` only): another local account on the same
+/// Mac can reach 127.0.0.1, so the full payload (which file is open, by
+/// name, and the daemon's pid) is only for a caller that already holds the
+/// pairing token. This endpoint itself never fails with 401: reporting
+/// liveness to an unauthenticated caller is the point of `/health`, it is
+/// only the detail that is gated.
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
 ) -> impl axum::response::IntoResponse {
+    if !crate::token::bearer_token_matches(&headers, state.token()) {
+        return axum::Json(serde_json::json!({
+            "version": reported_version(),
+            "uptimeSeconds": state.uptime_seconds(),
+        }));
+    }
     axum::Json(serde_json::json!({
         "version": reported_version(),
         "uptimeSeconds": state.uptime_seconds(),
         "connectedFiles": state.named_connections_json(),
+        "pid": std::process::id(),
     }))
+}
+
+/// Rejects `/job` and `/mcp` without a valid `Authorization: Bearer <pairing
+/// token>` header, with 401 and a short JSON error. Never logs the token,
+/// win or lose. Closes the gap where another local macOS account, which can
+/// also reach 127.0.0.1, could otherwise run plugin JavaScript in the
+/// owner's Figma file. Applied only to `/job` and `/mcp` (see `build_router`);
+/// `/health` and `/control` shape their own response or check instead, and
+/// `/` and the fallback carry no capability worth protecting.
+async fn require_bearer_token(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !crate::token::bearer_token_matches(req.headers(), state.token()) {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(
+                serde_json::json!({"ok": false, "error": "missing or invalid bearer token"}),
+            ),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// The version `/health` reports.
@@ -488,15 +531,26 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         LocalSessionManager::default().into(),
         config,
     );
+    // /job and /mcp require the pairing token; /health, /control, / and the
+    // fallback do not go through this layer. `route_layer` applies the
+    // middleware only to the routes already added to this sub-router, so a
+    // later `.merge()` into the full router never widens its reach.
+    let protected = axum::Router::new()
+        .route("/job", axum::routing::post(job_handler))
+        .nest_service("/mcp", service)
+        .route_layer(axum::middleware::from_fn_with_state(
+            health_state.clone(),
+            require_bearer_token,
+        ));
+
     axum::Router::new()
         .route("/", axum::routing::get(help_handler))
         .route("/health", axum::routing::get(health_handler))
-        .route("/job", axum::routing::post(job_handler))
         .route(
             "/control",
             axum::routing::post(crate::control::control_handler),
         )
-        .nest_service("/mcp", service)
+        .merge(protected)
         .fallback(help_handler)
         .with_state(health_state)
         .layer(axum::middleware::from_fn(reject_bad_host))
@@ -576,8 +630,12 @@ mod tests {
         assert!(!host_allowed(None));
     }
 
+    /// `GET /health` with no token (or the wrong one) must return only
+    /// `version` and `uptimeSeconds`: another local macOS account can reach
+    /// 127.0.0.1, so the connected-file names and the daemon's pid are
+    /// gated behind the pairing token.
     #[tokio::test]
-    async fn health_endpoint_returns_version_uptime_and_no_token() {
+    async fn health_endpoint_without_a_token_returns_the_reduced_payload() {
         let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
             100,
         )));
@@ -600,7 +658,76 @@ mod tests {
 
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
         assert!(body["uptimeSeconds"].is_number());
+        assert!(
+            body.get("connectedFiles").is_none(),
+            "connectedFiles must not appear without a valid token: {body}"
+        );
+        assert!(
+            body.get("pid").is_none(),
+            "pid must not appear without a valid token: {body}"
+        );
+        assert!(!bytes_contains(&bytes, token.as_bytes()));
+    }
+
+    /// `GET /health` with a wrong token must get the same reduced payload as
+    /// no token at all, not an error: `/health` never fails with 401.
+    #[tokio::test]
+    async fn health_endpoint_with_a_wrong_token_returns_the_reduced_payload() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(
+                axum::http::header::AUTHORIZATION,
+                "Bearer not-the-real-token",
+            )
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+        assert!(body.get("connectedFiles").is_none());
+    }
+
+    /// `GET /health` with the real token gets the full payload: connected
+    /// files (empty here) and this process's pid, and still never the token
+    /// itself.
+    #[tokio::test]
+    async fn health_endpoint_with_a_valid_token_returns_the_full_payload() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let token = state.token().to_owned();
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert!(body["uptimeSeconds"].is_number());
         assert_eq!(body["connectedFiles"], serde_json::json!([]));
+        assert_eq!(body["pid"], serde_json::json!(std::process::id()));
         assert!(!bytes_contains(&bytes, token.as_bytes()));
     }
 
@@ -709,13 +836,19 @@ mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
-    /// POST a job body to `/job` on `router` and return (status, body).
-    async fn post_job(router: axum::Router, body: Value) -> (axum::http::StatusCode, Value) {
+    /// POST a job body to `/job` on `router`, with a valid bearer `token`,
+    /// and return (status, body).
+    async fn post_job(
+        router: axum::Router,
+        token: &str,
+        body: Value,
+    ) -> (axum::http::StatusCode, Value) {
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/job")
             .header(axum::http::header::HOST, "127.0.0.1")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
             .body(axum::body::Body::from(body.to_string()))
             .expect("build request");
         let resp = router.oneshot(req).await.expect("router must respond");
@@ -735,7 +868,7 @@ mod tests {
         let router = build_router(state.clone());
 
         let direct = process_job(Job::parse(&json!({"op": "status"})).unwrap(), &state, None).await;
-        let (status, via_http) = post_job(router, json!({"op": "status"})).await;
+        let (status, via_http) = post_job(router, state.token(), json!({"op": "status"})).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(via_http, direct);
@@ -751,7 +884,7 @@ mod tests {
         let body = json!({"op": "execute", "code": "return 1;"});
 
         let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
-        let (status, via_http) = post_job(router, body).await;
+        let (status, via_http) = post_job(router, state.token(), body).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(via_http, direct);
@@ -767,7 +900,7 @@ mod tests {
         let body = json!({"op": "get_selection"});
 
         let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
-        let (status, via_http) = post_job(router, body).await;
+        let (status, via_http) = post_job(router, state.token(), body).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(via_http, direct);
@@ -782,7 +915,7 @@ mod tests {
         let body = json!({"op": "screenshot"});
 
         let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
-        let (status, via_http) = post_job(router, body).await;
+        let (status, via_http) = post_job(router, state.token(), body).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(via_http, direct);
@@ -793,9 +926,10 @@ mod tests {
         let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
             100,
         )));
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
-        let (status, body) = post_job(router, json!({"op": "delete_everything"})).await;
+        let (status, body) =
+            post_job(router, state.token(), json!({"op": "delete_everything"})).await;
 
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(body["ok"], json!(false));
@@ -838,6 +972,116 @@ mod tests {
 
         let resp = router.oneshot(req).await.expect("router must respond");
         assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_without_a_token_is_401() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/job")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({"op": "status"}).to_string()))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_with_a_wrong_token_is_401() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/job")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(
+                axum::http::header::AUTHORIZATION,
+                "Bearer not-the-real-token",
+            )
+            .body(axum::body::Body::from(json!({"op": "status"}).to_string()))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_endpoint_without_a_token_is_401() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(axum::body::Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                        "capabilities": {}
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_endpoint_with_a_wrong_token_is_401() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header(
+                axum::http::header::AUTHORIZATION,
+                "Bearer not-the-real-token",
+            )
+            .body(axum::body::Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                        "capabilities": {}
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
     /// POST a control body to `/control` on `router`, optionally with a

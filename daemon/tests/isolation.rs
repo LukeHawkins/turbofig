@@ -126,6 +126,7 @@ fn make_client() -> reqwest::Client {
 /// Attaches mcp-session-id when `session_id` is Some.
 async fn post_mcp(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     body: serde_json::Value,
     session_id: Option<&str>,
@@ -134,6 +135,7 @@ async fn post_mcp(
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .json(&body);
     if let Some(id) = session_id {
         builder = builder.header("mcp-session-id", id);
@@ -176,9 +178,10 @@ async fn read_first_sse_data(mut res: reqwest::Response) -> serde_json::Value {
 
 /// Run the MCP initialize + notifications/initialized handshake.
 /// Returns the mcp-session-id issued by the server.
-async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
+async fn mcp_handshake(client: &reqwest::Client, token: &str, base_url: &str) -> String {
     let init_res = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -212,6 +215,7 @@ async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
 
     let notif = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
         Some(&session_id),
@@ -233,6 +237,7 @@ async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
 /// for the server to close its SSE keep-alive stream.
 async fn call_execute(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     session_id: &str,
     file_key: Option<&str>,
@@ -245,6 +250,7 @@ async fn call_execute(
 
     let res = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -317,14 +323,15 @@ async fn test_two_sessions_two_files_concurrent_and_isolated() {
     );
 
     let client = make_client();
+    let token = state.token().to_owned();
 
     // Handshake two independent MCP sessions.
-    let session_a = mcp_handshake(&client, &base_url).await;
-    let session_b = mcp_handshake(&client, &base_url).await;
+    let session_a = mcp_handshake(&client, &token, &base_url).await;
+    let session_b = mcp_handshake(&client, &token, &base_url).await;
 
     // Pair session A to fk1 via an explicit fileKey call.
     // Use rpc_id=1 for pairing calls (sequential, no conflict).
-    let pair_a = call_execute(&client, &base_url, &session_a, Some("fk1"), 1).await;
+    let pair_a = call_execute(&client, &token, &base_url, &session_a, Some("fk1"), 1).await;
     assert_eq!(
         pair_a["ok"],
         serde_json::json!(true),
@@ -337,7 +344,7 @@ async fn test_two_sessions_two_files_concurrent_and_isolated() {
     );
 
     // Pair session B to fk2 via an explicit fileKey call.
-    let pair_b = call_execute(&client, &base_url, &session_b, Some("fk2"), 1).await;
+    let pair_b = call_execute(&client, &token, &base_url, &session_b, Some("fk2"), 1).await;
     assert_eq!(
         pair_b["ok"],
         serde_json::json!(true),
@@ -366,23 +373,25 @@ async fn test_two_sessions_two_files_concurrent_and_isolated() {
 
     for i in 0..N {
         let c = client.clone();
+        let tok = token.clone();
         let url = base_url.clone();
         let sid = session_a.clone();
         // Use rpc_id starting at 100 for session A calls to avoid conflicts.
         let rpc_id = 100 + i as u64;
         handles_a.push(tokio::spawn(async move {
-            call_execute(&c, &url, &sid, None, rpc_id).await
+            call_execute(&c, &tok, &url, &sid, None, rpc_id).await
         }));
     }
 
     for i in 0..N {
         let c = client.clone();
+        let tok = token.clone();
         let url = base_url.clone();
         let sid = session_b.clone();
         // Use rpc_id starting at 200 for session B calls to avoid conflicts.
         let rpc_id = 200 + i as u64;
         handles_b.push(tokio::spawn(async move {
-            call_execute(&c, &url, &sid, None, rpc_id).await
+            call_execute(&c, &tok, &url, &sid, None, rpc_id).await
         }));
     }
 

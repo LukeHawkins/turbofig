@@ -274,7 +274,12 @@ async fn cmd_run() {
         }
     }
 
-    let health = turbofig::spawn::fetch_health(&client, mcp_port).await;
+    // The connected-file names below need /health's full, authenticated
+    // payload; the token is already on disk by now (the daemon writes it
+    // before either listener binds).
+    let token = turbofig::read_token_file(&home).await;
+    let health =
+        turbofig::spawn::fetch_health_with_token(&client, mcp_port, token.as_deref()).await;
     let version = health
         .as_ref()
         .map(|h| health_version(h).to_owned())
@@ -457,9 +462,15 @@ async fn cmd_mcp() {
 
 async fn cmd_status() {
     let mcp_port = turbofig::port_from_env();
+    let home = turbofig::bridge_dir_from_env();
     let url = format!("http://127.0.0.1:{mcp_port}/health");
     let client = build_http_client("turbofig status");
-    match client.get(&url).send().await {
+    // Needs /health's full, authenticated payload to show connected files.
+    let mut req = client.get(&url);
+    if let Some(token) = turbofig::read_token_file(&home).await {
+        req = req.bearer_auth(token);
+    }
+    match req.send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => print!("{}", format_health(&body)),
             Err(e) => {

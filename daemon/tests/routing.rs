@@ -119,6 +119,7 @@ fn make_client() -> reqwest::Client {
 /// Attaches mcp-session-id when `session_id` is Some.
 async fn post_mcp(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     body: serde_json::Value,
     session_id: Option<&str>,
@@ -127,6 +128,7 @@ async fn post_mcp(
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .json(&body);
     if let Some(id) = session_id {
         builder = builder.header("mcp-session-id", id);
@@ -155,9 +157,10 @@ fn parse_sse_data(body: &str) -> serde_json::Value {
 
 /// Run the MCP initialize + notifications/initialized handshake.
 /// Returns the mcp-session-id issued by the server.
-async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
+async fn mcp_handshake(client: &reqwest::Client, token: &str, base_url: &str) -> String {
     let init_res = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -190,6 +193,7 @@ async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
 
     let notif = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
         Some(&session_id),
@@ -207,6 +211,7 @@ async fn mcp_handshake(client: &reqwest::Client, base_url: &str) -> String {
 /// Call turbofig_execute via MCP and return the parsed tool-output JSON.
 async fn call_execute(
     client: &reqwest::Client,
+    token: &str,
     base_url: &str,
     session_id: &str,
     file_key: Option<&str>,
@@ -218,6 +223,7 @@ async fn call_execute(
 
     let res = post_mcp(
         client,
+        token,
         base_url,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -257,10 +263,11 @@ async fn test_execute_one_plugin_no_file_key_routes_to_it() {
     assert!(found, "fk1 must register before routing");
 
     let client = make_client();
-    let session_id = mcp_handshake(&client, &base_url).await;
+    let token = state.token().to_owned();
+    let session_id = mcp_handshake(&client, &token, &base_url).await;
 
     // No fileKey: must auto-route to the sole connected plugin.
-    let payload = call_execute(&client, &base_url, &session_id, None).await;
+    let payload = call_execute(&client, &token, &base_url, &session_id, None).await;
 
     assert_eq!(
         payload["ok"],
@@ -289,10 +296,11 @@ async fn test_execute_two_plugins_explicit_file_key_routes_to_correct_plugin() {
     assert!(found2, "fk2 must register before routing");
 
     let client = make_client();
-    let session_id = mcp_handshake(&client, &base_url).await;
+    let token = state.token().to_owned();
+    let session_id = mcp_handshake(&client, &token, &base_url).await;
 
     // Explicit fileKey=fk2: must route to fk2, not fk1.
-    let payload = call_execute(&client, &base_url, &session_id, Some("fk2")).await;
+    let payload = call_execute(&client, &token, &base_url, &session_id, Some("fk2")).await;
 
     assert_eq!(
         payload["ok"],
@@ -321,10 +329,11 @@ async fn test_session_stickiness_after_explicit_file_key() {
     assert!(found2, "fk2 must register before routing");
 
     let client = make_client();
-    let session_id = mcp_handshake(&client, &base_url).await;
+    let token = state.token().to_owned();
+    let session_id = mcp_handshake(&client, &token, &base_url).await;
 
     // First call: explicit fk2 -> pairs session to fk2.
-    let first = call_execute(&client, &base_url, &session_id, Some("fk2")).await;
+    let first = call_execute(&client, &token, &base_url, &session_id, Some("fk2")).await;
     assert_eq!(
         first["result"]["from"],
         serde_json::json!("fk2-reply"),
@@ -332,7 +341,7 @@ async fn test_session_stickiness_after_explicit_file_key() {
     );
 
     // Second call: no fileKey -> session pairing must still direct to fk2.
-    let second = call_execute(&client, &base_url, &session_id, None).await;
+    let second = call_execute(&client, &token, &base_url, &session_id, None).await;
     assert_eq!(
         second["ok"],
         serde_json::json!(true),

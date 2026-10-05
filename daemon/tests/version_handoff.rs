@@ -13,8 +13,8 @@
 mod common;
 
 use common::{
-    fetch_health, free_port, handshake, spawn_daemon, spawn_proxy, stdio_call_tool, stop_daemon,
-    tool_call_status, wait_for_health,
+    fetch_health, fetch_health_with_token, free_port, handshake, spawn_daemon, spawn_proxy,
+    stdio_call_tool, stop_daemon, tool_call_status, wait_for_health,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -183,10 +183,15 @@ async fn two_new_proxies_and_one_old_daemon_give_exactly_one_new_daemon() {
 // ── (d) an in-flight job finishes before the old daemon exits ──────────────
 
 /// Polls the daemon's `/health` `connectedFiles` until `file_key` appears.
-async fn wait_for_file_connected(client: &reqwest::Client, mcp_port: u16, file_key: &str) {
+async fn wait_for_file_connected(
+    client: &reqwest::Client,
+    mcp_port: u16,
+    token: &str,
+    file_key: &str,
+) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Some(health) = fetch_health(client, mcp_port).await {
+        if let Some(health) = fetch_health_with_token(client, mcp_port, token).await {
             if health["connectedFiles"]
                 .as_array()
                 .map(|files| files.iter().any(|f| f["fileKey"] == json!(file_key)))
@@ -229,7 +234,7 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
         ))
         .await
         .expect("send FILE_INFO");
-    wait_for_file_connected(&client, mcp_port, "slow-file").await;
+    wait_for_file_connected(&client, mcp_port, &token, "slow-file").await;
 
     let plugin_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
@@ -250,9 +255,11 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
     // Fire the slow job without awaiting it yet.
     let job_client = client.clone();
     let job_url = format!("http://127.0.0.1:{mcp_port}/job");
+    let job_token = token.clone();
     let job_task = tokio::spawn(async move {
         job_client
             .post(job_url)
+            .bearer_auth(job_token)
             .json(&json!({"op": "execute", "fileKey": "slow-file", "code": "return 1;"}))
             .send()
             .await

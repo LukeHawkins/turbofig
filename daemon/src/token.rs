@@ -14,6 +14,7 @@
 //! the daemon binary (`main.rs`) calls `ensure_token`, which is the one path
 //! that reads or writes the real token file.
 
+use axum::http::HeaderMap;
 use std::io;
 use std::path::Path;
 
@@ -31,6 +32,40 @@ pub(crate) fn random_token_hex() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
     getrandom::fill(&mut bytes).expect("OS CSPRNG (getrandom) must be available");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Extracts the bearer token from `Authorization: Bearer <token>`.
+/// Returns `None` for a missing header, a non-UTF-8 header, or a header that
+/// does not carry the `Bearer ` prefix. Shared by `/control` (`control.rs`)
+/// and the `/job`/`/mcp` auth middleware and `/health` payload shaping
+/// (`mcp.rs`), so the three authenticated surfaces parse the header the same
+/// way.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+/// Returns true when `headers` carries a bearer token that matches `expected`
+/// in constant time. A missing or malformed header never matches.
+pub(crate) fn bearer_token_matches(headers: &HeaderMap, expected: &str) -> bool {
+    match bearer_token(headers) {
+        Some(candidate) => constant_time_eq(candidate, expected),
+        None => false,
+    }
+}
+
+/// Reads and trims the pairing token from `<home>/token`. Returns `None` on
+/// any read failure (not yet written, permissions, a racing delete): callers
+/// treat that the same as "no token available", never a panic. Shared by
+/// every CLI command that needs to attach `Authorization: Bearer <token>` to
+/// a request against the real daemon (`main.rs`, `proxy.rs`).
+pub async fn read_token_file(home: &Path) -> Option<String> {
+    tokio::fs::read_to_string(home.join("token"))
+        .await
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 /// Compares two strings in constant time with respect to their shared length.
@@ -174,6 +209,45 @@ mod tests {
     #[test]
     fn random_token_hex_differs_across_calls() {
         assert_ne!(random_token_hex(), random_token_hex());
+    }
+
+    #[test]
+    fn bearer_token_reads_the_prefixed_value() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer abc123".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers), Some("abc123"));
+    }
+
+    #[test]
+    fn bearer_token_is_none_without_the_prefix_or_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::AUTHORIZATION, "abc123".parse().unwrap());
+        assert_eq!(bearer_token(&headers), None);
+        assert_eq!(bearer_token(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn bearer_token_matches_accepts_the_right_token_only() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer right".parse().unwrap(),
+        );
+        assert!(bearer_token_matches(&headers, "right"));
+        assert!(!bearer_token_matches(&headers, "wrong"));
+        assert!(!bearer_token_matches(&HeaderMap::new(), "right"));
+    }
+
+    #[tokio::test]
+    async fn read_token_file_round_trips_and_is_none_when_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_token_file(tmp.path()).await, None);
+        ensure_token(tmp.path()).expect("ensure_token");
+        let read = read_token_file(tmp.path()).await.expect("token file read");
+        assert_eq!(read.len(), TOKEN_BYTES * 2);
     }
 
     #[test]

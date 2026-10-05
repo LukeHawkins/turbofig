@@ -207,6 +207,7 @@ async fn test_full_loop_over_http_mcp() {
     spawn_design_plugin(ws_addr, &state).await;
 
     let base_url = format!("http://{http_addr}");
+    let token = state.token().to_owned();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -217,6 +218,7 @@ async fn test_full_loop_over_http_mcp() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
@@ -240,6 +242,7 @@ async fn test_full_loop_over_http_mcp() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {token}"))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
         .send()
@@ -254,11 +257,13 @@ async fn test_full_loop_over_http_mcp() {
         let client = client.clone();
         let base_url = base_url.clone();
         let session_id = session_id.clone();
+        let token = token.clone();
         async move {
             let res = client
                 .post(format!("{base_url}/mcp"))
                 .header("Accept", "application/json, text/event-stream")
                 .header("Content-Type", "application/json")
+                .header("Authorization", format!("Bearer {token}"))
                 .header("mcp-session-id", &session_id)
                 .json(&serde_json::json!({
                     "jsonrpc": "2.0", "id": id, "method": "tools/call",

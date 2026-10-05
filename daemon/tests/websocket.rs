@@ -245,6 +245,7 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -272,6 +273,7 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -290,6 +292,7 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -429,6 +432,7 @@ async fn test_turbofig_status_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -463,6 +467,7 @@ async fn test_turbofig_status_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -479,6 +484,7 @@ async fn test_turbofig_status_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -765,6 +771,7 @@ async fn test_turbofig_execute_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -799,6 +806,7 @@ async fn test_turbofig_execute_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -815,6 +823,7 @@ async fn test_turbofig_execute_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -953,6 +962,7 @@ async fn test_turbofig_get_selection_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -987,6 +997,7 @@ async fn test_turbofig_get_selection_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -1003,6 +1014,7 @@ async fn test_turbofig_get_selection_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -1132,6 +1144,7 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1161,6 +1174,7 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -1176,6 +1190,7 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -1547,6 +1562,7 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
@@ -1571,6 +1587,7 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
         .send()
@@ -1585,6 +1602,7 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -1706,6 +1724,7 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {
@@ -1730,6 +1749,7 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}))
         .send()
@@ -1745,6 +1765,7 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -1780,6 +1801,7 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
         .post(format!("{base_url}/mcp"))
         .header("Accept", "application/json, text/event-stream")
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.token()))
         .header("mcp-session-id", &session_id)
         .json(&serde_json::json!({
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",

@@ -379,6 +379,16 @@ pub async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<Val
     turbofig::spawn::fetch_health(client, mcp_port).await
 }
 
+/// Same as `fetch_health`, authenticated: returns `/health`'s full payload
+/// (connected files, pid) rather than the reduced one.
+pub async fn fetch_health_with_token(
+    client: &reqwest::Client,
+    mcp_port: u16,
+    token: &str,
+) -> Option<Value> {
+    turbofig::spawn::fetch_health_with_token(client, mcp_port, Some(token)).await
+}
+
 /// Polls `GET /health` until it answers with a success status, or panics
 /// after 5 s.
 pub async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {

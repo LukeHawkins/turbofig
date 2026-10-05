@@ -75,11 +75,19 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
         }
     };
 
+    // The daemon's own startup always writes the token before its listeners
+    // bind (token.rs's ensure_token runs first in run_daemon), so by the time
+    // /health answered above, the token file is already there to read.
+    let token = crate::token::read_token_file(&home).await.ok_or_else(|| {
+        "turbofig mcp: could not read the pairing token to authenticate /job calls".to_owned()
+    })?;
+
     let handler = ProxyHandler {
         client,
         mcp_port,
         turbofig_binary,
         home,
+        token,
     };
 
     let daemon_version = health["version"].as_str().unwrap_or_default();
@@ -133,6 +141,11 @@ struct ProxyHandler {
     /// The daemon's `TURBOFIG_BRIDGE_DIR`, passed to a restart the same way
     /// it reached this process.
     home: PathBuf,
+    /// The pairing token read from `<home>/token` at startup. Sent as
+    /// `Authorization: Bearer <token>` on every `/job` call: the daemon
+    /// requires it since another local macOS account can also reach
+    /// 127.0.0.1 (see `mcp::require_bearer_token`).
+    token: String,
 }
 
 impl ProxyHandler {
@@ -182,7 +195,13 @@ impl ProxyHandler {
     /// so `run_job` can tell a connect failure from any other kind.
     async fn post_job(&self, job: &Job) -> Result<serde_json::Value, reqwest::Error> {
         let url = format!("http://127.0.0.1:{}/job", self.mcp_port);
-        let resp = self.client.post(url).json(job).send().await?;
+        let resp = self
+            .client
+            .post(url)
+            .bearer_auth(&self.token)
+            .json(job)
+            .send()
+            .await?;
         resp.json::<serde_json::Value>().await
     }
 
@@ -238,7 +257,7 @@ impl ProxyHandler {
     ///   below only cares that *some* daemon answers, not which process it
     ///   is.
     async fn restart_for_upgrade(&self) -> Result<(), String> {
-        let Some(token) = self.read_token().await else {
+        let Some(token) = crate::token::read_token_file(&self.home).await else {
             eprintln!(
                 "turbofig mcp: could not read the pairing token to request a restart; leaving the old daemon running"
             );
@@ -296,16 +315,6 @@ impl ProxyHandler {
     /// away yet" question.
     async fn wait_until_unreachable(&self, deadline: Duration) -> bool {
         crate::spawn::wait_for_unreachable(&self.client, self.mcp_port, deadline).await
-    }
-
-    /// Reads the pairing token from `<home>/token`, trimmed. `None` on any
-    /// read failure (not yet written, permissions, a racing delete): the
-    /// caller treats that the same as "can't restart", never a panic.
-    async fn read_token(&self) -> Option<String> {
-        tokio::fs::read_to_string(self.home.join("token"))
-            .await
-            .ok()
-            .map(|s| s.trim().to_owned())
     }
 }
 
