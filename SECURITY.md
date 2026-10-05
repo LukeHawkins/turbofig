@@ -102,6 +102,9 @@ could otherwise open the socket and receive the AI's jobs.
   generated formula pins a SHA256 checksum for each artifact, and
   `brew install` verifies that checksum before installing. See
   `RELEASING.md`'s "Unsigned binaries" section for the Gatekeeper caveat.
+- **The Homebrew tap and the releases are built and published by GitHub
+  Actions, not by hand.** The `release.yml` workflow runs only on a tagged
+  commit and publishes the artifacts and their SHA256 checksums.
 
 ## `GET /health`
 
