@@ -20,10 +20,9 @@ use crate::supervisor::wait_for_drain;
 use crate::token::constant_time_eq;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,11 +65,19 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 /// `wait_for_drain` logic the supervised-restart loop uses, then schedules
 /// the process to exit 0 shortly after the response is sent. Never logs the
 /// token, win or lose.
+///
+/// Race-safe against two concurrent callers (e.g. two proxies both deciding
+/// the daemon needs a version-handoff restart): `AppState::try_begin_draining`
+/// is a single atomic compare-exchange, so only the first caller through
+/// actually drains and schedules the exit. A caller that loses the race gets
+/// back `{"ok":true,"alreadyInProgress":true}` at once, with no second drain
+/// wait and no second exit timer, never a 4xx/5xx: a restart already being
+/// under way is success from this caller's point of view too.
 pub(crate) async fn control_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<ControlRequest>,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<Value>) {
     let Some(candidate) = bearer_token(&headers) else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -84,7 +91,13 @@ pub(crate) async fn control_handler(
         );
     }
 
-    state.set_draining(true);
+    if !state.try_begin_draining() {
+        return (
+            StatusCode::OK,
+            Json(json!({"ok": true, "action": req.action, "alreadyInProgress": true})),
+        );
+    }
+
     let drained = wait_for_drain(
         || state.jobs_in_flight(),
         CONTROL_DRAIN_MAX_WAIT,
@@ -139,6 +152,35 @@ mod tests {
     fn bearer_token_is_none_when_absent() {
         let headers = HeaderMap::new();
         assert_eq!(bearer_token(&headers), None);
+    }
+
+    #[tokio::test]
+    async fn a_second_concurrent_control_call_reports_already_in_progress_without_a_second_drain_wait(
+    ) {
+        let state = std::sync::Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        // Simulate the first caller already having won the race, exactly as
+        // control_handler's own `try_begin_draining` call would have done.
+        assert!(state.try_begin_draining());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", state.token()).parse().unwrap(),
+        );
+        let (status, Json(body)) = control_handler(
+            State(state),
+            headers,
+            Json(ControlRequest {
+                action: ControlAction::Restart,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], json!(true));
+        assert_eq!(body["alreadyInProgress"], json!(true));
     }
 
     #[test]

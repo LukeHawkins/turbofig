@@ -222,6 +222,22 @@ impl AppState {
         self.draining.load(Ordering::SeqCst)
     }
 
+    /// Atomically transitions draining from false to true. Returns true only
+    /// for the caller that actually made the transition; a caller that finds
+    /// draining already true gets false back and must not start a second
+    /// drain-then-exit sequence of its own.
+    ///
+    /// `/control` (`control.rs`) uses this so two concurrent restart/stop
+    /// requests (e.g. two proxies racing a version-handoff restart) never
+    /// both run `wait_for_drain` and schedule their own exit: exactly one
+    /// request does the real work, and the other's response just reports
+    /// that a restart was already in progress.
+    pub(crate) fn try_begin_draining(&self) -> bool {
+        self.draining
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
     /// Number of whole tool calls (MCP and bridge) currently in progress.
     /// Used by the supervised-restart loop to know when it is safe to exit.
     pub fn jobs_in_flight(&self) -> usize {
@@ -789,6 +805,25 @@ mod tests {
     fn jobs_in_flight_is_zero_with_no_guards_held() {
         let state = AppState::with_timeout(Duration::from_millis(100));
         assert_eq!(state.jobs_in_flight(), 0);
+    }
+
+    #[test]
+    fn try_begin_draining_only_lets_the_first_caller_through() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        assert!(!state.is_draining());
+        assert!(
+            state.try_begin_draining(),
+            "the first caller must make the transition"
+        );
+        assert!(state.is_draining());
+        assert!(
+            !state.try_begin_draining(),
+            "a second caller must see draining already true and get false back"
+        );
+        assert!(
+            !state.try_begin_draining(),
+            "repeated calls after the first must keep returning false"
+        );
     }
 
     #[test]
