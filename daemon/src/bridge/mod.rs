@@ -28,7 +28,7 @@
 //! just removed, and it is never retried or re-logged again while it keeps
 //! failing the same way.
 
-mod job;
+pub(crate) mod job;
 
 use crate::state::AppState;
 use job::Job;
@@ -450,7 +450,7 @@ async fn scan_and_service(
                 let in_flight_id = job_id.clone();
                 tokio::spawn(async move {
                     let _job_guard = job_guard;
-                    let result = process_job(job, &state, &outbox_owned).await;
+                    let result = process_job(job, &state, Some(&outbox_owned)).await;
                     write_result(&outbox_owned, &job_id, result).await;
                     in_flight
                         .lock()
@@ -514,9 +514,17 @@ async fn delete_stale_result(outbox: &Path, job_id: &str) {
 
 /// Run one parsed job against the shared daemon state.
 ///
-/// `output_dir` is the bridge outbox. Screenshot file-mode writes its PNG there.
+/// `output_dir` is where a file-mode screenshot writes its PNG: the bridge
+/// outbox for a bridge job, or the daemon's configured screenshot directory
+/// for a job posted to `POST /job` (see `mcp::job_handler`). `None` disables
+/// file-mode output entirely, matching an `AppState` with no screenshot
+/// directory configured (e.g. `AppState::with_timeout` in a test).
 /// The bridge has no MCP session id, so session_id is always None.
-async fn process_job(job: Job, state: &Arc<AppState>, output_dir: &Path) -> serde_json::Value {
+pub(crate) async fn process_job(
+    job: Job,
+    state: &Arc<AppState>,
+    output_dir: Option<&Path>,
+) -> serde_json::Value {
     match job {
         Job::Status(p) => crate::ops::run_status(state, None, p.file_key.as_deref()).await,
         Job::Execute(p) => {
@@ -540,7 +548,7 @@ async fn process_job(job: Job, state: &Arc<AppState>, output_dir: &Path) -> serd
                 p.scale,
                 p.node_id.as_deref(),
                 p.return_mode.as_str(),
-                Some(output_dir),
+                output_dir,
                 p.max_dim,
                 p.full_res,
             )
