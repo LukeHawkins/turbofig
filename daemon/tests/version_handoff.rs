@@ -7,14 +7,16 @@
 //! (an "old proxy" fixture): debug-build-only escape hatches
 //! (`mcp::reported_version`, `proxy::own_version`) that let these tests
 //! simulate a version mismatch without two real builds. Real processes, test
-//! ports, a temp home; every daemon spawned is stopped at the end via an
-//! authenticated `POST /control stop`.
+//! ports, a temp home. The old daemon is a `tokio::process::Child` the test
+//! owns directly (`kill_on_drop`), but a restart's new daemon is fully
+//! detached (no `Child` at all: see `spawn_detached_daemon`), so each test
+//! holds a `DaemonGuard` for that one once the handoff is confirmed.
 
 mod common;
 
 use common::{
     fetch_health, fetch_health_with_token, free_port, handshake, spawn_daemon, spawn_proxy,
-    stdio_call_tool, stop_daemon, tool_call_status, wait_for_health,
+    stdio_call_tool, stop_daemon, tool_call_status, wait_for_health, DaemonGuard,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -53,6 +55,9 @@ async fn old_daemon_and_new_proxy_triggers_a_restart_and_health_reports_the_new_
         .await
         .expect("wait for the old daemon to exit");
     assert!(status.success(), "the old daemon must exit 0: {status:?}");
+    // The restart's new daemon is fully detached: this is the only handle
+    // on it from here on.
+    let _new_daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 
     let after = fetch_health(&client, mcp_port).await.expect("health");
     assert_eq!(
@@ -60,8 +65,6 @@ async fn old_daemon_and_new_proxy_triggers_a_restart_and_health_reports_the_new_
         json!(env!("CARGO_PKG_VERSION")),
         "the daemon /health reports after the handoff must be this build's real version"
     );
-
-    stop_daemon(&client, mcp_port, home.path()).await;
 }
 
 // ── (b) a new daemon plus an old proxy gives no restart ─────────────────────
@@ -158,6 +161,9 @@ async fn two_new_proxies_and_one_old_daemon_give_exactly_one_new_daemon() {
 
     let status = old_daemon.wait().await.expect("wait old daemon");
     assert!(status.success());
+    // The restart's new daemon is fully detached: this is the only handle
+    // on it from here on.
+    let _new_daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 
     let health = fetch_health(&client, mcp_port).await.expect("health");
     assert_eq!(health["version"], json!(env!("CARGO_PKG_VERSION")));
@@ -176,8 +182,6 @@ async fn two_new_proxies_and_one_old_daemon_give_exactly_one_new_daemon() {
         listening_lines, 2,
         "the old daemon's start plus exactly one new daemon's start, got log:\n{log}"
     );
-
-    stop_daemon(&client, mcp_port, home.path()).await;
 }
 
 // ── (d) an in-flight job finishes before the old daemon exits ──────────────
@@ -288,6 +292,9 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
 
     let status = old_daemon.wait().await.expect("wait old daemon");
     assert!(status.success());
+    // The restart's new daemon is fully detached: this is the only handle
+    // on it from here on.
+    let _new_daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
     let elapsed = restart_requested_at.elapsed();
     assert!(
         elapsed >= JOB_DELAY - Duration::from_millis(200),
@@ -296,5 +303,4 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
     );
 
     plugin_task.abort();
-    stop_daemon(&client, mcp_port, home.path()).await;
 }

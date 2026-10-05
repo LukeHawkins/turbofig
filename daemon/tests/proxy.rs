@@ -3,15 +3,17 @@
 //! These spawn the real compiled binary (`CARGO_BIN_EXE_turbofig`): the
 //! proxy's own detached-daemon spawn, and the process-group kill tests,
 //! only mean anything against real OS processes, not an in-process mock.
-//! Every test cleans up the daemon it started via an authenticated
-//! `POST /control` `stop`, using the token the daemon wrote to its temp
-//! home, so no spawned daemon outlives its test.
+//! Every test holds a `DaemonGuard` for the daemon its proxy spawned: that
+//! daemon is fully detached (`setsid`), with no `Child` handle a test could
+//! otherwise reap, so the guard's drop (an authenticated `/control stop`,
+//! waited out, with a pid-kill fallback) is what keeps it from outliving
+//! the test, even when an assertion panics first.
 
 mod common;
 
 use common::{
-    free_port, handshake, spawn_proxy, stdio_call_tool, stdio_tools_list, stop_daemon,
-    tool_call_status, wait_for_health,
+    free_port, handshake, spawn_proxy, stdio_call_tool, stdio_tools_list, tool_call_status,
+    wait_for_health, DaemonGuard,
 };
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -130,10 +132,10 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
     let stdio_tools = stdio_tools_list(&mut writer, &mut reader).await;
 
     let http_tools = http_tools_list().await;
@@ -144,8 +146,6 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
         "the stdio proxy's tools/list must match the HTTP MCP's tool-for-tool"
     );
     assert_eq!(stdio_tools.len(), 4, "the tool surface is exactly 4 tools");
-
-    stop_daemon(&client, mcp_port, home.path()).await;
 }
 
 // ── (b) `turbofig mcp` with no daemon running starts one ───────────────────
@@ -172,8 +172,7 @@ async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() 
 
     // The daemon the proxy started is reachable directly too.
     wait_for_health(&client, mcp_port).await;
-
-    stop_daemon(&client, mcp_port, home.path()).await;
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 }
 
 // ── (c) killing the proxy, or its whole process group, never touches the daemon ─
@@ -189,6 +188,7 @@ async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
     let (mut writer, mut reader) = handshake(&mut proxy).await;
     let _ = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
     wait_for_health(&client, mcp_port).await;
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 
     let pid = proxy.0.id().expect("proxy has a pid") as i32;
     drop(writer);
@@ -202,8 +202,6 @@ async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
 
     // The daemon, in its own session, must still answer.
     wait_for_health(&client, mcp_port).await;
-
-    stop_daemon(&client, mcp_port, home.path()).await;
 }
 
 #[tokio::test]
@@ -217,6 +215,7 @@ async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
     let (mut writer, mut reader) = handshake(&mut proxy).await;
     let _ = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
     wait_for_health(&client, mcp_port).await;
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 
     // `process_group(0)` made the proxy the leader of its own group
     // (pgid == pid), so signalling -pid reaches only the proxy, never the
@@ -232,8 +231,6 @@ async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
     let _ = proxy.0.wait().await;
 
     wait_for_health(&client, mcp_port).await;
-
-    stop_daemon(&client, mcp_port, home.path()).await;
 }
 
 // ── (d) two proxies started at once share exactly one daemon ───────────────
@@ -243,7 +240,6 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Spawned back to back, with no daemon running yet for either to find:
     // both race to start one, and the TCP bind on mcp_port/ws_port is the
@@ -253,6 +249,7 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
 
     let (mut writer_a, mut reader_a) = handshake(&mut proxy_a).await;
     let (mut writer_b, mut reader_b) = handshake(&mut proxy_b).await;
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 
     let resp_a = stdio_call_tool(
         &mut writer_a,
@@ -294,6 +291,4 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
         listening_lines, 1,
         "exactly one daemon may ever bind {mcp_port}, got log:\n{log}"
     );
-
-    stop_daemon(&client, mcp_port, home.path()).await;
 }

@@ -448,6 +448,134 @@ pub async fn stop_daemon(client: &reqwest::Client, mcp_port: u16, home: &Path) {
         .json(&json!({"action": "stop"}))
         .send()
         .await;
+    // Wait for it to actually go away, not just for the request to land:
+    // /control replies 202 at once and drains in the background (see
+    // control.rs), so a caller that returns the instant this POST completes
+    // can race a still-draining daemon.
+    turbofig::spawn::wait_for_unreachable(client, mcp_port, Duration::from_secs(10)).await;
+}
+
+/// How long `DaemonGuard`'s drop waits for `/health` to go unreachable after
+/// an authenticated `/control stop`, before falling back to killing the
+/// recorded pid directly.
+const DAEMON_GUARD_STOP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// RAII guard for a daemon a test's own `turbofig mcp` proxy spawned.
+///
+/// `spawn_daemon` returns a `tokio::process::Child` with `kill_on_drop(true)`
+/// already set, which cleans itself up (even on a panic unwind) with no
+/// further help. A daemon `spawn_detached_daemon` starts, though (every
+/// daemon `turbofig mcp` spawns itself: at startup when none was running,
+/// or after a version-handoff restart), is fully detached (`setsid`) and
+/// held by no `Child` at all. Before this guard, cleanup for that daemon
+/// was a fire-and-forget `stop_daemon` call at the very end of the test
+/// function: a failed assertion anywhere before that line, or a test that
+/// forgot the call, left the daemon running forever. 18 such daemons had
+/// accumulated on one Mac before this fix.
+///
+/// Construct this as soon as the daemon is known reachable (right after a
+/// `wait_for_health`, or after a handshake that itself implies one); hold it
+/// for the rest of the test. On drop: sends an authenticated `/control
+/// stop`, waits up to `DAEMON_GUARD_STOP_DEADLINE` for `/health` to go
+/// unreachable, then falls back to killing the recorded pid directly if it
+/// is somehow still running. Runs during a panic unwind too (`Drop` always
+/// does, short of the whole process aborting), so a failing assertion can
+/// never leak the daemon again.
+pub struct DaemonGuard {
+    mcp_port: u16,
+    home: std::path::PathBuf,
+    /// This daemon's own pid, read from `/health`'s authenticated payload
+    /// (`"pid"`) at construction time, if the token file was readable and
+    /// the daemon answered. `None` when it could not be determined (the
+    /// daemon was already gone, or had no token yet): the drop then relies
+    /// entirely on `/control stop`.
+    pid: Option<u32>,
+}
+
+impl DaemonGuard {
+    /// Builds a guard for the daemon on `mcp_port`, reading its pid from the
+    /// authenticated `/health` payload if `<home>/token` is readable and the
+    /// daemon answers. Never fails: a daemon that already went away, or
+    /// whose pid could not be read for any other reason, still gets a (now
+    /// inert) guard, so a caller never has to handle a `Result` just to stay
+    /// safe.
+    pub async fn for_daemon_on(home: &Path, mcp_port: u16) -> Self {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("build http client");
+        let pid = match tokio::fs::read_to_string(home.join("token")).await {
+            Ok(token) => fetch_health_with_token(&client, mcp_port, token.trim())
+                .await
+                .and_then(|h| h.get("pid").and_then(Value::as_u64))
+                .map(|p| p as u32),
+            Err(_) => None,
+        };
+        Self {
+            mcp_port,
+            home: home.to_path_buf(),
+            pid,
+        }
+    }
+}
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let mcp_port = self.mcp_port;
+        let home = self.home.clone();
+        let pid = self.pid;
+
+        // `Drop::drop` is synchronous, and a test's own `#[tokio::test]`
+        // runtime cannot be entered recursively from inside its own drop
+        // glue (`block_on` panics "Cannot start a runtime from within a
+        // runtime"). A fresh OS thread with its own throwaway
+        // current-thread runtime sidesteps that; `thread::spawn` and
+        // `JoinHandle::join` both still run during a panic unwind.
+        let joined = std::thread::spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            rt.block_on(async {
+                let Ok(client) = reqwest::Client::builder().no_proxy().build() else {
+                    return;
+                };
+                if let Ok(token) = tokio::fs::read_to_string(home.join("token")).await {
+                    let _ = client
+                        .post(format!("http://127.0.0.1:{mcp_port}/control"))
+                        .bearer_auth(token.trim())
+                        .json(&json!({"action": "stop"}))
+                        .send()
+                        .await;
+                }
+                turbofig::spawn::wait_for_unreachable(
+                    &client,
+                    mcp_port,
+                    DAEMON_GUARD_STOP_DEADLINE,
+                )
+                .await;
+            });
+        })
+        .join();
+        if joined.is_err() {
+            eprintln!("DaemonGuard: the cleanup thread panicked");
+        }
+
+        // Fallback: kill the recorded pid regardless of whether /control
+        // stop appeared to succeed above, so a daemon that somehow survived
+        // (a stale or rotated token, a bug in /control) never outlives the
+        // test either. A pid that already exited is a harmless no-op: ESRCH
+        // is not checked or reported.
+        #[cfg(unix)]
+        if let Some(pid) = pid {
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
