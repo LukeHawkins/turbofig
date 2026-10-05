@@ -6,7 +6,9 @@ use turbofig::cli::{
     status_unreachable_message, uninstall_kept_home_message, Cli, Command,
 };
 use turbofig::launchd::{current_uid, RealLaunchctl};
-use turbofig::supervisor::{installed_target, upgrade_detected, wait_for_drain};
+use turbofig::supervisor::{
+    installed_target, should_log_binary_gone, upgrade_detected, wait_for_drain,
+};
 use turbofig::AppState;
 
 /// How often the supervised-restart loop checks whether the stable binary
@@ -276,14 +278,32 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
     // The stable path (for example /opt/homebrew/bin/turbofig) never changes
     // across an upgrade. Its resolved target (the versioned Cellar binary) does.
     let stable = stable_path_for_running_binary();
-    let baseline = installed_target(&stable);
+    let baseline = match installed_target(&stable) {
+        Some(target) => target,
+        // No baseline could be resolved at startup either; fall back to the
+        // stable path itself so later comparisons still have something to
+        // compare against (they will just never fire until it resolves).
+        None => stable.clone(),
+    };
     let mut interval = tokio::time::interval(SUPERVISOR_CHECK_INTERVAL);
     interval.tick().await; // first tick fires immediately; consume it
+    let mut consecutive_unresolved: u32 = 0;
 
     loop {
         interval.tick().await;
         let current = installed_target(&stable);
-        if upgrade_detected(&baseline, &current) {
+        if current.is_none() {
+            consecutive_unresolved += 1;
+            if should_log_binary_gone(consecutive_unresolved) {
+                eprintln!(
+                    "Turbofig daemon: the turbofig binary is gone; run `turbofig uninstall` or reinstall"
+                );
+            }
+            continue;
+        }
+        consecutive_unresolved = 0;
+        if upgrade_detected(&baseline, current.as_deref()) {
+            let current = current.expect("checked is_none above");
             println!(
                 "Turbofig daemon: detected an upgrade ({} -> {}); draining and restarting",
                 baseline.display(),

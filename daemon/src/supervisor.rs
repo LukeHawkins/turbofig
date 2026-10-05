@@ -13,18 +13,37 @@ use std::time::Duration;
 
 /// The file that `stable` points at right now. On a Homebrew install,
 /// `stable` is the `<prefix>/bin/turbofig` symlink, and its target is the
-/// versioned `Cellar` binary that `brew upgrade` swaps. Falls back to
-/// `stable` itself when it cannot be resolved (for example, mid-upgrade).
-pub fn installed_target(stable: &Path) -> PathBuf {
-    stable
-        .canonicalize()
-        .unwrap_or_else(|_| stable.to_path_buf())
+/// versioned `Cellar` binary that `brew upgrade` swaps. Returns `None` when
+/// it cannot be resolved (for example, mid-upgrade, or after `brew
+/// uninstall` removed the binary entirely): the caller must treat that as
+/// "cannot tell, skip this check", never as a difference from the baseline.
+pub fn installed_target(stable: &Path) -> Option<PathBuf> {
+    stable.canonicalize().ok()
 }
 
-/// Returns true when `current` differs from `baseline`, i.e. the stable
-/// binary path now resolves somewhere else than it did at daemon startup.
-pub fn upgrade_detected(baseline: &Path, current: &Path) -> bool {
-    baseline != current
+/// Returns true when `current` resolved to a path that differs from
+/// `baseline`, i.e. the stable binary path now resolves somewhere else than
+/// it did at daemon startup. A `current` of `None` (the target could not be
+/// resolved this check) is never an upgrade: it would otherwise never equal
+/// `baseline` and cause a spurious restart mid-upgrade, or a restart loop
+/// forever after `brew uninstall` removed the binary.
+pub fn upgrade_detected(baseline: &Path, current: Option<&Path>) -> bool {
+    match current {
+        Some(current) => baseline != current,
+        None => false,
+    }
+}
+
+/// After this many consecutive checks where the stable path could not be
+/// resolved, the supervisor loop logs a line so a user watching the daemon
+/// log knows the binary is gone, instead of restarting forever in silence.
+pub const UNRESOLVED_LOG_THRESHOLD: u32 = 3;
+
+/// Returns true exactly when `consecutive_unresolved` has just reached
+/// `UNRESOLVED_LOG_THRESHOLD` (not on every check after), so the caller logs
+/// the warning once per gap rather than on every poll.
+pub fn should_log_binary_gone(consecutive_unresolved: u32) -> bool {
+    consecutive_unresolved == UNRESOLVED_LOG_THRESHOLD
 }
 
 /// Polls `jobs_in_flight` (number of in-flight jobs) until it reaches zero or
@@ -58,19 +77,29 @@ mod tests {
     #[test]
     fn upgrade_detected_is_false_for_an_identical_path() {
         let p = PathBuf::from("/opt/homebrew/bin/turbofig");
-        assert!(!upgrade_detected(&p, &p.clone()));
+        assert!(!upgrade_detected(&p, Some(&p.clone())));
     }
 
     #[test]
     fn upgrade_detected_is_true_for_a_different_path() {
         let baseline = PathBuf::from("/opt/homebrew/bin/turbofig");
         let current = PathBuf::from("/opt/homebrew/Cellar/turbofig/1.2.4/bin/turbofig");
-        assert!(upgrade_detected(&baseline, &current));
+        assert!(upgrade_detected(&baseline, Some(&current)));
     }
 
-    /// The wiring that the two tests above do not cover: the stable symlink
-    /// path stays the same across a `brew upgrade`, so only its resolved
-    /// target can reveal the upgrade.
+    #[test]
+    fn upgrade_detected_is_false_when_current_could_not_be_resolved() {
+        // Mid-upgrade (or after `brew uninstall`), `installed_target` returns
+        // `None`. That must never be treated as an upgrade: a spurious
+        // restart mid-upgrade, or a restart loop forever once the binary is
+        // gone, are both worse than skipping one check.
+        let baseline = PathBuf::from("/opt/homebrew/bin/turbofig");
+        assert!(!upgrade_detected(&baseline, None));
+    }
+
+    /// The wiring that the tests above do not cover: the stable symlink path
+    /// stays the same across a `brew upgrade`, so only its resolved target
+    /// can reveal the upgrade.
     #[cfg(unix)]
     #[test]
     fn installed_target_changes_when_the_stable_symlink_is_repointed() {
@@ -86,12 +115,35 @@ mod tests {
         let stable = bin_dir.join("turbofig");
 
         std::os::unix::fs::symlink(cellar.join("0.1.0/bin/turbofig"), &stable).expect("link");
-        let baseline = installed_target(&stable);
-        assert!(!upgrade_detected(&baseline, &installed_target(&stable)));
+        let baseline = installed_target(&stable).expect("resolves while the binary exists");
+        assert!(!upgrade_detected(
+            &baseline,
+            installed_target(&stable).as_deref()
+        ));
 
         std::fs::remove_file(&stable).expect("unlink");
         std::os::unix::fs::symlink(cellar.join("0.2.0/bin/turbofig"), &stable).expect("relink");
-        assert!(upgrade_detected(&baseline, &installed_target(&stable)));
+        assert!(upgrade_detected(
+            &baseline,
+            installed_target(&stable).as_deref()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_target_is_none_when_the_stable_symlink_points_nowhere() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let stable = tmp.path().join("turbofig");
+        std::os::unix::fs::symlink(tmp.path().join("missing-binary"), &stable).expect("link");
+
+        assert_eq!(installed_target(&stable), None);
+    }
+
+    #[test]
+    fn should_log_binary_gone_fires_only_once_at_the_threshold() {
+        assert!(!should_log_binary_gone(UNRESOLVED_LOG_THRESHOLD - 1));
+        assert!(should_log_binary_gone(UNRESOLVED_LOG_THRESHOLD));
+        assert!(!should_log_binary_gone(UNRESOLVED_LOG_THRESHOLD + 1));
     }
 
     #[tokio::test]
