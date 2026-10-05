@@ -5,10 +5,11 @@
 ```
 Claude / AI client
     |
-    |  one of three inbound transports to the daemon:
+    |  one of four inbound transports to the daemon:
     |   1. HTTP POST /mcp   (port 18846, MCP streamable-http, SSE response)
-    |   2. file-bridge      (~/.turbofig/inbox -> outbox; write and read files)
-    |   3. curl on 18846    (the same HTTP endpoint, as a fallback)
+    |   2. stdio MCP        (`turbofig mcp`, a proxy forwarding onto POST /job)
+    |   3. file-bridge      (~/.turbofig/inbox -> outbox; write and read files)
+    |   4. curl on 18846    (the same HTTP endpoint, as a fallback)
     |
 Rust daemon  (daemon/)
     |
@@ -25,10 +26,14 @@ Figma plugin main thread  (plugin/src/code.ts)   runs the Figma API
 Figma document
 ```
 
-The three inbound transports converge on one shared `AppState`, so a call from
+All four inbound transports converge on one shared `AppState`, so a call from
 any of them routes to the plugin the same way. The file-bridge exists for
-locked-down clients that cannot use curl or a native MCP server. See
-`DECISIONS.md` item 15 and `skills/file-bridge.md`.
+locked-down clients that cannot use curl or a native MCP server. The stdio
+proxy (`turbofig mcp`) exists for a native MCP client (such as Claude Code's
+`claude mcp add`) that speaks stdio, not HTTP: it forwards every tool call
+onto the daemon's `POST /job`, starting the daemon first if it is not already
+reachable (see "Daemon lifecycle" below). See `DECISIONS.md` item 15 and
+`skills/file-bridge.md`.
 
 ## Daemon
 
@@ -47,19 +52,24 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | Module | Holds |
 |---|---|
 | `lib.rs` | Crate docs, `mod` declarations, re-exports only |
+| `main.rs` | The `turbofig` binary: dispatches `Cli::command` to `cmd_run` (bare), `run_daemon` (`serve`), `cmd_start`, `cmd_stop`, `cmd_status`, `cmd_autostart`, `cmd_uninstall`, `cmd_mcp`; the supervised-restart loop |
 | `config.rs` | Env-driven settings: ports, request timeout, bridge dir |
-| `state.rs` | `AppState`, the connection registry, session pairing, the pending-request map, `begin_job`/`JobGuard` (whole-call job counting) |
+| `state.rs` | `AppState`, the connection registry, session pairing, the pending-request map, `begin_job`/`JobGuard` (whole-call job counting), `mark_plugin_seen` |
 | `routing.rs` | `RouteError`, `resolve_route` |
 | `plugin_call.rs` | The one register/send/await/timeout/cancel path all four ops share, plus the pending-cleanup drop guard |
 | `ops/` | `status.rs`, `execute.rs`, `selection.rs`, `screenshot.rs` (the four `run_*` routines), `budget.rs` (context-firewall size warnings) |
 | `image.rs` | A cheap PNG header probe (`probe_dims`) kept separate from the expensive decode/resize/encode path (`resize_png`), so a screenshot that needs no resize never pays for either |
 | `mcp.rs` | MCP tool parameter structs, `TurbofigHandler`, `HELP_TEXT`, `build_router`, the Origin-rejection middleware |
-| `ws.rs` | `handle_socket`, the WS Origin check, keepalive ping/pong, `serve_ws` |
+| `ws.rs` | `handle_socket`, the WS Origin check, keepalive ping/pong, `serve_ws`; calls `AppState::mark_plugin_seen` on a successful token auth |
 | `bridge/mod.rs`, `bridge/job.rs` | The inbox scan loop; `job.rs`'s typed `Job` enum reuses the MCP param structs |
 | `embedded.rs` | `embedded_plugin()`, wrapping the `build.rs`-generated `include_str!`s |
-| `plugin_files.rs` | `write_plugin_files`, `plugin_files_outdated` |
+| `plugin_files.rs` | `write_plugin_files`, `plugin_files_outdated`, `mark_plugin_seen` (the `<home>/plugin-seen` marker) |
 | `token.rs` | `ensure_token`, `random_token_hex`, `constant_time_eq` |
-| `cli.rs` | The `clap` `Cli`/`Command` types, `run_setup`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
+| `spawn.rs` | `spawn_detached_daemon` (setsid, own session, log redirected to `<home>/daemon.log`), `fetch_health`/`wait_for_health`/`wait_for_unreachable`: shared by `turbofig` (bare), `turbofig start`, and `turbofig mcp` |
+| `proxy.rs` | `turbofig mcp`: a stdio MCP server forwarding every tool call onto `POST /job`, starting the daemon via `spawn` when unreachable, and the version-handoff restart (compares its own build version to the daemon's `/health` version) |
+| `control.rs` | The authenticated local `POST /control` path (`stop`/`restart`) used to drain and restart the daemon; backs `turbofig stop` and the version handoff |
+| `first_run.rs` | `first_run_text`, `status_text` (the two texts `turbofig`, the bare command, prints), the `Clipboard`/`AppOpener` seams (`RealClipboard`/`FakeClipboard`, `RealAppOpener`/`FakeOpener`) |
+| `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
 
@@ -156,57 +166,140 @@ in `ui.html` with the real pairing token, plus a version+token-hash marker
 stale root-level `code.js`/`ui.html` left by an older daemon version on
 refresh. `plugin/dist` is a Bun build, not a Cargo artifact, so
 `build.rs` degrades to a stub (`embedded_plugin()` returns `None`) when it is
-missing, keeping a Rust-only `cargo build` and the CI Rust job working.
-`turbofig setup` (see "CLI" below) is the command that calls
-`write_plugin_files` on a user's machine; see `DECISIONS.md` #38.
+missing, keeping a Rust-only `cargo build` and the CI Rust job working. The
+daemon's own startup (`run_daemon` in `main.rs`), not a separate install
+command, calls `write_plugin_files`: see "Daemon lifecycle" below; see also
+`DECISIONS.md` #38 and the "Install model" entry that supersedes it.
 
 `daemon/src/token.rs` owns the pairing token itself: see "WebSocket server"
 above and `DECISIONS.md` #39 for the full design.
 
-## CLI (`daemon/src/cli.rs`, `daemon/src/main.rs`)
+## Daemon lifecycle
 
-The `turbofig` binary is a `clap` (derive) CLI with no subcommand or
-`serve` running the daemon in the foreground (`run_daemon` in `main.rs`),
-and three install/ops subcommands: `setup`, `uninstall`, and `status`.
-`--version` and `--help` come from `clap`.
+`turbofig` never needs a separate install step: the daemon starts on demand
+and writes its own files on every start.
 
-- **`turbofig setup`** is idempotent: running it twice gives the same end
-  state. It (a) calls `ensure_token`; (b) calls `write_plugin_files` into
-  `<home>/figma-plugin/`, exiting non-zero with a clear message if the
-  binary has no embedded plugin (`plugin/dist` was missing at compile
-  time; see "Embedded plugin" above); (c) writes
+- **On-demand detached start.** `spawn::spawn_detached_daemon` runs
+  `<turbofig binary> serve` in its own session (`setsid`), stdin from
+  `/dev/null`, stdout/stderr appended to `<home>/daemon.log`. Both `turbofig`
+  (bare, no subcommand) and `turbofig mcp` call this the same way: check
+  `/health` first, start detached only if nothing answers, then poll
+  `/health` until it does (`spawn::wait_for_health`) or give up with a clear
+  error naming the log path. `turbofig start` is the same flow exposed as an
+  explicit, idempotent subcommand.
+- **Token and plugin files on every start.** `run_daemon` always calls
+  `ensure_token` (never overwrites an existing token), then always checks
+  `plugin_files_outdated` and calls `write_plugin_files` when it reports
+  true: on a fresh install (no `<home>/figma-plugin/` yet) this creates it;
+  on a later start with a newer embedded plugin or a rotated token, it
+  refreshes it. Either case logs exactly one line ("wrote" or "refreshed").
+  There is no "only if the directory already exists" gate: a user who has
+  never opened Figma still gets a ready-to-import `manifest.json` the first
+  time the daemon starts.
+- **The `plugin-seen` marker.** The daemon writes `<home>/plugin-seen` (mode
+  0600, holding a timestamp) the first time a plugin WebSocket connection
+  presents a valid pairing token (`AppState::mark_plugin_seen`, called from
+  `ws_handler` in `ws.rs`); a no-op on every later valid connection. This is
+  how the bare `turbofig` command tells a genuine first run (no plugin has
+  ever connected) from a later one (see "CLI" below).
+- **Version handoff.** `turbofig mcp` compares its own build version to the
+  running daemon's `/health` version on every call; an older daemon is
+  told to drain and restart via the authenticated `POST /control` path
+  (`control.rs`), so a `brew upgrade` reaches a long-running daemon without
+  the user restarting it by hand. See `DECISIONS.md` and the
+  "Supervised restart" section below for the launchd side of the same idea.
+- **Launchd autostart is optional.** `turbofig autostart on`/`off` write or
+  remove the `eu.lukehawkins.turbofig.plist`, so the daemon also starts at
+  login and survives a crash via `KeepAlive`. Nothing above depends on
+  autostart being on: the on-demand detached start is what makes the daemon
+  always reachable even when it is off.
+
+## CLI (`daemon/src/cli.rs`, `daemon/src/first_run.rs`, `daemon/src/main.rs`)
+
+The `turbofig` binary is a `clap` (derive) CLI. `--version` and `--help`
+come from `clap`.
+
+| Command | Does |
+|---|---|
+| *(none)* | `cmd_run`: starts the daemon detached if not already running, waits for `/health`, then prints the first-run walkthrough or a short status; see below |
+| `serve` | Runs the daemon in the foreground (`run_daemon`): binds both ports, ensures the token, writes/refreshes the plugin files, serves until a subsystem dies |
+| `start` | Starts the daemon detached if not already running, waits for `/health`, prints the version and both ports. Idempotent |
+| `stop` | Stops the running daemon via authenticated `POST /control`, waits for it to go away. A no-op (not an error) if nothing was running |
+| `status` | A thin client for `GET /health`, printed as a short report |
+| `autostart on` / `autostart off` | Writes or removes the launchd plist (below). Optional: nothing else depends on it |
+| `uninstall [--purge]` | Stops autostart and removes the plist; `--purge` also deletes the known home-directory entries |
+| `mcp` | Runs the stdio MCP proxy (`proxy.rs`), starting the daemon via `spawn` if unreachable |
+
+- **The bare command's first-run walkthrough.** When `<home>/plugin-seen`
+  does not exist yet (see "Daemon lifecycle" above), `cmd_run` best-effort
+  copies the manifest path to the clipboard and best-effort opens Figma
+  Desktop (`open -a Figma`), both behind a seam (`first_run::Clipboard`,
+  `first_run::AppOpener`) so a test never shells out to the real `pbcopy` or
+  `open`, then prints (`first_run::first_run_text`):
+
+  ```
+  turbofig <version> is running (MCP 127.0.0.1:<mcp port>, plugin 127.0.0.1:<ws port>).
+
+  1. Add the Figma plugin (once). Figma is opening now.
+     Plugins > Development > Import plugin from manifest...
+     Press Cmd+Shift+G, paste the path (it is on your clipboard), then press Return:
+     <manifest path>
+
+  2. Connect your agent (once):
+     Claude Code:   claude mcp add turbofig -- turbofig mcp
+     Other MCP clients, add this server:
+       {"command": "<stable binary path>", "args": ["mcp"]}
+
+  3. MCP blocked on your machine? Run the plugin in Figma and click "Copy prompt".
+  ```
+
+  If `open -a Figma` failed, "Figma is opening now." becomes "Open Figma
+  Desktop." instead; nothing else in the text changes, including the
+  clipboard line, since the manifest path is always printed too and can
+  always be pasted by hand. `<stable binary path>` is the Homebrew
+  `<prefix>/bin/turbofig` symlink when running from a Cellar, otherwise the
+  running binary's own path (`launchd::stable_binary_path`; see below).
+- **The bare command's later-run status.** When `<home>/plugin-seen`
+  already exists, `cmd_run` prints a 3-line status instead
+  (`first_run::status_text`), reading connected files from `/health`:
+
+  ```
+  turbofig <version> is running (MCP 127.0.0.1:<mcp port>, plugin 127.0.0.1:<ws port>).
+  Connected files: <names, or "none, open the turbofig plugin in Figma">
+  Plugin manifest: <manifest path>
+  ```
+- **`turbofig autostart on`** is idempotent: running it twice gives the same
+  end state. It (a) writes
   `~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`
   (`daemon/src/launchd.rs`'s `plist_contents`): `ProgramArguments` is the
   *stable* binary path (see below) plus `serve`, `RunAtLoad` and
   `KeepAlive` both true, `StandardOutPath`/`StandardErrorPath` set to
   `<home>/daemon.log`, and `EnvironmentVariables` holding
   `TURBOFIG_SUPERVISED=1` plus every other `TURBOFIG_*` variable set in
-  `setup`'s own environment at the time it ran
+  `autostart on`'s own environment at the time it ran
   (`launchd::carry_over_turbofig_env`, excluding `TURBOFIG_SUPERVISED` itself and the
-  setup-only `TURBOFIG_LAUNCH_AGENTS_DIR`): a `TURBOFIG_BRIDGE_DIR` or
-  `TURBOFIG_*_PORT` override given to `setup` would otherwise never reach
-  the launchd-started daemon, which ran with none of them and pointed at
-  the default `~/.turbofig` instead; (d) runs `launchctl bootout
+  seam-only `TURBOFIG_LAUNCH_AGENTS_DIR`): a `TURBOFIG_BRIDGE_DIR` or
+  `TURBOFIG_*_PORT` override given to `autostart on` would otherwise never
+  reach the launchd-started daemon, which ran with none of them and pointed
+  at the default `~/.turbofig` instead; (b) runs `launchctl bootout
   gui/<uid>/eu.lukehawkins.turbofig` (ignoring a "not loaded" failure) then
   retries `launchctl bootstrap gui/<uid> <plist>` up to 5 times with a
   backoff (`cli::bootstrap_with_retry`), since `bootstrap` right after
   `bootout` often fails on macOS while the old service instance is still
-  shutting down; (e) prints exactly 3 numbered next steps (import the
-  plugin manifest into Figma Desktop, run it in a file, copy the connect
-  prompt) plus one optional MCP-client line naming the real
-  `TURBOFIG_MCP_PORT`-resolved port, a warning if the pinned binary is not
-  inside a Homebrew Cellar, and, when a best-effort `pbcopy` of the
-  manifest path succeeded, a hint to press Cmd+Shift+G and paste in
-  Figma's file picker (which hides the dotfile `~/.turbofig`). The real
-  LaunchAgents directory is read from `TURBOFIG_LAUNCH_AGENTS_DIR` when
-  set, so a test never touches `~/Library/LaunchAgents`; `launchctl` itself
-  sits behind the `launchd::Launchctl` trait, faked in tests.
+  shutting down; (c) prints a warning if the pinned binary is not inside a
+  Homebrew Cellar. It writes no token and no plugin files: the daemon's own
+  startup owns those, whether launchd, `turbofig start`, or `turbofig serve`
+  started it (see "Daemon lifecycle" above). The real LaunchAgents directory
+  is read from `TURBOFIG_LAUNCH_AGENTS_DIR` when set, so a test never
+  touches `~/Library/LaunchAgents`; `launchctl` itself sits behind the
+  `launchd::Launchctl` trait, faked in tests.
 - **Stable binary path rule** (`launchd::stable_binary_path`): if the
   canonicalized `current_exe` path contains `/Cellar/turbofig/`, the
-  plist points at `<prefix>/bin/turbofig` (everything before `/Cellar`),
-  the stable symlink Homebrew repoints on every `brew upgrade`. Any other
-  path (a source checkout, a non-Cellar symlink target) is used as-is.
-  This is also the path the supervised-restart loop below polls.
+  plist (and the first-run text's connect-prompt command) points at
+  `<prefix>/bin/turbofig` (everything before `/Cellar`), the stable symlink
+  Homebrew repoints on every `brew upgrade`. Any other path (a source
+  checkout, a non-Cellar symlink target) is used as-is. This is also the
+  path the supervised-restart loop below polls.
 - **`turbofig uninstall [--purge]`**: `bootout`s the service and removes
   the plist. Without `--purge`, `<home>` (the token, the plugin files, the
   bridge inbox/outbox) is left in place and the command says so. With
@@ -222,7 +315,7 @@ and three install/ops subcommands: `setup`, `uninstall`, and `status`.
   using a `reqwest` client built with `.no_proxy()` so a corporate Mac's
   `HTTP_PROXY`/`HTTPS_PROXY` can never intercept this always-local
   request. If the daemon is unreachable, it says so and suggests
-  `turbofig setup`.
+  `turbofig start`.
 
 ## `/health`
 
@@ -239,9 +332,9 @@ same `pluginVersion`/`warning` fields on each entry in its `plugins` list.
 
 ## Supervised restart (`TURBOFIG_SUPERVISED=1`)
 
-The plist `turbofig setup` writes sets `TURBOFIG_SUPERVISED=1`. When set,
-`main.rs` spawns a loop (`run_supervisor_loop`) that every 30s resolves the
-stable binary path (the same rule `setup` used to build the plist) and
+The plist `turbofig autostart on` writes sets `TURBOFIG_SUPERVISED=1`. When
+set, `main.rs` spawns a loop (`run_supervisor_loop`) that every 30s resolves
+the stable binary path (the same rule `autostart on` used to build the plist) and
 compares its canonical target to the one captured at startup
 (`supervisor::upgrade_detected`, a pure path comparison). `supervisor::
 installed_target` returns `Option<PathBuf>`, `None` when `canonicalize`
@@ -299,5 +392,5 @@ name the real inbox/outbox paths even under a custom
 | `TURBOFIG_WS_PORT` | 18847 | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result. Clamped to 600000 (10 min); a larger value is logged and clamped, since it would otherwise overflow a JS `setTimeout` on the plugin side |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |
-| `TURBOFIG_SUPERVISED` | unset | Set by the launchd plist `turbofig setup` writes; enables the supervised-restart loop above |
-| `TURBOFIG_LAUNCH_AGENTS_DIR` | `~/Library/LaunchAgents` | Overrides where `setup`/`uninstall` read and write the plist; a test seam, not meant for normal use |
+| `TURBOFIG_SUPERVISED` | unset | Set by the launchd plist `turbofig autostart on` writes; enables the supervised-restart loop above |
+| `TURBOFIG_LAUNCH_AGENTS_DIR` | `~/Library/LaunchAgents` | Overrides where `autostart`/`uninstall` read and write the plist; a test seam, not meant for normal use |
