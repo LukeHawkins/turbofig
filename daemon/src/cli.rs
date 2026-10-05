@@ -50,6 +50,9 @@ pub enum Command {
     },
     /// Query the running daemon's `/health` endpoint.
     Status,
+    /// Run a stdio MCP server that forwards every tool call onto the
+    /// daemon's `POST /job`, starting the daemon if it is not reachable.
+    Mcp,
 }
 
 /// Result of a successful `run_setup` call.

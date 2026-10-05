@@ -11,10 +11,17 @@
 //! `config` reads every env-driven setting. `token` generates and persists
 //! the WS pairing token; `embedded` embeds the built Figma plugin into the
 //! binary at compile time; `plugin_files` writes that embedded plugin out to
-//! `~/.turbofig/figma-plugin/` with the real token injected.
+//! `~/.turbofig/figma-plugin/` with the real token injected. `control` is the
+//! authenticated local `/control` path a caller uses to drain and restart
+//! the daemon. `spawn` starts a detached `turbofig serve` in its own
+//! session; `proxy` is `turbofig mcp`, a stdio MCP server that forwards
+//! every tool call onto `POST /job`, starting the daemon via `spawn` when
+//! it is not already running.
 
 pub mod cli;
 pub mod launchd;
+pub mod proxy;
+pub mod spawn;
 pub mod supervisor;
 
 mod bridge;

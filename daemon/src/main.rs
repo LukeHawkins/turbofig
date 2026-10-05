@@ -48,6 +48,7 @@ async fn main() {
         Some(Command::Setup) => cmd_setup(),
         Some(Command::Uninstall { purge }) => cmd_uninstall(purge),
         Some(Command::Status) => cmd_status().await,
+        Some(Command::Mcp) => cmd_mcp().await,
     }
 }
 
@@ -175,6 +176,26 @@ fn cmd_uninstall(purge: bool) {
             eprintln!("turbofig uninstall: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Runs `turbofig mcp`: the stdio MCP proxy. Never prints to stdout itself
+/// (that channel is reserved for MCP frames); every diagnostic here goes to
+/// stderr, including the final error on failure.
+async fn cmd_mcp() {
+    let mcp_port = turbofig::port_from_env();
+    let home = turbofig::bridge_dir_from_env();
+    let turbofig_binary = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("turbofig mcp: failed to determine the running binary's path: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = turbofig::proxy::run(mcp_port, home, turbofig_binary).await {
+        eprintln!("{e}");
+        std::process::exit(1);
     }
 }
 
