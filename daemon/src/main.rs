@@ -1,8 +1,134 @@
+use clap::Parser;
+use std::path::PathBuf;
 use std::sync::Arc;
+use turbofig::cli::{
+    format_health, run_setup, run_uninstall, setup_steps_text, status_unreachable_message,
+    uninstall_kept_home_message, Cli, Command,
+};
+use turbofig::launchd::{current_uid, RealLaunchctl};
+use turbofig::supervisor::{upgrade_detected, wait_for_drain};
 use turbofig::AppState;
+
+/// How often the supervised-restart loop checks whether the stable binary
+/// path now resolves somewhere else (a Homebrew upgrade landed).
+const SUPERVISOR_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Longest the supervised-restart loop waits for in-flight jobs to finish
+/// before exiting anyway.
+const SUPERVISOR_DRAIN_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+const SUPERVISOR_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The real `~/Library/LaunchAgents` directory, unless overridden.
+///
+/// Kept behind `TURBOFIG_LAUNCH_AGENTS_DIR` so a test never writes to the
+/// real user's LaunchAgents folder: a test sets this to a temp dir instead.
+fn launch_agents_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("TURBOFIG_LAUNCH_AGENTS_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(home).join("Library/LaunchAgents")
+}
 
 #[tokio::main]
 async fn main() {
+    let cli = Cli::parse();
+    match cli.command {
+        None | Some(Command::Serve) => run_daemon().await,
+        Some(Command::Setup) => cmd_setup(),
+        Some(Command::Uninstall { purge }) => cmd_uninstall(purge),
+        Some(Command::Status) => cmd_status().await,
+    }
+}
+
+fn cmd_setup() {
+    let home = turbofig::bridge_dir_from_env();
+    let agents_dir = launch_agents_dir();
+    let launchctl = RealLaunchctl;
+    let uid = match current_uid() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("turbofig setup: failed to determine the current user id: {e}");
+            std::process::exit(1);
+        }
+    };
+    let current_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("turbofig setup: failed to determine the running binary's path: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match run_setup(&home, &agents_dir, &launchctl, &uid, &current_exe) {
+        Ok(outcome) => {
+            println!(
+                "turbofig: installed and started (plist: {})",
+                outcome.plist_path.display()
+            );
+            print!("{}", setup_steps_text(&outcome.manifest_path));
+        }
+        Err(e) => {
+            eprintln!("turbofig setup: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_uninstall(purge: bool) {
+    let home = turbofig::bridge_dir_from_env();
+    let agents_dir = launch_agents_dir();
+    let launchctl = RealLaunchctl;
+    let uid = match current_uid() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("turbofig uninstall: failed to determine the current user id: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match run_uninstall(&home, &agents_dir, &launchctl, &uid, purge) {
+        Ok(outcome) => {
+            println!("turbofig: uninstalled the launchd service");
+            if !outcome.purged {
+                println!("{}", uninstall_kept_home_message(&outcome.home));
+            } else {
+                println!("turbofig: removed {}", outcome.home.display());
+            }
+        }
+        Err(e) => {
+            eprintln!("turbofig uninstall: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_status() {
+    let mcp_port = turbofig::port_from_env();
+    let url = format!("http://127.0.0.1:{mcp_port}/health");
+    match reqwest::get(&url).await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => print!("{}", format_health(&body)),
+            Err(e) => {
+                eprintln!("turbofig status: could not parse the daemon's /health response: {e}");
+                std::process::exit(1);
+            }
+        },
+        Ok(resp) => {
+            eprintln!("turbofig status: daemon responded with {}", resp.status());
+            std::process::exit(1);
+        }
+        Err(_) => {
+            println!("{}", status_unreachable_message(mcp_port));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Runs the daemon exactly as `turbofig` with no arguments always has: binds
+/// both ports, ensures the pairing token, refreshes a stale on-disk plugin
+/// copy, and runs the three servers until one of them dies. Shared by the
+/// bare `turbofig` invocation and `turbofig serve`.
+async fn run_daemon() {
     let mcp_port = turbofig::port_from_env();
     let ws_port = turbofig::ws_port_from_env();
     let bridge_dir = turbofig::bridge_dir_from_env();
@@ -48,6 +174,20 @@ async fn main() {
             std::process::exit(1);
         }
     };
+
+    // If `turbofig setup` already wrote the plugin files out once, and this
+    // binary embeds a newer version (or the token rotated), refresh them now
+    // so a Homebrew upgrade's new plugin reaches disk without a manual
+    // `turbofig setup` re-run. A fresh install (no figma-plugin/ yet) is left
+    // to `turbofig setup`, not written implicitly here.
+    let figma_plugin_dir = bridge_dir.join("figma-plugin");
+    if figma_plugin_dir.exists() && turbofig::plugin_files_outdated(&bridge_dir, &token) {
+        match turbofig::write_plugin_files(&bridge_dir, &token) {
+            Ok(_) => println!("Turbofig daemon: refreshed the on-disk Figma plugin files"),
+            Err(e) => eprintln!("Turbofig daemon: failed to refresh the Figma plugin files: {e}"),
+        }
+    }
+
     let state = Arc::new(AppState::new_with_token(token));
 
     let mcp_state = state.clone();
@@ -74,6 +214,16 @@ async fn main() {
         }
     });
 
+    // Under launchd supervision (set by the plist `turbofig setup` writes),
+    // watch for a Homebrew upgrade and hand off cleanly instead of letting
+    // KeepAlive kill an in-flight job. See supervisor.rs and ARCHITECTURE.md.
+    if std::env::var("TURBOFIG_SUPERVISED").as_deref() == Ok("1") {
+        let supervised_state = state.clone();
+        tokio::spawn(async move {
+            run_supervisor_loop(supervised_state).await;
+        });
+    }
+
     // A healthy daemon runs forever. Any handle that completes — whether by a
     // normal return (unexpected for a server), by an Err path that did not call
     // process::exit, or by a task panic surfacing as a JoinError — means a
@@ -99,4 +249,51 @@ async fn main() {
         }
     }
     std::process::exit(1);
+}
+
+/// The supervised-restart loop: every `SUPERVISOR_CHECK_INTERVAL`, resolve
+/// the stable binary path and compare it to the one captured at startup. On
+/// a change, stop accepting new jobs, wait up to `SUPERVISOR_DRAIN_MAX_WAIT`
+/// for in-flight jobs to finish, then exit 0 so launchd starts the new
+/// binary. Never returns.
+async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
+    let baseline = resolve_stable_path();
+    let mut interval = tokio::time::interval(SUPERVISOR_CHECK_INTERVAL);
+    interval.tick().await; // first tick fires immediately; consume it
+
+    loop {
+        interval.tick().await;
+        let current = resolve_stable_path();
+        if upgrade_detected(&baseline, &current) {
+            println!(
+                "Turbofig daemon: detected an upgrade ({} -> {}); draining and restarting",
+                baseline.display(),
+                current.display()
+            );
+            state.set_draining(true);
+            let drained = wait_for_drain(
+                || state.jobs_in_flight(),
+                SUPERVISOR_DRAIN_MAX_WAIT,
+                SUPERVISOR_DRAIN_POLL_INTERVAL,
+            )
+            .await;
+            if !drained {
+                eprintln!(
+                    "Turbofig daemon: {} job(s) still in flight after {:?}; restarting anyway",
+                    state.jobs_in_flight(),
+                    SUPERVISOR_DRAIN_MAX_WAIT
+                );
+            }
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Resolves the stable binary path for the currently running process.
+fn resolve_stable_path() -> PathBuf {
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
+    let canonical = current_exe
+        .canonicalize()
+        .unwrap_or_else(|_| current_exe.clone());
+    turbofig::launchd::stable_binary_path(&canonical)
 }

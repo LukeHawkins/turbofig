@@ -13,6 +13,10 @@
 //! binary at compile time; `plugin_files` writes that embedded plugin out to
 //! `~/.turbofig/figma-plugin/` with the real token injected.
 
+pub mod cli;
+pub mod launchd;
+pub mod supervisor;
+
 mod bridge;
 mod config;
 mod embedded;

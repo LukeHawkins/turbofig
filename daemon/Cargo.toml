@@ -23,9 +23,10 @@ notify = "6"
 base64 = "0.22"
 http = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
 tokio-tungstenite = "0.24"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
