@@ -58,16 +58,16 @@ package, version 1.22.1.
 
 | | turbofig | figma-console-mcp 1.22.1 |
 |---|---|---|
-| Tools | 4 | 46 registered in its local-mode source (its own README advertises "94+" across all its modes; this count covers only the local-mode tool list) |
-| Figma access token needed | No | Yes, a personal access token |
+| Tools | 4 | 94+, per its own README |
+| Figma access token needed | No | Only for its REST tools |
 | Runtime | Single Rust binary, no Node | Node.js, run through `npx` |
 | Figma Desktop must be open | Yes | Yes, for its Desktop Bridge plugin features |
-| REST-only features (comments, Code Connect, reading a file without Figma open) | No. Turbofig has no REST access | Comments are supported through the Figma REST API. Code Connect support is not confirmed |
+| REST-only features (comments, reading a file without Figma open) | No. Turbofig has no REST access | Comments are supported through the Figma REST API |
 
-**When to use something else.** If you need comments, Code Connect, or file
-access without Figma open, use a REST-based server such as
-figma-console-mcp or Figma's own MCP server. This README makes no claim
-about Figma's own MCP server beyond that it exists.
+**When to use something else.** If you need comments, or file access
+without Figma open, use a REST-based server such as figma-console-mcp or
+Figma's own MCP server. This README makes no claim about Figma's own MCP
+server beyond that it exists.
 
 ## Quickstart
 
@@ -152,7 +152,7 @@ Any instruction that a Figma Plugin API script can carry out. For example:
 |---|---|
 | `turbofig_execute` | Runs arbitrary Figma Plugin API JavaScript in the connected file and returns its result |
 | `turbofig_get_selection` | Returns the current selection as a compact, shaped object |
-| `turbofig_screenshot` | Exports a PNG of the file or a node, downscaled by default |
+| `turbofig_screenshot` | Exports a PNG of a given node, or the first selected node if none is given, downscaled by default |
 | `turbofig_status` | Returns connection state for the daemon and the connected plugin |
 
 Every tool accepts an optional `fileKey` to target one of several open
@@ -286,7 +286,10 @@ vulnerability.
 - **"Import plugin from manifest" is missing from the Plugins menu.** Use
   Figma Desktop, not the Figma web app. The menu item does not exist there.
 - **A port is already in use.** Set `TURBOFIG_MCP_PORT` or
-  `TURBOFIG_WS_PORT` to a free port and restart the daemon.
+  `TURBOFIG_WS_PORT` to a free port, then run `turbofig setup` again so the
+  launchd service picks up the new value from its plist. If you change the
+  WebSocket port, also set the same port in the plugin panel's Advanced
+  screen.
 - **MCP is blocked on a managed machine.** Use the file bridge instead:
   click the copy-prompt button in the plugin panel, or read
   `skills/file-bridge.md` directly.
