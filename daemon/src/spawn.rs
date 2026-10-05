@@ -83,11 +83,20 @@ fn rotate_log_if_oversize(home: &Path) -> io::Result<()> {
 /// start never loses earlier log lines), unless it has grown past
 /// `LOG_ROTATE_THRESHOLD_BYTES`, in which case it is first rotated to
 /// `daemon.log.1` (see `rotate_log_if_oversize`) and a fresh file is opened.
-/// The child inherits this process's environment unchanged, so any
-/// `TURBOFIG_*` override already in the caller's environment reaches the
-/// child the same way it reached the caller. The returned child is
-/// intentionally never waited on here: once `setsid` detaches it, it is no
-/// longer this process's job to reap or supervise.
+/// The child's working directory is `home`, not whatever directory this
+/// process happens to be running from: a detached daemon that inherited the
+/// caller's cwd would otherwise keep that directory busy (e.g. blocking an
+/// unmount or an `rm -rf` of a dev checkout) for as long as it runs. The
+/// child inherits this process's environment unchanged, so any `TURBOFIG_*`
+/// override already in the caller's environment reaches the child the same
+/// way it reached the caller.
+///
+/// `setsid` detaches the child into its own session, but it is still this
+/// process's OS child: if the daemon exits (a `/control restart`, a crash)
+/// while this process keeps running, an un-reaped child becomes a zombie
+/// until this process itself exits. A detached background thread calls
+/// `Child::wait` so that reap happens promptly instead, without this
+/// function (or its caller) blocking on it.
 pub fn spawn_detached_daemon(turbofig_binary: &Path, home: &Path) -> io::Result<()> {
     std::fs::create_dir_all(home)?;
     rotate_log_if_oversize(home)?;
@@ -101,13 +110,17 @@ pub fn spawn_detached_daemon(turbofig_binary: &Path, home: &Path) -> io::Result<
 
     let mut cmd = Command::new(turbofig_binary);
     cmd.arg("serve")
+        .current_dir(home)
         .stdin(Stdio::from(dev_null))
         .stdout(Stdio::from(stdout_log))
         .stderr(Stdio::from(stderr_log));
 
     detach_into_own_session(&mut cmd);
 
-    cmd.spawn()?;
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 
@@ -419,6 +432,114 @@ mod tests {
             contents.starts_with("earlier line\n"),
             "an existing log must never be truncated: {contents:?}"
         );
+    }
+
+    #[test]
+    fn spawn_detached_daemon_runs_the_child_with_home_as_its_working_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("temp home");
+
+        // A fake binary that prints its own cwd: /bin/pwd itself rejects the
+        // extra "serve" argument this function always appends ("usage: pwd
+        // [-L | -P]"), so a tiny script that ignores its arguments stands in
+        // for it instead.
+        let script_path = tmp.path().join("fake-turbofig-pwd.sh");
+        std::fs::write(&script_path, "#!/bin/sh\npwd\n").expect("write fake binary script");
+        let mut perms = std::fs::metadata(&script_path)
+            .expect("script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).expect("make script executable");
+
+        spawn_detached_daemon(&script_path, tmp.path()).expect("spawn a trivial detached process");
+
+        let log_path = tmp.path().join("daemon.log");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let contents = loop {
+            let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
+            if !contents.trim().is_empty() {
+                break contents;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the fake binary never wrote its cwd to the log"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let expected = std::fs::canonicalize(tmp.path())
+            .expect("canonicalize home")
+            .display()
+            .to_string();
+        assert_eq!(
+            contents.trim(),
+            expected,
+            "the child's cwd must be the turbofig home, not the caller's"
+        );
+    }
+
+    /// A child left un-reaped after `setsid` detaches it still shares this
+    /// process as its OS parent, so it becomes a zombie once it exits until
+    /// something calls `wait` on it. This proves the background reap thread
+    /// actually does that: a short-lived fake binary records its own pid,
+    /// and once it exits, `ps` must stop reporting it at all (reaped), never
+    /// report it in zombie state ("Z").
+    #[test]
+    fn spawn_detached_daemon_reaps_the_child_instead_of_leaving_a_zombie() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("temp home");
+        let pidfile = tmp.path().join("child-pid");
+        let script_path = tmp.path().join("fake-turbofig.sh");
+        std::fs::write(
+            &script_path,
+            format!("#!/bin/sh\necho $$ > {}\n", pidfile.display()),
+        )
+        .expect("write fake binary script");
+        let mut perms = std::fs::metadata(&script_path)
+            .expect("script metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms).expect("make script executable");
+
+        spawn_detached_daemon(&script_path, tmp.path()).expect("spawn the fake daemon");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pid: i32 = loop {
+            if let Ok(s) = std::fs::read_to_string(&pidfile) {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    break trimmed.parse().expect("recorded pid must parse");
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the fake daemon never recorded its own pid"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .expect("run ps");
+            let stat = String::from_utf8_lossy(&output.stdout);
+            let stat = stat.trim();
+            if stat.is_empty() {
+                break; // no longer in the process table at all: reaped.
+            }
+            assert!(
+                !stat.starts_with('Z'),
+                "the child must never be left as a zombie: pid {pid} stat {stat:?}"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "the child was never reaped within the deadline (last stat {stat:?})"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
