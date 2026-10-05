@@ -21,7 +21,7 @@ If you drive `tf.*` code through the file-bridge, give every job file a unique i
 | `tf.findOrCreate` | `(parent, name, factory)` | `Promise<SceneNode>` | **yes** | Return an existing direct child named `name`, or call `factory`, name it, append it, and return it. |
 | `tf.commit` | `(label?: string)` | `void` | no | Call `figma.commitUndo()` to mark the end of a batch undo step. |
 | `tf.skipInvisible` | `(on?: boolean)` | `void` | no | Set `figma.skipInvisibleInstanceChildren` (default `true`). Skipping hidden instance children speeds up traversal on large documents. No-op when the property is absent. |
-| `tf.findAll` | `(node, criteria)` | `SceneNode[]` | no | Wrap `node.findAllWithCriteria(criteria)`. Use for fast, native type-based node queries. Example: `{ types: ["TEXT"] }`. |
+| `tf.findAll` | `(node, criteria)` | `SceneNode[]` | no | Wrap `node.findAllWithCriteria(criteria)`. Use for native type-based node queries, instead of a hand-written predicate. Example: `{ types: ["TEXT"] }`. |
 | `tf.chunk` | `(items, size?)` | `T[][]` | no | Split an array into consecutive sub-arrays of at most `size` elements. Default `size` is 75. Throws `RangeError` when `size < 1`. |
 | `tf.slide` | `(opts?: SlideOpts)` | `FrameNode` | no | Create a slide frame. Default size is 1920x1080 with name "Slide". Accepts all FrameOpts fields. |
 | `tf.deck` | `(opts)` | `Promise<FrameNode[]>` | **yes** | Create `count` slide frames, position them in a grid, append each to `parent`, and call `build` per slide. Default `cols=1`, `gap=80`. |
@@ -137,11 +137,11 @@ const pos = tf.slidePosition(4, { cols: 3, width: 1920, height: 1080, gap: 80 })
 
 ## Performance and batching
 
-- Preload all fonts once with `await tf.loadFonts([...])` before creating any text nodes. This avoids one network round-trip per node.
+- Preload all fonts once with `await tf.loadFonts([...])` before creating any text nodes. `tf.loadFonts` deduplicates the list and calls `figma.loadFontAsync` for each font once, in parallel; `tf.text` then creates each node without loading its font again.
 - Do as many node operations as possible in one eval call. Each `turbofig_execute` call has network overhead.
 - Call `tf.commit(label)` once at the end of a batch to create a single undo step.
 - Call `tf.skipInvisible()` at the start of any eval that scans the document. It sets `figma.skipInvisibleInstanceChildren = true`, which skips hidden instance children during traversal.
-- Use `tf.findAll(node, { types: ["TEXT"] })` instead of `node.findAll(predicate)`. The native criteria filter is faster on large documents.
+- Use `tf.findAll(node, { types: ["TEXT"] })` instead of `node.findAll(predicate)`. It calls the native `findAllWithCriteria`, rather than running a JS predicate over every node.
 - Use `tf.chunk(nodes, size)` to process large node arrays in batches of at most `size` (default 75). Process each batch in sequence to avoid blocking the UI thread for long periods.
 
 ---
@@ -165,11 +165,12 @@ const nodes = tf.findAll(otherPage, { types: ["COMPONENT"] });
 - Every queued reply (including `tf.export` output returned from
   `turbofig_execute`) is capped at 16 MiB. An oversized reply becomes an
   `ok:false` error naming the size, instead of reaching the daemon.
-- `tf.export` scale is clamped to `[0.1, 4]`, matching the range Figma
-  itself accepts for an export constraint.
-- `turbofig_screenshot` defaults to file mode for large output: the PNG is
-  written to the file-bridge outbox and the call returns its path, instead
-  of returning the image inline.
+- `turbofig_screenshot`'s scale is clamped to `[0.1, 4]`, matching the range
+  Figma itself accepts for an export constraint. `tf.export` passes its
+  `settings` through to `exportAsync` unchanged, with no clamp.
+- `turbofig_screenshot` defaults to file mode: the PNG is written to the
+  file-bridge outbox and the call returns its path, instead of returning
+  the image inline.
 
 ## instanceByKey and unpublished components
 
