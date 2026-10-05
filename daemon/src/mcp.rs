@@ -32,7 +32,17 @@ fn session_id_from_parts(parts: &http::request::Parts) -> Option<&str> {
 /// Screenshot return mode. A typed enum, not a free string: an unrecognized
 /// value (a typo) fails parameter deserialization loudly instead of silently
 /// falling back to file mode.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Deserialize,
+    serde::Serialize,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ReturnMode {
     #[default]
@@ -51,7 +61,7 @@ impl ReturnMode {
 
 /// Parameters for tools that take only an optional target file key.
 /// Used by turbofig_status only. turbofig_get_selection uses SelectionParams.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct FileTargetParams {
     #[serde(rename = "fileKey", default)]
     #[schemars(
@@ -65,7 +75,7 @@ pub(crate) struct FileTargetParams {
 /// Extends the base file-key routing with optional field selection and
 /// child-traversal depth. Omit fields and depth to get the compact default
 /// (seven base fields, top-level nodes only).
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SelectionParams {
     #[serde(rename = "fileKey", default)]
     #[schemars(
@@ -85,7 +95,7 @@ pub(crate) struct SelectionParams {
 }
 
 /// Parameters for the turbofig_execute tool.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ExecuteParams {
     #[schemars(description = "JavaScript code to execute in the Figma plugin context")]
     pub(crate) code: String,
@@ -97,7 +107,7 @@ pub(crate) struct ExecuteParams {
 }
 
 /// Parameters for the turbofig_screenshot tool.
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ScreenshotParams {
     #[serde(default = "default_screenshot_scale")]
     #[schemars(description = "Export scale factor (default 1.0, clamped to 0.1-4.0)")]
@@ -259,7 +269,7 @@ impl TurbofigHandler {
 /// An `{"ok":false,...}` result must surface as an MCP tool *error*
 /// (`isError: true`), not success: the call failed and the client must be
 /// able to tell without inspecting the text body.
-fn call_tool_result(value: Value) -> CallToolResult {
+pub(crate) fn call_tool_result(value: Value) -> CallToolResult {
     let is_err = !value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
     let content = vec![ContentBlock::text(value.to_string())];
     if is_err {

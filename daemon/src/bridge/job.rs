@@ -5,11 +5,16 @@
 //! behind one `#[serde(tag = "op")]` enum, so a job with a bad field (a
 //! typo'd `return` mode, a non-numeric `depth`) fails to parse the same way
 //! an MCP tool call would, instead of silently taking a wrong default.
+//!
+//! `Job` also derives `Serialize`: the stdio MCP proxy (`proxy.rs`) builds a
+//! `Job` value straight from its own tool parameters and serializes it to
+//! send to `POST /job`, rather than hand-assembling the same `{"op":...}`
+//! shape as a second, driftable copy.
 
 use crate::mcp::{ExecuteParams, FileTargetParams, ScreenshotParams, SelectionParams};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum Job {
     Status(FileTargetParams),
