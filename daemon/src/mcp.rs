@@ -165,6 +165,7 @@ impl TurbofigHandler {
         Parameters(FileTargetParams { file_key }): Parameters<FileTargetParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let _job = self.state.begin_job();
         let session_id = session_id_from_parts(&parts);
         let value = run_status(&self.state, session_id, file_key.as_deref()).await;
         Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -182,6 +183,7 @@ impl TurbofigHandler {
         Parameters(ExecuteParams { code, file_key }): Parameters<ExecuteParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let _job = self.state.begin_job();
         let session_id = session_id_from_parts(&parts);
         let value = run_execute(&self.state, session_id, file_key.as_deref(), &code).await;
         Ok(call_tool_result(value))
@@ -203,6 +205,7 @@ impl TurbofigHandler {
         }): Parameters<SelectionParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let _job = self.state.begin_job();
         let session_id = session_id_from_parts(&parts);
         let value = run_get_selection(
             &self.state,
@@ -232,6 +235,7 @@ impl TurbofigHandler {
         }): Parameters<ScreenshotParams>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<CallToolResult, McpError> {
+        let _job = self.state.begin_job();
         let session_id = session_id_from_parts(&parts);
         let value = run_screenshot(
             &self.state,

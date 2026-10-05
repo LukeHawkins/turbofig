@@ -18,6 +18,12 @@ const SUPERVISOR_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from
 /// before exiting anyway.
 const SUPERVISOR_DRAIN_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 const SUPERVISOR_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// Grace wait after the job count reaches 0, before the process actually
+/// exits. `jobs_in_flight` reaching 0 means the daemon has finished writing
+/// its own in-memory result, but an outbound HTTP response or a bridge
+/// result-file rename can still be a few scheduler ticks from landing;
+/// this gives those a moment to flush before launchd restarts the process.
+const SUPERVISOR_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The real `~/Library/LaunchAgents` directory, unless overridden.
 ///
@@ -323,6 +329,9 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
                     SUPERVISOR_DRAIN_MAX_WAIT
                 );
             }
+            // Give a just-finished job's HTTP response or bridge result-file
+            // rename a moment to flush before the process actually exits.
+            tokio::time::sleep(SUPERVISOR_EXIT_GRACE).await;
             std::process::exit(0);
         }
     }

@@ -432,6 +432,7 @@ async fn scan_and_service(
                 let in_flight = in_flight.clone();
                 let in_flight_id = job_id.clone();
                 tokio::spawn(async move {
+                    let _job_guard = state.begin_job();
                     let result = process_job(job, &state, &outbox_owned).await;
                     write_result(&outbox_owned, &job_id, result).await;
                     in_flight

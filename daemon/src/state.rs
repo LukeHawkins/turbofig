@@ -7,8 +7,8 @@ use crate::token::random_token_hex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Mutex,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -117,6 +117,28 @@ pub struct AppState {
     /// accepts no more work while it waits for in-flight jobs to finish
     /// before exiting for launchd to start the new binary.
     draining: std::sync::atomic::AtomicBool,
+    /// Count of whole tool calls (MCP and bridge) currently in progress, from
+    /// entry to the final response (MCP) or result write (bridge). See
+    /// `begin_job`/`JobGuard`. This is intentionally not the `pending` map's
+    /// length: `pending` only covers the span waiting for a plugin reply, so
+    /// it misses work after the reply arrives (a screenshot resize, a file
+    /// write, building the HTTP response) and any job between `resolve_route`
+    /// and the `pending` insert.
+    job_counter: Arc<AtomicUsize>,
+}
+
+/// RAII guard returned by `AppState::begin_job`. Increments the shared job
+/// counter on creation, decrements it on drop (including an early return or
+/// a panic unwind), so a whole tool call is counted for its entire lifetime
+/// without any call site having to remember to decrement by hand.
+pub struct JobGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl AppState {
@@ -133,6 +155,7 @@ impl AppState {
             token,
             started_at: Instant::now(),
             draining: std::sync::atomic::AtomicBool::new(false),
+            job_counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -199,10 +222,22 @@ impl AppState {
         self.draining.load(Ordering::Relaxed)
     }
 
-    /// Number of tool-call requests currently waiting for a plugin reply.
+    /// Number of whole tool calls (MCP and bridge) currently in progress.
     /// Used by the supervised-restart loop to know when it is safe to exit.
     pub fn jobs_in_flight(&self) -> usize {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.job_counter.load(Ordering::SeqCst)
+    }
+
+    /// Marks the start of one whole tool call (an MCP tool invocation or a
+    /// bridge job). Call this at the top of the call, before routing; hold
+    /// the returned guard until the final response or result write is done,
+    /// then let it drop. See `job_counter`'s field doc for why this counts
+    /// more than `pending`.
+    pub fn begin_job(&self) -> JobGuard {
+        self.job_counter.fetch_add(1, Ordering::SeqCst);
+        JobGuard {
+            counter: self.job_counter.clone(),
+        }
     }
 
     /// Returns true when `conn_id` is still a live, registered connection.
@@ -748,6 +783,33 @@ mod tests {
         // Can only assert it is a small, sane value right after construction;
         // elapsed() can never be negative by construction (Instant-based).
         assert!(state.uptime_seconds() < 5);
+    }
+
+    #[test]
+    fn jobs_in_flight_is_zero_with_no_guards_held() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        assert_eq!(state.jobs_in_flight(), 0);
+    }
+
+    #[test]
+    fn begin_job_counts_a_job_until_its_guard_drops() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let guard = state.begin_job();
+        assert_eq!(state.jobs_in_flight(), 1);
+        drop(guard);
+        assert_eq!(state.jobs_in_flight(), 0);
+    }
+
+    #[test]
+    fn begin_job_counts_each_concurrent_job_independently() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let first = state.begin_job();
+        let second = state.begin_job();
+        assert_eq!(state.jobs_in_flight(), 2);
+        drop(first);
+        assert_eq!(state.jobs_in_flight(), 1);
+        drop(second);
+        assert_eq!(state.jobs_in_flight(), 0);
     }
 
     #[test]
