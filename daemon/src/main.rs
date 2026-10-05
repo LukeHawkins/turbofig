@@ -45,14 +45,17 @@ fn launch_agents_dir() -> PathBuf {
     PathBuf::from(home).join("Library/LaunchAgents")
 }
 
-/// Builds the HTTP client every command that talks to the daemon uses.
-/// The daemon is always local (127.0.0.1); a corporate proxy env var
-/// (HTTP_PROXY/HTTPS_PROXY) must never be allowed to intercept or break
-/// this request, so this ignores proxy env settings rather than using
+/// Builds the HTTP client every command that talks to the daemon's admin
+/// surface (`/health`, `/control`) uses: `spawn::build_admin_client`'s 2s
+/// connect and overall timeout, so a wedged daemon or an unrelated foreign
+/// process answering on the port can never hang a CLI command forever. The
+/// daemon is always local (127.0.0.1); a corporate proxy env var
+/// (HTTP_PROXY/HTTPS_PROXY) must never be allowed to intercept or break this
+/// request either, hence `no_proxy` inside `build_admin_client` rather than
 /// reqwest's default client. Exits 1 with a clear message on the (very
 /// unlikely) failure to build a client at all.
 fn build_http_client(context: &str) -> reqwest::Client {
-    match reqwest::Client::builder().no_proxy().build() {
+    match turbofig::spawn::build_admin_client() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{context}: could not build the HTTP client: {e}");
@@ -568,7 +571,7 @@ async fn cmd_status() {
 /// or `None` if none is reachable. Builds its own short-lived client: called
 /// before `run_daemon` has any other state to reuse one from.
 async fn already_running_health(mcp_port: u16) -> Option<serde_json::Value> {
-    let client = reqwest::Client::builder().no_proxy().build().ok()?;
+    let client = turbofig::spawn::build_admin_client().ok()?;
     turbofig::spawn::fetch_health(&client, mcp_port).await
 }
 

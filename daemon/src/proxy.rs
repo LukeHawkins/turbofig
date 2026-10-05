@@ -53,21 +53,27 @@ const UNREACHABLE_DEADLINE: Duration = Duration::from_secs(65);
 /// `turbofig_binary` and `home` are only used if the daemon needs to be
 /// (re)started, either at startup or mid-session after a lost connection.
 pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
+    // Two clients, deliberately: `health_client` bounds `/health` and
+    // `/control` calls to `ADMIN_CLIENT_TIMEOUT` total, so a wedged daemon or
+    // a foreign process on this port can never hang the proxy forever.
+    // `job_client` only bounds the *connect* phase the same way; a real
+    // `/job` call (an `execute` op especially) can legitimately run for far
+    // longer than that, up to the daemon's own `TURBOFIG_REQUEST_TIMEOUT_MS`.
+    let health_client = crate::spawn::build_admin_client()
+        .map_err(|e| format!("turbofig mcp: could not build the HTTP client: {e}"))?;
+    let job_client = crate::spawn::build_job_client()
         .map_err(|e| format!("turbofig mcp: could not build the HTTP client: {e}"))?;
 
-    let health = match crate::spawn::fetch_health(&client, mcp_port).await {
+    let health = match crate::spawn::fetch_health(&health_client, mcp_port).await {
         Some(h) => h,
         None => {
             eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
             crate::spawn::spawn_detached_daemon(&turbofig_binary, &home)
                 .map_err(|e| format!("turbofig mcp: could not start the daemon: {e}"))?;
-            crate::spawn::wait_for_health(&client, mcp_port)
+            crate::spawn::wait_for_health(&health_client, mcp_port)
                 .await
                 .map_err(|e| format!("turbofig mcp: {e}"))?;
-            crate::spawn::fetch_health(&client, mcp_port)
+            crate::spawn::fetch_health(&health_client, mcp_port)
                 .await
                 .ok_or_else(|| {
                     "turbofig mcp: the daemon answered /health once but not again".to_owned()
@@ -83,7 +89,8 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
     })?;
 
     let handler = ProxyHandler {
-        client,
+        health_client,
+        job_client,
         mcp_port,
         turbofig_binary,
         home,
@@ -133,7 +140,12 @@ fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
 /// answer is returned as-is.
 #[derive(Clone)]
 struct ProxyHandler {
-    client: reqwest::Client,
+    /// Bounds `/health` and `/control` calls to `ADMIN_CLIENT_TIMEOUT` total.
+    health_client: reqwest::Client,
+    /// Bounds only the connect phase of `/job` calls the same way; no
+    /// overall timeout, since a real job can legitimately run far longer.
+    /// See `run`'s doc comment for why these are two separate clients.
+    job_client: reqwest::Client,
     mcp_port: u16,
     /// The running `turbofig` binary, re-invoked with `serve` if the daemon
     /// needs to be (re)started.
@@ -196,7 +208,7 @@ impl ProxyHandler {
     async fn post_job(&self, job: &Job) -> Result<serde_json::Value, reqwest::Error> {
         let url = format!("http://127.0.0.1:{}/job", self.mcp_port);
         let resp = self
-            .client
+            .job_client
             .post(url)
             .bearer_auth(&self.token)
             .json(job)
@@ -209,7 +221,7 @@ impl ProxyHandler {
     async fn restart_daemon(&self) -> Result<(), String> {
         crate::spawn::spawn_detached_daemon(&self.turbofig_binary, &self.home)
             .map_err(|e| format!("could not start the daemon: {e}"))?;
-        crate::spawn::wait_for_health(&self.client, self.mcp_port).await
+        crate::spawn::wait_for_health(&self.health_client, self.mcp_port).await
     }
 
     /// Compares `daemon_version` against this proxy's own version, once, at
@@ -266,7 +278,7 @@ impl ProxyHandler {
 
         let control_url = format!("http://127.0.0.1:{}/control", self.mcp_port);
         match self
-            .client
+            .health_client
             .post(&control_url)
             .bearer_auth(&token)
             .json(&serde_json::json!({"action": "restart"}))
@@ -305,7 +317,7 @@ impl ProxyHandler {
             );
         }
 
-        crate::spawn::wait_for_health(&self.client, self.mcp_port).await
+        crate::spawn::wait_for_health(&self.health_client, self.mcp_port).await
     }
 
     /// Polls `/health` until it stops answering, or `deadline` elapses.
@@ -314,7 +326,7 @@ impl ProxyHandler {
     /// (`main.rs`) also uses for the same "has the daemon actually gone
     /// away yet" question.
     async fn wait_until_unreachable(&self, deadline: Duration) -> bool {
-        crate::spawn::wait_for_unreachable(&self.client, self.mcp_port, deadline).await
+        crate::spawn::wait_for_unreachable(&self.health_client, self.mcp_port, deadline).await
     }
 }
 

@@ -19,6 +19,39 @@ use std::time::{Duration, Instant};
 pub const HEALTH_DEADLINE: Duration = Duration::from_secs(5);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Connect timeout for every admin HTTP call (`/health`, `/control`), and
+/// also the overall timeout for those calls: a wedged daemon, or an
+/// unrelated foreign process that happens to answer on the port, must never
+/// hang `turbofig mcp`, `turbofig start`/`stop`/`status`, or the `serve`
+/// pre-check forever. 2s is generous for a local loopback call that never
+/// does real work beyond JSON (de)serialization.
+pub const ADMIN_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Builds the shared HTTP client every admin call (`GET /health`,
+/// `POST /control`) uses: `ADMIN_CLIENT_TIMEOUT` for both the connect phase
+/// and the whole request. Never intercepted by a corporate proxy env var
+/// (`HTTP_PROXY`/`HTTPS_PROXY`): the daemon is always local (127.0.0.1).
+pub fn build_admin_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(ADMIN_CLIENT_TIMEOUT)
+        .timeout(ADMIN_CLIENT_TIMEOUT)
+        .build()
+}
+
+/// Builds the HTTP client `POST /job` calls use: the same
+/// `ADMIN_CLIENT_TIMEOUT` connect timeout (a wedged daemon or a foreign
+/// process on the port must still fail to *connect* quickly), but
+/// deliberately no overall request timeout: a real job (an `execute` op in
+/// particular) can legitimately run for up to the daemon's configured
+/// `TURBOFIG_REQUEST_TIMEOUT_MS`, far longer than an admin call ever should.
+pub fn build_job_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(ADMIN_CLIENT_TIMEOUT)
+        .build()
+}
+
 /// Spawns `<turbofig_binary> serve` fully detached into its own session.
 ///
 /// `home` is the daemon's `TURBOFIG_BRIDGE_DIR`; `<home>/daemon.log` gets
@@ -167,6 +200,62 @@ async fn wait_for_health_with_deadline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn admin_client_request_fails_within_its_timeout_against_a_listener_that_never_answers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(async move {
+            // Accept the connection and hold it open without ever replying:
+            // a wedged daemon, or an unrelated foreign process that happens
+            // to answer on this port, looks exactly like this to a client.
+            if let Ok((_stream, _)) = listener.accept().await {
+                std::future::pending::<()>().await
+            }
+        });
+
+        let client = build_admin_client().expect("build admin client");
+        let start = Instant::now();
+        let result = fetch_health(&client, port).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_none(),
+            "a connection that never answers must never look healthy"
+        );
+        assert!(
+            elapsed < ADMIN_CLIENT_TIMEOUT + Duration::from_secs(3),
+            "the request must fail near the client's own {ADMIN_CLIENT_TIMEOUT:?} timeout, \
+             not hang forever: took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn job_client_request_never_hangs_beyond_a_bounded_wait_on_an_unroutable_address() {
+        let client = build_job_client().expect("build job client");
+        // 192.0.2.1 is TEST-NET-1 (RFC 5737): reserved and never routable,
+        // so the connect attempt itself must fail, via `connect_timeout`
+        // rather than hang. The outer `tokio::time::timeout` bounds this
+        // test, not the client: `job_client` deliberately has no overall
+        // request timeout (a real `/job` call can run far longer), so a
+        // bug that silently added one, or removed `connect_timeout`
+        // entirely, must still be caught without this test itself hanging.
+        let bounded = tokio::time::timeout(
+            ADMIN_CLIENT_TIMEOUT + Duration::from_secs(5),
+            client.get("http://192.0.2.1:18846/job").send(),
+        )
+        .await;
+        assert!(
+            bounded.is_ok(),
+            "connect_timeout must bound the connect attempt; the outer test timeout fired instead"
+        );
+        assert!(
+            bounded.unwrap().is_err(),
+            "an unroutable address must fail to connect, not somehow succeed"
+        );
+    }
 
     #[tokio::test]
     async fn wait_for_health_times_out_with_a_clear_message_when_nothing_is_listening() {
