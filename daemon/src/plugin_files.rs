@@ -42,17 +42,30 @@ pub fn write_plugin_files(home: &Path, token: &str) -> io::Result<PathBuf> {
     })?;
 
     let dir = home.join("figma-plugin");
-    std::fs::create_dir_all(&dir)?;
+    let dist_dir = dir.join("dist");
+    std::fs::create_dir_all(&dist_dir)?;
     set_owner_only(&dir)?;
+    set_owner_only(&dist_dir)?;
 
     let manifest_path = dir.join("manifest.json");
     write_atomic_0600(&manifest_path, plugin.manifest.as_bytes())?;
-    write_atomic_0600(&dir.join("code.js"), plugin.code_js.as_bytes())?;
+    write_atomic_0600(&dist_dir.join("code.js"), plugin.code_js.as_bytes())?;
 
     let ui_html = plugin.ui_html.replace(TOKEN_PLACEHOLDER, token);
-    write_atomic_0600(&dir.join("ui.html"), ui_html.as_bytes())?;
+    write_atomic_0600(&dist_dir.join("ui.html"), ui_html.as_bytes())?;
 
     write_atomic_0600(&dir.join(MARKER_FILE), marker_contents(token).as_bytes())?;
+
+    // Old daemon versions wrote code.js and ui.html at the root of
+    // figma-plugin/, which did not match the manifest's dist/ paths. Remove
+    // any leftover root-level copies on refresh so a stale file never shadows
+    // the correct one.
+    for stale in ["code.js", "ui.html"] {
+        let stale_path = dir.join(stale);
+        if stale_path.exists() {
+            std::fs::remove_file(&stale_path)?;
+        }
+    }
 
     Ok(manifest_path)
 }
@@ -99,11 +112,14 @@ fn write_atomic_0600(path: &Path, contents: &[u8]) -> io::Result<()> {
     tmp_name.push(".tmp");
     let tmp_path = PathBuf::from(tmp_name);
     {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp_path)?;
         file.write_all(contents)?;
     }
     set_owner_only(&tmp_path)?;
@@ -142,8 +158,8 @@ mod tests {
         let dir = tmp.path().join("figma-plugin");
         assert_eq!(manifest_path, dir.join("manifest.json"));
         assert!(dir.join("manifest.json").exists());
-        assert!(dir.join("code.js").exists());
-        assert!(dir.join("ui.html").exists());
+        assert!(dir.join("dist/code.js").exists());
+        assert!(dir.join("dist/ui.html").exists());
         assert!(dir.join(MARKER_FILE).exists());
     }
 
@@ -151,8 +167,8 @@ mod tests {
     fn write_plugin_files_injects_the_token_into_ui_html() {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_plugin_files(tmp.path(), "my-secret-token").expect("write_plugin_files");
-        let ui_html =
-            std::fs::read_to_string(tmp.path().join("figma-plugin/ui.html")).expect("read ui.html");
+        let ui_html = std::fs::read_to_string(tmp.path().join("figma-plugin/dist/ui.html"))
+            .expect("read ui.html");
         assert!(
             ui_html.contains("my-secret-token"),
             "ui.html must carry the real token"
@@ -178,7 +194,7 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(dir_mode, 0o700);
-            for name in ["manifest.json", "code.js", "ui.html", MARKER_FILE] {
+            for name in ["manifest.json", "dist/code.js", "dist/ui.html", MARKER_FILE] {
                 let mode = std::fs::metadata(dir.join(name))
                     .unwrap_or_else(|_| panic!("stat {name}"))
                     .permissions()
@@ -186,6 +202,28 @@ mod tests {
                     & 0o777;
                 assert_eq!(mode, 0o600, "{name} must be mode 0600");
             }
+        }
+    }
+
+    #[test]
+    fn write_plugin_files_manifest_paths_resolve_on_disk() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manifest_path =
+            write_plugin_files(tmp.path(), "test-token-abc").expect("write_plugin_files");
+        let dir = manifest_path.parent().expect("manifest has a parent dir");
+
+        let manifest_text = std::fs::read_to_string(&manifest_path).expect("read manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest_text).expect("manifest is valid JSON");
+
+        for key in ["main", "ui"] {
+            let rel_path = manifest[key]
+                .as_str()
+                .unwrap_or_else(|| panic!("manifest.{key} must be a string"));
+            assert!(
+                dir.join(rel_path).exists(),
+                "manifest.{key} names {rel_path}, which must exist under {dir:?}"
+            );
         }
     }
 
@@ -214,8 +252,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_plugin_files(tmp.path(), "tok-a").expect("first write");
         write_plugin_files(tmp.path(), "tok-b").expect("second write");
-        let ui_html =
-            std::fs::read_to_string(tmp.path().join("figma-plugin/ui.html")).expect("read ui.html");
+        let ui_html = std::fs::read_to_string(tmp.path().join("figma-plugin/dist/ui.html"))
+            .expect("read ui.html");
         assert!(ui_html.contains("tok-b"));
         assert!(!ui_html.contains("tok-a"));
         assert!(!plugin_files_outdated(tmp.path(), "tok-b"));
