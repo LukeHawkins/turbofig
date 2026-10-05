@@ -21,7 +21,20 @@ a WebSocket and exposes 4 tools to the agent, including one tool that runs
 Figma Plugin API JavaScript directly. The daemon runs as a launchd service,
 so it keeps running after your agent session ends.
 
+**Works with:**
+
+- **Platform:** macOS (Apple Silicon and Intel). Windows and Linux are not
+  supported yet.
+- **Agents:** any local agent that can read and write files (file bridge),
+  or any MCP client with streamable HTTP, for example Claude Code.
+- Chat apps that run in a browser cannot reach your Mac, so they cannot use
+  turbofig.
+
 ## Why turbofig
+
+![How turbofig works](docs/how-it-works.png)
+*The daemon bridges your AI agent to the Figma plugin over a local
+WebSocket.*
 
 - **4 tools, so a small schema.** All capability flows through
   `turbofig_execute`. The tool surface is locked at 4 and never grows.
@@ -37,6 +50,24 @@ so it keeps running after your agent session ends.
   MCP connection.
 - **Localhost only, with Origin checks and a pairing token.** Both ports
   bind to `127.0.0.1`. See [Security](#security).
+
+### turbofig vs figma-console-mcp
+
+Countable facts, not an opinion. figma-console-mcp facts are from its npm
+package, version 1.22.1.
+
+| | turbofig | figma-console-mcp 1.22.1 |
+|---|---|---|
+| Tools | 4 | 46 registered in its local-mode source (its own README advertises "94+" across all its modes; this count covers only the local-mode tool list) |
+| Figma access token needed | No | Yes, a personal access token |
+| Runtime | Single Rust binary, no Node | Node.js, run through `npx` |
+| Figma Desktop must be open | Yes | Yes, for its Desktop Bridge plugin features |
+| REST-only features (comments, Code Connect, reading a file without Figma open) | No. Turbofig has no REST access | Comments are supported through the Figma REST API. Code Connect support is not confirmed |
+
+**When to use something else.** If you need comments, Code Connect, or file
+access without Figma open, use a REST-based server such as
+figma-console-mcp or Figma's own MCP server. This README makes no claim
+about Figma's own MCP server beyond that it exists.
 
 ## Quickstart
 
@@ -57,6 +88,19 @@ and starts the daemon at login. It then prints 3 steps:
 3. Click the copy-prompt button in the plugin and paste it into your AI
    agent.
 
+<details>
+<summary>New to the terminal?</summary>
+
+1. Open Terminal: press Cmd+Space, type `Terminal`, then press Return.
+2. Install Homebrew from [brew.sh](https://brew.sh). Follow the install
+   command shown on that page. On a managed Mac, installing Homebrew can
+   need admin rights, so ask IT first.
+3. Run the 2 turbofig commands above.
+4. In Figma's file picker, press Cmd+Shift+G, then paste the manifest
+   path. `turbofig setup` already copied it to your clipboard.
+
+</details>
+
 ## Connect your agent
 
 **The file bridge (default).** Click the copy-prompt button in the plugin
@@ -64,6 +108,11 @@ panel and paste the prompt into your agent. The agent then drives turbofig
 by writing a JSON job to `~/.turbofig/inbox` and reading the result from
 `~/.turbofig/outbox`. No curl, no MCP connection, no permission dialog. See
 `skills/file-bridge.md`.
+
+**Any agent, not just Claude.** [`docs/agents.md`](docs/agents.md) is an
+agent-neutral onboarding prompt. Paste it into Cursor, Codex, Copilot,
+Claude, or any other agent that can read and write local files or call an
+MCP server.
 
 **Claude Code (MCP):**
 
@@ -85,6 +134,17 @@ config, merge this block (`docs/discoverability/mcp-config.json`):
   }
 }
 ```
+
+## What you can ask it
+
+Any instruction that a Figma Plugin API script can carry out. For example:
+
+- Tidy the auto layout spacing and padding across a whole page.
+- Build 20 card variants from a list of titles and images.
+- Audit every fill against the file's color variables and flag mismatches.
+- Rename layers across a page to match a naming rule.
+- Lay out a slide deck from a text outline.
+- Screenshot a frame so the agent can check its own work before you look.
 
 ## The 4 tools
 
@@ -118,9 +178,30 @@ tf.commit("card");
 return card.id;
 ```
 
-## How it works
+A batch example, building many nodes from a data array in one
+`turbofig_execute` call:
 
-![How turbofig works](docs/how-it-works.png)
+```js
+const rows = [
+  { label: "Alpha", color: "#0066FF" },
+  { label: "Beta", color: "#00AA55" },
+  { label: "Gamma", color: "#AA0066" },
+];
+await tf.loadFonts([{ family: "Inter", style: "Regular" }]);
+
+const list = tf.frame({ name: "List", direction: "VERTICAL", gap: 8 });
+for (const row of rows) {
+  const chip = tf.frame({ direction: "HORIZONTAL", padding: 8, fill: row.color });
+  const label = await tf.text({ text: row.label, size: 14, color: "#FFFFFF" });
+  tf.append(chip, label);
+  tf.append(list, chip);
+}
+figma.currentPage.appendChild(list);
+tf.commit("list");
+return list.id;
+```
+
+## How it works
 
 - The daemon is one Rust process. It runs the MCP HTTP endpoint, the
   plugin WebSocket server, and the file bridge as three tasks sharing one
@@ -185,6 +266,19 @@ null or missing `Origin` and requires a pairing token on the upgrade. See
 [SECURITY.md](SECURITY.md) for the full threat model and how to report a
 vulnerability.
 
+## Reliability and retries
+
+- **launchd restarts the daemon if it exits.** The service runs with
+  `KeepAlive`, so a crash is followed by a restart, not a dead daemon.
+- **A job in flight when the plugin disconnects, or that times out, may
+  still be running.** A retry of that job is not idempotent: the first
+  attempt can still complete in Figma after you retry.
+- **"Expired in the queue; the job did not run" is safe to retry.** This
+  reply means the job's deadline passed before it started, so nothing ran.
+- **Use a unique job id for every job.** Reusing an id while the first job
+  with that id may still be running does not get you a result; see
+  `skills/file-bridge.md`.
+
 ## Troubleshooting
 
 - **The plugin panel shows disconnected.** Run `turbofig status` to check
@@ -202,21 +296,15 @@ vulnerability.
 
 ## Roadmap
 
-- Positioning and docs: a clear comparison against other Figma MCP options.
 - A screencast of a brief becoming a full Figma page.
 - Wider platform support: Linux and Windows builds, `cargo install`, and a
   `curl | sh` installer.
 - An auto-update nudge on daemon startup.
 - A community-safe command vocabulary alongside the eval-first tool.
-- CI benchmark regression guard, gating on token and speed budgets.
+- Error codes in tool results, and an optional job audit log.
+- Notarized binaries, for a company that needs them.
 
-## Benchmarks
-
-A reproducible benchmark harness lives in [`bench/`](bench/README.md). It
-measures exact wire bytes and real Claude Code token counts, never an
-estimate.
-
-<!-- BENCHMARK RESULTS: add measured numbers here after the first public run -->
+<!-- BENCHMARK RESULTS: add the measured section here after the first public run -->
 
 ## Contributing
 
