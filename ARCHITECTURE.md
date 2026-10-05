@@ -56,6 +56,12 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `mcp.rs` | MCP tool parameter structs, `TurbofigHandler`, `HELP_TEXT`, `build_router`, the Origin-rejection middleware |
 | `ws.rs` | `handle_socket`, the WS Origin check, keepalive ping/pong, `serve_ws` |
 | `bridge/mod.rs`, `bridge/job.rs` | The inbox scan loop; `job.rs`'s typed `Job` enum reuses the MCP param structs |
+| `embedded.rs` | `embedded_plugin()`, wrapping the `build.rs`-generated `include_str!`s |
+| `plugin_files.rs` | `write_plugin_files`, `plugin_files_outdated` |
+| `token.rs` | `ensure_token`, `random_token_hex`, `constant_time_eq` |
+| `cli.rs` | The `clap` `Cli`/`Command` types, `run_setup`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
+| `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
+| `supervisor.rs` | `upgrade_detected`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
 
 ## Plugin
 
@@ -144,12 +150,93 @@ writes those three files to `<home>/figma-plugin/`, replacing the
 token, plus a version+token-hash marker (`plugin_files_outdated` reads it to
 detect a stale copy). `plugin/dist` is a Bun build, not a Cargo artifact, so
 `build.rs` degrades to a stub (`embedded_plugin()` returns `None`) when it is
-missing, keeping a Rust-only `cargo build` and the CI Rust job working. A
-later `turbofig setup` command (not built yet) is the one that calls
+missing, keeping a Rust-only `cargo build` and the CI Rust job working.
+`turbofig setup` (see "CLI" below) is the command that calls
 `write_plugin_files` on a user's machine; see `DECISIONS.md` #38.
 
 `daemon/src/token.rs` owns the pairing token itself: see "WebSocket server"
 above and `DECISIONS.md` #39 for the full design.
+
+## CLI (`daemon/src/cli.rs`, `daemon/src/main.rs`)
+
+The `turbofig` binary is a `clap` (derive) CLI with no subcommand or
+`serve` running the daemon in the foreground (`run_daemon` in `main.rs`),
+and three install/ops subcommands: `setup`, `uninstall`, and `status`.
+`--version` and `--help` come from `clap`.
+
+- **`turbofig setup`** is idempotent: running it twice gives the same end
+  state. It (a) calls `ensure_token`; (b) calls `write_plugin_files` into
+  `<home>/figma-plugin/`, exiting non-zero with a clear message if the
+  binary has no embedded plugin (`plugin/dist` was missing at compile
+  time; see "Embedded plugin" above); (c) writes
+  `~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`
+  (`daemon/src/launchd.rs`'s `plist_contents`): `ProgramArguments` is the
+  *stable* binary path (see below) plus `serve`, `RunAtLoad` and
+  `KeepAlive` both true, `EnvironmentVariables.TURBOFIG_SUPERVISED=1`, and
+  `StandardOutPath`/`StandardErrorPath` set to `<home>/daemon.log`; (d)
+  runs `launchctl bootout gui/<uid>/eu.lukehawkins.turbofig` (ignoring a
+  "not loaded" failure) then `launchctl bootstrap gui/<uid> <plist>`; (e)
+  prints exactly 3 numbered next steps (import the plugin manifest into
+  Figma Desktop, run it in a file, copy the connect prompt) plus one
+  optional MCP-client line. The real LaunchAgents directory is read from
+  `TURBOFIG_LAUNCH_AGENTS_DIR` when set, so a test never touches
+  `~/Library/LaunchAgents`; `launchctl` itself sits behind the
+  `launchd::Launchctl` trait, faked in tests.
+- **Stable binary path rule** (`launchd::stable_binary_path`): if the
+  canonicalized `current_exe` path contains `/Cellar/turbofig/`, the
+  plist points at `<prefix>/bin/turbofig` (everything before `/Cellar`),
+  the stable symlink Homebrew repoints on every `brew upgrade`. Any other
+  path (a source checkout, a non-Cellar symlink target) is used as-is.
+  This is also the path the supervised-restart loop below polls.
+- **`turbofig uninstall [--purge]`**: `bootout`s the service and removes
+  the plist. Without `--purge`, `<home>` (the token, the plugin files, the
+  bridge inbox/outbox) is left in place and the command says so. With
+  `--purge`, `<home>` is removed too. A missing plist or a missing `<home>`
+  is not an error: uninstall is idempotent.
+- **`turbofig status`**: a thin CLI client for `GET /health` (below) on
+  `127.0.0.1:<TURBOFIG_MCP_PORT>`, printed as a short, readable report. If
+  the daemon is unreachable, it says so and suggests `turbofig setup`.
+
+## `/health`
+
+`GET /health` (same HTTP port as `/mcp`, same Origin and Host checks, see
+`mcp.rs`'s `reject_browser_origin` and the new `reject_bad_host`) returns
+JSON: `version` (`CARGO_PKG_VERSION`), `uptimeSeconds`, and
+`connectedFiles` (one entry per connected file: `fileKey`, `name`,
+`pluginVersion`, and, if the plugin's reported version differs from the
+daemon's, a `warning` of `"reopen the turbofig plugin in Figma"`). Never
+includes the pairing token: `connectedFiles` reuses
+`AppState::named_connections_json`, the same JSON `turbofig_status`
+returns, so the two surfaces can never drift. `turbofig_status` gained the
+same `pluginVersion`/`warning` fields on each entry in its `plugins` list.
+
+## Supervised restart (`TURBOFIG_SUPERVISED=1`)
+
+The plist `turbofig setup` writes sets `TURBOFIG_SUPERVISED=1`. When set,
+`main.rs` spawns a loop (`run_supervisor_loop`) that every 30s resolves the
+stable binary path (the same rule `setup` used to build the plist) and
+compares its canonical target to the one captured at startup
+(`supervisor::upgrade_detected`, a pure path comparison). A change means
+`brew upgrade` repointed the Cellar symlink. On detection the daemon: calls
+`AppState::set_draining(true)`, so `resolve_route` refuses every new job
+with `RouteError::Draining` across all three transports (MCP, WS-routed
+ops, file-bridge; they all call `resolve_route`); waits up to 60s
+(`supervisor::wait_for_drain`, polling `AppState::jobs_in_flight`) for
+in-flight jobs to finish; then exits 0, so launchd's `KeepAlive` starts the
+new binary. The clock and the path resolver are pure/seamed
+(`supervisor.rs`) so the decision logic is unit tested without a real 30s
+wait or a real Homebrew upgrade.
+
+## Message contract: plugin version reporting
+
+`FILE_INFO` (plugin to daemon) now carries `pluginVersion` alongside
+`fileKey` and `name` (`plugin/src/protocol.ts`'s `FileInfoMessage`,
+built by `buildFileInfo`; `plugin/build-code.ts` injects
+`__PLUGIN_VERSION__` from `plugin/package.json` the same way
+`build-ui.ts` already does for the UI bundle). The daemon stores it on
+`PluginConn` (`state.rs`) and surfaces it, plus the reopen-the-plugin
+warning when it differs from the daemon's own version, in both
+`turbofig_status` and `/health` (see above).
 
 ## Environment variables
 
@@ -159,3 +246,5 @@ above and `DECISIONS.md` #39 for the full design.
 | `TURBOFIG_WS_PORT` | 18847 | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result. Clamped to 600000 (10 min); a larger value is logged and clamped, since it would otherwise overflow a JS `setTimeout` on the plugin side |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |
+| `TURBOFIG_SUPERVISED` | unset | Set by the launchd plist `turbofig setup` writes; enables the supervised-restart loop above |
+| `TURBOFIG_LAUNCH_AGENTS_DIR` | `~/Library/LaunchAgents` | Overrides where `setup`/`uninstall` read and write the plist; a test seam, not meant for normal use |

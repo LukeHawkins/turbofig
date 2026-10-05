@@ -10,6 +10,33 @@ recorded under Unreleased.
 
 ### Added
 
+- `turbofig` CLI (`clap`): `turbofig` with no subcommand or `turbofig serve`
+  runs the daemon in the foreground as before. `turbofig setup` installs the
+  pairing token, writes the embedded Figma plugin to `<home>/figma-plugin/`,
+  writes and loads a launchd service (`~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`,
+  `RunAtLoad` and `KeepAlive`), then prints the 3 steps to import the plugin
+  into Figma. `turbofig uninstall [--purge]` unloads the service and removes
+  the plist, keeping `<home>` unless `--purge` is given. `turbofig status`
+  queries the running daemon's `/health` endpoint and prints a readable
+  report. `--version` and `--help` come from `clap`.
+- `GET /health`: daemon version, uptime, and the connected files (name, key,
+  plugin version), with the same Origin and `Host` checks as `/mcp`. Never
+  includes the pairing token.
+- Automatic updates after `brew upgrade`: on startup, a daemon with an
+  existing `<home>/figma-plugin/` refreshes it if the on-disk copy is stale.
+  Under launchd supervision (`TURBOFIG_SUPERVISED=1`, set by the plist
+  `turbofig setup` writes), the daemon polls every 30s for a Homebrew
+  upgrade (the stable binary path resolving to a new Cellar version), stops
+  accepting new jobs, waits up to 60s for in-flight jobs to finish, then
+  exits cleanly so launchd starts the new binary.
+- The Figma plugin reports its own version in `FILE_INFO`; `turbofig_status`
+  and `/health` flag a mismatch against the daemon's version with
+  "reopen the turbofig plugin in Figma".
+- `daemon/build.rs` normalizes the pairing-token slot in the embedded
+  `dist/ui.html` back to its placeholder before embedding, even when a
+  contributor's local build injected a real token from their own
+  `~/.turbofig/token`, so the embedded daemon binary never carries a real
+  token baked in.
 - Rust daemon (`daemon/`) running three servers in one process on three
   `tokio::spawn` tasks: an HTTP MCP endpoint (`rmcp`, streamable-http,
   `legacy_session_mode`, stateful `mcp-session-id`), a WebSocket server for

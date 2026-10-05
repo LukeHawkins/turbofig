@@ -59,14 +59,27 @@ could otherwise open the socket and receive the AI's jobs.
 - **Who has it:** the daemon (reads it at startup) and the Figma plugin UI
   (built in with `write_plugin_files`, or injected locally by
   `plugin/build-ui.ts` for a manual dev install; see `CONTRIBUTING.md`). It
-  is never logged, never returned in `turbofig_status`, and never appears in
-  any error message.
+  is never logged, never returned in `turbofig_status` or `GET /health`, and
+  never appears in any error message. `build.rs` also normalizes a local
+  `dist/ui.html` back to the `__TURBOFIG_PAIRING_TOKEN__` placeholder before
+  embedding it into the daemon binary, even if a contributor's own
+  `~/.turbofig/token` was baked in by a local `bun run build`: otherwise that
+  real token would ship inside the binary with no placeholder left for
+  `write_plugin_files` to replace (`daemon/build.rs`'s `normalize_ui_html`,
+  tested by `embedded::tests::embedded_ui_html_always_carries_the_placeholder_never_a_real_token`).
 - **Comparison:** constant-time, so a wrong guess cannot be distinguished by
   timing from a near-miss of the same length.
 - **To rotate it:** stop the daemon, delete `~/.turbofig/token`, restart the
-  daemon (it generates a fresh one), then reload the Figma plugin so it picks
-  up the new token (rerun `turbofig setup` once that command exists, or
-  rebuild and reimport the dev plugin manually).
+  daemon (it generates a fresh one), then run `turbofig setup` again to
+  reload the Figma plugin with the new token.
+
+## `GET /health`
+
+`/health` (same HTTP port as `/mcp`, 18846) returns the daemon version,
+uptime, and the connected files' names, keys, and plugin versions. It never
+includes the pairing token, and it is subject to the same Origin and `Host`
+checks as every other route on this port (above), so it is no more reachable
+from a browser or a DNS-rebinding attack than `/mcp` is.
 
 Report a finding that breaks one of these guarantees (for example, a port
 that becomes reachable from the network, an `Origin` check that can be
