@@ -15,6 +15,16 @@
 //! to decide whether to start a new binary itself, as `turbofig mcp`'s
 //! `restart_for_upgrade` does.
 //!
+//! The handler itself never blocks on the drain: it replies `202` at once
+//! with `{"ok":true,"action":...,"draining":true}`, then drains and exits in
+//! a background task. A drain can take up to `CONTROL_DRAIN_MAX_WAIT` (60s);
+//! holding the HTTP response open that whole time (the old behaviour) ties
+//! up a connection and a caller's timeout budget for no reason, since every
+//! real caller (`turbofig stop`, the version-handoff restart, `autostart
+//! on`'s pre-stop) already has to separately poll `/health` until it stops
+//! answering to know the daemon is actually gone; the response itself was
+//! never the signal that mattered.
+//!
 //! The pairing token is the same one the WebSocket upgrade and the Figma
 //! plugin already use (`token.rs`), compared here in constant time. There is
 //! no separate control token: the pairing token is already a local secret
@@ -57,18 +67,19 @@ pub(crate) enum ControlAction {
 ///
 /// Requires `Authorization: Bearer <pairing token>`, checked with
 /// `constant_time_eq`; a missing or wrong token gives 401 before anything
-/// else happens. On success, drains in-flight jobs via the same
-/// `wait_for_drain` logic the supervised-restart loop uses, then schedules
-/// the process to exit 0 shortly after the response is sent. Never logs the
-/// token, win or lose.
+/// else happens. On success, replies `202` with `{"ok":true,"action":...,
+/// "draining":true}` at once, then drains in-flight jobs (the same
+/// `wait_for_drain` logic the supervised-restart loop uses) and exits in a
+/// background task. Never logs the token, win or lose.
 ///
 /// Race-safe against two concurrent callers (e.g. two proxies both deciding
 /// the daemon needs a version-handoff restart): `AppState::try_begin_draining`
 /// is a single atomic compare-exchange, so only the first caller through
 /// actually drains and schedules the exit. A caller that loses the race gets
-/// back `{"ok":true,"alreadyInProgress":true}` at once, with no second drain
-/// wait and no second exit timer, never a 4xx/5xx: a restart already being
-/// under way is success from this caller's point of view too.
+/// back the exact same `202 {"ok":true,"action":...,"draining":true}` at
+/// once, changing nothing: a restart already being under way is success from
+/// this caller's point of view too, and there is nothing left to report that
+/// the first caller's response did not already say.
 pub(crate) async fn control_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -81,39 +92,37 @@ pub(crate) async fn control_handler(
         );
     }
 
-    if !state.try_begin_draining() {
-        return (
-            StatusCode::OK,
-            Json(json!({"ok": true, "action": req.action, "alreadyInProgress": true})),
-        );
-    }
-
-    let drained = wait_for_drain(
-        || state.jobs_in_flight(),
-        CONTROL_DRAIN_MAX_WAIT,
-        CONTROL_DRAIN_POLL_INTERVAL,
-    )
-    .await;
-    if !drained {
-        eprintln!(
-            "Turbofig daemon: {} job(s) still in flight after {:?}; exiting anyway for /control {:?}",
-            state.jobs_in_flight(),
-            CONTROL_DRAIN_MAX_WAIT,
-            req.action,
-        );
-    }
-
-    // Exit after a short grace delay so this response has time to reach the
-    // caller before the process dies, rather than exiting from inside the
-    // handler before axum can write the body. See `exit_code_for` for which
-    // code each action uses and why.
     let action = req.action;
-    tokio::spawn(async move {
-        tokio::time::sleep(CONTROL_EXIT_GRACE).await;
-        std::process::exit(exit_code_for(action));
-    });
+    if state.try_begin_draining() {
+        // Drain and exit in the background: the caller never waits on this,
+        // only on /health going unreachable (see this module's doc comment).
+        tokio::spawn(async move {
+            let drained = wait_for_drain(
+                || state.jobs_in_flight(),
+                CONTROL_DRAIN_MAX_WAIT,
+                CONTROL_DRAIN_POLL_INTERVAL,
+            )
+            .await;
+            if !drained {
+                eprintln!(
+                    "Turbofig daemon: {} job(s) still in flight after {:?}; exiting anyway for /control {:?}",
+                    state.jobs_in_flight(),
+                    CONTROL_DRAIN_MAX_WAIT,
+                    action,
+                );
+            }
+            // Give a just-sent response (this one, or a concurrent repeat
+            // caller's) a moment to flush before the process actually exits.
+            // See `exit_code_for` for which code each action uses and why.
+            tokio::time::sleep(CONTROL_EXIT_GRACE).await;
+            std::process::exit(exit_code_for(action));
+        });
+    }
 
-    (StatusCode::OK, Json(json!({"ok": true, "action": action})))
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({"ok": true, "action": action, "draining": true})),
+    )
 }
 
 /// The exit code `/control` uses for `action`, once it is ready to exit.
@@ -191,8 +200,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_second_concurrent_control_call_reports_already_in_progress_without_a_second_drain_wait(
-    ) {
+    async fn a_second_concurrent_control_call_reports_draining_without_a_second_drain_wait() {
         let state = std::sync::Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
             100,
         )));
@@ -214,10 +222,22 @@ mod tests {
         )
         .await;
 
-        assert_eq!(status, StatusCode::OK);
+        // A repeated call during an ongoing drain gets the exact same 202
+        // shape as the first caller: nothing distinguishes it, and it must
+        // never start a second drain wait or a second exit timer.
+        assert_eq!(status, StatusCode::ACCEPTED);
         assert_eq!(body["ok"], json!(true));
-        assert_eq!(body["alreadyInProgress"], json!(true));
+        assert_eq!(body["action"], json!("restart"));
+        assert_eq!(body["draining"], json!(true));
     }
+
+    // The first-caller path (a fresh `try_begin_draining` success) always
+    // schedules a real `std::process::exit` in the background, so it is
+    // never exercised in-process here: doing so would eventually kill this
+    // whole test binary, not just a child. See `daemon/tests/control.rs`'s
+    // `assert_control_drains_and_exits`, which spawns the real compiled
+    // daemon as a child process instead, precisely so that exit only ever
+    // ends the child; it also asserts the 202-at-once reply added here.
 
     #[test]
     fn control_action_serializes_to_snake_case_strings() {

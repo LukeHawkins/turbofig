@@ -242,9 +242,9 @@ impl ProxyHandler {
     ///
     /// Tolerant of every kind of race on purpose:
     /// - A concurrent proxy may have already triggered the same restart;
-    ///   `/control` reports `alreadyInProgress` in that case, which this
-    ///   treats exactly like a normal restart ack (still waits, still
-    ///   spawns).
+    ///   `/control` replies the exact same `202 {"draining":true}` either
+    ///   way, so this treats it exactly like a normal restart ack (still
+    ///   waits, still spawns).
     /// - The daemon may not go away at all (the restart request failed to
     ///   reach it, or drained past `UNREACHABLE_DEADLINE`): this logs a
     ///   warning and falls through to use whatever is still running, rather

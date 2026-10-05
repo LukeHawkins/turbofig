@@ -67,8 +67,10 @@ async fn spawn_daemon(home: &std::path::Path, mcp_port: u16, ws_port: u16) -> Da
 }
 
 /// Runs one `/control` call (`stop` or `restart`) against a freshly spawned
-/// daemon with the right token, and asserts it drains (no in-flight jobs, so
-/// this is instant) and exits 0 shortly after responding.
+/// daemon with the right token, and asserts it replies 202 at once (well
+/// under the drain deadline, proving the response does not wait for the
+/// drain), then drains (no in-flight jobs, so that part is instant too) and
+/// exits 0 shortly after responding.
 async fn assert_control_drains_and_exits(action: &str) {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
@@ -91,6 +93,7 @@ async fn assert_control_drains_and_exits(action: &str) {
         "the pairing token file must not be empty"
     );
 
+    let request_started = Instant::now();
     let resp = client
         .post(format!("http://127.0.0.1:{mcp_port}/control"))
         .bearer_auth(&token)
@@ -98,10 +101,16 @@ async fn assert_control_drains_and_exits(action: &str) {
         .send()
         .await
         .expect("send POST /control");
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let response_elapsed = request_started.elapsed();
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
     let body: serde_json::Value = resp.json().await.expect("parse /control response");
     assert_eq!(body["ok"], serde_json::json!(true));
     assert_eq!(body["action"], serde_json::json!(action));
+    assert_eq!(body["draining"], serde_json::json!(true));
+    assert!(
+        response_elapsed < Duration::from_secs(2),
+        "the response must arrive at once, not after the (up to 60s) drain: took {response_elapsed:?}"
+    );
 
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
