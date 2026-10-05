@@ -23,9 +23,9 @@ pub struct EmbeddedPlugin {
 
 /// Returns the embedded plugin, or `None` when the daemon was built without
 /// `plugin/dist` present (a Rust-only build). A caller that needs the plugin
-/// (e.g. a future `turbofig setup` command) must handle `None` by telling the
-/// user to install a release build, or to run `cd plugin && bun run build`
-/// first in a source checkout.
+/// (the daemon's own startup, which writes it out to disk) must handle
+/// `None` by telling the user to install a release build, or to run
+/// `cd plugin && bun run build` first in a source checkout.
 pub fn embedded_plugin() -> Option<EmbeddedPlugin> {
     raw_embedded_plugin().map(|(manifest, code_js, ui_html)| EmbeddedPlugin {
         manifest,

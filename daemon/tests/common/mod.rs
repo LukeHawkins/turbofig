@@ -213,6 +213,32 @@ pub fn spawn_daemon(
     cmd.spawn().expect("spawn turbofig serve")
 }
 
+/// Runs the `turbofig` binary with `args` to completion, pointed at
+/// `mcp_port`/`ws_port`/`home` via the `TURBOFIG_*` env vars, and returns its
+/// exit status plus captured stdout and stderr. For a one-shot CLI command
+/// (`start`, `stop`, `status`), not `serve` or `mcp`, which never exit on
+/// their own.
+pub async fn run_turbofig(
+    args: &[&str],
+    home: &Path,
+    mcp_port: u16,
+    ws_port: u16,
+) -> (std::process::ExitStatus, String, String) {
+    let output = Command::new(BIN)
+        .args(args)
+        .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
+        .env("TURBOFIG_WS_PORT", ws_port.to_string())
+        .env("TURBOFIG_BRIDGE_DIR", home)
+        .output()
+        .await
+        .expect("run turbofig");
+    (
+        output.status,
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
 // ── stdio MCP framing (newline-delimited JSON, per the MCP stdio transport) ─
 
 pub async fn send_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, msg: &Value) {
@@ -350,12 +376,7 @@ pub fn tool_call_status(resp: &Value) -> Value {
 /// Returns `GET /health`'s parsed JSON body, or `None` for any failure
 /// (connection refused, timeout, a non-success status, an unparseable body).
 pub async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<Value> {
-    let url = format!("http://127.0.0.1:{mcp_port}/health");
-    let resp = client.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    resp.json::<Value>().await.ok()
+    turbofig::spawn::fetch_health(client, mcp_port).await
 }
 
 /// Polls `GET /health` until it answers with a success status, or panics

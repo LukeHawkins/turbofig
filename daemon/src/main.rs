@@ -1,9 +1,13 @@
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use turbofig::cli::{
-    carried_over_env_message, format_health, non_cellar_binary_warning, run_setup, run_uninstall,
-    setup_steps_text, status_unreachable_message, uninstall_kept_home_message, Cli, Command,
+    already_running_message, autostart_off_message, autostart_on_message, autostart_plist_exists,
+    carried_over_env_message, format_health, non_cellar_binary_warning, run_autostart_off,
+    run_autostart_on, run_uninstall, started_message, status_unreachable_message,
+    stop_autostart_restart_hint, stop_nothing_running_message, stopped_message,
+    uninstall_kept_home_message, AutostartState, Cli, Command,
 };
 use turbofig::launchd::{current_uid, RealLaunchctl};
 use turbofig::supervisor::{
@@ -13,17 +17,21 @@ use turbofig::AppState;
 
 /// How often the supervised-restart loop checks whether the stable binary
 /// path now resolves somewhere else (a Homebrew upgrade landed).
-const SUPERVISOR_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const SUPERVISOR_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// Longest the supervised-restart loop waits for in-flight jobs to finish
 /// before exiting anyway.
-const SUPERVISOR_DRAIN_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
-const SUPERVISOR_DRAIN_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+const SUPERVISOR_DRAIN_MAX_WAIT: Duration = Duration::from_secs(60);
+const SUPERVISOR_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Grace wait after the job count reaches 0, before the process actually
 /// exits. `jobs_in_flight` reaching 0 means the daemon has finished writing
 /// its own in-memory result, but an outbound HTTP response or a bridge
 /// result-file rename can still be a few scheduler ticks from landing;
 /// this gives those a moment to flush before launchd restarts the process.
-const SUPERVISOR_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+const SUPERVISOR_EXIT_GRACE: Duration = Duration::from_millis(250);
+/// Longest `turbofig stop` (and `uninstall`'s best-effort stop) waits for
+/// `/health` to go unreachable after an authenticated restart request. The
+/// daemon's own drain wait is up to 60s; this comfortably outlasts that.
+const STOP_UNREACHABLE_DEADLINE: Duration = Duration::from_secs(65);
 
 /// The real `~/Library/LaunchAgents` directory, unless overridden.
 ///
@@ -37,6 +45,30 @@ fn launch_agents_dir() -> PathBuf {
     PathBuf::from(home).join("Library/LaunchAgents")
 }
 
+/// Builds the HTTP client every command that talks to the daemon uses.
+/// The daemon is always local (127.0.0.1); a corporate proxy env var
+/// (HTTP_PROXY/HTTPS_PROXY) must never be allowed to intercept or break
+/// this request, so this ignores proxy env settings rather than using
+/// reqwest's default client. Exits 1 with a clear message on the (very
+/// unlikely) failure to build a client at all.
+fn build_http_client(context: &str) -> reqwest::Client {
+    match reqwest::Client::builder().no_proxy().build() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{context}: could not build the HTTP client: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Extracts `/health`'s `version` field, or `"unknown"` if absent.
+fn health_version(health: &serde_json::Value) -> &str {
+    health
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -45,9 +77,11 @@ async fn main() {
     }
     match cli.command {
         None | Some(Command::Serve) => run_daemon().await,
-        Some(Command::Setup) => cmd_setup(),
-        Some(Command::Uninstall { purge }) => cmd_uninstall(purge),
+        Some(Command::Start) => cmd_start().await,
+        Some(Command::Stop) => cmd_stop().await,
         Some(Command::Status) => cmd_status().await,
+        Some(Command::Autostart { state }) => cmd_autostart(state),
+        Some(Command::Uninstall { purge }) => cmd_uninstall(purge).await,
         Some(Command::Mcp) => cmd_mcp().await,
     }
 }
@@ -79,81 +113,79 @@ fn cmd_check_embedded() -> ! {
     std::process::exit(0);
 }
 
-/// Best-effort copy of `text` to the macOS clipboard via `pbcopy`. Returns
-/// true on success. Figma's "Import plugin from manifest" file picker hides
-/// `~/.turbofig` (a dotfile), so a copy-pasteable manifest path is the
-/// practical way in. A failure here (no `pbcopy`, a non-interactive
-/// session) must never stop `setup`: the printed path is still correct on
-/// its own, just not pre-copied.
-fn copy_to_clipboard(text: &str) -> bool {
-    use std::io::Write;
-    let mut child = match std::process::Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let Some(mut stdin) = child.stdin.take() else {
-        return false;
-    };
-    if stdin.write_all(text.as_bytes()).is_err() {
-        return false;
+fn cmd_autostart(state: AutostartState) {
+    match state {
+        AutostartState::On => cmd_autostart_on(),
+        AutostartState::Off => cmd_autostart_off(),
     }
-    drop(stdin);
-    child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
-fn cmd_setup() {
+fn cmd_autostart_on() {
     let home = turbofig::bridge_dir_from_env();
     let agents_dir = launch_agents_dir();
     let launchctl = RealLaunchctl;
     let uid = match current_uid() {
         Ok(u) => u,
         Err(e) => {
-            eprintln!("turbofig setup: failed to determine the current user id: {e}");
+            eprintln!("turbofig autostart: failed to determine the current user id: {e}");
             std::process::exit(1);
         }
     };
     let current_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("turbofig setup: failed to determine the running binary's path: {e}");
+            eprintln!("turbofig autostart: failed to determine the running binary's path: {e}");
             std::process::exit(1);
         }
     };
 
-    match run_setup(&home, &agents_dir, &launchctl, &uid, &current_exe) {
+    match run_autostart_on(&agents_dir, &launchctl, &uid, &current_exe, &home) {
         Ok(outcome) => {
-            println!(
-                "turbofig: installed and started (plist: {})",
-                outcome.plist_path.display()
-            );
+            println!("{}", autostart_on_message(&outcome.plist_path));
             print!(
                 "{}",
                 non_cellar_binary_warning(outcome.binary_outside_homebrew_cellar)
             );
             print!("{}", carried_over_env_message(&outcome.carried_over_env));
-            let clipboard_copied = copy_to_clipboard(&outcome.manifest_path.to_string_lossy());
-            print!(
-                "{}",
-                setup_steps_text(
-                    &outcome.manifest_path,
-                    turbofig::port_from_env(),
-                    clipboard_copied
-                )
-            );
         }
         Err(e) => {
-            eprintln!("turbofig setup: {e}");
+            eprintln!("turbofig autostart: {e}");
             std::process::exit(1);
         }
     }
 }
 
-fn cmd_uninstall(purge: bool) {
+fn cmd_autostart_off() {
+    let agents_dir = launch_agents_dir();
+    let launchctl = RealLaunchctl;
+    let uid = match current_uid() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("turbofig autostart: failed to determine the current user id: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    match run_autostart_off(&agents_dir, &launchctl, &uid) {
+        Ok(plist_path) => println!("{}", autostart_off_message(&plist_path)),
+        Err(e) => {
+            eprintln!("turbofig autostart: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_uninstall(purge: bool) {
     let home = turbofig::bridge_dir_from_env();
     let agents_dir = launch_agents_dir();
+    let mcp_port = turbofig::port_from_env();
+    let client = build_http_client("turbofig uninstall");
+
+    // Best-effort: uninstall must still succeed when nothing was running, or
+    // when the stop request itself fails for some other reason. The plist
+    // removal and purge below are what uninstall is really responsible for.
+    let _ = stop_running_daemon(&client, mcp_port, &home).await;
+
     let launchctl = RealLaunchctl;
     let uid = match current_uid() {
         Ok(u) => u,
@@ -179,6 +211,117 @@ fn cmd_uninstall(purge: bool) {
     }
 }
 
+/// Starts the daemon detached if it is not already running, waits for
+/// `/health`, then prints the version and both ports. If a daemon is
+/// already running, prints that and exits 0: `start` is idempotent, safe to
+/// run any number of times.
+async fn cmd_start() {
+    let mcp_port = turbofig::port_from_env();
+    let ws_port = turbofig::ws_port_from_env();
+    let home = turbofig::bridge_dir_from_env();
+    let client = build_http_client("turbofig start");
+
+    if let Some(health) = turbofig::spawn::fetch_health(&client, mcp_port).await {
+        println!(
+            "{}",
+            already_running_message(health_version(&health), mcp_port)
+        );
+        return;
+    }
+
+    let turbofig_binary = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("turbofig start: failed to determine the running binary's path: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
+        eprintln!("turbofig start: could not start the daemon: {e}");
+        std::process::exit(1);
+    }
+    if let Err(e) = turbofig::spawn::wait_for_health(&client, mcp_port).await {
+        eprintln!("turbofig start: {e}");
+        std::process::exit(1);
+    }
+
+    let version = match turbofig::spawn::fetch_health(&client, mcp_port).await {
+        Some(h) => health_version(&h).to_owned(),
+        None => "unknown".to_owned(),
+    };
+    println!("{}", started_message(&version, mcp_port, ws_port));
+}
+
+/// Stops the running daemon via the authenticated `/control` path, then
+/// waits for it to actually go away. Idempotent: stopping an already-
+/// stopped daemon is success, not an error. Warns when the autostart plist
+/// is present, since launchd's `KeepAlive` will otherwise restart the
+/// daemon this command just stopped.
+async fn cmd_stop() {
+    let mcp_port = turbofig::port_from_env();
+    let home = turbofig::bridge_dir_from_env();
+    let agents_dir = launch_agents_dir();
+    let client = build_http_client("turbofig stop");
+
+    match stop_running_daemon(&client, mcp_port, &home).await {
+        Ok(true) => {
+            println!("{}", stopped_message());
+            if autostart_plist_exists(&agents_dir) {
+                println!("{}", stop_autostart_restart_hint());
+            }
+        }
+        Ok(false) => println!("{}", stop_nothing_running_message()),
+        Err(e) => {
+            eprintln!("turbofig stop: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Stops the daemon on `mcp_port` via an authenticated `POST /control`,
+/// using the token at `<home>/token`, then waits for it to actually go
+/// away. Shared by `cmd_stop` and `cmd_uninstall`'s best-effort stop.
+///
+/// Returns `Ok(true)` when a daemon was stopped, `Ok(false)` when none was
+/// running (no token file, or the request could not even connect: a stale
+/// token file from a daemon that is already gone), and `Err` with a clear
+/// reason for any other failure (the daemon refused the request, or never
+/// actually went away).
+async fn stop_running_daemon(
+    client: &reqwest::Client,
+    mcp_port: u16,
+    home: &std::path::Path,
+) -> Result<bool, String> {
+    let Ok(token) = tokio::fs::read_to_string(home.join("token")).await else {
+        return Ok(false);
+    };
+
+    let resp = client
+        .post(format!("http://127.0.0.1:{mcp_port}/control"))
+        .bearer_auth(token.trim())
+        .json(&serde_json::json!({"action": "stop"}))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => {
+            return Err(format!(
+                "the daemon refused the stop request ({})",
+                r.status()
+            ))
+        }
+        Err(_) => return Ok(false), // nothing answered: a stale token file
+    }
+
+    if !turbofig::spawn::wait_for_unreachable(client, mcp_port, STOP_UNREACHABLE_DEADLINE).await {
+        return Err(format!(
+            "the daemon on port {mcp_port} was still answering after the stop request"
+        ));
+    }
+    Ok(true)
+}
+
 /// Runs `turbofig mcp`: the stdio MCP proxy. Never prints to stdout itself
 /// (that channel is reserved for MCP frames); every diagnostic here goes to
 /// stderr, including the final error on failure.
@@ -202,17 +345,7 @@ async fn cmd_mcp() {
 async fn cmd_status() {
     let mcp_port = turbofig::port_from_env();
     let url = format!("http://127.0.0.1:{mcp_port}/health");
-    // The daemon is always local (127.0.0.1); a corporate proxy env var
-    // (HTTP_PROXY/HTTPS_PROXY) must never be allowed to intercept or break
-    // this request, so build a client that ignores proxy env settings
-    // instead of using reqwest::get's default client.
-    let client = match reqwest::Client::builder().no_proxy().build() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("turbofig status: could not build the HTTP client: {e}");
-            std::process::exit(1);
-        }
-    };
+    let client = build_http_client("turbofig status");
     match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => print!("{}", format_health(&body)),
@@ -232,6 +365,14 @@ async fn cmd_status() {
     }
 }
 
+/// Returns `/health`'s body from an already-running daemon on `mcp_port`,
+/// or `None` if none is reachable. Builds its own short-lived client: called
+/// before `run_daemon` has any other state to reuse one from.
+async fn already_running_health(mcp_port: u16) -> Option<serde_json::Value> {
+    let client = reqwest::Client::builder().no_proxy().build().ok()?;
+    turbofig::spawn::fetch_health(&client, mcp_port).await
+}
+
 /// Runs the daemon exactly as `turbofig` with no arguments always has: binds
 /// both ports, ensures the pairing token, refreshes a stale on-disk plugin
 /// copy, and runs the three servers until one of them dies. Shared by the
@@ -241,12 +382,37 @@ async fn run_daemon() {
     let ws_port = turbofig::ws_port_from_env();
     let bridge_dir = turbofig::bridge_dir_from_env();
 
+    // Check before any other side effect (reading the token, binding a
+    // port): a second `turbofig serve` while one is already healthy on this
+    // port must exit at once with a clear message, not silently fail later.
+    if let Some(health) = already_running_health(mcp_port).await {
+        eprintln!(
+            "{}",
+            already_running_message(health_version(&health), mcp_port)
+        );
+        std::process::exit(1);
+    }
+
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
     let ws_addr = format!("127.0.0.1:{ws_port}");
 
     let mcp_listener = match tokio::net::TcpListener::bind(&mcp_addr).await {
         Ok(l) => l,
         Err(e) => {
+            // The health check above can still lose a tight startup race
+            // (two `serve`s launched within the same instant): if the bind
+            // failed because something is already there, re-check /health
+            // once more so this path reports the same clear message instead
+            // of a raw "Address already in use".
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                if let Some(health) = already_running_health(mcp_port).await {
+                    eprintln!(
+                        "{}",
+                        already_running_message(health_version(&health), mcp_port)
+                    );
+                    std::process::exit(1);
+                }
+            }
             eprintln!("Turbofig daemon: failed to bind MCP port {mcp_addr}: {e}");
             std::process::exit(1);
         }
@@ -283,11 +449,11 @@ async fn run_daemon() {
         }
     };
 
-    // If `turbofig setup` already wrote the plugin files out once, and this
-    // binary embeds a newer version (or the token rotated), refresh them now
-    // so a Homebrew upgrade's new plugin reaches disk without a manual
-    // `turbofig setup` re-run. A fresh install (no figma-plugin/ yet) is left
-    // to `turbofig setup`, not written implicitly here.
+    // If a plugin copy already exists on disk, and this binary embeds a
+    // newer version (or the token rotated), refresh it now so a Homebrew
+    // upgrade's new plugin reaches disk without manual intervention. A
+    // fresh install with no figma-plugin/ yet is left alone here; a later
+    // step makes this write unconditional, matching an always-on first run.
     let figma_plugin_dir = bridge_dir.join("figma-plugin");
     if figma_plugin_dir.exists() && turbofig::plugin_files_outdated(&bridge_dir, &token) {
         match turbofig::write_plugin_files(&bridge_dir, &token) {
@@ -322,9 +488,10 @@ async fn run_daemon() {
         }
     });
 
-    // Under launchd supervision (set by the plist `turbofig setup` writes),
-    // watch for a Homebrew upgrade and hand off cleanly instead of letting
-    // KeepAlive kill an in-flight job. See supervisor.rs and ARCHITECTURE.md.
+    // Under launchd supervision (set by the plist `turbofig autostart on`
+    // writes), watch for a Homebrew upgrade and hand off cleanly instead of
+    // letting KeepAlive kill an in-flight job. See supervisor.rs and
+    // ARCHITECTURE.md.
     if std::env::var("TURBOFIG_SUPERVISED").as_deref() == Ok("1") {
         let supervised_state = state.clone();
         tokio::spawn(async move {

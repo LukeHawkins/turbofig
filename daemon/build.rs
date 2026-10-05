@@ -1,7 +1,7 @@
 //! Embeds the built Figma plugin (`manifest.json`, `dist/code.js`,
 //! `dist/ui.html`) into the daemon binary, so a Homebrew-installed daemon can
-//! write the plugin files out to disk (`turbofig setup`, a later command)
-//! with no separate download and no copy of the repo.
+//! write the plugin files out to disk on its own startup with no separate
+//! download and no copy of the repo.
 //!
 //! The plugin is a Bun/TypeScript build (`cd plugin && bun run build`), not
 //! a Cargo artifact, so a Rust-only contributor (and the CI Rust job, which
@@ -36,7 +36,8 @@ fn main() {
     } else {
         println!(
             "cargo:warning=turbofig: plugin/dist not found; building without an embedded plugin. \
-             Run `cd plugin && bun run build` first to embed it (needed for `turbofig setup`)."
+             Run `cd plugin && bun run build` first to embed it (needed for the daemon to \
+             write the Figma plugin files out to disk)."
         );
         write_stub_source(&dest);
     }

@@ -1,10 +1,11 @@
 //! Writes the embedded Figma plugin out to `<home>/figma-plugin/`.
 //!
-//! This is the half of `turbofig setup` (a later command, not built here)
-//! that touches disk: given a home directory and the daemon's pairing token,
-//! write `manifest.json`, `code.js`, and a `ui.html` with the real token
-//! injected in place of the `__TURBOFIG_PAIRING_TOKEN__` placeholder the
-//! embedded build carries (see `embedded.rs` and `plugin/build-ui.ts`).
+//! Given a home directory and the daemon's pairing token, write
+//! `manifest.json`, `code.js`, and a `ui.html` with the real token injected
+//! in place of the `__TURBOFIG_PAIRING_TOKEN__` placeholder the embedded
+//! build carries (see `embedded.rs` and `plugin/build-ui.ts`). The daemon's
+//! own startup (`main.rs`'s `run_daemon`) calls this, not a separate
+//! install-time command.
 
 use crate::embedded::embedded_plugin;
 use std::collections::hash_map::DefaultHasher;
@@ -75,7 +76,7 @@ pub fn write_plugin_files(home: &Path, token: &str) -> io::Result<PathBuf> {
 /// than the ones given, or incomplete: a missing `dist/code.js` or
 /// `dist/ui.html`, or a leftover root-level `code.js`/`ui.html` from an old
 /// daemon version that wrote them there instead of under `dist/`. A caller
-/// (the future `turbofig setup`) uses this to decide whether to call
+/// (the daemon's own startup) uses this to decide whether to call
 /// `write_plugin_files` again, so a plugin reload is only needed after a real
 /// daemon upgrade, a token rotation, or a layout the marker alone cannot see.
 pub fn plugin_files_outdated(home: &Path, token: &str) -> bool {

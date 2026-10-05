@@ -1,7 +1,7 @@
-//! launchd integration for `turbofig setup`/`uninstall`: the stable binary
-//! path rule, the `eu.lukehawkins.turbofig.plist` contents, and a seam over
-//! `launchctl` so tests never touch the real LaunchAgents directory or the
-//! real user's `gui/<uid>` session.
+//! launchd integration for `turbofig autostart`/`uninstall`: the stable
+//! binary path rule, the `eu.lukehawkins.turbofig.plist` contents, and a
+//! seam over `launchctl` so tests never touch the real LaunchAgents
+//! directory or the real user's `gui/<uid>` session.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -39,7 +39,7 @@ pub fn stable_binary_path(canonical_current_exe: &Path) -> PathBuf {
 
 /// Returns true when `canonical_current_exe` resolves inside a Homebrew
 /// Cellar for this package (the same marker `stable_binary_path` matches).
-/// `setup` uses this to warn when the binary it is about to pin into the
+/// `autostart on` uses this to warn when the binary it is about to pin into the
 /// plist is not a Homebrew install (for example `target/release/turbofig`
 /// from a source checkout): that path breaks the service the moment the
 /// build directory moves or is cleaned.
@@ -67,8 +67,8 @@ fn xml_escape(s: &str) -> String {
 /// `StandardOutPath` and `StandardErrorPath`. Sets `RunAtLoad` and
 /// `KeepAlive` true, and `TURBOFIG_SUPERVISED=1` plus every pair in
 /// `extra_env` in `EnvironmentVariables`, so a `TURBOFIG_*` override set at
-/// `setup` time (bridge dir, ports, timeout) also applies to the launchd
-/// daemon, not only to the one-off `setup` process. `extra_env` entries are
+/// `autostart on` time (bridge dir, ports, timeout) also applies to the
+/// launchd daemon, not only to the one-off `autostart on` process. `extra_env` entries are
 /// written in the given order; both keys and values are XML-escaped.
 pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, String)]) -> String {
     let program = xml_escape(&program.to_string_lossy());
@@ -115,31 +115,31 @@ pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, Str
 /// `TURBOFIG_*` variables that name a filesystem path. A value copied into
 /// the launchd plist verbatim must be made absolute first: launchd runs the
 /// daemon with its working directory at `/`, so a relative value here would
-/// resolve somewhere else than the `setup`-time user intended.
+/// resolve somewhere else than the `autostart on`-time user intended.
 const PATH_VALUED_VARS: &[&str] = &["TURBOFIG_BRIDGE_DIR"];
 
 /// Collects every `TURBOFIG_*` environment variable set in the current
 /// process, except `TURBOFIG_SUPERVISED` (the daemon sets its own) and
-/// `TURBOFIG_LAUNCH_AGENTS_DIR` (a `setup`-only seam, never read by the
-/// daemon). Used to carry a `setup`-time override (bridge dir, ports,
+/// `TURBOFIG_LAUNCH_AGENTS_DIR` (an `autostart`-only seam, never read by the
+/// daemon). Used to carry an `autostart on`-time override (bridge dir, ports,
 /// timeout) into the launchd plist so the daemon sees the same values.
 ///
 /// Uses `std::env::vars_os` rather than `std::env::vars`: the latter panics
 /// on any non-UTF-8 environment variable anywhere in the process
 /// environment, not only a `TURBOFIG_*` one, so a single unrelated
 /// non-UTF-8-valued variable (not uncommon on a real machine) would crash
-/// `turbofig setup` entirely. A non-UTF-8 `TURBOFIG_*` key or value is
+/// `turbofig autostart on` entirely. A non-UTF-8 `TURBOFIG_*` key or value is
 /// skipped with a warning instead: the daemon could not read it as a path or
 /// port either.
 ///
 /// A path-valued variable (`PATH_VALUED_VARS`) is made absolute, resolved
-/// against the current working directory at `setup` time, before being
+/// against the current working directory at `autostart on` time, before being
 /// carried into the plist: launchd runs the daemon with cwd `/`, so a
-/// relative `TURBOFIG_BRIDGE_DIR` set at `setup` time would otherwise resolve
+/// relative `TURBOFIG_BRIDGE_DIR` set at `autostart on` time would otherwise resolve
 /// to a different directory once the service is actually running.
 pub fn carry_over_turbofig_env() -> Vec<(String, String)> {
-    let setup_cwd = std::env::current_dir().ok();
-    carry_over_turbofig_env_from(std::env::vars_os(), setup_cwd.as_deref())
+    let autostart_cwd = std::env::current_dir().ok();
+    carry_over_turbofig_env_from(std::env::vars_os(), autostart_cwd.as_deref())
 }
 
 /// The pure, testable half of `carry_over_turbofig_env`: filters, resolves,
@@ -160,7 +160,7 @@ fn carry_over_turbofig_env_from(
             }
             let Some(value) = value.to_str() else {
                 eprintln!(
-                    "turbofig setup: skipping {key}: its value is not valid UTF-8, so it cannot \
+                    "turbofig autostart: skipping {key}: its value is not valid UTF-8, so it cannot \
                      be carried into the launchd plist"
                 );
                 return None;
@@ -191,7 +191,7 @@ fn absolutize(value: &str, cwd: Option<&Path>) -> String {
     }
 }
 
-/// Seam over the two `launchctl` subcommands `setup`/`uninstall` need.
+/// Seam over the two `launchctl` subcommands `autostart on`/`autostart off` need.
 /// `RealLaunchctl` shells out for real; tests use a fake that records calls
 /// instead of touching the real user's `gui/<uid>` session.
 pub trait Launchctl {
@@ -206,14 +206,14 @@ pub trait Launchctl {
 }
 
 /// The real `launchctl`-shelling implementation. Used only by the `turbofig`
-/// binary's `setup`/`uninstall` commands, never by a test.
+/// binary's `autostart`/`uninstall` commands, never by a test.
 pub struct RealLaunchctl;
 
 impl Launchctl for RealLaunchctl {
     fn bootout(&self, service_target: &str) {
         // Ignore the exit status: "service is not loaded" is the common and
-        // expected case (first-ever setup, or a prior crash that already
-        // unloaded it), not a failure worth reporting.
+        // expected case (first-ever `autostart on`, or a prior crash that
+        // already unloaded it), not a failure worth reporting.
         let _ = std::process::Command::new("launchctl")
             .args(["bootout", service_target])
             .status();
@@ -246,7 +246,7 @@ pub fn domain_target(uid: &str) -> String {
 }
 
 /// Runs `id -u` to get the current user's numeric uid, trimmed.
-/// Only `setup`/`uninstall` call this; it is never needed by a test, which
+/// Only `autostart`/`uninstall` call this; it is never needed by a test, which
 /// passes its own fixed uid string to the pure functions above.
 pub fn current_uid() -> io::Result<String> {
     let out = std::process::Command::new("id").arg("-u").output()?;

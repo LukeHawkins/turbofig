@@ -1,16 +1,14 @@
 //! The `turbofig` CLI: argument parsing (`clap`) and the pure/testable
-//! halves of `setup`, `uninstall`, and `status`. `main.rs` wires these to
-//! the real filesystem, `launchctl`, and HTTP client; tests use the seams
-//! here (`Launchctl`, explicit `home`/`launch_agents_dir`/`uid` arguments)
-//! instead.
+//! halves of `autostart on`/`autostart off`/`uninstall`/`status`. `main.rs`
+//! wires these to the real filesystem, `launchctl`, and HTTP client; tests
+//! use the seams here (`Launchctl`, explicit `home`/`launch_agents_dir`/`uid`
+//! arguments) instead.
 
 use crate::launchd::{
     carry_over_turbofig_env, domain_target, is_in_homebrew_cellar, plist_contents, plist_file_name,
     service_target, stable_binary_path, Launchctl,
 };
-use crate::plugin_files::write_plugin_files;
-use crate::token::ensure_token;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -36,10 +34,19 @@ pub struct Cli {
 pub enum Command {
     /// Run the daemon in the foreground. Same as no subcommand.
     Serve,
-    /// Install the pairing token, the Figma plugin files, and the launchd
-    /// service, then load it so the daemon starts now and on every login.
-    Setup,
-    /// Unload the launchd service and remove its plist.
+    /// Start the daemon detached in the background, if it is not already
+    /// running.
+    Start,
+    /// Stop the running daemon.
+    Stop,
+    /// Query the running daemon's `/health` endpoint.
+    Status,
+    /// Turn the launchd autostart service on or off.
+    Autostart {
+        #[arg(value_enum)]
+        state: AutostartState,
+    },
+    /// Stop the daemon, turn autostart off, and remove its plist.
     Uninstall {
         /// Also delete the turbofig entries in the home directory (token,
         /// plugin files, bridge inbox/outbox, log), then the directory
@@ -48,21 +55,24 @@ pub enum Command {
         #[arg(long)]
         purge: bool,
     },
-    /// Query the running daemon's `/health` endpoint.
-    Status,
     /// Run a stdio MCP server that forwards every tool call onto the
     /// daemon's `POST /job`, starting the daemon if it is not reachable.
     Mcp,
 }
 
-/// Result of a successful `run_setup` call.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutostartState {
+    On,
+    Off,
+}
+
+/// Result of a successful `run_autostart_on` call.
 #[derive(Debug, PartialEq, Eq)]
-pub struct SetupOutcome {
-    pub manifest_path: PathBuf,
+pub struct AutostartOnOutcome {
     pub plist_path: PathBuf,
     /// Names of the `TURBOFIG_*` environment variables that were set at
-    /// `setup` time and carried into the plist's `EnvironmentVariables`, in
-    /// the order written. Empty when none were set.
+    /// `autostart on` time and carried into the plist's `EnvironmentVariables`,
+    /// in the order written. Empty when none were set.
     pub carried_over_env: Vec<String>,
     /// True when the binary pinned into the plist is not inside a Homebrew
     /// Cellar (a source checkout's `target/release` or `target/debug`). The
@@ -70,41 +80,43 @@ pub struct SetupOutcome {
     pub binary_outside_homebrew_cellar: bool,
 }
 
-/// Runs the full, idempotent setup sequence: ensure the pairing token,
-/// write the embedded plugin out to `<home>/figma-plugin/`, write the
-/// launchd plist, then `bootout` (ignoring "not loaded") and `bootstrap` it.
+/// Turns the launchd autostart service on: writes the plist pinning the
+/// stable binary path (so a `brew upgrade` never invalidates it), then
+/// `bootout`s (ignoring "not loaded") and `bootstrap`s it so the daemon
+/// starts now and on every login.
 ///
-/// Every step is idempotent: `ensure_token` never overwrites an existing
-/// token, `write_plugin_files` always overwrites with the same embedded
-/// content plus the current token, the plist is byte-identical across runs
-/// given the same binary path and home, and a `bootout` then `bootstrap`
-/// pair gives the same end state whether or not the service was already
-/// loaded. Running `turbofig setup` twice in a row is always safe.
-pub fn run_setup(
-    home: &Path,
+/// Writes no token, no plugin files: the daemon writes those itself on its
+/// own startup (`run_daemon` in `main.rs`), whether it was started by
+/// launchd, `turbofig start`, or `turbofig serve` directly. This only ever
+/// touches the plist.
+///
+/// Idempotent: the plist is byte-identical across runs given the same
+/// binary path and home, and a `bootout` then `bootstrap` pair gives the
+/// same end state whether or not the service was already loaded. Running
+/// `turbofig autostart on` twice in a row is always safe.
+pub fn run_autostart_on(
     launch_agents_dir: &Path,
     launchctl: &dyn Launchctl,
     uid: &str,
     current_exe: &Path,
-) -> io::Result<SetupOutcome> {
-    run_setup_with_sleep(home, launch_agents_dir, launchctl, uid, current_exe, &|d| {
+    home: &Path,
+) -> io::Result<AutostartOnOutcome> {
+    run_autostart_on_with_sleep(launch_agents_dir, launchctl, uid, current_exe, home, &|d| {
         std::thread::sleep(d)
     })
 }
 
-/// The testable half of `run_setup`: takes an explicit `sleep` so a test can
-/// pass a no-op and exercise `bootstrap`'s retry loop without a real wait.
-fn run_setup_with_sleep(
-    home: &Path,
+/// The testable half of `run_autostart_on`: takes an explicit `sleep` so a
+/// test can pass a no-op and exercise `bootstrap`'s retry loop without a
+/// real wait.
+fn run_autostart_on_with_sleep(
     launch_agents_dir: &Path,
     launchctl: &dyn Launchctl,
     uid: &str,
     current_exe: &Path,
+    home: &Path,
     sleep: &dyn Fn(Duration),
-) -> io::Result<SetupOutcome> {
-    let token = ensure_token(home)?;
-    let manifest_path = write_plugin_files(home, &token)?;
-
+) -> io::Result<AutostartOnOutcome> {
     std::fs::create_dir_all(launch_agents_dir)?;
     let canonical_exe = current_exe
         .canonicalize()
@@ -118,16 +130,15 @@ fn run_setup_with_sleep(
     launchctl.bootout(&service_target(uid));
     bootstrap_with_retry(launchctl, &domain_target(uid), &plist_path, sleep)?;
 
-    Ok(SetupOutcome {
-        manifest_path,
+    Ok(AutostartOnOutcome {
         plist_path,
         carried_over_env: extra_env.into_iter().map(|(key, _)| key).collect(),
         binary_outside_homebrew_cellar: !is_in_homebrew_cellar(&canonical_exe),
     })
 }
 
-/// Message printed after `setup` when the pinned binary is not inside a
-/// Homebrew Cellar. Empty when it is (the common case: a real install).
+/// Message printed after `autostart on` when the pinned binary is not inside
+/// a Homebrew Cellar. Empty when it is (the common case: a real install).
 pub fn non_cellar_binary_warning(binary_outside_homebrew_cellar: bool) -> String {
     if !binary_outside_homebrew_cellar {
         return String::new();
@@ -145,7 +156,7 @@ const BOOTSTRAP_MAX_ATTEMPTS: u32 = 5;
 /// with a short backoff between attempts. `bootstrap` right after `bootout`
 /// often fails on macOS with "Bootstrap failed: 5" while the old service
 /// instance is still shutting down; retrying a few times usually succeeds
-/// without the user having to re-run `setup` themselves.
+/// without the user having to re-run `autostart on` themselves.
 fn bootstrap_with_retry(
     launchctl: &dyn Launchctl,
     domain_target: &str,
@@ -165,9 +176,9 @@ fn bootstrap_with_retry(
     }
 }
 
-/// Message printed after `setup` when 1 or more `TURBOFIG_*` variables were
-/// carried from the `setup` process's own environment into the plist. Empty
-/// when `carried_over_env` is empty.
+/// Message printed after `autostart on` when 1 or more `TURBOFIG_*`
+/// variables were carried from the process's own environment into the
+/// plist. Empty when `carried_over_env` is empty.
 pub fn carried_over_env_message(carried_over_env: &[String]) -> String {
     if carried_over_env.is_empty() {
         return String::new();
@@ -178,18 +189,30 @@ pub fn carried_over_env_message(carried_over_env: &[String]) -> String {
     )
 }
 
-/// The exact 3 numbered steps plus the 1 optional MCP line `setup` prints.
+/// Message printed when `autostart on` installs and starts the service.
+pub fn autostart_on_message(plist_path: &Path) -> String {
+    format!("turbofig: autostart on (plist: {})", plist_path.display())
+}
+
+/// Message printed when `autostart off` unloads the service and removes the
+/// plist.
+pub fn autostart_off_message(plist_path: &Path) -> String {
+    format!("turbofig: autostart off (removed {})", plist_path.display())
+}
+
+/// The exact 3 numbered steps plus the 1 optional MCP line the no-arg first
+/// run prints (moved here from the retired `setup` command; wired up by a
+/// later step).
 ///
 /// `mcp_port` is the real port the daemon's MCP endpoint listens on
 /// (`TURBOFIG_MCP_PORT`-overridable), not a hardcoded default: a custom
 /// port must show up here too, or the printed command connects to nothing.
 ///
-/// `clipboard_copied` is whether `setup` already best-effort copied
-/// `manifest_path` to the clipboard (see `main.rs`'s `copy_to_clipboard`):
-/// Figma's file picker hides `~/.turbofig`, so a copy-pasteable path is the
-/// practical way in. When true, an unnumbered hint line is added after step
-/// 1, pointing at Figma's "go to folder" shortcut; this never changes the
-/// count of numbered steps.
+/// `clipboard_copied` is whether the caller already best-effort copied
+/// `manifest_path` to the clipboard: Figma's file picker hides `~/.turbofig`,
+/// so a copy-pasteable path is the practical way in. When true, an
+/// unnumbered hint line is added after step 1, pointing at Figma's "go to
+/// folder" shortcut; this never changes the count of numbered steps.
 pub fn setup_steps_text(manifest_path: &Path, mcp_port: u16, clipboard_copied: bool) -> String {
     let clipboard_hint = if clipboard_copied {
         "   (Figma's file picker hides ~/.turbofig: press Cmd+Shift+G, paste the path \
@@ -215,10 +238,33 @@ pub struct UninstallOutcome {
     pub purged: bool,
 }
 
-/// Unloads the launchd service and removes its plist. With `purge`, also
-/// deletes the known turbofig entries inside `home` (see `purge_home`). A
-/// missing plist or a missing `home` is not an error: uninstall is
-/// idempotent too.
+/// Turns autostart off: unloads the launchd service and removes its plist.
+/// A missing plist is not an error: this is idempotent too. Returns the
+/// plist path removed (or that would have been removed).
+pub fn run_autostart_off(
+    launch_agents_dir: &Path,
+    launchctl: &dyn Launchctl,
+    uid: &str,
+) -> io::Result<PathBuf> {
+    launchctl.bootout(&service_target(uid));
+    let plist_path = launch_agents_dir.join(plist_file_name());
+    ignore_not_found(std::fs::remove_file(&plist_path))?;
+    Ok(plist_path)
+}
+
+/// Returns true when the autostart plist exists, i.e. `autostart on` has
+/// been run (whether or not launchd currently has it loaded). Used only to
+/// decide whether `turbofig stop` prints a hint that launchd will restart
+/// the daemon it just stopped.
+pub fn autostart_plist_exists(launch_agents_dir: &Path) -> bool {
+    launch_agents_dir.join(plist_file_name()).exists()
+}
+
+/// Turns autostart off (see `run_autostart_off`), then, with `purge`, also
+/// deletes the known turbofig entries inside `home` (see `purge_home`).
+/// Stopping the running daemon itself is the caller's job (`main.rs`'s
+/// `cmd_uninstall`): this function only ever touches the plist and the
+/// home directory, never the network.
 pub fn run_uninstall(
     home: &Path,
     launch_agents_dir: &Path,
@@ -226,10 +272,7 @@ pub fn run_uninstall(
     uid: &str,
     purge: bool,
 ) -> io::Result<UninstallOutcome> {
-    launchctl.bootout(&service_target(uid));
-
-    let plist_path = launch_agents_dir.join(plist_file_name());
-    ignore_not_found(std::fs::remove_file(&plist_path))?;
+    run_autostart_off(launch_agents_dir, launchctl, uid)?;
 
     if purge {
         purge_home(home)?;
@@ -336,8 +379,39 @@ pub fn format_health(body: &serde_json::Value) -> String {
 /// Message printed when the daemon cannot be reached on `mcp_port`.
 pub fn status_unreachable_message(mcp_port: u16) -> String {
     format!(
-        "turbofig: could not reach the daemon on port {mcp_port}.\nRun `turbofig setup` to install and start it."
+        "turbofig: could not reach the daemon on port {mcp_port}.\nRun `turbofig start` to start it."
     )
+}
+
+/// Message for `turbofig serve` (or `turbofig start`, or a stray second
+/// `serve`) finding a daemon already answering `/health` on this port.
+/// `serve` prints this and exits 1 before any other side effect (binding a
+/// port, touching the token); `start` prints the same text and exits 0.
+pub fn already_running_message(version: &str, mcp_port: u16) -> String {
+    format!("turbofig is already running (version {version}, port {mcp_port})")
+}
+
+/// Message `turbofig start` prints once it has confirmed the daemon it just
+/// started (or found already running) answers `/health`.
+pub fn started_message(version: &str, mcp_port: u16, ws_port: u16) -> String {
+    format!("turbofig: started (version {version}, MCP port {mcp_port}, WS port {ws_port})")
+}
+
+/// Message `turbofig stop` prints once the daemon has actually gone away.
+pub fn stopped_message() -> &'static str {
+    "turbofig: stopped the daemon"
+}
+
+/// Message `turbofig stop` prints when no daemon was reachable to stop
+/// (idempotent: this is success, not an error).
+pub fn stop_nothing_running_message() -> &'static str {
+    "turbofig: no daemon appears to be running"
+}
+
+/// Hint `turbofig stop` appends when the autostart plist is present:
+/// launchd's `KeepAlive` will restart the daemon this command just stopped.
+pub fn stop_autostart_restart_hint() -> &'static str {
+    "turbofig: autostart is on, so launchd will restart it. Run `turbofig autostart off` to stop that."
 }
 
 #[cfg(test)]
@@ -349,10 +423,11 @@ mod tests {
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// `run_setup` reads the real process environment for `TURBOFIG_*`
-    /// variables. Every test that touches one of those variables (directly,
-    /// or indirectly by calling `run_setup`) must hold this lock first, so
-    /// two such tests never race on shared global state.
+    /// `run_autostart_on` reads the real process environment for
+    /// `TURBOFIG_*` variables. Every test that touches one of those
+    /// variables (directly, or indirectly by calling `run_autostart_on`)
+    /// must hold this lock first, so two such tests never race on shared
+    /// global state.
     static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct FakeLaunchctl {
@@ -406,24 +481,25 @@ mod tests {
     }
 
     #[test]
-    fn run_setup_is_idempotent_across_two_runs() {
+    fn run_autostart_on_is_idempotent_across_two_runs() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home");
         let launch_agents_dir = unique_temp_dir("agents");
         let launchctl = FakeLaunchctl::new();
         let fake_exe = std::env::current_exe().expect("current_exe");
 
-        let first = run_setup(&home, &launch_agents_dir, &launchctl, "501", &fake_exe)
-            .expect("first setup");
-        let second = run_setup(&home, &launch_agents_dir, &launchctl, "501", &fake_exe)
-            .expect("second setup");
+        let first = run_autostart_on(&launch_agents_dir, &launchctl, "501", &fake_exe, &home)
+            .expect("first autostart on");
+        let second = run_autostart_on(&launch_agents_dir, &launchctl, "501", &fake_exe, &home)
+            .expect("second autostart on");
 
         assert_eq!(first, second);
-        assert!(home.join("token").exists());
-        assert!(home.join("figma-plugin/manifest.json").exists());
         assert!(launch_agents_dir
             .join("eu.lukehawkins.turbofig.plist")
             .exists());
+        // autostart on must never touch the home directory's own contents:
+        // the daemon's own startup owns the token and plugin files.
+        assert!(!home.join("token").exists());
         assert_eq!(
             *launchctl.calls.borrow(),
             vec![
@@ -449,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn run_setup_carries_a_turbofig_env_var_into_the_plist() {
+    fn run_autostart_on_carries_a_turbofig_env_var_into_the_plist() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-env-carry");
         let launch_agents_dir = unique_temp_dir("agents-env-carry");
@@ -463,14 +539,14 @@ mod tests {
             std::env::set_var("TURBOFIG_LAUNCH_AGENTS_DIR", "/should/not/appear");
         }
 
-        let outcome = run_setup(&home, &launch_agents_dir, &launchctl, "501", &fake_exe);
+        let outcome = run_autostart_on(&launch_agents_dir, &launchctl, "501", &fake_exe, &home);
 
         unsafe {
             std::env::remove_var("TURBOFIG_MCP_PORT");
             std::env::remove_var("TURBOFIG_LAUNCH_AGENTS_DIR");
         }
 
-        let outcome = outcome.expect("setup");
+        let outcome = outcome.expect("autostart on");
         assert_eq!(
             outcome.carried_over_env,
             vec!["TURBOFIG_MCP_PORT".to_owned()]
@@ -485,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn run_setup_retries_bootstrap_after_2_failures_with_no_real_wait() {
+    fn run_autostart_on_retries_bootstrap_after_2_failures_with_no_real_wait() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-bootstrap-retry");
         let launch_agents_dir = unique_temp_dir("agents-bootstrap-retry");
@@ -493,18 +569,18 @@ mod tests {
         let fake_exe = std::env::current_exe().expect("current_exe");
         let sleeps: RefCell<Vec<Duration>> = RefCell::new(Vec::new());
 
-        let outcome = run_setup_with_sleep(
-            &home,
+        let outcome = run_autostart_on_with_sleep(
             &launch_agents_dir,
             &launchctl,
             "501",
             &fake_exe,
+            &home,
             &|d| sleeps.borrow_mut().push(d),
         );
 
         assert!(
             outcome.is_ok(),
-            "setup must succeed once bootstrap stops failing"
+            "autostart on must succeed once bootstrap stops failing"
         );
         assert_eq!(
             sleeps.borrow().len(),
@@ -527,19 +603,19 @@ mod tests {
     }
 
     #[test]
-    fn run_setup_gives_up_after_the_max_bootstrap_attempts() {
+    fn run_autostart_on_gives_up_after_the_max_bootstrap_attempts() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-bootstrap-giveup");
         let launch_agents_dir = unique_temp_dir("agents-bootstrap-giveup");
         let launchctl = FakeLaunchctl::failing_bootstrap_times(BOOTSTRAP_MAX_ATTEMPTS);
         let fake_exe = std::env::current_exe().expect("current_exe");
 
-        let outcome = run_setup_with_sleep(
-            &home,
+        let outcome = run_autostart_on_with_sleep(
             &launch_agents_dir,
             &launchctl,
             "501",
             &fake_exe,
+            &home,
             &|_| {},
         );
 
@@ -576,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn run_setup_flags_a_dev_checkout_binary_as_outside_the_cellar() {
+    fn run_autostart_on_flags_a_dev_checkout_binary_as_outside_the_cellar() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-cellar-flag");
         let launch_agents_dir = unique_temp_dir("agents-cellar-flag");
@@ -585,8 +661,8 @@ mod tests {
         // Homebrew Cellar, so this exercises the true branch for free.
         let fake_exe = std::env::current_exe().expect("current_exe");
 
-        let outcome =
-            run_setup(&home, &launch_agents_dir, &launchctl, "501", &fake_exe).expect("setup");
+        let outcome = run_autostart_on(&launch_agents_dir, &launchctl, "501", &fake_exe, &home)
+            .expect("autostart on");
 
         assert!(outcome.binary_outside_homebrew_cellar);
 
@@ -631,6 +707,54 @@ mod tests {
         assert!(with.contains("1. In Figma Desktop"));
         assert!(with.contains("2. Run the turbofig plugin"));
         assert!(with.contains("3. Click the copy-prompt button"));
+    }
+
+    #[test]
+    fn run_autostart_off_removes_the_plist() {
+        let launch_agents_dir = unique_temp_dir("agents-autostart-off");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        std::fs::write(
+            launch_agents_dir.join("eu.lukehawkins.turbofig.plist"),
+            "placeholder",
+        )
+        .expect("write plist");
+        let launchctl = FakeLaunchctl::new();
+
+        let plist_path =
+            run_autostart_off(&launch_agents_dir, &launchctl, "501").expect("autostart off");
+
+        assert!(!plist_path.exists());
+        assert_eq!(
+            *launchctl.calls.borrow(),
+            vec!["bootout gui/501/eu.lukehawkins.turbofig".to_owned()]
+        );
+
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_autostart_off_is_a_no_op_when_no_plist_exists() {
+        let launch_agents_dir = unique_temp_dir("agents-autostart-off-missing");
+        let launchctl = FakeLaunchctl::new();
+
+        let outcome = run_autostart_off(&launch_agents_dir, &launchctl, "501");
+        assert!(outcome.is_ok());
+    }
+
+    #[test]
+    fn autostart_plist_exists_reflects_the_plist_file() {
+        let launch_agents_dir = unique_temp_dir("agents-plist-exists");
+        assert!(!autostart_plist_exists(&launch_agents_dir));
+
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        std::fs::write(
+            launch_agents_dir.join("eu.lukehawkins.turbofig.plist"),
+            "placeholder",
+        )
+        .expect("write plist");
+        assert!(autostart_plist_exists(&launch_agents_dir));
+
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 
     #[test]
@@ -757,9 +881,30 @@ mod tests {
     }
 
     #[test]
-    fn status_unreachable_message_names_the_port_and_suggests_setup() {
+    fn status_unreachable_message_names_the_port_and_suggests_start() {
         let msg = status_unreachable_message(18846);
         assert!(msg.contains("18846"));
-        assert!(msg.contains("turbofig setup"));
+        assert!(msg.contains("turbofig start"));
+    }
+
+    #[test]
+    fn already_running_message_names_the_version_and_port() {
+        let msg = already_running_message("1.2.3", 18846);
+        assert!(msg.contains("already running"));
+        assert!(msg.contains("1.2.3"));
+        assert!(msg.contains("18846"));
+    }
+
+    #[test]
+    fn started_message_names_the_version_and_both_ports() {
+        let msg = started_message("1.2.3", 18846, 18847);
+        assert!(msg.contains("1.2.3"));
+        assert!(msg.contains("18846"));
+        assert!(msg.contains("18847"));
+    }
+
+    #[test]
+    fn stop_autostart_restart_hint_names_the_off_command() {
+        assert!(stop_autostart_restart_hint().contains("turbofig autostart off"));
     }
 }
