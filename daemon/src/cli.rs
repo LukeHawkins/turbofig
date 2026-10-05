@@ -5,8 +5,8 @@
 //! instead.
 
 use crate::launchd::{
-    carry_over_turbofig_env, domain_target, plist_contents, plist_file_name, service_target,
-    stable_binary_path, Launchctl,
+    carry_over_turbofig_env, domain_target, is_in_homebrew_cellar, plist_contents, plist_file_name,
+    service_target, stable_binary_path, Launchctl,
 };
 use crate::plugin_files::write_plugin_files;
 use crate::token::ensure_token;
@@ -61,6 +61,10 @@ pub struct SetupOutcome {
     /// `setup` time and carried into the plist's `EnvironmentVariables`, in
     /// the order written. Empty when none were set.
     pub carried_over_env: Vec<String>,
+    /// True when the binary pinned into the plist is not inside a Homebrew
+    /// Cellar (a source checkout's `target/release` or `target/debug`). The
+    /// service breaks if that binary moves or is deleted.
+    pub binary_outside_homebrew_cellar: bool,
 }
 
 /// Runs the full, idempotent setup sequence: ensure the pairing token,
@@ -115,7 +119,20 @@ fn run_setup_with_sleep(
         manifest_path,
         plist_path,
         carried_over_env: extra_env.into_iter().map(|(key, _)| key).collect(),
+        binary_outside_homebrew_cellar: !is_in_homebrew_cellar(&canonical_exe),
     })
+}
+
+/// Message printed after `setup` when the pinned binary is not inside a
+/// Homebrew Cellar. Empty when it is (the common case: a real install).
+pub fn non_cellar_binary_warning(binary_outside_homebrew_cellar: bool) -> String {
+    if !binary_outside_homebrew_cellar {
+        return String::new();
+    }
+    "turbofig: warning: this binary is not a Homebrew install. The launchd \
+     service will break if it moves or is deleted. Run `brew install turbofig` \
+     for a stable install.\n"
+        .to_owned()
 }
 
 /// How many times to retry `launchctl bootstrap` after a failure.
@@ -518,6 +535,35 @@ mod tests {
     fn carried_over_env_message_names_the_carried_variables() {
         let msg = carried_over_env_message(&["TURBOFIG_MCP_PORT".to_owned()]);
         assert!(msg.contains("TURBOFIG_MCP_PORT"));
+    }
+
+    #[test]
+    fn non_cellar_binary_warning_is_empty_for_a_homebrew_install() {
+        assert_eq!(non_cellar_binary_warning(false), "");
+    }
+
+    #[test]
+    fn non_cellar_binary_warning_warns_for_a_dev_checkout_binary() {
+        let msg = non_cellar_binary_warning(true);
+        assert!(msg.contains("not a Homebrew install"));
+    }
+
+    #[test]
+    fn run_setup_flags_a_dev_checkout_binary_as_outside_the_cellar() {
+        let home = unique_temp_dir("home-cellar-flag");
+        let launch_agents_dir = unique_temp_dir("agents-cellar-flag");
+        let launchctl = FakeLaunchctl::new();
+        // The test binary runs from target/{debug,release}, never a real
+        // Homebrew Cellar, so this exercises the true branch for free.
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        let outcome =
+            run_setup(&home, &launch_agents_dir, &launchctl, "501", &fake_exe).expect("setup");
+
+        assert!(outcome.binary_outside_homebrew_cellar);
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 
     #[test]

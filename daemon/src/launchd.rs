@@ -37,6 +37,18 @@ pub fn stable_binary_path(canonical_current_exe: &Path) -> PathBuf {
     }
 }
 
+/// Returns true when `canonical_current_exe` resolves inside a Homebrew
+/// Cellar for this package (the same marker `stable_binary_path` matches).
+/// `setup` uses this to warn when the binary it is about to pin into the
+/// plist is not a Homebrew install (for example `target/release/turbofig`
+/// from a source checkout): that path breaks the service the moment the
+/// build directory moves or is cleaned.
+pub fn is_in_homebrew_cellar(canonical_current_exe: &Path) -> bool {
+    canonical_current_exe
+        .to_string_lossy()
+        .contains("/Cellar/turbofig/")
+}
+
 /// Escapes the four XML special characters a plist string value might
 /// contain (a path is the only untrusted-ish input here, but escape
 /// unconditionally rather than assume it is always clean).
@@ -218,6 +230,18 @@ mod tests {
     fn stable_binary_path_leaves_a_non_cellar_path_unchanged() {
         let path = PathBuf::from("/Users/dev/turbofig/target/release/turbofig");
         assert_eq!(stable_binary_path(&path), path);
+    }
+
+    #[test]
+    fn is_in_homebrew_cellar_is_true_for_a_cellar_path() {
+        let path = PathBuf::from("/opt/homebrew/Cellar/turbofig/1.2.3/bin/turbofig");
+        assert!(is_in_homebrew_cellar(&path));
+    }
+
+    #[test]
+    fn is_in_homebrew_cellar_is_false_for_a_dev_checkout_path() {
+        let path = PathBuf::from("/Users/dev/turbofig/target/release/turbofig");
+        assert!(!is_in_homebrew_cellar(&path));
     }
 
     #[test]

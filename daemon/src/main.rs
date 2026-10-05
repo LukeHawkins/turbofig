@@ -2,8 +2,8 @@ use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use turbofig::cli::{
-    carried_over_env_message, format_health, run_setup, run_uninstall, setup_steps_text,
-    status_unreachable_message, uninstall_kept_home_message, Cli, Command,
+    carried_over_env_message, format_health, non_cellar_binary_warning, run_setup, run_uninstall,
+    setup_steps_text, status_unreachable_message, uninstall_kept_home_message, Cli, Command,
 };
 use turbofig::launchd::{current_uid, RealLaunchctl};
 use turbofig::supervisor::{
@@ -87,6 +87,10 @@ fn cmd_setup() {
             println!(
                 "turbofig: installed and started (plist: {})",
                 outcome.plist_path.display()
+            );
+            print!(
+                "{}",
+                non_cellar_binary_warning(outcome.binary_outside_homebrew_cellar)
             );
             print!("{}", carried_over_env_message(&outcome.carried_over_env));
             print!("{}", setup_steps_text(&outcome.manifest_path));
