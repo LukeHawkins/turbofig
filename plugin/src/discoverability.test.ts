@@ -44,17 +44,17 @@ describe("mcp-config.json", () => {
     expect(servers["turbofig"]).toBeDefined();
   });
 
-  test("the turbofig entry URL contains port 18846", () => {
+  test("the turbofig entry runs the turbofig binary", () => {
     const servers = config["mcpServers"] as Record<string, unknown>;
     const entry = servers["turbofig"] as Record<string, unknown>;
-    const url = entry["url"] as string;
-    expect(url).toContain("18846");
+    const command = entry["command"] as string;
+    expect(command).toContain("turbofig");
   });
 
-  test("the turbofig entry URL contains the /mcp path", () => {
+  test("the turbofig entry args pass the mcp subcommand", () => {
     const servers = config["mcpServers"] as Record<string, unknown>;
     const entry = servers["turbofig"] as Record<string, unknown>;
-    const url = entry["url"] as string;
-    expect(url).toContain("/mcp");
+    const args = entry["args"] as string[];
+    expect(args).toContain("mcp");
   });
 });

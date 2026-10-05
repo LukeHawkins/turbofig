@@ -8,7 +8,7 @@ Drive the Turbofig daemon with local file writes and reads only. Use this path w
 - A managed policy blocks self-adding an MCP server.
 - You want a dialog-free path to the always-on daemon.
 
-The daemon must run. It watches the bridge folder and services each job over its WebSocket to the Figma plugin.
+The daemon must run. Run `turbofig start` if it is not already running. It watches the bridge folder and services each job over its WebSocket to the Figma plugin.
 
 ## Folders
 

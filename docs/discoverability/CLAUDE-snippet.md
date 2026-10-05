@@ -12,4 +12,6 @@ Example job: `{"op":"execute","fileKey":"<key>","code":"return figma.root.name;"
 
 ## MCP (fallback)
 
-Plain local HTTP on port 18846, not HTTPS. Use curl, never a web-fetch tool (it forces HTTPS and fails). `POST http://127.0.0.1:18846/mcp`. The four tools mirror the ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`, each with an optional `fileKey`.
+Claude Code: `claude mcp add turbofig -- turbofig mcp`. This starts a stdio MCP server that starts the daemon itself if it is not already running.
+
+If you cannot add an MCP server this way, the daemon also speaks plain local HTTP on port 18846, not HTTPS. Use curl, never a web-fetch tool (it forces HTTPS and fails). `POST http://127.0.0.1:18846/mcp`. The four tools mirror the ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`, each with an optional `fileKey`.
