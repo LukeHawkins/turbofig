@@ -3,6 +3,10 @@ name = "turbofig"
 version.workspace = true
 edition = "2021"
 rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "turbofig"

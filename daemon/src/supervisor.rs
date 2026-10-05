@@ -8,12 +8,22 @@
 //! separate from the real clock and path resolver, so both are unit
 //! testable without a real 30s wait or a real filesystem symlink.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// The file that `stable` points at right now. On a Homebrew install,
+/// `stable` is the `<prefix>/bin/turbofig` symlink, and its target is the
+/// versioned `Cellar` binary that `brew upgrade` swaps. Falls back to
+/// `stable` itself when it cannot be resolved (for example, mid-upgrade).
+pub fn installed_target(stable: &Path) -> PathBuf {
+    stable
+        .canonicalize()
+        .unwrap_or_else(|_| stable.to_path_buf())
+}
 
 /// Returns true when `current` differs from `baseline`, i.e. the stable
 /// binary path now resolves somewhere else than it did at daemon startup.
-pub fn upgrade_detected(baseline: &PathBuf, current: &PathBuf) -> bool {
+pub fn upgrade_detected(baseline: &Path, current: &Path) -> bool {
     baseline != current
 }
 
@@ -56,6 +66,32 @@ mod tests {
         let baseline = PathBuf::from("/opt/homebrew/bin/turbofig");
         let current = PathBuf::from("/opt/homebrew/Cellar/turbofig/1.2.4/bin/turbofig");
         assert!(upgrade_detected(&baseline, &current));
+    }
+
+    /// The wiring that the two tests above do not cover: the stable symlink
+    /// path stays the same across a `brew upgrade`, so only its resolved
+    /// target can reveal the upgrade.
+    #[cfg(unix)]
+    #[test]
+    fn installed_target_changes_when_the_stable_symlink_is_repointed() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let cellar = tmp.path().join("Cellar/turbofig");
+        let bin_dir = tmp.path().join("bin");
+        for version in ["0.1.0", "0.2.0"] {
+            let dir = cellar.join(version).join("bin");
+            std::fs::create_dir_all(&dir).expect("cellar dir");
+            std::fs::write(dir.join("turbofig"), b"").expect("binary");
+        }
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        let stable = bin_dir.join("turbofig");
+
+        std::os::unix::fs::symlink(cellar.join("0.1.0/bin/turbofig"), &stable).expect("link");
+        let baseline = installed_target(&stable);
+        assert!(!upgrade_detected(&baseline, &installed_target(&stable)));
+
+        std::fs::remove_file(&stable).expect("unlink");
+        std::os::unix::fs::symlink(cellar.join("0.2.0/bin/turbofig"), &stable).expect("relink");
+        assert!(upgrade_detected(&baseline, &installed_target(&stable)));
     }
 
     #[tokio::test]

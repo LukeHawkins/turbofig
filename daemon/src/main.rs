@@ -6,7 +6,7 @@ use turbofig::cli::{
     uninstall_kept_home_message, Cli, Command,
 };
 use turbofig::launchd::{current_uid, RealLaunchctl};
-use turbofig::supervisor::{upgrade_detected, wait_for_drain};
+use turbofig::supervisor::{installed_target, upgrade_detected, wait_for_drain};
 use turbofig::AppState;
 
 /// How often the supervised-restart loop checks whether the stable binary
@@ -32,12 +32,27 @@ fn launch_agents_dir() -> PathBuf {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    if cli.check_embedded {
+        cmd_check_embedded();
+    }
     match cli.command {
         None | Some(Command::Serve) => run_daemon().await,
         Some(Command::Setup) => cmd_setup(),
         Some(Command::Uninstall { purge }) => cmd_uninstall(purge),
         Some(Command::Status) => cmd_status().await,
     }
+}
+
+/// Release-pipeline check: exits 0 when this binary embeds the Figma plugin,
+/// 1 when it does not. `.github/workflows/release.yml` calls it on every
+/// built binary, so a release can never ship without the plugin.
+fn cmd_check_embedded() -> ! {
+    if turbofig::embedded_plugin().is_some() {
+        println!("turbofig: embedded Figma plugin present");
+        std::process::exit(0);
+    }
+    eprintln!("turbofig: this binary has no embedded Figma plugin (build plugin/ before cargo)");
+    std::process::exit(1);
 }
 
 fn cmd_setup() {
@@ -257,13 +272,16 @@ async fn run_daemon() {
 /// for in-flight jobs to finish, then exit 0 so launchd starts the new
 /// binary. Never returns.
 async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
-    let baseline = resolve_stable_path();
+    // The stable path (for example /opt/homebrew/bin/turbofig) never changes
+    // across an upgrade. Its resolved target (the versioned Cellar binary) does.
+    let stable = stable_path_for_running_binary();
+    let baseline = installed_target(&stable);
     let mut interval = tokio::time::interval(SUPERVISOR_CHECK_INTERVAL);
     interval.tick().await; // first tick fires immediately; consume it
 
     loop {
         interval.tick().await;
-        let current = resolve_stable_path();
+        let current = installed_target(&stable);
         if upgrade_detected(&baseline, &current) {
             println!(
                 "Turbofig daemon: detected an upgrade ({} -> {}); draining and restarting",
@@ -289,8 +307,10 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
     }
 }
 
-/// Resolves the stable binary path for the currently running process.
-fn resolve_stable_path() -> PathBuf {
+/// The stable binary path for the currently running process: the Homebrew
+/// `<prefix>/bin/turbofig` symlink when running from the Cellar, otherwise
+/// the running binary itself.
+fn stable_path_for_running_binary() -> PathBuf {
     let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
     let canonical = current_exe
         .canonicalize()

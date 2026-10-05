@@ -23,6 +23,11 @@ use std::path::{Path, PathBuf};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
+
+    /// Exit 0 if this binary embeds the Figma plugin, 1 if not. Used by the
+    /// release workflow; hidden from `--help`.
+    #[arg(long, hide = true)]
+    pub check_embedded: bool,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
