@@ -179,7 +179,7 @@ export function formatConnectPrompt(
 ): string {
   if (!fileKey) return "";
   const home = bridgeHome || DEFAULT_BRIDGE_HOME;
-  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ${home}/inbox/<unique-id>.json (id unique per job) → read ${home}/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
+  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ${home}/inbox/<unique-id>.json (id unique per job) → read ${home}/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. If no result file appears within a few seconds, run \`turbofig start\` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
 }
 
 /**

@@ -454,4 +454,10 @@ describe("formatConnectPrompt", () => {
     expect(result).toContain("~/.turbofig/inbox/");
     expect(result).toContain("~/.turbofig/outbox/");
   });
+
+  test("tells the agent to run turbofig start and retry if no result appears", () => {
+    const result = formatConnectPrompt("someKey", 18846);
+    expect(result).toContain("turbofig start");
+    expect(result).toContain("retry");
+  });
 });

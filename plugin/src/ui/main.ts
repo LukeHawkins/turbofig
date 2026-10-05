@@ -80,7 +80,7 @@ let hasConnectedOnce = false;
 
 const CONN_LABELS: Record<string, string> = {
   connected: "Connected to daemon",
-  offline: "No connection to daemon",
+  offline: "Daemon not running. Run `turbofig` in Terminal.",
   connecting: "Connecting...",
   reconnecting: "Reconnecting...",
 };
