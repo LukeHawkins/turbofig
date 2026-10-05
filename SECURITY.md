@@ -48,10 +48,11 @@ and what is a bug.
   reason (it tells the real Figma plugin apart from a malicious page that
   reports the same null Origin, see "Pairing token" below), not to stop
   another local process owned by the same user.
-- **The file-bridge directories are mode `0700`.** `~/.turbofig`, its
-  `inbox/`, and its `outbox/` are created and corrected to `0700` on every
-  daemon start, because job and result files can carry arbitrary eval code
-  and its output.
+- **The file-bridge directories are mode `0700`.** The default home
+  `~/.turbofig` is created and corrected to `0700` on every daemon start,
+  because job and result files can carry arbitrary eval code and its output.
+  A custom `TURBOFIG_BRIDGE_DIR` folder keeps whatever mode it already has;
+  only its `inbox/` and `outbox/` are created and corrected to `0700`.
 
 ## Pairing token
 
@@ -79,9 +80,9 @@ could otherwise open the socket and receive the AI's jobs.
   timing from a near-miss of the same length.
 - **To rotate it:** the daemon runs under launchd with `KeepAlive`, so you
   cannot just stop it; launchd restarts it right away. Delete
-  `~/.turbofig/token`, then run `turbofig setup`. `setup` restarts the
-  service, which generates a fresh token, and rewrites the plugin files with
-  it. Then reopen the plugin in Figma.
+  `~/.turbofig/token`, then run `turbofig setup`. `turbofig setup` generates
+  the fresh token, rewrites the plugin files with it, and restarts the
+  service. Then reopen the plugin in Figma.
 
 ## Data handling
 
