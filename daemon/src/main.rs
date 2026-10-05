@@ -55,12 +55,27 @@ async fn main() {
 /// 1 when it does not. `.github/workflows/release.yml` calls it on every
 /// built binary, so a release can never ship without the plugin.
 fn cmd_check_embedded() -> ! {
-    if turbofig::embedded_plugin().is_some() {
-        println!("turbofig: embedded Figma plugin present");
-        std::process::exit(0);
+    let Some(plugin) = turbofig::embedded_plugin() else {
+        eprintln!(
+            "turbofig: this binary has no embedded Figma plugin (build plugin/ before cargo)"
+        );
+        std::process::exit(1);
+    };
+
+    if !turbofig::ui_html_has_placeholder(plugin.ui_html) {
+        eprintln!(
+            "turbofig: embedded ui.html has no pairing-token placeholder; it may carry a real \
+             token baked in (see build.rs's normalize_ui_html)"
+        );
+        std::process::exit(1);
     }
-    eprintln!("turbofig: this binary has no embedded Figma plugin (build plugin/ before cargo)");
-    std::process::exit(1);
+    if turbofig::ui_html_contains_a_real_token(plugin.ui_html) {
+        eprintln!("turbofig: embedded ui.html appears to contain a real pairing token");
+        std::process::exit(1);
+    }
+
+    println!("turbofig: embedded Figma plugin present");
+    std::process::exit(0);
 }
 
 fn cmd_setup() {

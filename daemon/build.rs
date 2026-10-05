@@ -90,32 +90,45 @@ fn normalize_ui_html_file(ui_path: &Path, normalized_path: &Path) {
         .unwrap_or_else(|e| panic!("write {}: {e}", normalized_path.display()));
 }
 
-/// Pure text transform: finds the first `TOKEN_MARKER_START`/`_END` pair and
-/// replaces everything between them with `PLACEHOLDER_LITERAL`. Emits a
-/// `cargo:warning` and returns `contents` unchanged if the markers are
-/// missing (a `dist/ui.html` built by an older `build-ui.ts`): rebuild the
-/// plugin (`cd plugin && bun run build`) to regenerate it with markers.
+/// Pure text transform: finds every `TOKEN_MARKER_START`/`_END` pair and
+/// replaces everything between each pair with `PLACEHOLDER_LITERAL`. Panics
+/// (failing the build) if no pair is found, or if the result does not carry
+/// `PLACEHOLDER_LITERAL` at least once afterward: either way a real token
+/// could end up embedded in the binary verbatim, and `write_plugin_files`
+/// would have no placeholder left to inject the real token into. Rebuild the
+/// plugin (`cd plugin && bun run build`) to regenerate `dist/ui.html` with
+/// the markers the current `build-ui.ts` writes.
 fn normalize_ui_html(contents: &str) -> String {
-    let start = contents.find(TOKEN_MARKER_START);
-    let end = contents.find(TOKEN_MARKER_END);
-    match (start, end) {
-        (Some(start), Some(end)) if end > start => {
-            let inner_start = start + TOKEN_MARKER_START.len();
-            let mut out = String::with_capacity(contents.len());
-            out.push_str(&contents[..inner_start]);
-            out.push_str(PLACEHOLDER_LITERAL);
-            out.push_str(&contents[end..]);
-            out
-        }
-        _ => {
-            println!(
-                "cargo:warning=turbofig: dist/ui.html has no pairing-token markers; it may \
-                 embed a real token verbatim. Run `cd plugin && bun run build` to regenerate \
-                 it with the markers the current build-ui.ts writes."
-            );
-            contents.to_string()
+    let mut out = String::with_capacity(contents.len());
+    let mut rest = contents;
+    let mut pairs_replaced = 0u32;
+
+    loop {
+        match (rest.find(TOKEN_MARKER_START), rest.find(TOKEN_MARKER_END)) {
+            (Some(start), Some(end)) if end > start => {
+                let inner_start = start + TOKEN_MARKER_START.len();
+                out.push_str(&rest[..inner_start]);
+                out.push_str(PLACEHOLDER_LITERAL);
+                out.push_str(&rest[end..end + TOKEN_MARKER_END.len()]);
+                rest = &rest[end + TOKEN_MARKER_END.len()..];
+                pairs_replaced += 1;
+            }
+            _ => {
+                out.push_str(rest);
+                break;
+            }
         }
     }
+
+    if pairs_replaced == 0 || !out.contains(PLACEHOLDER_LITERAL) {
+        panic!(
+            "turbofig: dist/ui.html has no pairing-token markers; it may embed a real token \
+             verbatim. Run `cd plugin && bun run build` to regenerate it with the markers the \
+             current build-ui.ts writes."
+        );
+    }
+
+    out
 }
 
 /// Writes a stub that makes `embedded_plugin()` return `None`.
