@@ -2,7 +2,7 @@
 
 The always-on Figma design agent: blazing fast, token-light, never re-pair a plugin. One Rust daemon + a thin eval-first Figma plugin. An AI acts as a senior designer that builds real Figma work from a brief or a moodboard.
 
-**This file is the hub.** Read a branch only when the task needs it. Build order and tasks live in `PLAN.md`. The *why* behind choices lives in `DECISIONS.md`.
+**This file is the hub.** Read a branch only when the task needs it. The *why* behind choices lives in `DECISIONS.md`. The original phase plan is retired; see git history.
 
 ---
 
@@ -23,7 +23,7 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 ## Always-on rules
 
 - **STE.** Simplified Technical English in all prose. Active voice, short sentences, one idea each. No em dashes. No hedging.
-- **Commits.** One commit per PLAN.md item. Imperative message, no `feat:`/`chore:` prefixes. **Never** add Co-Authored-By, Signed-off-by, or any AI attribution. Author is the git config only (Luke Hawkins <hi@lukehawkins.eu>).
+- **Commits.** One logical change per commit, tests in the same commit. Imperative message, no `feat:`/`chore:` prefixes. **Never** add Co-Authored-By, Signed-off-by, or any AI attribution. Author is the git config only (Luke Hawkins <hi@lukehawkins.eu>).
 - **Verify before commit.** Rust: `cargo build` + `cargo test` + `cargo clippy`. TS: `bun run typecheck` + `bun test`. The `lint` script must pass.
 - **Tests with every change.** Every item that adds behaviour ships with tests in the same commit. Tests are never deferred to a later phase. Untested behaviour is not done.
 - **Read before you write.** Always read a file before modifying it.
@@ -46,7 +46,6 @@ Tool surface (locked, 4): `turbofig_execute`, `turbofig_get_selection`, `turbofi
 
 ## Branches (read on demand)
 
-- `PLAN.md`: phased build plan.
 - `DECISIONS.md`: the why behind big choices (eval-first, Rust, ports, distribution).
 - `ARCHITECTURE.md`: deeper architecture and data flow.
 - `STACK.md`: the exact stack and versions.

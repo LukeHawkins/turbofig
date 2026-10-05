@@ -4,147 +4,217 @@
     <source media="(prefers-color-scheme: light)" srcset="docs/wordmark-light.png">
     <img alt="turbofig wordmark" src="docs/wordmark-light.png" height="80">
   </picture>
+
+  <p>Bridge any AI to Figma.</p>
+
+  [![CI](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml/badge.svg)](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml)
+  [![Release](https://img.shields.io/github/v/release/LukeHawkins/turbofig)](https://github.com/LukeHawkins/turbofig/releases)
+  [![License: MIT](https://img.shields.io/github/license/LukeHawkins/turbofig)](LICENSE)
+  [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#)
 </div>
 
-Built to give AI full control of Figma with exceptional speed and token efficiency, powered by a Rust daemon. You spend less time waiting, and spend fewer tokens in the process.
-
-Free and open source. Works on every Figma account — free, paid, and enterprise. Installed locally as a development plugin, so it works even on locked-down corporate Figma accounts.
-
-Figma Desktop required. macOS. MIT licensed.
-
-![Demo: a brief becomes a full Figma page in minutes](docs/demo.gif)
-
 ---
 
-## Why
+Turbofig is a local, always-on daemon that lets any AI agent read and edit
+the Figma file open in Figma Desktop. It talks to a thin Figma plugin over
+a WebSocket and exposes 4 tools to the agent, including one tool that runs
+Figma Plugin API JavaScript directly. The daemon runs as a launchd service,
+so it keeps running after your agent session ends.
 
-- Read and write access to Figma from AI needs a non-native solution. The official Figma MCP is read-only.
-- The third-party solutions (`figma-console-mcp` and others) have real problems. They are slow, they are token-heavy, and the MCP handshake is frustrating to manage.
-- On enterprise Figma accounts, native MCP servers are blocked. You end up with a workaround anyway.
-- On enterprise machines, curl requests prompt for permission. The turbofig file-bridge avoids this. The AI only reads and writes files. It makes no network calls.
-- The result: turbofig is always on and always paired. No handshake. No re-pairing. No curl prompts.
+## Why turbofig
 
----
+- **4 tools, so a small schema.** All capability flows through
+  `turbofig_execute`. The tool surface is locked at 4 and never grows.
+- **A single binary with no Node runtime.** The daemon is one Rust binary.
+  It embeds the Figma plugin and writes it to disk on `turbofig setup`.
+- **No Figma access token.** Turbofig drives the file through the Figma
+  Plugin API, not the Figma web API, so it never needs a personal access
+  token.
+- **The daemon keeps running when an agent session ends.** It is a launchd
+  service with `KeepAlive`, decoupled from any one client session.
+- **The file bridge works where adding MCP servers is blocked by policy.**
+  An agent drives the daemon with file writes and reads only: no curl, no
+  MCP connection.
+- **Localhost only, with Origin checks and a pairing token.** Both ports
+  bind to `127.0.0.1`. See [Security](#security).
 
 ## Quickstart
-
-### 1. Start the daemon
-
-```bash
-cargo build --release
-./target/release/turbofig
-```
-
-To install turbofig and start the daemon at login, use Homebrew. This step is
-macOS only.
 
 ```bash
 brew install LukeHawkins/tap/turbofig
 turbofig setup
 ```
 
-### 2. Open the plugin in Figma Desktop
+`turbofig setup` installs the pairing token, writes the Figma plugin files,
+and starts the daemon at login. It then prints 3 steps:
 
-Use Figma Desktop, not the web app. In Figma: **Plugins → Development → Import plugin from manifest**. Select `plugin/manifest.json`. Open a file and run the plugin. The panel shows the connection status and the file key.
+1. In Figma Desktop: **Plugins > Development > Import plugin from
+   manifest**, then pick the printed manifest path. This menu item exists
+   only in Figma Desktop, not the web app.
+2. Run the turbofig plugin in a file.
+3. Click the copy-prompt button in the plugin and paste it into your AI
+   agent.
 
-### 3. Connect your AI
+## Connect your agent
 
-Click the copy button in the plugin panel. Paste the prompt into any AI with local file access. Claude Code is the example. That is it.
+**The file bridge (default).** Click the copy-prompt button in the plugin
+panel and paste the prompt into your agent. The agent then drives turbofig
+by writing a JSON job to `~/.turbofig/inbox` and reading the result from
+`~/.turbofig/outbox`. No curl, no MCP connection, no permission dialog. See
+`skills/file-bridge.md`.
 
-<details>
-<summary>Fallback: MCP server</summary>
+**Claude Code (MCP):**
 
-MCP is a fallback. It is heavier on tokens and it needs a network call. Add this to your MCP client config:
+```bash
+claude mcp add --transport http turbofig http://127.0.0.1:18846/mcp
+```
+
+**Any other MCP client that supports streamable HTTP:** point it at
+`http://127.0.0.1:18846/mcp`. For a client with an allowlisted native MCP
+config, merge this block (`docs/discoverability/mcp-config.json`):
 
 ```json
 {
   "mcpServers": {
     "turbofig": {
+      "type": "http",
       "url": "http://127.0.0.1:18846/mcp"
     }
   }
 }
 ```
 
-</details>
+## The 4 tools
 
-<details>
-<summary>Advanced: drive the file-bridge directly</summary>
+| Tool | What it does |
+|---|---|
+| `turbofig_execute` | Runs arbitrary Figma Plugin API JavaScript in the connected file and returns its result |
+| `turbofig_get_selection` | Returns the current selection as a compact, shaped object |
+| `turbofig_screenshot` | Exports a PNG of the file or a node, downscaled by default |
+| `turbofig_status` | Returns connection state for the daemon and the connected plugin |
 
-Write a job file to the inbox:
+Every tool accepts an optional `fileKey` to target one of several open
+files. Omit it to use the paired or sole connected file.
 
-```bash
-cat > ~/.turbofig/inbox/job-001.json << 'EOF'
-{
-  "op": "execute",
-  "js": "figma.createFrame(); 'done'"
-}
-EOF
+`turbofig_execute` example, matching the helper API in `helpers/tf-api.md`:
+
+```js
+await tf.loadFonts([{ family: "Inter", style: "Bold" }]);
+
+const card = tf.frame({
+  name: "Card",
+  direction: "VERTICAL",
+  gap: 12,
+  padding: 24,
+  fill: "#FFFFFF",
+});
+
+const heading = await tf.text({ text: "Card Title", size: 20, style: "Bold" });
+tf.append(card, heading);
+figma.currentPage.appendChild(card);
+tf.commit("card");
+return card.id;
 ```
-
-Read the result from the outbox:
-
-```bash
-cat ~/.turbofig/outbox/job-001.json
-```
-
-</details>
-
----
 
 ## How it works
 
 ![How turbofig works](docs/how-it-works.png)
 
-One Rust daemon process runs three servers: an HTTP MCP endpoint, a WebSocket server, and a file-bridge. The file-bridge is the primary path. The AI writes a job file and reads a result file, with no curl. The plugin holds a permanent WebSocket connection with automatic reconnect. One `execute` tool runs any Figma Plugin API JS, so one tool does the work of dozens.
+- The daemon is one Rust process. It runs the MCP HTTP endpoint, the
+  plugin WebSocket server, and the file bridge as three tasks sharing one
+  state.
+- The Figma plugin UI holds a persistent WebSocket to the daemon, with
+  infinite-backoff reconnect, so a plugin reopen re-pairs with no
+  handshake.
+- MCP HTTP (`POST /mcp`, port 18846) is the native-client path: a request
+  arrives over HTTP and the daemon forwards the call to the plugin.
+- The file bridge (`~/.turbofig/inbox` and `outbox`) is the default path
+  for a locked-down client: it writes a job file, the daemon's watcher
+  picks it up, and it reads the result file back.
+- The plugin WebSocket upgrade requires a per-install pairing token
+  (`~/.turbofig/token`), so a malicious web page cannot open the socket
+  even though it shares the plugin iframe's null Origin.
 
----
+## Commands
 
-## Tools
-
-| Tool | What it does |
+| Command | Does |
 |---|---|
-| `turbofig_execute` | Run arbitrary Figma Plugin API JS in the connected file |
-| `turbofig_get_selection` | Return the current selection as a compact shaped object |
-| `turbofig_screenshot` | Export a PNG of the file or a node (downscaled by default) |
-| `turbofig_status` | Return connection state |
+| `turbofig setup` | Installs the pairing token and plugin files, writes and loads the launchd service, prints the 3 connect steps |
+| `turbofig status` | Queries the running daemon's `/health` endpoint and prints a readable report |
+| `turbofig uninstall [--purge]` | Unloads the launchd service and removes its plist. With `--purge`, also removes `~/.turbofig` |
+| `turbofig serve` | Runs the daemon in the foreground. Same as no subcommand |
 
-All capability flows through `execute`. The tool surface is locked at four.
+**Updating:**
 
-Each tool accepts an optional `fileKey` to target one of several open files. Omit it to use the paired or sole connected file.
-
----
-
-## Architecture
-
-```
-plugin/
-  src/
-    code.ts          # Figma main thread — dispatch, eval, plugin API
-    ui/
-      ui-logic.ts    # Pure UI state and message handlers
-      main.ts        # Browser runtime
-    manifest.json
-daemon/
-  src/
-    main.rs          # MCP HTTP + WebSocket + file-bridge, one process
-helpers/
-  tf/                # tf.* craft namespace injected into every eval
-skills/
-  design.md          # Brief → plan → parallel builder subagents → QA → refine
+```bash
+brew upgrade turbofig
 ```
 
-Ports are a product contract, not a dev convention:
+The daemon detects the upgrade, drains in-flight jobs, and restarts itself.
+Reopen the plugin in Figma afterward so it picks up the refreshed plugin
+files.
 
-| Server | Default | Env var |
+## Configuration
+
+All settings are environment variables. Each falls back to its default on
+an absent, unparsable, or zero value.
+
+| Variable | Default | Purpose |
 |---|---|---|
-| HTTP MCP | `18846` | `TURBOFIG_MCP_PORT` |
-| WebSocket | `18847` | `TURBOFIG_WS_PORT` |
+| `TURBOFIG_MCP_PORT` | `18846` | HTTP MCP port |
+| `TURBOFIG_WS_PORT` | `18847` | Plugin WebSocket port |
+| `TURBOFIG_REQUEST_TIMEOUT_MS` | `30000` | Wait for a plugin reply before returning a timeout result. Clamped to `600000` |
+| `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge home: the pairing token, the plugin files, and the inbox/outbox |
 
-Other env vars: `TURBOFIG_REQUEST_TIMEOUT_MS` (default `30000`), `TURBOFIG_BRIDGE_DIR` (default `~/.turbofig`).
+## Security
 
----
+`turbofig_execute` runs arbitrary Figma Plugin API JavaScript by design.
+Any client that can call this tool has full script access to the open
+Figma file. Both ports bind to `127.0.0.1` only. The HTTP MCP port rejects
+any request carrying an `Origin` header; the WebSocket port accepts only a
+null or missing `Origin` and requires a pairing token on the upgrade. See
+[SECURITY.md](SECURITY.md) for the full threat model and how to report a
+vulnerability.
+
+## Troubleshooting
+
+- **The plugin panel shows disconnected.** Run `turbofig status` to check
+  the daemon is up. If it is not, run `turbofig setup` again.
+- **"Import plugin from manifest" is missing from the Plugins menu.** Use
+  Figma Desktop, not the Figma web app. The menu item does not exist there.
+- **A port is already in use.** Set `TURBOFIG_MCP_PORT` or
+  `TURBOFIG_WS_PORT` to a free port and restart the daemon.
+- **MCP is blocked on a managed machine.** Use the file bridge instead:
+  click the copy-prompt button in the plugin panel, or read
+  `skills/file-bridge.md` directly.
+- **The panel or `turbofig status` warns of a version mismatch.** The
+  daemon upgraded but the plugin in Figma has not reloaded. Reopen the
+  turbofig plugin in Figma.
+
+## Roadmap
+
+- Positioning and docs: a clear comparison against other Figma MCP options.
+- A screencast of a brief becoming a full Figma page.
+- Wider platform support: Linux and Windows builds, `cargo install`, and a
+  `curl | sh` installer.
+- An auto-update nudge on daemon startup.
+- A community-safe command vocabulary alongside the eval-first tool.
+- CI benchmark regression guard, gating on token and speed budgets.
+
+## Benchmarks
+
+A reproducible benchmark harness lives in [`bench/`](bench/README.md). It
+measures exact wire bytes and real Claude Code token counts, never an
+estimate.
+
+<!-- BENCHMARK RESULTS: add measured numbers here after the first public run -->
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and the PR
+process, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for the project's
+code of conduct.
 
 ## License
 
-MIT. See LICENSE.
+MIT. See [LICENSE](LICENSE).
