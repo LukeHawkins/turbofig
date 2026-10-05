@@ -50,7 +50,9 @@ and starts the daemon at login. It then prints 3 steps:
 
 1. In Figma Desktop: **Plugins > Development > Import plugin from
    manifest**, then pick the printed manifest path. This menu item exists
-   only in Figma Desktop, not the web app.
+   only in Figma Desktop, not the web app. Figma's file picker hides
+   `~/.turbofig` by default. `turbofig setup` puts the manifest path on
+   your clipboard, so press Cmd+Shift+G in the picker and paste it in.
 2. Run the turbofig plugin in a file.
 3. Click the copy-prompt button in the plugin and paste it into your AI
    agent.
@@ -141,7 +143,7 @@ return card.id;
 |---|---|
 | `turbofig setup` | Installs the pairing token and plugin files, writes and loads the launchd service, prints the 3 connect steps |
 | `turbofig status` | Queries the running daemon's `/health` endpoint and prints a readable report |
-| `turbofig uninstall [--purge]` | Unloads the launchd service and removes its plist. With `--purge`, also removes `~/.turbofig` |
+| `turbofig uninstall [--purge]` | Unloads the launchd service and removes its plist. With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
 | `turbofig serve` | Runs the daemon in the foreground. Same as no subcommand |
 
 **Updating:**
@@ -154,6 +156,9 @@ The daemon detects the upgrade, drains in-flight jobs, and restarts itself.
 Reopen the plugin in Figma afterward so it picks up the refreshed plugin
 files.
 
+**Uninstalling:** run `turbofig uninstall` before `brew uninstall turbofig`,
+so the launchd service is unloaded first.
+
 ## Configuration
 
 All settings are environment variables. Each falls back to its default on
@@ -165,6 +170,10 @@ an absent, unparsable, or zero value.
 | `TURBOFIG_WS_PORT` | `18847` | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | `30000` | Wait for a plugin reply before returning a timeout result. Clamped to `600000` |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge home: the pairing token, the plugin files, and the inbox/outbox |
+
+`turbofig setup` copies the env vars set at that time into the launchd
+service. To change a setting for the background service, set it and run
+`turbofig setup` again.
 
 ## Security
 
