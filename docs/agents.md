@@ -42,13 +42,18 @@ Full protocol and job and result shapes: `skills/file-bridge.md`.
 
 Use this only when the file bridge is not available. If you can add an MCP
 server that runs as a child process over stdio, run `turbofig mcp` that
-way (this starts the daemon itself, if it is not already running). If you
-can only speak HTTP, the daemon serves plain local HTTP on port 18846, not
-HTTPS. Use `curl`, never a web-fetch tool: a web-fetch tool forces HTTPS
-and fails against a plain HTTP port.
+way (this starts the daemon itself, if it is not already running, and
+reads the pairing token itself). If you can only speak HTTP, the daemon
+serves plain local HTTP on port 18846, not HTTPS. Use `curl`, never a
+web-fetch tool: a web-fetch tool forces HTTPS and fails against a plain
+HTTP port. `/mcp` requires the pairing token (`~/.turbofig/token`) as a
+Bearer auth header:
 
 ```bash
-curl -X POST http://127.0.0.1:18846/mcp -H "Content-Type: application/json" -d '...'
+curl -X POST http://127.0.0.1:18846/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat ~/.turbofig/token)" \
+  -d '...'
 ```
 
 The 4 tools mirror the file-bridge ops: `turbofig_execute`,
