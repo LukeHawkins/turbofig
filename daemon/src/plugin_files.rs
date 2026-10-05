@@ -71,15 +71,24 @@ pub fn write_plugin_files(home: &Path, token: &str) -> io::Result<PathBuf> {
 }
 
 /// Returns true when the plugin files at `<home>/figma-plugin/` are missing,
-/// unreadable, or stamped with a different daemon version or a different
-/// token than the ones given. A caller (the future `turbofig setup`) uses
-/// this to decide whether to call `write_plugin_files` again, so a plugin
-/// reload is only needed after a real daemon upgrade or a token rotation.
+/// unreadable, stamped with a different daemon version or a different token
+/// than the ones given, or incomplete: a missing `dist/code.js` or
+/// `dist/ui.html`, or a leftover root-level `code.js`/`ui.html` from an old
+/// daemon version that wrote them there instead of under `dist/`. A caller
+/// (the future `turbofig setup`) uses this to decide whether to call
+/// `write_plugin_files` again, so a plugin reload is only needed after a real
+/// daemon upgrade, a token rotation, or a layout the marker alone cannot see.
 pub fn plugin_files_outdated(home: &Path, token: &str) -> bool {
-    let marker_path = home.join("figma-plugin").join(MARKER_FILE);
+    let dir = home.join("figma-plugin");
+    let marker_path = dir.join(MARKER_FILE);
     match std::fs::read_to_string(&marker_path) {
-        Ok(contents) => contents != marker_contents(token),
-        Err(_) => true,
+        Ok(contents) if contents == marker_contents(token) => {
+            !dir.join("dist/code.js").exists()
+                || !dir.join("dist/ui.html").exists()
+                || dir.join("code.js").exists()
+                || dir.join("ui.html").exists()
+        }
+        _ => true,
     }
 }
 
@@ -245,6 +254,54 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_plugin_files(tmp.path(), "tok-a").expect("write_plugin_files");
         assert!(plugin_files_outdated(tmp.path(), "tok-b"));
+    }
+
+    #[test]
+    fn plugin_files_outdated_is_true_when_dist_code_js_is_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_plugin_files(tmp.path(), "tok").expect("write_plugin_files");
+        std::fs::remove_file(tmp.path().join("figma-plugin/dist/code.js"))
+            .expect("remove dist/code.js");
+        assert!(
+            plugin_files_outdated(tmp.path(), "tok"),
+            "a missing dist/code.js must count as outdated even with a matching marker"
+        );
+    }
+
+    #[test]
+    fn plugin_files_outdated_is_true_when_dist_ui_html_is_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_plugin_files(tmp.path(), "tok").expect("write_plugin_files");
+        std::fs::remove_file(tmp.path().join("figma-plugin/dist/ui.html"))
+            .expect("remove dist/ui.html");
+        assert!(
+            plugin_files_outdated(tmp.path(), "tok"),
+            "a missing dist/ui.html must count as outdated even with a matching marker"
+        );
+    }
+
+    #[test]
+    fn plugin_files_outdated_is_true_for_a_leftover_root_layout_install() {
+        // An old daemon version with the same recorded version and token
+        // wrote code.js/ui.html at the root of figma-plugin/ instead of
+        // dist/. The marker alone cannot see this; the leftover root files
+        // must force an outdated result so write_plugin_files runs again
+        // and cleans them up.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_plugin_files(tmp.path(), "tok").expect("write_plugin_files");
+        let dir = tmp.path().join("figma-plugin");
+        std::fs::write(dir.join("code.js"), b"stale root code.js").expect("write stale code.js");
+        assert!(
+            plugin_files_outdated(tmp.path(), "tok"),
+            "a leftover root-level code.js must count as outdated"
+        );
+
+        std::fs::remove_file(dir.join("code.js")).expect("remove stale code.js");
+        std::fs::write(dir.join("ui.html"), b"stale root ui.html").expect("write stale ui.html");
+        assert!(
+            plugin_files_outdated(tmp.path(), "tok"),
+            "a leftover root-level ui.html must count as outdated"
+        );
     }
 
     #[test]
