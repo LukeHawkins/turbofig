@@ -78,6 +78,31 @@ fn cmd_check_embedded() -> ! {
     std::process::exit(0);
 }
 
+/// Best-effort copy of `text` to the macOS clipboard via `pbcopy`. Returns
+/// true on success. Figma's "Import plugin from manifest" file picker hides
+/// `~/.turbofig` (a dotfile), so a copy-pasteable manifest path is the
+/// practical way in. A failure here (no `pbcopy`, a non-interactive
+/// session) must never stop `setup`: the printed path is still correct on
+/// its own, just not pre-copied.
+fn copy_to_clipboard(text: &str) -> bool {
+    use std::io::Write;
+    let mut child = match std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return false;
+    };
+    if stdin.write_all(text.as_bytes()).is_err() {
+        return false;
+    }
+    drop(stdin);
+    child.wait().map(|status| status.success()).unwrap_or(false)
+}
+
 fn cmd_setup() {
     let home = turbofig::bridge_dir_from_env();
     let agents_dir = launch_agents_dir();
@@ -108,7 +133,15 @@ fn cmd_setup() {
                 non_cellar_binary_warning(outcome.binary_outside_homebrew_cellar)
             );
             print!("{}", carried_over_env_message(&outcome.carried_over_env));
-            print!("{}", setup_steps_text(&outcome.manifest_path));
+            let clipboard_copied = copy_to_clipboard(&outcome.manifest_path.to_string_lossy());
+            print!(
+                "{}",
+                setup_steps_text(
+                    &outcome.manifest_path,
+                    turbofig::port_from_env(),
+                    clipboard_copied
+                )
+            );
         }
         Err(e) => {
             eprintln!("turbofig setup: {e}");
@@ -148,7 +181,18 @@ fn cmd_uninstall(purge: bool) {
 async fn cmd_status() {
     let mcp_port = turbofig::port_from_env();
     let url = format!("http://127.0.0.1:{mcp_port}/health");
-    match reqwest::get(&url).await {
+    // The daemon is always local (127.0.0.1); a corporate proxy env var
+    // (HTTP_PROXY/HTTPS_PROXY) must never be allowed to intercept or break
+    // this request, so build a client that ignores proxy env settings
+    // instead of using reqwest::get's default client.
+    let client = match reqwest::Client::builder().no_proxy().build() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("turbofig status: could not build the HTTP client: {e}");
+            std::process::exit(1);
+        }
+    };
+    match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => print!("{}", format_health(&body)),
             Err(e) => {
