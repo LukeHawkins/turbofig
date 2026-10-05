@@ -18,8 +18,9 @@
 Turbofig is a local, always-on daemon that lets any AI agent read and edit
 the Figma file open in Figma Desktop. It talks to a thin Figma plugin over
 a WebSocket and exposes 4 tools to the agent, including one tool that runs
-Figma Plugin API JavaScript directly. The daemon runs as a launchd service,
-so it keeps running after your agent session ends.
+Figma Plugin API JavaScript directly. Your agent's MCP client starts the
+daemon the first time it needs it, the same way `npx` starts a Node MCP
+server. The daemon then keeps running after your agent session ends.
 
 **Works with:**
 
@@ -39,12 +40,14 @@ WebSocket.*
 - **4 tools, so a small schema.** All capability flows through
   `turbofig_execute`. The tool surface is locked at 4 and never grows.
 - **A single binary with no Node runtime.** The daemon is one Rust binary.
-  It embeds the Figma plugin and writes it to disk on `turbofig setup`.
+  It embeds the Figma plugin and writes it to disk on every start.
 - **No Figma access token.** Turbofig drives the file through the Figma
   Plugin API, not the Figma web API, so it never needs a personal access
   token.
-- **The daemon keeps running when an agent session ends.** It is a launchd
-  service with `KeepAlive`, decoupled from any one client session.
+- **The daemon keeps running when an agent session ends.** `turbofig mcp`
+  starts it if it is not already running, then the daemon keeps going on
+  its own, decoupled from any one client session. An optional launchd
+  autostart (`turbofig autostart on`) also starts it at login.
 - **The file bridge works where adding MCP servers is blocked by policy.**
   An agent drives the daemon with file writes and reads only: no curl, no
   MCP connection.
@@ -69,24 +72,36 @@ without Figma open, use a REST-based server such as figma-console-mcp or
 Figma's own MCP server. This README makes no claim about Figma's own MCP
 server beyond that it exists.
 
+Both tools are started by the MCP client the same way: on the client's
+first call. The difference is what happens after. turbofig's daemon keeps
+running once started; figma-console-mcp runs only for the life of the
+`npx` process the client spawned.
+
 ## Quickstart
 
 ```bash
 brew install LukeHawkins/tap/turbofig
-turbofig setup
+turbofig
 ```
 
-`turbofig setup` installs the pairing token, writes the Figma plugin files,
-and starts the daemon at login. It then prints 3 steps:
+The first run of `turbofig` starts the daemon in the background, writes the
+Figma plugin to `~/.turbofig/figma-plugin/`, copies the manifest path to
+your clipboard, opens Figma Desktop, and prints 3 steps:
 
-1. In Figma Desktop: **Plugins > Development > Import plugin from
-   manifest**, then pick the printed manifest path. This menu item exists
-   only in Figma Desktop, not the web app. Figma's file picker hides
-   `~/.turbofig` by default. `turbofig setup` puts the manifest path on
-   your clipboard, so press Cmd+Shift+G in the picker and paste it in.
-2. Run the turbofig plugin in a file.
-3. Click the copy-prompt button in the plugin and paste it into your AI
-   agent.
+1. **Add the Figma plugin (once).** In Figma Desktop: **Plugins >
+   Development > Import plugin from manifest**. This menu item exists only
+   in Figma Desktop, not the web app. Figma's file picker hides
+   `~/.turbofig` by default, so press Cmd+Shift+G in the picker, paste the
+   path (it is already on your clipboard), then press Return.
+2. **Connect your agent (once).** Claude Code:
+   `claude mcp add turbofig -- turbofig mcp`. Other MCP clients: add
+   `{"command": "<absolute path, for example /opt/homebrew/bin/turbofig>", "args": ["mcp"]}`.
+   A GUI app needs the absolute path: it does not have `/opt/homebrew/bin`
+   on its `PATH`.
+3. **MCP blocked on your machine?** Run the plugin in Figma and click
+   "Copy prompt".
+
+A later run of `turbofig` prints a 3-line status instead.
 
 <details>
 <summary>New to the terminal?</summary>
@@ -97,43 +112,57 @@ and starts the daemon at login. It then prints 3 steps:
    need admin rights, so ask IT first.
 3. Run the 2 turbofig commands above.
 4. In Figma's file picker, press Cmd+Shift+G, then paste the manifest
-   path. `turbofig setup` already copied it to your clipboard.
+   path. `turbofig` already copied it to your clipboard.
 
 </details>
 
 ## Connect your agent
 
-**The file bridge (default).** Click the copy-prompt button in the plugin
-panel and paste the prompt into your agent. The agent then drives turbofig
-by writing a JSON job to `~/.turbofig/inbox` and reading the result from
-`~/.turbofig/outbox`. No curl, no MCP connection, no permission dialog. See
-`skills/file-bridge.md`.
+**Claude Code:**
+
+```bash
+claude mcp add turbofig -- turbofig mcp
+```
+
+This runs `turbofig mcp`, a stdio MCP server, the same way Claude Code
+starts an `npx`-based MCP server. If the daemon is not running, `turbofig
+mcp` starts it as a separate background process first. The daemon keeps
+running after the agent session ends.
+
+**Any other MCP client that starts its own server process:** add this
+block, with the absolute path to the `turbofig` binary (a GUI app does not
+have `/opt/homebrew/bin` on its `PATH`):
+
+```json
+{
+  "mcpServers": {
+    "turbofig": {
+      "command": "/opt/homebrew/bin/turbofig",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+See `docs/discoverability/mcp-config.json` for this block, and
+`docs/discoverability/CLAUDE-snippet.md` for a snippet to paste into a
+global `CLAUDE.md`.
+
+**MCP blocked on your machine (the file bridge).** Click the copy-prompt
+button in the plugin panel and paste the prompt into your agent. The agent
+then drives turbofig by writing a JSON job to `~/.turbofig/inbox` and
+reading the result from `~/.turbofig/outbox`. No curl, no MCP connection,
+no permission dialog. See `skills/file-bridge.md`.
 
 **Any agent, not just Claude.** [`docs/agents.md`](docs/agents.md) is an
 agent-neutral onboarding prompt. Paste it into Cursor, Codex, Copilot,
 Claude, or any other agent that can read and write local files or call an
 MCP server.
 
-**Claude Code (MCP):**
-
-```bash
-claude mcp add --transport http turbofig http://127.0.0.1:18846/mcp
-```
-
-**Any other MCP client that supports streamable HTTP:** point it at
-`http://127.0.0.1:18846/mcp`. For a client with an allowlisted native MCP
-config, merge this block (`docs/discoverability/mcp-config.json`):
-
-```json
-{
-  "mcpServers": {
-    "turbofig": {
-      "type": "http",
-      "url": "http://127.0.0.1:18846/mcp"
-    }
-  }
-}
-```
+**Advanced: MCP over HTTP.** The daemon also serves streamable HTTP MCP
+directly at `http://127.0.0.1:18846/mcp`. Point any MCP client that
+supports streamable HTTP at that URL if it cannot start its own stdio
+server process.
 
 ## What you can ask it
 
@@ -222,10 +251,14 @@ return list.id;
 
 | Command | Does |
 |---|---|
-| `turbofig setup` | Installs the pairing token and plugin files, writes and loads the launchd service, prints the 3 connect steps |
+| `turbofig` | First run: installs the pairing token, writes the plugin files, starts the daemon, and prints the 3 connect steps. A later run: prints a 3-line status |
+| `turbofig mcp` | Runs a stdio MCP server for an agent's MCP client. Starts the daemon first if it is not already running |
+| `turbofig start` | Starts the daemon detached in the background, if it is not already running |
+| `turbofig stop` | Stops the running daemon |
 | `turbofig status` | Queries the running daemon's `/health` endpoint and prints a readable report |
-| `turbofig uninstall [--purge]` | Unloads the launchd service and removes its plist. With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
-| `turbofig serve` | Runs the daemon in the foreground. Same as no subcommand |
+| `turbofig serve` | Runs the daemon in the foreground. For development, or for an autostart launchd service |
+| `turbofig autostart on\|off` | Turns on or off an optional launchd service that starts the daemon at login |
+| `turbofig uninstall [--purge]` | Turns off autostart and removes its plist. With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
 
 **Updating:**
 
@@ -233,12 +266,15 @@ return list.id;
 brew upgrade turbofig
 ```
 
-The daemon detects the upgrade, drains in-flight jobs, and restarts itself.
-Reopen the plugin in Figma afterward so it picks up the refreshed plugin
-files.
+The next `turbofig mcp` start sees an older daemon, lets its in-flight jobs
+finish, then restarts it on the new version. An older proxy never restarts
+a newer daemon. The daemon rewrites the plugin files on every start, so the
+Figma import only happens once: reopen the plugin in Figma after an
+upgrade to pick up the refreshed files.
 
-**Uninstalling:** run `turbofig uninstall` before `brew uninstall turbofig`,
-so the launchd service is unloaded first.
+**Uninstalling:** run `turbofig uninstall` before `brew uninstall
+turbofig`, so a launchd autostart service (if you turned one on) is
+unloaded first.
 
 ## Configuration
 
@@ -252,9 +288,14 @@ an absent, unparsable, or zero value.
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | `30000` | Wait for a plugin reply before returning a timeout result. Clamped to `600000` |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge home: the pairing token, the plugin files, and the inbox/outbox |
 
-`turbofig setup` copies the env vars set at that time into the launchd
-service. To change a setting for the background service, set it and run
-`turbofig setup` again.
+**With autostart on** (`turbofig autostart on`), the launchd service carries
+over whatever `TURBOFIG_*` variables were set at that moment. To change a
+setting for the background service, set it and run `turbofig autostart on`
+again.
+
+**Without autostart**, these variables apply to the next `turbofig start`,
+`turbofig serve`, or `turbofig mcp` (which starts the daemon itself if
+needed).
 
 ## Security
 
@@ -268,8 +309,11 @@ vulnerability.
 
 ## Reliability and retries
 
-- **launchd restarts the daemon if it exits.** The service runs with
-  `KeepAlive`, so a crash is followed by a restart, not a dead daemon.
+- **`turbofig mcp` restarts the daemon if it is not reachable.** Your agent's
+  MCP client starts `turbofig mcp` on demand; it starts the daemon too, if
+  needed. With autostart on, launchd also restarts the daemon if it exits,
+  running with `KeepAlive`, so a crash is followed by a restart, not a dead
+  daemon.
 - **A job in flight when the plugin disconnects, or that times out, may
   still be running.** A retry of that job is not idempotent: the first
   attempt can still complete in Figma after you retry.
@@ -281,15 +325,16 @@ vulnerability.
 
 ## Troubleshooting
 
-- **The plugin panel shows disconnected.** Run `turbofig status` to check
-  the daemon is up. If it is not, run `turbofig setup` again.
+- **The plugin panel shows disconnected, or says it is waiting.** Run
+  `turbofig start`. Run `turbofig status` first to check the daemon is
+  actually down.
 - **"Import plugin from manifest" is missing from the Plugins menu.** Use
   Figma Desktop, not the Figma web app. The menu item does not exist there.
 - **A port is already in use.** Set `TURBOFIG_MCP_PORT` or
-  `TURBOFIG_WS_PORT` to a free port, then run `turbofig setup` again so the
-  launchd service picks up the new value from its plist. If you change the
-  WebSocket port, also set the same port in the plugin panel's Advanced
-  screen.
+  `TURBOFIG_WS_PORT` to a free port, then run `turbofig stop` followed by
+  `turbofig start` (or, with autostart on, `turbofig autostart on` again so
+  the launchd plist picks up the new value). If you change the WebSocket
+  port, also set the same port in the plugin panel's Advanced screen.
 - **MCP is blocked on a managed machine.** Use the file bridge instead:
   click the copy-prompt button in the plugin panel, or read
   `skills/file-bridge.md` directly.
