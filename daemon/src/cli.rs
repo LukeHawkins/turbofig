@@ -130,8 +130,8 @@ pub fn non_cellar_binary_warning(binary_outside_homebrew_cellar: bool) -> String
         return String::new();
     }
     "turbofig: warning: this binary is not a Homebrew install. The launchd \
-     service will break if it moves or is deleted. Run `brew install turbofig` \
-     for a stable install.\n"
+     service will break if it moves or is deleted. Run \
+     `brew install LukeHawkins/tap/turbofig` for a stable install.\n"
         .to_owned()
 }
 
@@ -483,6 +483,7 @@ mod tests {
 
     #[test]
     fn run_setup_retries_bootstrap_after_2_failures_with_no_real_wait() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-bootstrap-retry");
         let launch_agents_dir = unique_temp_dir("agents-bootstrap-retry");
         let launchctl = FakeLaunchctl::failing_bootstrap_times(2);
@@ -524,6 +525,7 @@ mod tests {
 
     #[test]
     fn run_setup_gives_up_after_the_max_bootstrap_attempts() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-bootstrap-giveup");
         let launch_agents_dir = unique_temp_dir("agents-bootstrap-giveup");
         let launchctl = FakeLaunchctl::failing_bootstrap_times(BOOTSTRAP_MAX_ATTEMPTS);
@@ -564,10 +566,15 @@ mod tests {
     fn non_cellar_binary_warning_warns_for_a_dev_checkout_binary() {
         let msg = non_cellar_binary_warning(true);
         assert!(msg.contains("not a Homebrew install"));
+        assert!(
+            msg.contains("brew install LukeHawkins/tap/turbofig"),
+            "the formula lives only in the tap, not homebrew-core: {msg}"
+        );
     }
 
     #[test]
     fn run_setup_flags_a_dev_checkout_binary_as_outside_the_cellar() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home-cellar-flag");
         let launch_agents_dir = unique_temp_dir("agents-cellar-flag");
         let launchctl = FakeLaunchctl::new();
