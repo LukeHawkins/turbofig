@@ -146,6 +146,46 @@ const pos = tf.slidePosition(4, { cols: 3, width: 1920, height: 1080, gap: 80 })
 
 ---
 
+## Cross-page access
+
+The plugin runs under `documentAccess: dynamic-page`. A node outside
+`figma.currentPage` is not available until its page loads. Load the page
+first with `await page.loadAsync()`, or use an async node lookup such as
+`figma.getNodeByIdAsync` before you touch a node on another page.
+
+```js
+const pages = figma.root.children;
+const otherPage = pages.find((p) => p.name === "Components");
+await otherPage.loadAsync();
+const nodes = tf.findAll(otherPage, { types: ["COMPONENT"] });
+```
+
+## Export and result limits
+
+- Every queued reply (including `tf.export` output returned from
+  `turbofig_execute`) is capped at 16 MiB. An oversized reply becomes an
+  `ok:false` error naming the size, instead of reaching the daemon.
+- `tf.export` scale is clamped to `[0.1, 4]`, matching the range Figma
+  itself accepts for an export constraint.
+- `turbofig_screenshot` defaults to file mode for large output: the PNG is
+  written to the file-bridge outbox and the call returns its path, instead
+  of returning the image inline.
+
+## instanceByKey and unpublished components
+
+`tf.instanceByKey(key)` calls `figma.importComponentByKeyAsync(key)`. The
+component must be published in a library the current file can use. When it
+is not published, or the key is wrong, `importComponentByKeyAsync` throws
+and the eval call fails with that error. `tf.instanceByKey` does not catch
+or soften this error.
+
+## Multiple open files
+
+Each open Figma file runs its own plugin instance and its own WebSocket
+connection to the daemon. When more than one file is open, pass `fileKey`
+on every tool call (or file-bridge job) to target a specific file. Omit it
+only when a single file is connected.
+
 ## Idempotency
 
 `tf.findOrCreate` protects only the named node itself. Children appended inside the factory, or after it returns, are NOT protected. If the eval runs a second time, `findOrCreate` returns the existing node but then appends new children on top of the existing ones, accumulating duplicates.
