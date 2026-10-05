@@ -112,30 +112,83 @@ pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, Str
     )
 }
 
+/// `TURBOFIG_*` variables that name a filesystem path. A value copied into
+/// the launchd plist verbatim must be made absolute first: launchd runs the
+/// daemon with its working directory at `/`, so a relative value here would
+/// resolve somewhere else than the `setup`-time user intended.
+const PATH_VALUED_VARS: &[&str] = &["TURBOFIG_BRIDGE_DIR"];
+
 /// Collects every `TURBOFIG_*` environment variable set in the current
 /// process, except `TURBOFIG_SUPERVISED` (the daemon sets its own) and
 /// `TURBOFIG_LAUNCH_AGENTS_DIR` (a `setup`-only seam, never read by the
 /// daemon). Used to carry a `setup`-time override (bridge dir, ports,
 /// timeout) into the launchd plist so the daemon sees the same values.
+///
+/// Uses `std::env::vars_os` rather than `std::env::vars`: the latter panics
+/// on any non-UTF-8 environment variable anywhere in the process
+/// environment, not only a `TURBOFIG_*` one, so a single unrelated
+/// non-UTF-8-valued variable (not uncommon on a real machine) would crash
+/// `turbofig setup` entirely. A non-UTF-8 `TURBOFIG_*` key or value is
+/// skipped with a warning instead: the daemon could not read it as a path or
+/// port either.
+///
+/// A path-valued variable (`PATH_VALUED_VARS`) is made absolute, resolved
+/// against the current working directory at `setup` time, before being
+/// carried into the plist: launchd runs the daemon with cwd `/`, so a
+/// relative `TURBOFIG_BRIDGE_DIR` set at `setup` time would otherwise resolve
+/// to a different directory once the service is actually running.
 pub fn carry_over_turbofig_env() -> Vec<(String, String)> {
-    carry_over_turbofig_env_from(std::env::vars())
+    let setup_cwd = std::env::current_dir().ok();
+    carry_over_turbofig_env_from(std::env::vars_os(), setup_cwd.as_deref())
 }
 
-/// The pure, testable half of `carry_over_turbofig_env`: filters and sorts a
-/// given iterator of environment pairs instead of reading the real process
-/// environment, so a test never has to mutate global state.
+/// The pure, testable half of `carry_over_turbofig_env`: filters, resolves,
+/// and sorts a given iterator of environment pairs instead of reading the
+/// real process environment, so a test never has to mutate global state.
 fn carry_over_turbofig_env_from(
-    vars: impl Iterator<Item = (String, String)>,
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    cwd: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut vars: Vec<(String, String)> = vars
-        .filter(|(key, _)| {
-            key.starts_with("TURBOFIG_")
-                && key != "TURBOFIG_SUPERVISED"
-                && key != "TURBOFIG_LAUNCH_AGENTS_DIR"
+        .filter_map(|(key, value)| {
+            let key = key.to_str()?.to_owned();
+            if !key.starts_with("TURBOFIG_")
+                || key == "TURBOFIG_SUPERVISED"
+                || key == "TURBOFIG_LAUNCH_AGENTS_DIR"
+            {
+                return None;
+            }
+            let Some(value) = value.to_str() else {
+                eprintln!(
+                    "turbofig setup: skipping {key}: its value is not valid UTF-8, so it cannot \
+                     be carried into the launchd plist"
+                );
+                return None;
+            };
+            let value = if PATH_VALUED_VARS.contains(&key.as_str()) {
+                absolutize(value, cwd)
+            } else {
+                value.to_owned()
+            };
+            Some((key, value))
         })
         .collect();
     vars.sort();
     vars
+}
+
+/// Makes `value` absolute by joining it onto `cwd`, when `value` is relative
+/// and `cwd` is available. Returns `value` unchanged when it is already
+/// absolute, or when `cwd` could not be determined.
+fn absolutize(value: &str, cwd: Option<&Path>) -> String {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return value.to_owned();
+    }
+    match cwd {
+        Some(cwd) => cwd.join(path).to_string_lossy().into_owned(),
+        None => value.to_owned(),
+    }
 }
 
 /// Seam over the two `launchctl` subcommands `setup`/`uninstall` need.
@@ -293,22 +346,23 @@ mod tests {
         assert!(xml.contains("<key>TURBOFIG_SUPERVISED</key>\n\t\t<string>1</string>"));
     }
 
+    fn osstr_pairs(given: Vec<(&str, &str)>) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        given
+            .into_iter()
+            .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
+            .collect()
+    }
+
     #[test]
     fn carry_over_turbofig_env_from_excludes_supervised_and_launch_agents_dir() {
-        let given = vec![
-            (
-                "TURBOFIG_BRIDGE_DIR".to_owned(),
-                "/tmp/carry-over-test".to_owned(),
-            ),
-            ("TURBOFIG_SUPERVISED".to_owned(), "1".to_owned()),
-            (
-                "TURBOFIG_LAUNCH_AGENTS_DIR".to_owned(),
-                "/tmp/agents".to_owned(),
-            ),
-            ("PATH".to_owned(), "/usr/bin".to_owned()),
-        ];
+        let given = osstr_pairs(vec![
+            ("TURBOFIG_BRIDGE_DIR", "/tmp/carry-over-test"),
+            ("TURBOFIG_SUPERVISED", "1"),
+            ("TURBOFIG_LAUNCH_AGENTS_DIR", "/tmp/agents"),
+            ("PATH", "/usr/bin"),
+        ]);
 
-        let vars = carry_over_turbofig_env_from(given.into_iter());
+        let vars = carry_over_turbofig_env_from(given.into_iter(), None);
 
         assert_eq!(
             vars,
@@ -321,12 +375,12 @@ mod tests {
 
     #[test]
     fn carry_over_turbofig_env_from_sorts_by_key() {
-        let given = vec![
-            ("TURBOFIG_WS_PORT".to_owned(), "18847".to_owned()),
-            ("TURBOFIG_BRIDGE_DIR".to_owned(), "/tmp/x".to_owned()),
-        ];
+        let given = osstr_pairs(vec![
+            ("TURBOFIG_WS_PORT", "18847"),
+            ("TURBOFIG_BRIDGE_DIR", "/tmp/x"),
+        ]);
 
-        let vars = carry_over_turbofig_env_from(given.into_iter());
+        let vars = carry_over_turbofig_env_from(given.into_iter(), None);
 
         assert_eq!(
             vars,
@@ -334,6 +388,63 @@ mod tests {
                 ("TURBOFIG_BRIDGE_DIR".to_owned(), "/tmp/x".to_owned()),
                 ("TURBOFIG_WS_PORT".to_owned(), "18847".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn carry_over_turbofig_env_from_skips_a_non_utf8_value() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let non_utf8_value = std::ffi::OsString::from_vec(vec![0x66, 0x6f, 0xff, 0x6f]);
+            let given = vec![
+                (
+                    std::ffi::OsString::from("TURBOFIG_BRIDGE_DIR"),
+                    non_utf8_value,
+                ),
+                (
+                    std::ffi::OsString::from("TURBOFIG_WS_PORT"),
+                    std::ffi::OsString::from("18847"),
+                ),
+            ];
+
+            let vars = carry_over_turbofig_env_from(given.into_iter(), None);
+
+            assert_eq!(
+                vars,
+                vec![("TURBOFIG_WS_PORT".to_owned(), "18847".to_owned())],
+                "a non-UTF-8 value must be skipped, not panic or corrupt other entries"
+            );
+        }
+    }
+
+    #[test]
+    fn carry_over_turbofig_env_from_makes_a_relative_bridge_dir_absolute() {
+        let given = osstr_pairs(vec![("TURBOFIG_BRIDGE_DIR", "my-bridge-dir")]);
+
+        let vars = carry_over_turbofig_env_from(given.into_iter(), Some(Path::new("/home/alice")));
+
+        assert_eq!(
+            vars,
+            vec![(
+                "TURBOFIG_BRIDGE_DIR".to_owned(),
+                "/home/alice/my-bridge-dir".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn carry_over_turbofig_env_from_leaves_an_already_absolute_bridge_dir_unchanged() {
+        let given = osstr_pairs(vec![("TURBOFIG_BRIDGE_DIR", "/already/absolute")]);
+
+        let vars = carry_over_turbofig_env_from(given.into_iter(), Some(Path::new("/home/alice")));
+
+        assert_eq!(
+            vars,
+            vec![(
+                "TURBOFIG_BRIDGE_DIR".to_owned(),
+                "/already/absolute".to_owned()
+            )]
         );
     }
 
