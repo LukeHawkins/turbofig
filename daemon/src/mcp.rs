@@ -1,7 +1,8 @@
 //! The MCP HTTP transport: tool parameter types, the `TurbofigHandler`, the
-//! self-describing help payload, and the axum router (`/mcp` plus Origin and
-//! Host validation).
+//! self-describing help payload, and the axum router (`/mcp`, `/job`,
+//! `/control`, plus Origin and Host validation).
 
+use crate::bridge::{job::Job, process_job};
 use crate::ops::{run_execute, run_get_selection, run_screenshot, run_status};
 use crate::state::AppState;
 use rmcp::{
@@ -384,6 +385,37 @@ async fn health_handler(
     }))
 }
 
+/// `POST /job` handler: runs one bridge-shaped job over plain HTTP and
+/// returns the same result JSON the filesystem bridge writes to its outbox.
+///
+/// The request body is the bridge `Job` JSON (the `#[serde(tag = "op")]`
+/// enum): `{"op":"execute","code":"..."}`, `{"op":"status"}`, and so on,
+/// with an optional `fileKey`. This, the file-bridge, and the MCP tools all
+/// go through the same `run_*` ops, so the three transports share one
+/// contract. A body that fails to parse as a `Job` gives `400` with the same
+/// `{"ok":false,"error":...}` shape the bridge writes for a schema-invalid
+/// job. A screenshot in file mode writes its PNG to the daemon's configured
+/// screenshot directory, the same as the MCP tool does, not the bridge's
+/// outbox (this endpoint has no outbox).
+async fn job_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::Json(raw): axum::Json<Value>,
+) -> impl axum::response::IntoResponse {
+    let _job = state.begin_job();
+    let job = match Job::parse(&raw) {
+        Ok(j) => j,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({"ok": false, "error": e})),
+            );
+        }
+    };
+    let output_dir = state.screenshot_dir();
+    let value = process_job(job, &state, output_dir.as_deref()).await;
+    (axum::http::StatusCode::OK, axum::Json(value))
+}
+
 /// Rejects any HTTP request that carries an Origin header, with 403 Forbidden.
 /// A browser always sends an Origin header on a cross-origin fetch; a non-browser
 /// MCP client (curl, a native MCP client, the file-bridge) sends none. So this
@@ -430,6 +462,11 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
         .route("/", axum::routing::get(help_handler))
         .route("/health", axum::routing::get(health_handler))
+        .route("/job", axum::routing::post(job_handler))
+        .route(
+            "/control",
+            axum::routing::post(crate::control::control_handler),
+        )
         .nest_service("/mcp", service)
         .fallback(help_handler)
         .with_state(health_state)
@@ -455,6 +492,7 @@ pub async fn serve_with_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tower::ServiceExt;
 
     #[test]
@@ -640,5 +678,194 @@ mod tests {
 
         let resp = router.oneshot(req).await.expect("router must respond");
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// POST a job body to `/job` on `router` and return (status, body).
+    async fn post_job(router: axum::Router, body: Value) -> (axum::http::StatusCode, Value) {
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/job")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("build request");
+        let resp = router.oneshot(req).await.expect("router must respond");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value: Value = serde_json::from_slice(&bytes).expect("valid JSON body");
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_status_matches_the_bridge_result() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state.clone());
+
+        let direct = process_job(Job::parse(&json!({"op": "status"})).unwrap(), &state, None).await;
+        let (status, via_http) = post_job(router, json!({"op": "status"})).await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(via_http, direct);
+        assert_eq!(via_http["ok"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_execute_matches_the_bridge_result() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state.clone());
+        let body = json!({"op": "execute", "code": "return 1;"});
+
+        let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
+        let (status, via_http) = post_job(router, body).await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(via_http, direct);
+        assert_eq!(via_http["ok"], json!(false), "no plugin is connected");
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_get_selection_matches_the_bridge_result() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state.clone());
+        let body = json!({"op": "get_selection"});
+
+        let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
+        let (status, via_http) = post_job(router, body).await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(via_http, direct);
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_screenshot_matches_the_bridge_result() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state.clone());
+        let body = json!({"op": "screenshot"});
+
+        let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
+        let (status, via_http) = post_job(router, body).await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(via_http, direct);
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_rejects_a_malformed_job_with_400() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let (status, body) = post_job(router, json!({"op": "delete_everything"})).await;
+
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_rejects_a_browser_origin() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/job")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::ORIGIN, "https://evil.example")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({"op": "status"}).to_string()))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn job_endpoint_rejects_a_foreign_host() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/job")
+            .header(axum::http::header::HOST, "evil.example")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(json!({"op": "status"}).to_string()))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// POST a control body to `/control` on `router`, optionally with a
+    /// bearer token, and return (status, body).
+    async fn post_control(
+        router: axum::Router,
+        token: Option<&str>,
+        body: Value,
+    ) -> (axum::http::StatusCode, Value) {
+        let mut builder = axum::http::Request::builder()
+            .method("POST")
+            .uri("/control")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json");
+        if let Some(t) = token {
+            builder = builder.header(axum::http::header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let req = builder
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("build request");
+        let resp = router.oneshot(req).await.expect("router must respond");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value: Value = serde_json::from_slice(&bytes).expect("valid JSON body");
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn control_endpoint_without_a_token_is_401() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let (status, body) = post_control(router, None, json!({"action": "stop"})).await;
+
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(body["ok"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn control_endpoint_with_a_wrong_token_is_401() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let (status, body) = post_control(
+            router,
+            Some("not-the-real-token"),
+            json!({"action": "stop"}),
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(body["ok"], json!(false));
     }
 }

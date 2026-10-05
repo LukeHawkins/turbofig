@@ -19,6 +19,7 @@ pub mod supervisor;
 
 mod bridge;
 mod config;
+mod control;
 mod embedded;
 mod image;
 mod mcp;
