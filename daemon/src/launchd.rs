@@ -64,12 +64,21 @@ fn xml_escape(s: &str) -> String {
 ///
 /// `program` is the stable binary path (see `stable_binary_path`);
 /// `ProgramArguments` is `[program, "serve"]`. `log_path` is used for both
-/// `StandardOutPath` and `StandardErrorPath`. Sets `RunAtLoad` and
-/// `KeepAlive` true, and `TURBOFIG_SUPERVISED=1` plus every pair in
-/// `extra_env` in `EnvironmentVariables`, so a `TURBOFIG_*` override set at
-/// `autostart on` time (bridge dir, ports, timeout) also applies to the
-/// launchd daemon, not only to the one-off `autostart on` process. `extra_env` entries are
+/// `StandardOutPath` and `StandardErrorPath`. Sets `RunAtLoad` true, and
+/// `TURBOFIG_SUPERVISED=1` plus every pair in `extra_env` in
+/// `EnvironmentVariables`, so a `TURBOFIG_*` override set at `autostart on`
+/// time (bridge dir, ports, timeout) also applies to the launchd daemon, not
+/// only to the one-off `autostart on` process. `extra_env` entries are
 /// written in the given order; both keys and values are XML-escaped.
+///
+/// `KeepAlive` is `{SuccessfulExit: false}`, not plain `true`: launchd then
+/// restarts the daemon only on a non-zero exit (a crash, or an intentional
+/// restart exiting `supervisor::SUPERVISED_RESTART_EXIT_CODE`), never on an
+/// ordinary `stop`'s exit 0. Plain `true` restarts on *every* exit including
+/// a clean stop, which previously made `turbofig stop` pointless under
+/// autostart: `serve` would find a daemon already running moments later and
+/// (if it then exited 1, the old pre-fix behaviour) get relaunched by
+/// `KeepAlive` again, forever, about every 10s.
 pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, String)]) -> String {
     let program = xml_escape(&program.to_string_lossy());
     let log_path = xml_escape(&log_path.to_string_lossy());
@@ -96,7 +105,10 @@ pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, Str
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
-	<true/>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 	<key>EnvironmentVariables</key>
 	<dict>
 		<key>TURBOFIG_SUPERVISED</key>
@@ -318,9 +330,24 @@ mod tests {
         assert!(xml.contains("<string>/opt/homebrew/bin/turbofig</string>"));
         assert!(xml.contains("<string>serve</string>"));
         assert!(xml.contains("<key>RunAtLoad</key>\n\t<true/>"));
-        assert!(xml.contains("<key>KeepAlive</key>\n\t<true/>"));
+        assert!(xml.contains(
+            "<key>KeepAlive</key>\n\t<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>"
+        ));
         assert!(xml.contains("<key>TURBOFIG_SUPERVISED</key>\n\t\t<string>1</string>"));
         assert!(xml.contains("/Users/dev/.turbofig/daemon.log"));
+    }
+
+    /// Guards the exact fix for the restart-loop bug: `KeepAlive` must never
+    /// be plain `true`, which restarts the daemon on *every* exit including
+    /// an ordinary `stop`.
+    #[test]
+    fn plist_contents_never_uses_plain_keep_alive_true() {
+        let xml = plist_contents(
+            Path::new("/opt/homebrew/bin/turbofig"),
+            Path::new("/Users/dev/.turbofig/daemon.log"),
+            &[],
+        );
+        assert!(!xml.contains("<key>KeepAlive</key>\n\t<true/>"));
     }
 
     #[test]

@@ -106,6 +106,38 @@ pub fn run_autostart_on(
     })
 }
 
+/// Turns autostart on exactly like `run_autostart_on`, after first warning
+/// (never failing the whole command) about `stop_result`, the caller's own
+/// already-awaited attempt to stop a daemon that was running but not
+/// launchd-managed. A daemon like that must be gone before this bootstraps
+/// the plist: once launchd's own `serve` starts, finding one already healthy
+/// on the port makes it exit at once and (`KeepAlive: {SuccessfulExit:
+/// false}`, see `launchd.rs`) stay stopped until the next login, instead of
+/// ever taking over as the supervised instance.
+///
+/// Takes `stop_result` already resolved, rather than performing or awaiting
+/// the stop itself, so this stays synchronous and testable the same way
+/// `run_autostart_on` is: the caller (`main.rs`'s `cmd_autostart_on`) owns
+/// the only real network I/O in this path.
+///
+/// Returns the same `AutostartOnOutcome` as `run_autostart_on`, plus
+/// `Some(message)` when `stop_result` was `Err`, for the caller to print as
+/// a warning. `stop_result`'s `Ok(_)` (whether or not a daemon was actually
+/// found running) never produces a warning and never blocks the bootstrap:
+/// this is best-effort, not a precondition.
+pub fn run_autostart_on_after_stopping_existing(
+    stop_result: Result<bool, String>,
+    launch_agents_dir: &Path,
+    launchctl: &dyn Launchctl,
+    uid: &str,
+    current_exe: &Path,
+    home: &Path,
+) -> io::Result<(AutostartOnOutcome, Option<String>)> {
+    let stop_warning = stop_result.err();
+    let outcome = run_autostart_on(launch_agents_dir, launchctl, uid, current_exe, home)?;
+    Ok((outcome, stop_warning))
+}
+
 /// The testable half of `run_autostart_on`: takes an explicit `sleep` so a
 /// test can pass a no-op and exercise `bootstrap`'s retry loop without a
 /// real wait.
@@ -256,7 +288,20 @@ pub fn run_uninstall(
 /// The exact entries `turbofig` writes directly under its home directory.
 /// `--purge` removes only these, never the whole directory, so a `home` that
 /// is a shared folder or `$HOME` is never wiped out from under the user.
-const PURGE_ENTRIES: &[&str] = &["token", "figma-plugin", "inbox", "outbox", "daemon.log"];
+/// Keep this in sync with every file the daemon writes to `home` (see
+/// `token.rs`'s `ensure_token`, `plugin_files.rs`'s `write_plugin_files` and
+/// `mark_plugin_seen`, `first_run.rs`, and `main.rs`'s `daemon.log` open):
+/// an entry missing here survives a `--purge`, so the directory is never
+/// left empty, is never removed, and a reinstall wrongly skips the
+/// first-run walkthrough because `plugin-seen` is still there.
+const PURGE_ENTRIES: &[&str] = &[
+    "token",
+    "figma-plugin",
+    "inbox",
+    "outbox",
+    "daemon.log",
+    "plugin-seen",
+];
 
 /// Deletes the known turbofig entries inside `home`, then removes `home`
 /// itself only if it is left empty. Anything else in `home` (a file the user
@@ -650,6 +695,85 @@ mod tests {
         std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 
+    /// `autostart on` must still bootstrap the plist (bootout then bootstrap,
+    /// exactly as `run_autostart_on` does alone) when a daemon was running
+    /// and got stopped first: the pre-stop step must never block or change
+    /// the bootstrap sequence.
+    #[test]
+    fn run_autostart_on_after_stopping_existing_bootstraps_regardless_of_the_stop_outcome() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-stop-then-autostart-ok");
+        let launch_agents_dir = unique_temp_dir("agents-stop-then-autostart-ok");
+        let launchctl = FakeLaunchctl::new();
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        let (outcome, warning) = run_autostart_on_after_stopping_existing(
+            Ok(true), // a daemon was running and the pre-stop step stopped it
+            &launch_agents_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &home,
+        )
+        .expect("autostart on after a successful pre-stop");
+
+        assert!(warning.is_none(), "a successful stop must not warn");
+        assert!(outcome.plist_path.exists());
+        assert_eq!(
+            launchctl
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with("bootstrap"))
+                .count(),
+            1,
+            "bootstrap must still run exactly once"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    /// A failed pre-stop (the daemon could not be stopped, or none was ever
+    /// running) must warn, not fail: the bootstrap still proceeds.
+    #[test]
+    fn run_autostart_on_after_stopping_existing_warns_but_still_bootstraps_on_a_stop_failure() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-stop-then-autostart-fail");
+        let launch_agents_dir = unique_temp_dir("agents-stop-then-autostart-fail");
+        let launchctl = FakeLaunchctl::new();
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        let (outcome, warning) = run_autostart_on_after_stopping_existing(
+            Err("the daemon refused the stop request (500 Internal Server Error)".to_owned()),
+            &launch_agents_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &home,
+        )
+        .expect("autostart on must still succeed despite a failed pre-stop");
+
+        assert_eq!(
+            warning.as_deref(),
+            Some("the daemon refused the stop request (500 Internal Server Error)")
+        );
+        assert!(outcome.plist_path.exists());
+        assert_eq!(
+            launchctl
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with("bootstrap"))
+                .count(),
+            1,
+            "a failed pre-stop must still let bootstrap run"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
     #[test]
     fn run_autostart_off_removes_the_plist() {
         let launch_agents_dir = unique_temp_dir("agents-autostart-off");
@@ -753,6 +877,7 @@ mod tests {
         std::fs::create_dir_all(home.join("figma-plugin/dist")).expect("mkdir figma-plugin");
         std::fs::create_dir_all(home.join("inbox")).expect("mkdir inbox");
         std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");
+        std::fs::write(home.join("plugin-seen"), "1700000000\n").expect("write plugin-seen");
         std::fs::write(home.join("not-turbofigs.txt"), "keep me").expect("write unrelated file");
         let launchctl = FakeLaunchctl::new();
 
@@ -770,11 +895,44 @@ mod tests {
         assert!(!home.join("inbox").exists());
         assert!(!home.join("outbox").exists());
         assert!(
+            !home.join("plugin-seen").exists(),
+            "plugin-seen must be purged too, or a reinstall wrongly skips first-run"
+        );
+        assert!(
             home.join("not-turbofigs.txt").exists(),
             "an unrelated file in home must survive --purge"
         );
 
         std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    /// A purge of a home holding every file the daemon now writes (including
+    /// `plugin-seen`) must leave nothing behind: the directory itself must
+    /// be removed, not just emptied of some entries.
+    #[test]
+    fn run_uninstall_with_purge_of_every_daemon_file_leaves_nothing_behind() {
+        let home = unique_temp_dir("home-purge-everything");
+        let launch_agents_dir = unique_temp_dir("agents-purge-everything");
+        std::fs::create_dir_all(&home).expect("mkdir home");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        std::fs::write(home.join("token"), "deadbeef").expect("write token");
+        std::fs::write(home.join("daemon.log"), "log").expect("write log");
+        std::fs::create_dir_all(home.join("figma-plugin/dist")).expect("mkdir figma-plugin");
+        std::fs::create_dir_all(home.join("inbox")).expect("mkdir inbox");
+        std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");
+        std::fs::write(home.join("plugin-seen"), "1700000000\n").expect("write plugin-seen");
+        let launchctl = FakeLaunchctl::new();
+
+        let outcome =
+            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", true).expect("uninstall");
+
+        assert!(outcome.purged);
+        assert!(
+            !home.exists(),
+            "a home holding only known daemon entries must be removed entirely by --purge"
+        );
+
         std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 

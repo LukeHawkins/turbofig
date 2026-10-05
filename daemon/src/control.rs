@@ -4,10 +4,16 @@
 //! drain its in-flight jobs and exit. `turbofig mcp` is the first client: it
 //! calls this when `/health` reports a daemon version that differs from its
 //! own (an upgrade swapped the binary on disk), so the old process clears
-//! out before the proxy starts the new one. The daemon side never tells
-//! `restart` and `stop` apart beyond the response body: both drain and exit
-//! 0, and it is the caller's job to decide whether to start a new binary
-//! afterward.
+//! out before the proxy starts the new one. Both actions always drain the
+//! same way; they differ only in the exit code under launchd supervision
+//! (`supervisor::is_supervised`): `stop` always exits 0, so the plist's
+//! `KeepAlive: {SuccessfulExit: false}` (`launchd.rs`) leaves the daemon
+//! stopped until the next login; a supervised `restart` exits
+//! `supervisor::SUPERVISED_RESTART_EXIT_CODE` instead, so the same
+//! `KeepAlive` rule restarts it with the (by then upgraded) binary.
+//! Unsupervised (no launchd watching), both exit 0: it is the caller's job
+//! to decide whether to start a new binary itself, as `turbofig mcp`'s
+//! `restart_for_upgrade` does.
 //!
 //! The pairing token is the same one the WebSocket upgrade and the Figma
 //! plugin already use (`token.rs`), compared here in constant time. There is
@@ -99,21 +105,90 @@ pub(crate) async fn control_handler(
 
     // Exit after a short grace delay so this response has time to reach the
     // caller before the process dies, rather than exiting from inside the
-    // handler before axum can write the body.
+    // handler before axum can write the body. See `exit_code_for` for which
+    // code each action uses and why.
+    let action = req.action;
     tokio::spawn(async move {
         tokio::time::sleep(CONTROL_EXIT_GRACE).await;
-        std::process::exit(0);
+        std::process::exit(exit_code_for(action));
     });
 
-    (
-        StatusCode::OK,
-        Json(json!({"ok": true, "action": req.action})),
-    )
+    (StatusCode::OK, Json(json!({"ok": true, "action": action})))
+}
+
+/// The exit code `/control` uses for `action`, once it is ready to exit.
+///
+/// `stop` always exits 0: under launchd supervision, the plist's `KeepAlive:
+/// {SuccessfulExit: false}` (`launchd.rs`) then leaves the daemon stopped
+/// until the next login, exactly what `turbofig stop` promises. A
+/// supervised `restart` instead exits `SUPERVISED_RESTART_EXIT_CODE`, a
+/// non-zero code, so that same `KeepAlive` rule restarts it at once with the
+/// binary that triggered the restart (an upgrade). Unsupervised, `restart`
+/// exits 0 too: nothing is watching to restart it, so the caller
+/// (`turbofig mcp`'s `restart_for_upgrade`) is the one that starts the new
+/// process.
+fn exit_code_for(action: ControlAction) -> i32 {
+    match action {
+        ControlAction::Stop => 0,
+        ControlAction::Restart if crate::supervisor::is_supervised() => {
+            crate::supervisor::SUPERVISED_RESTART_EXIT_CODE
+        }
+        ControlAction::Restart => 0,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn exit_code_for_stop_is_always_zero() {
+        let _guard = crate::supervisor::SUPERVISED_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, guarded by ENV_TEST_LOCK.
+        unsafe {
+            std::env::remove_var("TURBOFIG_SUPERVISED");
+        }
+        assert_eq!(exit_code_for(ControlAction::Stop), 0);
+        unsafe {
+            std::env::set_var("TURBOFIG_SUPERVISED", "1");
+        }
+        assert_eq!(
+            exit_code_for(ControlAction::Stop),
+            0,
+            "stop must exit 0 even under supervision, so KeepAlive leaves it stopped"
+        );
+        unsafe {
+            std::env::remove_var("TURBOFIG_SUPERVISED");
+        }
+    }
+
+    #[test]
+    fn exit_code_for_restart_depends_on_supervision() {
+        let _guard = crate::supervisor::SUPERVISED_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, guarded by ENV_TEST_LOCK.
+        unsafe {
+            std::env::remove_var("TURBOFIG_SUPERVISED");
+        }
+        assert_eq!(
+            exit_code_for(ControlAction::Restart),
+            0,
+            "unsupervised, the caller starts the new binary, so 0 is fine"
+        );
+        unsafe {
+            std::env::set_var("TURBOFIG_SUPERVISED", "1");
+        }
+        assert_eq!(
+            exit_code_for(ControlAction::Restart),
+            crate::supervisor::SUPERVISED_RESTART_EXIT_CODE,
+            "supervised, launchd must see a non-zero exit to restart the daemon"
+        );
+        unsafe {
+            std::env::remove_var("TURBOFIG_SUPERVISED");
+        }
+    }
 
     #[tokio::test]
     async fn a_second_concurrent_control_call_reports_already_in_progress_without_a_second_drain_wait(

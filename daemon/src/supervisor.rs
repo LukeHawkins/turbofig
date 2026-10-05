@@ -11,6 +11,35 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// True when this process is running under launchd supervision: the plist
+/// `launchd.rs`'s `plist_contents` writes sets `TURBOFIG_SUPERVISED=1` in
+/// `EnvironmentVariables`. The supervised upgrade-restart loop (`main.rs`)
+/// only runs when this is true; `/control restart` (`control.rs`) and a
+/// `serve` that finds a daemon already running (`main.rs`'s `run_daemon`)
+/// both also branch on it, see `SUPERVISED_RESTART_EXIT_CODE`.
+pub fn is_supervised() -> bool {
+    std::env::var("TURBOFIG_SUPERVISED").as_deref() == Ok("1")
+}
+
+/// Exit code a supervised restart uses instead of 0: the supervised
+/// upgrade-restart loop after it drains, and `/control restart` under
+/// `is_supervised()`. The plist's `KeepAlive: {SuccessfulExit: false}`
+/// (`launchd.rs`) restarts the daemon only on a non-zero exit, so an
+/// ordinary `stop` (always exit 0, in every mode) stays stopped until the
+/// next login, while an intentional restart (this code) is picked back up
+/// at once with the new binary. 75 is `EX_TEMPFAIL` in BSD `sysexits.h`
+/// ("temporary failure, please retry"): a real, documented convention for
+/// "restart me", not an arbitrary unexplained number.
+pub const SUPERVISED_RESTART_EXIT_CODE: i32 = 75;
+
+/// Guards every test (in this module and in `control.rs`) that sets or
+/// removes the real `TURBOFIG_SUPERVISED` env var `is_supervised` reads, so
+/// two such tests across the whole unit-test binary never race on that
+/// shared global state (same convention as `cli.rs`'s `ENV_TEST_LOCK`, which
+/// guards a different, unrelated set of env vars).
+#[cfg(test)]
+pub(crate) static SUPERVISED_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The file that `stable` points at right now. On a Homebrew install,
 /// `stable` is the `<prefix>/bin/turbofig` symlink, and its target is the
 /// versioned `Cellar` binary that `brew upgrade` swaps. Returns `None` when
@@ -73,6 +102,39 @@ pub async fn wait_for_drain(
 mod tests {
     use super::*;
     use std::cell::Cell;
+    #[test]
+    fn is_supervised_is_false_when_unset() {
+        let _guard = SUPERVISED_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, guarded by ENV_TEST_LOCK.
+        unsafe {
+            std::env::remove_var("TURBOFIG_SUPERVISED");
+        }
+        assert!(!is_supervised());
+    }
+
+    #[test]
+    fn is_supervised_is_true_only_for_the_exact_value_1() {
+        let _guard = SUPERVISED_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: test-only env mutation, guarded by ENV_TEST_LOCK.
+        unsafe {
+            std::env::set_var("TURBOFIG_SUPERVISED", "1");
+        }
+        assert!(is_supervised());
+        unsafe {
+            std::env::set_var("TURBOFIG_SUPERVISED", "true");
+        }
+        assert!(
+            !is_supervised(),
+            "only the exact value \"1\" (what the plist writes) counts"
+        );
+        unsafe {
+            std::env::remove_var("TURBOFIG_SUPERVISED");
+        }
+    }
 
     #[test]
     fn upgrade_detected_is_false_for_an_identical_path() {

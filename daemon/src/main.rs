@@ -5,9 +5,9 @@ use std::time::Duration;
 use turbofig::cli::{
     already_running_message, autostart_off_message, autostart_on_message, autostart_plist_exists,
     carried_over_env_message, format_health, non_cellar_binary_warning, run_autostart_off,
-    run_autostart_on, run_uninstall, started_message, status_unreachable_message,
-    stop_autostart_restart_hint, stop_nothing_running_message, stopped_message,
-    uninstall_kept_home_message, AutostartState, Cli, Command,
+    run_autostart_on_after_stopping_existing, run_uninstall, started_message,
+    status_unreachable_message, stop_autostart_restart_hint, stop_nothing_running_message,
+    stopped_message, uninstall_kept_home_message, AutostartState, Cli, Command,
 };
 use turbofig::launchd::{current_uid, RealLaunchctl};
 use turbofig::supervisor::{
@@ -81,7 +81,7 @@ async fn main() {
         Some(Command::Start) => cmd_start().await,
         Some(Command::Stop) => cmd_stop().await,
         Some(Command::Status) => cmd_status().await,
-        Some(Command::Autostart { state }) => cmd_autostart(state),
+        Some(Command::Autostart { state }) => cmd_autostart(state).await,
         Some(Command::Uninstall { purge }) => cmd_uninstall(purge).await,
         Some(Command::Mcp) => cmd_mcp().await,
     }
@@ -114,15 +114,16 @@ fn cmd_check_embedded() -> ! {
     std::process::exit(0);
 }
 
-fn cmd_autostart(state: AutostartState) {
+async fn cmd_autostart(state: AutostartState) {
     match state {
-        AutostartState::On => cmd_autostart_on(),
+        AutostartState::On => cmd_autostart_on().await,
         AutostartState::Off => cmd_autostart_off(),
     }
 }
 
-fn cmd_autostart_on() {
+async fn cmd_autostart_on() {
     let home = turbofig::bridge_dir_from_env();
+    let mcp_port = turbofig::port_from_env();
     let agents_dir = launch_agents_dir();
     let launchctl = RealLaunchctl;
     let uid = match current_uid() {
@@ -140,8 +141,31 @@ fn cmd_autostart_on() {
         }
     };
 
-    match run_autostart_on(&agents_dir, &launchctl, &uid, &current_exe, &home) {
-        Ok(outcome) => {
+    // A daemon already running (started by `turbofig start`/`turbofig`, not
+    // by launchd) must be stopped before the plist is bootstrapped: once
+    // launchd's own `serve` starts, finding a daemon already healthy on this
+    // port makes it exit at once and (per `KeepAlive: {SuccessfulExit:
+    // false}`, see `launchd.rs`) stay stopped until the next login, rather
+    // than ever taking over as the supervised instance. Best-effort: a
+    // failure here is a warning, not a reason to abandon `autostart on`; see
+    // `run_autostart_on_after_stopping_existing`.
+    let client = build_http_client("turbofig autostart");
+    let stop_result = stop_running_daemon(&client, mcp_port, &home).await;
+
+    match run_autostart_on_after_stopping_existing(
+        stop_result,
+        &agents_dir,
+        &launchctl,
+        &uid,
+        &current_exe,
+        &home,
+    ) {
+        Ok((outcome, stop_warning)) => {
+            if let Some(w) = stop_warning {
+                eprintln!(
+                    "turbofig autostart: warning: could not stop the already-running daemon first: {w}"
+                );
+            }
             println!("{}", autostart_on_message(&outcome.plist_path));
             print!(
                 "{}",
@@ -524,6 +548,21 @@ async fn already_running_health(mcp_port: u16) -> Option<serde_json::Value> {
     turbofig::spawn::fetch_health(&client, mcp_port).await
 }
 
+/// Exit code `serve` uses when it finds a daemon already running on this
+/// port. Under launchd supervision (`turbofig::supervisor::is_supervised`),
+/// this must be 0: the plist's `KeepAlive: {SuccessfulExit: false}`
+/// (`launchd.rs`) then leaves the daemon stopped, instead of the old exit 1
+/// which, combined with `KeepAlive` being unconditional, restarted this same
+/// "already running" `serve` about every 10s forever. Unsupervised (a stray
+/// manual second `serve`), 1 is still the right, ordinary CLI error exit.
+fn already_running_exit_code() -> i32 {
+    if turbofig::supervisor::is_supervised() {
+        0
+    } else {
+        1
+    }
+}
+
 /// Runs the daemon exactly as `turbofig` with no arguments always has: binds
 /// both ports, ensures the pairing token, refreshes a stale on-disk plugin
 /// copy, and runs the three servers until one of them dies. Shared by the
@@ -541,7 +580,7 @@ async fn run_daemon() {
             "{}",
             already_running_message(health_version(&health), mcp_port)
         );
-        std::process::exit(1);
+        std::process::exit(already_running_exit_code());
     }
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
@@ -561,7 +600,7 @@ async fn run_daemon() {
                         "{}",
                         already_running_message(health_version(&health), mcp_port)
                     );
-                    std::process::exit(1);
+                    std::process::exit(already_running_exit_code());
                 }
             }
             eprintln!("Turbofig daemon: failed to bind MCP port {mcp_addr}: {e}");
@@ -650,7 +689,7 @@ async fn run_daemon() {
     // writes), watch for a Homebrew upgrade and hand off cleanly instead of
     // letting KeepAlive kill an in-flight job. See supervisor.rs and
     // ARCHITECTURE.md.
-    if std::env::var("TURBOFIG_SUPERVISED").as_deref() == Ok("1") {
+    if turbofig::supervisor::is_supervised() {
         let supervised_state = state.clone();
         tokio::spawn(async move {
             run_supervisor_loop(supervised_state).await;
@@ -687,8 +726,10 @@ async fn run_daemon() {
 /// The supervised-restart loop: every `SUPERVISOR_CHECK_INTERVAL`, resolve
 /// the stable binary path and compare it to the one captured at startup. On
 /// a change, stop accepting new jobs, wait up to `SUPERVISOR_DRAIN_MAX_WAIT`
-/// for in-flight jobs to finish, then exit 0 so launchd starts the new
-/// binary. Never returns.
+/// for in-flight jobs to finish, then exits
+/// `supervisor::SUPERVISED_RESTART_EXIT_CODE` (non-zero) so launchd's
+/// `KeepAlive: {SuccessfulExit: false}` restarts the new binary. Never
+/// returns.
 async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
     // The stable path (for example /opt/homebrew/bin/turbofig) never changes
     // across an upgrade. Its resolved target (the versioned Cellar binary) does.
@@ -743,7 +784,12 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
             // Give a just-finished job's HTTP response or bridge result-file
             // rename a moment to flush before the process actually exits.
             tokio::time::sleep(SUPERVISOR_EXIT_GRACE).await;
-            std::process::exit(0);
+            // Non-zero, not 0: this loop only ever runs under supervision
+            // (the `is_supervised()` check above it), and the plist's
+            // `KeepAlive: {SuccessfulExit: false}` (`launchd.rs`) restarts
+            // the daemon only on a non-zero exit, picking up the upgraded
+            // binary. See `supervisor::SUPERVISED_RESTART_EXIT_CODE`.
+            std::process::exit(turbofig::supervisor::SUPERVISED_RESTART_EXIT_CODE);
         }
     }
 }
