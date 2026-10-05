@@ -35,6 +35,14 @@ pub async fn run_status(
             let plugins = state.named_connections_json();
             return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
         }
+        Err(RouteError::Draining) => {
+            return json!({
+                "ok": true,
+                "draining": true,
+                "plugin": {"connected": false},
+                "plugins": []
+            });
+        }
     };
 
     let request = json!({"type": "STATUS", "sessionId": session_id.unwrap_or("")});

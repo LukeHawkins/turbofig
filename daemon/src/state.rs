@@ -18,6 +18,19 @@ use tokio::sync::{mpsc, oneshot};
 /// unbounded: the plugin side is untrusted input.
 const MAX_NAME_LEN: usize = 200;
 
+/// Returns the reopen-the-plugin warning text when `plugin_version` is
+/// non-empty and differs from the daemon's own `CARGO_PKG_VERSION`. An empty
+/// `plugin_version` (not yet announced, or an older plugin build that never
+/// sent `pluginVersion`) never warns: there is nothing to compare against.
+/// Shared by `turbofig_status` (via `named_connections_json`) and `/health`,
+/// so the two surfaces never drift on wording.
+pub(crate) fn version_mismatch_warning(plugin_version: &str) -> Option<String> {
+    if plugin_version.is_empty() || plugin_version == env!("CARGO_PKG_VERSION") {
+        return None;
+    }
+    Some("reopen the turbofig plugin in Figma".to_owned())
+}
+
 /// Strip control characters and cap length on a plugin-supplied name.
 fn sanitize_name(raw: &str) -> String {
     raw.chars()
@@ -55,6 +68,11 @@ pub struct PluginConn {
     pub file_key: String,
     pub name: String,
     pub tx: mpsc::UnboundedSender<String>,
+    /// The plugin's own reported version (from FILE_INFO's `pluginVersion`).
+    /// Empty when not yet announced, or when an older plugin build never
+    /// sent it. Used only to flag a version mismatch in status output; see
+    /// `version_mismatch_warning`.
+    pub plugin_version: String,
 }
 
 /// Shared daemon state passed to the MCP HTTP server, the WS server, and the bridge.
@@ -90,6 +108,15 @@ pub struct AppState {
     /// Only `main.rs` loads the real, persisted token (via `token::ensure_token`)
     /// and passes it to `new_with_token`.
     token: String,
+    /// When this `AppState` was constructed, i.e. daemon startup. Used only
+    /// by `/health` and `turbofig_status`'s uptime figure.
+    started_at: Instant,
+    /// Set by the supervised-restart loop (`main.rs`, `TURBOFIG_SUPERVISED=1`)
+    /// once it detects a Homebrew upgrade. While true, `resolve_route`
+    /// refuses every new job with `RouteError::Draining`, so the old process
+    /// accepts no more work while it waits for in-flight jobs to finish
+    /// before exiting for launchd to start the new binary.
+    draining: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -104,6 +131,8 @@ impl AppState {
             request_timeout: timeout,
             screenshot_dir,
             token,
+            started_at: Instant::now(),
+            draining: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -153,6 +182,29 @@ impl AppState {
         &self.token
     }
 
+    /// Seconds since this `AppState` was constructed, i.e. daemon uptime.
+    pub fn uptime_seconds(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
+    }
+
+    /// Marks the daemon as draining (true) or accepting work again (false).
+    /// See the `draining` field doc for who sets this and why.
+    pub fn set_draining(&self, value: bool) {
+        self.draining.store(value, Ordering::Relaxed);
+    }
+
+    /// True once `set_draining(true)` has been called. `resolve_route`
+    /// checks this before resolving any new job.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Relaxed)
+    }
+
+    /// Number of tool-call requests currently waiting for a plugin reply.
+    /// Used by the supervised-restart loop to know when it is safe to exit.
+    pub fn jobs_in_flight(&self) -> usize {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
     /// Returns true when `conn_id` is still a live, registered connection.
     /// Call this before acting on any inbound frame tagged with a conn_id:
     /// a message that arrives after its connection has already closed must
@@ -178,6 +230,7 @@ impl AppState {
                 file_key: String::new(),
                 name: String::new(),
                 tx,
+                plugin_version: String::new(),
             },
         );
         conn_id
@@ -196,12 +249,29 @@ impl AppState {
     /// one routing prefers. A conn_id no longer in the registry (the socket
     /// already closed) is a silent no-op: a message from a dead connection
     /// must never resurrect an entry.
+    #[cfg(test)]
     pub(crate) fn set_connection_info(&self, conn_id: u64, file_key: String, name: String) {
+        self.set_connection_info_with_version(conn_id, file_key, name, String::new());
+    }
+
+    /// Same as `set_connection_info`, plus the plugin's self-reported
+    /// version from FILE_INFO's `pluginVersion` field. The real WS dispatch
+    /// path (`ws.rs`) calls this one; `set_connection_info` stays as a
+    /// plain two-field convenience for the many existing tests that do not
+    /// care about plugin version.
+    pub(crate) fn set_connection_info_with_version(
+        &self,
+        conn_id: u64,
+        file_key: String,
+        name: String,
+        plugin_version: String,
+    ) {
         let name = sanitize_name(&name);
         let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = guard.get_mut(&conn_id) {
             conn.file_key = file_key;
             conn.name = name;
+            conn.plugin_version = plugin_version;
         }
     }
 
@@ -243,25 +313,28 @@ impl AppState {
     /// deterministic output.
     pub(crate) fn connections_named(
         &self,
-    ) -> Vec<(u64, mpsc::UnboundedSender<String>, String, String)> {
+    ) -> Vec<(u64, mpsc::UnboundedSender<String>, String, String, String)> {
         let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
-        let mut newest: HashMap<String, (u64, mpsc::UnboundedSender<String>, String)> =
+        let mut newest: HashMap<String, (u64, mpsc::UnboundedSender<String>, String, String)> =
             HashMap::new();
         for (id, c) in connections.iter() {
             if c.file_key.is_empty() {
                 continue;
             }
             let keep = match newest.get(&c.file_key) {
-                Some((existing_id, _, _)) => *id > *existing_id,
+                Some((existing_id, _, _, _)) => *id > *existing_id,
                 None => true,
             };
             if keep {
-                newest.insert(c.file_key.clone(), (*id, c.tx.clone(), c.name.clone()));
+                newest.insert(
+                    c.file_key.clone(),
+                    (*id, c.tx.clone(), c.name.clone(), c.plugin_version.clone()),
+                );
             }
         }
         let mut v: Vec<_> = newest
             .into_iter()
-            .map(|(fk, (id, tx, name))| (id, tx, fk, name))
+            .map(|(fk, (id, tx, name, plugin_version))| (id, tx, fk, name, plugin_version))
             .collect();
         v.sort_by(|a, b| a.2.cmp(&b.2).then(a.0.cmp(&b.0)));
         v
@@ -269,11 +342,25 @@ impl AppState {
 
     /// Return all named connections as JSON objects for status and error
     /// responses. Dedupes a shared file_key the same way `connections_named`
-    /// does, so status output never lists the same file twice.
+    /// does, so status output never lists the same file twice. Each entry
+    /// carries `pluginVersion` (empty string when not yet announced) and, if
+    /// it differs from the daemon's own `CARGO_PKG_VERSION`, a `warning`
+    /// telling the caller to reopen the plugin. Never includes the pairing
+    /// token: nothing here reads `AppState::token()`.
     pub(crate) fn named_connections_json(&self) -> Vec<Value> {
         self.connections_named()
             .into_iter()
-            .map(|(_, _, fk, name)| serde_json::json!({"fileKey": fk, "name": name}))
+            .map(|(_, _, fk, name, plugin_version)| {
+                let mut obj = serde_json::json!({
+                    "fileKey": fk,
+                    "name": name,
+                    "pluginVersion": plugin_version,
+                });
+                if let Some(warning) = version_mismatch_warning(&plugin_version) {
+                    obj["warning"] = Value::String(warning);
+                }
+                obj
+            })
             .collect()
     }
 
@@ -588,6 +675,79 @@ mod tests {
             1,
             "status output must not list the same file key twice"
         );
+    }
+
+    #[test]
+    fn version_mismatch_warning_is_none_for_empty_or_matching_version() {
+        assert_eq!(version_mismatch_warning(""), None);
+        assert_eq!(version_mismatch_warning(env!("CARGO_PKG_VERSION")), None);
+    }
+
+    #[test]
+    fn version_mismatch_warning_fires_for_a_different_version() {
+        let warning = version_mismatch_warning("0.0.1-not-the-daemon-version");
+        assert_eq!(
+            warning,
+            Some("reopen the turbofig plugin in Figma".to_owned())
+        );
+    }
+
+    #[test]
+    fn named_connections_json_carries_plugin_version_and_no_warning_when_matching() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info_with_version(
+            conn,
+            "fk1".to_owned(),
+            "File 1".to_owned(),
+            env!("CARGO_PKG_VERSION").to_owned(),
+        );
+
+        let json = state.named_connections_json();
+        assert_eq!(json.len(), 1);
+        assert_eq!(json[0]["pluginVersion"], env!("CARGO_PKG_VERSION"));
+        assert!(json[0].get("warning").is_none());
+    }
+
+    #[test]
+    fn named_connections_json_warns_on_a_mismatched_plugin_version() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info_with_version(
+            conn,
+            "fk1".to_owned(),
+            "File 1".to_owned(),
+            "0.0.1-old".to_owned(),
+        );
+
+        let json = state.named_connections_json();
+        assert_eq!(json[0]["warning"], "reopen the turbofig plugin in Figma");
+    }
+
+    #[test]
+    fn named_connections_json_never_includes_the_token() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info_with_version(
+            conn,
+            "fk1".to_owned(),
+            "File 1".to_owned(),
+            "x".to_owned(),
+        );
+        let json = state.named_connections_json();
+        let serialized = serde_json::to_string(&json).expect("serialize");
+        assert!(!serialized.contains(state.token()));
+    }
+
+    #[test]
+    fn uptime_seconds_starts_at_zero_and_is_never_negative() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        // Can only assert it is a small, sane value right after construction;
+        // elapsed() can never be negative by construction (Instant-based).
+        assert!(state.uptime_seconds() < 5);
     }
 
     #[test]

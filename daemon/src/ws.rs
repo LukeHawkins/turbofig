@@ -129,7 +129,12 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
-            state.set_connection_info(conn_id, file_key, name);
+            let plugin_version = json
+                .get("pluginVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            state.set_connection_info_with_version(conn_id, file_key, name, plugin_version);
             // Push WELCOME so the plugin UI can display version/session info.
             // Ignore send errors: the write task may have already exited.
             let _ = tx.send(welcome_message());
@@ -294,6 +299,38 @@ mod tests {
             state.list_connections().is_empty(),
             "an unregistered conn_id must not create a connection entry"
         );
+    }
+
+    #[test]
+    fn dispatch_file_info_stores_the_reported_plugin_version() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+        let msg = json!({
+            "type": "FILE_INFO",
+            "fileKey": "fk1",
+            "name": "Doc",
+            "pluginVersion": "0.9.9"
+        });
+        dispatch(&msg, &state, &tx, conn_id);
+        let json = state.named_connections_json();
+        assert_eq!(json[0]["pluginVersion"], "0.9.9");
+    }
+
+    #[test]
+    fn dispatch_file_info_without_plugin_version_stores_an_empty_string() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+        let msg = json!({"type": "FILE_INFO", "fileKey": "fk1", "name": "Doc"});
+        dispatch(&msg, &state, &tx, conn_id);
+        let json = state.named_connections_json();
+        assert_eq!(json[0]["pluginVersion"], "");
+        assert!(json[0].get("warning").is_none());
     }
 
     #[test]

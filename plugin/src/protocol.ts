@@ -3,11 +3,16 @@
  * All messages carry a `type` discriminant.
  */
 
-/** Sent by the plugin to the daemon on connect to identify the open file. */
+/**
+ * Sent by the plugin to the daemon on connect to identify the open file.
+ * `pluginVersion` lets the daemon flag a stale plugin that needs reopening
+ * in Figma (see `turbofig_status` and `/health`'s version-mismatch text).
+ */
 export interface FileInfoMessage {
   type: "FILE_INFO";
   fileKey: string;
   name: string;
+  pluginVersion: string;
 }
 
 /**
@@ -249,8 +254,12 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
  * Builds a FILE_INFO message for the given file key and document name.
  * Use this in the plugin main thread to post file identity to the UI.
  */
-export function buildFileInfo(fileKey: string, name: string): FileInfoMessage {
-  return { type: "FILE_INFO", fileKey, name };
+export function buildFileInfo(
+  fileKey: string,
+  name: string,
+  pluginVersion: string,
+): FileInfoMessage {
+  return { type: "FILE_INFO", fileKey, name, pluginVersion };
 }
 
 /**

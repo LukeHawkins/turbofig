@@ -318,6 +318,68 @@ async fn help_handler() -> impl axum::response::IntoResponse {
     )
 }
 
+/// Host values the daemon accepts on every HTTP route, not only `/mcp`.
+/// Matches `build_router`'s `allowed_hosts` for the nested MCP service, so a
+/// DNS-rebinding attack is blocked the same way everywhere, including
+/// `/health`.
+const ALLOWED_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// Returns the bare host from a `Host` header value, stripping a trailing
+/// `:<port>` and, for a bracketed IPv6 literal (`[::1]:18846`), the brackets.
+fn host_without_port(host_header: &str) -> &str {
+    if let Some(rest) = host_header.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            return &rest[..end];
+        }
+        return rest;
+    }
+    host_header
+        .rsplit_once(':')
+        .map_or(host_header, |(host, _)| host)
+}
+
+/// Returns true when the `Host` header names one of `ALLOWED_HOSTS`.
+/// A missing `Host` header is rejected: HTTP/1.1 requires it, and a request
+/// that somehow lacks one gives no host to allow-list against.
+fn host_allowed(host_header: Option<&str>) -> bool {
+    match host_header {
+        Some(h) => ALLOWED_HOSTS.contains(&host_without_port(h)),
+        None => false,
+    }
+}
+
+/// Rejects any HTTP request whose `Host` header is not in `ALLOWED_HOSTS`,
+/// with 403 Forbidden. This mirrors `build_router`'s `allowed_hosts` config
+/// (enforced by the nested MCP service only) for every route on this router,
+/// so `/`, `/health`, and the MCP fallback all get the same DNS-rebinding
+/// defence as `/mcp`.
+async fn reject_bad_host(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let host = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
+    if !host_allowed(host) {
+        return (axum::http::StatusCode::FORBIDDEN, "host not allowed").into_response();
+    }
+    next.run(req).await
+}
+
+/// `GET /health` response shape. Never includes the pairing token: only
+/// `version`, `uptimeSeconds`, and the connected-files list (itself built by
+/// `AppState::named_connections_json`, which never reads the token either).
+async fn health_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    axum::Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptimeSeconds": state.uptime_seconds(),
+        "connectedFiles": state.named_connections_json(),
+    }))
+}
+
 /// Rejects any HTTP request that carries an Origin header, with 403 Forbidden.
 /// A browser always sends an Origin header on a cross-origin fetch; a non-browser
 /// MCP client (curl, a native MCP client, the file-bridge) sends none. So this
@@ -355,6 +417,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         "127.0.0.1".to_owned(),
         "::1".to_owned(),
     ];
+    let health_state = state.clone();
     let service = StreamableHttpService::new(
         move || Ok(TurbofigHandler::new(state.clone())),
         LocalSessionManager::default().into(),
@@ -362,8 +425,11 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
     );
     axum::Router::new()
         .route("/", axum::routing::get(help_handler))
+        .route("/health", axum::routing::get(health_handler))
         .nest_service("/mcp", service)
         .fallback(help_handler)
+        .with_state(health_state)
+        .layer(axum::middleware::from_fn(reject_bad_host))
         .layer(axum::middleware::from_fn(reject_browser_origin))
 }
 
@@ -411,6 +477,103 @@ mod tests {
             builder = builder.header("mcp-session-id", v);
         }
         builder.body(()).expect("build request").into_parts().0
+    }
+
+    #[test]
+    fn host_without_port_strips_a_plain_port() {
+        assert_eq!(host_without_port("127.0.0.1:18846"), "127.0.0.1");
+        assert_eq!(host_without_port("localhost"), "localhost");
+    }
+
+    #[test]
+    fn host_without_port_strips_bracketed_ipv6_and_its_port() {
+        assert_eq!(host_without_port("[::1]:18846"), "::1");
+        assert_eq!(host_without_port("[::1]"), "::1");
+    }
+
+    #[test]
+    fn host_allowed_accepts_every_entry_in_the_allow_list() {
+        assert!(host_allowed(Some("localhost")));
+        assert!(host_allowed(Some("127.0.0.1")));
+        assert!(host_allowed(Some("127.0.0.1:18846")));
+        assert!(host_allowed(Some("[::1]:18846")));
+    }
+
+    #[test]
+    fn host_allowed_rejects_an_unknown_host_or_a_missing_header() {
+        assert!(!host_allowed(Some("evil.example")));
+        assert!(!host_allowed(None));
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_returns_version_uptime_and_no_token() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let token = state.token().to_owned();
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert!(body["uptimeSeconds"].is_number());
+        assert_eq!(body["connectedFiles"], serde_json::json!([]));
+        assert!(!bytes_contains(&bytes, token.as_bytes()));
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_rejects_a_browser_origin() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::ORIGIN, "https://evil.example")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_rejects_a_foreign_host() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/health")
+            .header(axum::http::header::HOST, "evil.example")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 
     #[test]

@@ -202,9 +202,22 @@ export async function handleScreenshot(
   }
 }
 
+/** Build-time constant injected by build-code.ts via Bun.build define. */
+declare const __PLUGIN_VERSION__: string;
+
+/**
+ * Returns the build-time plugin version, or "dev" when running outside a
+ * `bun run build` bundle (e.g. under `bun test`, which never defines
+ * `__PLUGIN_VERSION__`). `typeof` never throws on an undeclared identifier,
+ * unlike a direct reference, so this is safe in both contexts.
+ */
+function pluginVersion(): string {
+  return typeof __PLUGIN_VERSION__ !== "undefined" ? __PLUGIN_VERSION__ : "dev";
+}
+
 /** Posts a FILE_INFO message with the current file identity via the given sink. */
 function emitFileInfo(figma: PluginAPI, post: (msg: unknown) => void): void {
-  post(buildFileInfo(figma.fileKey ?? "", figma.root.name));
+  post(buildFileInfo(figma.fileKey ?? "", figma.root.name, pluginVersion()));
 }
 
 /** Reads the stored daemon port (falling back to the default) and posts it via the given sink. */

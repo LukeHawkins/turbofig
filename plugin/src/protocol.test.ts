@@ -573,19 +573,20 @@ describe("buildScreenshot", () => {
 });
 
 describe("buildFileInfo", () => {
-  test("returns a FILE_INFO carrying fileKey and name", () => {
-    const msg = buildFileInfo("key1", "Design File");
+  test("returns a FILE_INFO carrying fileKey, name, and pluginVersion", () => {
+    const msg = buildFileInfo("key1", "Design File", "0.3.0");
     expect(msg.type).toBe("FILE_INFO");
     expect(msg.fileKey).toBe("key1");
     expect(msg.name).toBe("Design File");
+    expect(msg.pluginVersion).toBe("0.3.0");
   });
 
   test("result passes the isDaemonMessage guard", () => {
-    expect(isDaemonMessage(buildFileInfo("k", "n"))).toBe(true);
+    expect(isDaemonMessage(buildFileInfo("k", "n", "0.1.0"))).toBe(true);
   });
 
   test("accepts an empty fileKey string", () => {
-    const msg = buildFileInfo("", "n");
+    const msg = buildFileInfo("", "n", "0.1.0");
     expect(msg.fileKey).toBe("");
   });
 });

@@ -13,6 +13,9 @@ pub(crate) enum RouteError {
     Ambiguous(Vec<String>),
     /// The requested file key is not connected.
     NotFound(String, Vec<String>),
+    /// The daemon is draining for a supervised restart (a Homebrew upgrade
+    /// was detected) and refuses every new job until the new binary starts.
+    Draining,
 }
 
 /// Convert a RouteError into the caller-facing JSON shape.
@@ -28,6 +31,10 @@ pub(crate) fn route_error_to_json(e: RouteError) -> Value {
             "ok": false,
             "error": format!("file not connected: {fk}"),
             "files": available
+        }),
+        RouteError::Draining => json!({
+            "ok": false,
+            "error": "daemon is restarting after an upgrade; retry shortly"
         }),
     }
 }
@@ -51,6 +58,13 @@ pub(crate) fn resolve_route(
     session_id: Option<&str>,
     explicit: Option<&str>,
 ) -> Result<(u64, mpsc::UnboundedSender<String>, String, String), RouteError> {
+    // A supervised restart in progress refuses every new job, regardless of
+    // target, so the old process can drain and exit cleanly for launchd to
+    // start the upgraded binary. See AppState::is_draining.
+    if state.is_draining() {
+        return Err(RouteError::Draining);
+    }
+
     // Normalize an empty explicit fileKey to no target, the same as an
     // empty session id. An empty string can never name a real file, so it
     // must fall through to the session pairing or the sole connection
@@ -75,8 +89,8 @@ pub(crate) fn resolve_route(
     if let Some(ref fk) = desired {
         let found = named
             .iter()
-            .find(|(_, _, fk2, _)| fk2 == fk)
-            .map(|(id, tx, fk2, nm)| (*id, tx.clone(), fk2.clone(), nm.clone()));
+            .find(|(_, _, fk2, _, _)| fk2 == fk)
+            .map(|(id, tx, fk2, nm, _)| (*id, tx.clone(), fk2.clone(), nm.clone()));
 
         if let Some(result) = found {
             return Ok(result);
@@ -86,7 +100,7 @@ pub(crate) fn resolve_route(
         if let Some(sid) = session_id {
             state.session_remove(sid);
         }
-        let available: Vec<String> = named.into_iter().map(|(_, _, fk2, _)| fk2).collect();
+        let available: Vec<String> = named.into_iter().map(|(_, _, fk2, _, _)| fk2).collect();
         return Err(RouteError::NotFound(fk.clone(), available));
     }
 
@@ -94,14 +108,14 @@ pub(crate) fn resolve_route(
     match named.len() {
         0 => Err(RouteError::NoPlugin),
         1 => {
-            let (conn_id, tx, fk, nm) = named.into_iter().next().unwrap();
+            let (conn_id, tx, fk, nm, _) = named.into_iter().next().unwrap();
             if let Some(sid) = session_id {
                 state.session_insert(sid, &fk);
             }
             Ok((conn_id, tx, fk, nm))
         }
         _ => {
-            let fks: Vec<String> = named.into_iter().map(|(_, _, fk, _)| fk).collect();
+            let fks: Vec<String> = named.into_iter().map(|(_, _, fk, _, _)| fk).collect();
             Err(RouteError::Ambiguous(fks))
         }
     }
