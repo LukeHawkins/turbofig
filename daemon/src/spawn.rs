@@ -80,11 +80,46 @@ fn detach_into_own_session(cmd: &mut Command) {
 #[cfg(not(unix))]
 fn detach_into_own_session(_cmd: &mut Command) {}
 
+/// Returns `GET /health`'s parsed JSON body, or `None` for any failure
+/// (connection refused, timeout, a non-success status, an unparseable
+/// body). All of those mean the same thing to a caller of this function:
+/// not currently answerable, never worth telling apart.
+pub async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<serde_json::Value> {
+    let url = format!("http://127.0.0.1:{mcp_port}/health");
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<serde_json::Value>().await.ok()
+}
+
 /// Polls `GET /health` on `127.0.0.1:<mcp_port>` until it answers with a
 /// success status, or `HEALTH_DEADLINE` elapses. Returns a clear, user-facing
 /// error message on timeout: never a bare `reqwest::Error`.
 pub async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) -> Result<(), String> {
     wait_for_health_with_deadline(client, mcp_port, HEALTH_DEADLINE).await
+}
+
+/// Polls `GET /health` until it stops answering (a daemon that was running
+/// has exited), or `deadline` elapses. Returns true once unreachable, false
+/// on timeout. The counterpart to `wait_for_health`: `turbofig stop` and the
+/// version-handoff restart (`proxy.rs`) both need to know the *old* daemon
+/// is actually gone before starting (or trusting launchd to start) a new one.
+pub async fn wait_for_unreachable(
+    client: &reqwest::Client,
+    mcp_port: u16,
+    deadline: Duration,
+) -> bool {
+    let until = Instant::now() + deadline;
+    loop {
+        if fetch_health(client, mcp_port).await.is_none() {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+    }
 }
 
 /// The testable half of `wait_for_health`: takes an explicit deadline so a
@@ -144,6 +179,55 @@ mod tests {
         wait_for_health_with_deadline(&client, port, Duration::from_secs(2))
             .await
             .expect("a real /health endpoint must satisfy the wait");
+    }
+
+    #[tokio::test]
+    async fn fetch_health_is_none_when_nothing_is_listening() {
+        let client = reqwest::Client::new();
+        assert!(fetch_health(&client, 1).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_health_returns_the_body_once_a_health_endpoint_answers() {
+        let state = std::sync::Arc::new(crate::state::AppState::with_timeout(
+            Duration::from_millis(100),
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(async move {
+            let _ = crate::mcp::serve_with_state(listener, state).await;
+        });
+
+        let client = reqwest::Client::new();
+        let body = fetch_health(&client, port).await.expect("health body");
+        assert!(body["version"].is_string());
+    }
+
+    #[tokio::test]
+    async fn wait_for_unreachable_returns_true_immediately_when_nothing_is_listening() {
+        let client = reqwest::Client::new();
+        assert!(wait_for_unreachable(&client, 1, Duration::from_millis(50)).await);
+    }
+
+    #[tokio::test]
+    async fn wait_for_unreachable_times_out_while_a_daemon_still_answers() {
+        let state = std::sync::Arc::new(crate::state::AppState::with_timeout(
+            Duration::from_millis(100),
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(async move {
+            let _ = crate::mcp::serve_with_state(listener, state).await;
+        });
+
+        assert!(
+            !wait_for_unreachable(&reqwest::Client::new(), port, Duration::from_millis(100)).await,
+            "a still-healthy daemon must never be reported unreachable"
+        );
     }
 
     #[test]

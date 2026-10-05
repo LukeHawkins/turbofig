@@ -44,7 +44,6 @@ use std::time::Duration;
 /// daemon is still there. The daemon's own drain wait is up to 60 s
 /// (`control::CONTROL_DRAIN_MAX_WAIT`); this must comfortably outlast that.
 const UNREACHABLE_DEADLINE: Duration = Duration::from_secs(65);
-const UNREACHABLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Starts the stdio MCP proxy: ensures a daemon is reachable on `mcp_port`
 /// (starting one via `spawn::spawn_detached_daemon` if `GET /health` fails),
@@ -59,7 +58,7 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
         .build()
         .map_err(|e| format!("turbofig mcp: could not build the HTTP client: {e}"))?;
 
-    let health = match fetch_health(&client, mcp_port).await {
+    let health = match crate::spawn::fetch_health(&client, mcp_port).await {
         Some(h) => h,
         None => {
             eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
@@ -68,9 +67,11 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
             crate::spawn::wait_for_health(&client, mcp_port)
                 .await
                 .map_err(|e| format!("turbofig mcp: {e}"))?;
-            fetch_health(&client, mcp_port).await.ok_or_else(|| {
-                "turbofig mcp: the daemon answered /health once but not again".to_owned()
-            })?
+            crate::spawn::fetch_health(&client, mcp_port)
+                .await
+                .ok_or_else(|| {
+                    "turbofig mcp: the daemon answered /health once but not again".to_owned()
+                })?
         }
     };
 
@@ -93,19 +94,6 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
         .await
         .map_err(|e| format!("turbofig mcp: the stdio transport ended unexpectedly: {e}"))?;
     Ok(())
-}
-
-/// Returns `GET /health`'s parsed JSON body, or `None` for any failure
-/// (connection refused, timeout, a non-success status, an unparseable
-/// body). All of those mean the same thing to a caller of this function:
-/// not currently answerable.
-async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<serde_json::Value> {
-    let url = format!("http://127.0.0.1:{mcp_port}/health");
-    let resp = client.get(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
-    resp.json::<serde_json::Value>().await.ok()
 }
 
 /// This proxy's own version for the handoff comparison.
@@ -302,18 +290,12 @@ impl ProxyHandler {
     }
 
     /// Polls `/health` until it stops answering, or `deadline` elapses.
-    /// Returns true once unreachable, false on timeout.
+    /// Returns true once unreachable, false on timeout. Thin wrapper over
+    /// the shared `spawn::wait_for_unreachable`, which `turbofig stop`
+    /// (`main.rs`) also uses for the same "has the daemon actually gone
+    /// away yet" question.
     async fn wait_until_unreachable(&self, deadline: Duration) -> bool {
-        let until = tokio::time::Instant::now() + deadline;
-        loop {
-            if fetch_health(&self.client, self.mcp_port).await.is_none() {
-                return true;
-            }
-            if tokio::time::Instant::now() >= until {
-                return false;
-            }
-            tokio::time::sleep(UNREACHABLE_POLL_INTERVAL).await;
-        }
+        crate::spawn::wait_for_unreachable(&self.client, self.mcp_port, deadline).await
     }
 
     /// Reads the pairing token from `<home>/token`, trimmed. `None` on any
