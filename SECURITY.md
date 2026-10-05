@@ -40,6 +40,14 @@ and what is a bug.
   HTTP MCP port still has no token, so a local privilege boundary (a
   different user account, or a sandboxed process) is the only thing that
   stops another local process from driving it.
+- **A token on disk would not fix this, so the HTTP port carries none.** A
+  reviewer may read "no token" as a bug and expect one added. A token stored
+  in a file that the same user can read gives no extra protection: any
+  process that runs as that user can also read the file and present the
+  token. The pairing token on the WebSocket port exists for a different
+  reason (it tells the real Figma plugin apart from a malicious page that
+  reports the same null Origin, see "Pairing token" below), not to stop
+  another local process owned by the same user.
 - **The file-bridge directories are mode `0700`.** `~/.turbofig`, its
   `inbox/`, and its `outbox/` are created and corrected to `0700` on every
   daemon start, because job and result files can carry arbitrary eval code
@@ -69,9 +77,31 @@ could otherwise open the socket and receive the AI's jobs.
   tested by `embedded::tests::embedded_ui_html_always_carries_the_placeholder_never_a_real_token`).
 - **Comparison:** constant-time, so a wrong guess cannot be distinguished by
   timing from a near-miss of the same length.
-- **To rotate it:** stop the daemon, delete `~/.turbofig/token`, restart the
-  daemon (it generates a fresh one), then run `turbofig setup` again to
-  reload the Figma plugin with the new token.
+- **To rotate it:** the daemon runs under launchd with `KeepAlive`, so you
+  cannot just stop it; launchd restarts it right away. Delete
+  `~/.turbofig/token`, then run `turbofig setup`. `setup` restarts the
+  service, which generates a fresh token, and rewrites the plugin files with
+  it. Then reopen the plugin in Figma.
+
+## Data handling
+
+- **Turbofig makes no outbound network calls of its own.** The daemon only
+  serves `127.0.0.1`; it never calls out to any remote service.
+- **Design data moves only between the plugin, the daemon on `127.0.0.1`,
+  and the local agent (AI client).** Nothing in that path leaves the
+  machine.
+- **The file-bridge inbox and outbox hold job and result files, including
+  eval code and its output.** The daemon prunes outbox entries (results and
+  file-mode screenshot PNGs) older than 24 hours; a result nobody reads in
+  that window is deleted, not kept.
+- **`daemon.log` carries operational messages only:** startup, port binds,
+  the bridge directory path, and errors from the MCP, WebSocket, and bridge
+  tasks. It never logs job eval code or file content.
+- **Release binaries are not code-signed or notarized today.** Each GitHub
+  release ships through `cargo-dist` with a Homebrew installer; the
+  generated formula pins a SHA256 checksum for each artifact, and
+  `brew install` verifies that checksum before installing. See
+  `RELEASING.md`'s "Unsigned binaries" section for the Gatekeeper caveat.
 
 ## `GET /health`
 
