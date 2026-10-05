@@ -59,7 +59,7 @@ async fn connect_mock_plugin(
     file_key: &str,
     reply_tag: &'static str,
 ) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
         .await
         .expect("mock plugin connect");
 
@@ -286,9 +286,10 @@ async fn test_paired_session_returns_error_after_plugin_closes() {
 
     // Connect fk1. The reply task owns the socket and handles EXECUTE frames.
     // Aborting the task drops the socket, which closes the connection.
-    let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
-        .await
-        .expect("fk1 connect");
+    let (mut fk1_ws, _) =
+        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
+            .await
+            .expect("fk1 connect");
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({
@@ -387,9 +388,10 @@ async fn test_fk1_close_does_not_disturb_session_b_paired_to_fk2() {
     connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Connect fk1 as a raw socket for deliberate close.
-    let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
-        .await
-        .expect("fk1 connect");
+    let (mut fk1_ws, _) =
+        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
+            .await
+            .expect("fk1 connect");
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({
@@ -482,9 +484,10 @@ async fn test_concurrent_call_to_fk2_succeeds_while_fk1_hangs_and_closes() {
 
     // Connect fk1 as a raw socket that will NOT reply to EXECUTE frames.
     // Closing it mid-call exercises in-flight isolation.
-    let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
-        .await
-        .expect("fk1 connect");
+    let (mut fk1_ws, _) =
+        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
+            .await
+            .expect("fk1 connect");
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({

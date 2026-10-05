@@ -54,9 +54,13 @@ async fn spawn_mock_plugin(
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "abc", "name": "F"}).to_string(),
@@ -107,9 +111,13 @@ async fn test_bridge_status_roundtrip_with_plugin() {
     spawn_bridge(state.clone(), tmp.path().to_path_buf());
 
     // Connect the mock plugin and send FILE_INFO.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
 
     plugin_ws
         .send(TtMessage::Text(
@@ -303,9 +311,13 @@ async fn test_bridge_services_jobs_concurrently() {
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "s", "name": "Silent"}).to_string(),
@@ -507,9 +519,13 @@ async fn spawn_mock_plugin_with_key(
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": file_key, "name": file_key})
@@ -699,9 +715,13 @@ async fn spawn_mock_plugin_keyed(
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": file_key, "name": file_key})
@@ -853,9 +873,13 @@ async fn test_bridge_get_selection_fields_and_depth_forwarded() {
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "echo", "name": "Echo"}).to_string(),

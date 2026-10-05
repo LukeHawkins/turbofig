@@ -36,7 +36,19 @@ async fn main() {
     );
     println!("Turbofig bridge dir: {}", bridge_dir.display());
 
-    let state = Arc::new(AppState::new());
+    // Ensure the pairing token exists (created on first run, never overwritten
+    // on a later one) before any server starts accepting connections. See
+    // token.rs: this is the one path that reads or writes the real
+    // ~/.turbofig/token; AppState::new() alone would generate an in-memory
+    // token instead, which is what every test uses.
+    let token = match turbofig::ensure_token(&bridge_dir) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Turbofig daemon: failed to create or read the pairing token: {e}");
+            std::process::exit(1);
+        }
+    };
+    let state = Arc::new(AppState::new_with_token(token));
 
     let mcp_state = state.clone();
     let mcp_handle = tokio::spawn(async move {

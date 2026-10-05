@@ -24,6 +24,15 @@ import {
 
 /** Build-time constant injected by build-ui.ts via Bun.build define. */
 declare const __PLUGIN_VERSION__: string;
+/**
+ * Build-time constant injected by build-ui.ts. The embedded, checked-in-free
+ * `dist/ui.html` carries the literal placeholder string
+ * "__TURBOFIG_PAIRING_TOKEN__"; `write_plugin_files` (daemon/src/plugin_files.rs)
+ * replaces it with the real token when it writes the plugin out to
+ * ~/.turbofig/figma-plugin/. A local `bun run build` injects the real token
+ * directly when the daemon has already created ~/.turbofig/token.
+ */
+declare const __TURBOFIG_PAIRING_TOKEN__: string;
 
 /** Active daemon port. Updated when PORT arrives from the main thread. */
 let currentPort = 18847;
@@ -234,7 +243,7 @@ function connect(): void {
     reconnectTimer = null;
   }
   setConnStatus("attempt");
-  const socket = new WebSocket(wsUrlForPort(currentPort));
+  const socket = new WebSocket(wsUrlForPort(currentPort, __TURBOFIG_PAIRING_TOKEN__));
   ws = socket;
 
   socket.onopen = () => {

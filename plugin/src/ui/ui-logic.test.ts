@@ -321,19 +321,23 @@ describe("parsePort", () => {
 
 describe("wsUrlForPort", () => {
   test("returns the default daemon URL for port 18847", () => {
-    expect(wsUrlForPort(18847)).toBe("ws://127.0.0.1:18847");
+    expect(wsUrlForPort(18847, "tok")).toBe("ws://127.0.0.1:18847?token=tok");
   });
 
   test("returns a URL for a custom port", () => {
-    expect(wsUrlForPort(8080)).toBe("ws://127.0.0.1:8080");
+    expect(wsUrlForPort(8080, "tok")).toBe("ws://127.0.0.1:8080?token=tok");
   });
 
   test("returns a URL for port 1", () => {
-    expect(wsUrlForPort(1)).toBe("ws://127.0.0.1:1");
+    expect(wsUrlForPort(1, "tok")).toBe("ws://127.0.0.1:1?token=tok");
   });
 
   test("returns a URL for port 65535", () => {
-    expect(wsUrlForPort(65535)).toBe("ws://127.0.0.1:65535");
+    expect(wsUrlForPort(65535, "tok")).toBe("ws://127.0.0.1:65535?token=tok");
+  });
+
+  test("URL-encodes a token with special characters", () => {
+    expect(wsUrlForPort(18847, "a b&c")).toBe("ws://127.0.0.1:18847?token=a%20b%26c");
   });
 });
 

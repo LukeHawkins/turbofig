@@ -3,6 +3,7 @@
 //! resolves it.
 
 use crate::config::{bridge_dir_from_env, request_timeout_from_env};
+use crate::token::random_token_hex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{
@@ -82,11 +83,18 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Directory where screenshot PNGs are written in file mode, if configured.
     screenshot_dir: Option<std::path::PathBuf>,
+    /// The WebSocket pairing token. The WS upgrade in `ws.rs` requires a
+    /// matching `token` query parameter: see `token.rs` for why. `new`/
+    /// `with_timeout` generate this in memory via `random_token_hex`, so
+    /// building an `AppState` in a test never touches `~/.turbofig/token`.
+    /// Only `main.rs` loads the real, persisted token (via `token::ensure_token`)
+    /// and passes it to `new_with_token`.
+    token: String,
 }
 
 impl AppState {
     /// Private constructor. All public constructors delegate here.
-    fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>) -> Self {
+    fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>, token: String) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
             conn_counter: AtomicU64::new(1),
@@ -95,28 +103,54 @@ impl AppState {
             counter: AtomicU64::new(random_counter_start()),
             request_timeout: timeout,
             screenshot_dir,
+            token,
         }
     }
 
     /// Create a new AppState. Reads the timeout from TURBOFIG_REQUEST_TIMEOUT_MS.
     /// Sets screenshot_dir to `~/.turbofig/outbox`.
+    /// Generates a random in-memory pairing token: never touches disk. The
+    /// daemon binary uses `new_with_token` instead, with the real persisted
+    /// token, so the production WS upgrade check matches the one file-bridge
+    /// clients and the plugin UI read from `~/.turbofig/token`.
     pub fn new() -> Self {
         Self::build(
             request_timeout_from_env(),
             Some(bridge_dir_from_env().join("outbox")),
+            random_token_hex(),
         )
     }
 
     /// Create a new AppState with an explicit request timeout.
     /// Use this in tests to set a short timeout without touching global env.
-    /// Sets screenshot_dir to None.
+    /// Sets screenshot_dir to None. Generates a random in-memory pairing token.
     pub fn with_timeout(d: Duration) -> Self {
-        Self::build(d, None)
+        Self::build(d, None, random_token_hex())
+    }
+
+    /// Create a new AppState exactly like `new()`, but with an explicit
+    /// pairing token rather than a freshly generated one. The daemon binary
+    /// uses this with the token `token::ensure_token` persisted to
+    /// `~/.turbofig/token`, so the WS upgrade check matches what a client
+    /// reads from that file.
+    pub fn new_with_token(token: String) -> Self {
+        Self::build(
+            request_timeout_from_env(),
+            Some(bridge_dir_from_env().join("outbox")),
+            token,
+        )
     }
 
     /// Return a clone of the screenshot output directory, if configured.
     pub fn screenshot_dir(&self) -> Option<std::path::PathBuf> {
         self.screenshot_dir.clone()
+    }
+
+    /// Returns the WebSocket pairing token. Never logged, never exposed in
+    /// status output: only compared, in constant time, against a connecting
+    /// client's `token` query parameter (`ws.rs`).
+    pub fn token(&self) -> &str {
+        &self.token
     }
 
     /// Returns true when `conn_id` is still a live, registered connection.

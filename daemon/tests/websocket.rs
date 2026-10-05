@@ -56,9 +56,13 @@ async fn test_ws_file_info_registers_plugin() {
     });
 
     // Connect a tungstenite client.
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("WS connect failed");
+    let (mut ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("WS connect failed");
 
     // Send a FILE_INFO frame.
     let msg = serde_json::json!({
@@ -124,9 +128,13 @@ async fn test_ws_unknown_message_type_is_ignored() {
             .expect("serve_ws error in test");
     });
 
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("WS connect failed");
+    let (mut ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("WS connect failed");
 
     // Send an unknown type. The server must not panic.
     let unknown = serde_json::json!({"type": "MYSTERY_TYPE", "data": 42});
@@ -193,9 +201,13 @@ async fn test_turbofig_status_times_out_when_plugin_silent() {
     });
 
     // Connect the mock plugin and register, but never reply to STATUS.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect");
 
     let fi = serde_json::json!({
         "type": "FILE_INFO",
@@ -352,9 +364,13 @@ async fn test_turbofig_status_routes_through_plugin() {
     });
 
     // Connect the mock plugin over WebSocket.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect failed");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect failed");
 
     // Register the plugin.
     let fi = serde_json::json!({
@@ -544,9 +560,13 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     });
 
     // First connect: the plugin registers.
-    let (mut ws1, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("first WS connect failed");
+    let (mut ws1, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("first WS connect failed");
     ws1.send(TtMessage::Text(file_info.to_string()))
         .await
         .expect("send FILE_INFO (1)");
@@ -581,9 +601,13 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     );
 
     // Figma reopens: a new socket re-registers with no manual steps.
-    let (mut ws2, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("reconnect WS failed");
+    let (mut ws2, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("reconnect WS failed");
     ws2.send(TtMessage::Text(file_info.to_string()))
         .await
         .expect("send FILE_INFO (2)");
@@ -617,9 +641,13 @@ async fn test_plugin_repairs_after_figma_and_daemon_restart() {
     });
 
     // The plugin reconnects to the restarted daemon and re-registers.
-    let (mut ws3, _) = connect_async(format!("ws://127.0.0.1:{}/", addr_b.port()))
-        .await
-        .expect("connect to restarted daemon failed");
+    let (mut ws3, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr_b.port(),
+        state_b.token()
+    ))
+    .await
+    .expect("connect to restarted daemon failed");
     ws3.send(TtMessage::Text(file_info.to_string()))
         .await
         .expect("send FILE_INFO (3)");
@@ -673,9 +701,13 @@ async fn test_turbofig_execute_routes_through_plugin() {
     });
 
     // Connect the mock plugin over WebSocket.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect failed");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect failed");
 
     // Register the plugin.
     let fi = serde_json::json!({
@@ -854,9 +886,13 @@ async fn test_turbofig_get_selection_routes_through_plugin() {
     });
 
     // Connect the mock plugin over WebSocket.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect failed");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect failed");
 
     // Register the plugin.
     let fi = serde_json::json!({
@@ -1034,9 +1070,13 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
             .expect("serve_with_state error in test");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect failed");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect failed");
 
     let fi = serde_json::json!({
         "type": "FILE_INFO",
@@ -1195,9 +1235,13 @@ async fn test_run_screenshot_file_mode_writes_png() {
             .expect("serve_ws error in test");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect");
 
     let fi = serde_json::json!({
         "type": "FILE_INFO",
@@ -1337,9 +1381,13 @@ async fn spawn_screenshot_plugin(state: Arc<turbofig::AppState>, png: &'static s
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "F", "name": "F"}).to_string(),
@@ -1452,9 +1500,13 @@ async fn test_disconnect_mid_request_does_not_hang_caller() {
     });
 
     // Connect the mock plugin and register.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "F1", "name": "Deck File"})
@@ -1592,9 +1644,13 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
             .expect("serve_with_state error in test");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin WS connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin WS connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "abc123", "name": "My Design File"})
@@ -1778,9 +1834,13 @@ async fn test_run_screenshot_real_png_is_downscaled() {
             .expect("serve_ws error");
     });
 
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "F", "name": "F"}).to_string(),
@@ -1897,6 +1957,7 @@ async fn test_ws_upgrade_with_null_origin_is_accepted() {
         .expect("bind ephemeral WS port");
     let addr = listener.local_addr().expect("read local addr");
     let state = Arc::new(turbofig::AppState::new());
+    let token = state.token().to_owned();
 
     tokio::spawn(async move {
         turbofig::serve_ws(listener, state)
@@ -1904,7 +1965,7 @@ async fn test_ws_upgrade_with_null_origin_is_accepted() {
             .expect("serve_ws error in test");
     });
 
-    let mut request = format!("ws://127.0.0.1:{}/", addr.port())
+    let mut request = format!("ws://127.0.0.1:{}/?token={token}", addr.port())
         .into_client_request()
         .expect("build client request");
     request
@@ -1936,9 +1997,13 @@ async fn test_oversize_ws_message_drops_the_connection() {
             .expect("serve_ws error in test");
     });
 
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("WS connect failed");
+    let (mut ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("WS connect failed");
 
     ws.send(TtMessage::Text(
         serde_json::json!({"type": "FILE_INFO", "fileKey": "big", "name": "Big File"}).to_string(),
@@ -2004,9 +2069,13 @@ async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
             .expect("serve_ws error in test");
     });
 
-    let (mut ws1, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("first connect");
+    let (mut ws1, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("first connect");
     ws1.send(TtMessage::Text(
         serde_json::json!({"type": "FILE_INFO", "fileKey": "dup", "name": "First"}).to_string(),
     ))
@@ -2024,9 +2093,13 @@ async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
     )
     .await;
 
-    let (mut ws2, _) = connect_async(format!("ws://127.0.0.1:{}/", addr.port()))
-        .await
-        .expect("second connect");
+    let (mut ws2, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("second connect");
     ws2.send(TtMessage::Text(
         serde_json::json!({"type": "FILE_INFO", "fileKey": "dup", "name": "Second"}).to_string(),
     ))
@@ -2066,4 +2139,146 @@ async fn test_reconnect_same_file_key_keeps_both_connections_registered() {
         "both dup connections to deregister after close",
     )
     .await;
+}
+
+// ── pairing token tests ──────────────────────────────────────────────────────
+
+/// A WS upgrade with no `token` query parameter at all is rejected with 401.
+#[tokio::test]
+async fn test_ws_upgrade_with_no_token_is_rejected() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let result = connect_async(format!("ws://127.0.0.1:{}/", addr.port())).await;
+    assert!(
+        result.is_err(),
+        "a WS upgrade with no token must be rejected"
+    );
+}
+
+/// A WS upgrade with a wrong (but correctly sized) token is rejected with 401.
+#[tokio::test]
+async fn test_ws_upgrade_with_wrong_token_is_rejected() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+    let wrong = "0".repeat(state.token().len());
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let result = connect_async(format!("ws://127.0.0.1:{}/?token={wrong}", addr.port())).await;
+    assert!(
+        result.is_err(),
+        "a WS upgrade with a wrong token must be rejected"
+    );
+}
+
+/// A WS upgrade with a token of the wrong length is rejected with 401.
+#[tokio::test]
+async fn test_ws_upgrade_with_wrong_length_token_is_rejected() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let result = connect_async(format!("ws://127.0.0.1:{}/?token=short", addr.port())).await;
+    assert!(
+        result.is_err(),
+        "a WS upgrade with a wrong-length token must be rejected"
+    );
+}
+
+/// A WS upgrade with the correct token succeeds.
+#[tokio::test]
+async fn test_ws_upgrade_with_correct_token_is_accepted() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state = Arc::new(turbofig::AppState::new());
+    let token = state.token().to_owned();
+
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let result = connect_async(format!("ws://127.0.0.1:{}/?token={token}", addr.port())).await;
+    assert!(
+        result.is_ok(),
+        "a WS upgrade with the correct token must be accepted, got: {:?}",
+        result.err()
+    );
+}
+
+/// The pairing token never appears in turbofig_status output, even when a
+/// plugin is connected. The daemon has no HTTP /health endpoint; status is
+/// the equivalent surface to check.
+#[tokio::test]
+async fn test_turbofig_status_never_includes_the_token() {
+    let state = Arc::new(turbofig::AppState::new());
+    let token = state.token().to_owned();
+
+    let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind WS port");
+    let ws_addr = ws_listener.local_addr().expect("ws local addr");
+    let ws_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(ws_listener, ws_state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let (mut plugin_ws, _) =
+        connect_async(format!("ws://127.0.0.1:{}/?token={token}", ws_addr.port()))
+            .await
+            .expect("mock plugin WS connect failed");
+
+    let fi =
+        serde_json::json!({"type": "FILE_INFO", "fileKey": "abc123", "name": "My Design File"});
+    plugin_ws
+        .send(TtMessage::Text(fi.to_string()))
+        .await
+        .expect("send FILE_INFO");
+    wait_until(
+        || {
+            state
+                .plugin_snapshot()
+                .is_some_and(|(fk, _)| !fk.is_empty())
+        },
+        common::WAIT_DEADLINE_MS,
+        "plugin to register",
+    )
+    .await;
+
+    let status = turbofig::run_status(&state, None, None).await;
+    let status_str = status.to_string();
+    assert!(
+        !status_str.contains(&token),
+        "turbofig_status output must never contain the pairing token, got: {status_str}"
+    );
 }

@@ -63,7 +63,7 @@ async fn connect_mock_plugin(
     file_key: &str,
     reply_tag: &'static str,
 ) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
         .await
         .expect("mock plugin connect");
 

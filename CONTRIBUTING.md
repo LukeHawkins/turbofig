@@ -38,11 +38,19 @@ port `18847`, and a file-bridge at `~/.turbofig`. Override ports with
 
 ## Load the plugin in Figma
 
-1. Build the plugin: `cd plugin && bun run build`.
-2. Open Figma Desktop.
-3. Go to **Plugins > Development > Import plugin from manifest**.
-4. Select `plugin/manifest.json`.
-5. Open a file and run the plugin. The panel shows the connection status and
+The daemon's WebSocket port requires a pairing token (`SECURITY.md`,
+`DECISIONS.md` #39). **Start the daemon once before you build the plugin**,
+so `~/.turbofig/token` exists: `plugin/build-ui.ts` reads it and injects the
+real token into your local `dist/ui.html`. Skip this step and the build still
+succeeds, but prints a warning and embeds a placeholder that cannot connect.
+
+1. Start the daemon once: `cargo run` (leave it running, or stop it after
+   `~/.turbofig/token` is created).
+2. Build the plugin: `cd plugin && bun run build`.
+3. Open Figma Desktop.
+4. Go to **Plugins > Development > Import plugin from manifest**.
+5. Select `plugin/manifest.json`.
+6. Open a file and run the plugin. The panel shows the connection status and
    the file key.
 
 After any change under `plugin/src/`, rebuild with `cd plugin && bun run

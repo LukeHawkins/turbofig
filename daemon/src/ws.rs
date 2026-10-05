@@ -2,8 +2,9 @@
 
 use crate::config::port_from_env;
 use crate::state::AppState;
+use crate::token::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -148,6 +149,25 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
     }
 }
 
+/// Query parameters accepted on the WS upgrade. Only `token` is read; any
+/// other parameter is ignored rather than rejected, so a future addition
+/// never breaks an older plugin's URL.
+#[derive(serde::Deserialize)]
+struct WsAuthQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// Returns true when `candidate` matches `expected` in constant time.
+/// A missing `candidate` (no `token` query parameter at all) is rejected
+/// without comparison: there is nothing to compare, not a same-length miss.
+fn token_allowed(candidate: Option<&str>, expected: &str) -> bool {
+    match candidate {
+        Some(c) => constant_time_eq(c, expected),
+        None => false,
+    }
+}
+
 /// Returns true when `origin` is acceptable for the plugin WebSocket.
 /// Accepts a missing Origin header (non-browser clients send none) and the
 /// literal string "null" (the Figma plugin UI runs in a sandboxed iframe,
@@ -160,16 +180,28 @@ fn ws_origin_allowed(origin: Option<&axum::http::HeaderValue>) -> bool {
 }
 
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
+///
 /// Rejects the upgrade with 403 when the Origin header is present and is
-/// neither absent nor "null", so an arbitrary web page cannot open this socket
-/// and drive the Figma plugin (the MCP spec's Origin-validation requirement).
+/// neither absent nor "null" (the MCP spec's Origin-validation requirement).
+/// Then rejects with 401 when the `token` query parameter is missing or does
+/// not match the daemon's pairing token: Origin alone cannot tell the real
+/// Figma plugin UI apart from a sandboxed `<iframe>` on a malicious web page,
+/// since both report Origin `null` (see `token.rs`).
 async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: axum::http::HeaderMap,
+    Query(auth): Query<WsAuthQuery>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Response {
     if !ws_origin_allowed(headers.get(axum::http::header::ORIGIN)) {
         return (axum::http::StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    if !token_allowed(auth.token.as_deref(), state.token()) {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "invalid or missing token",
+        )
+            .into_response();
     }
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)
@@ -220,6 +252,27 @@ mod tests {
         assert!(ws_origin_allowed(Some(
             &axum::http::HeaderValue::from_static("null")
         )));
+    }
+
+    #[test]
+    fn token_allowed_accepts_a_matching_token() {
+        assert!(token_allowed(Some("abc123"), "abc123"));
+    }
+
+    #[test]
+    fn token_allowed_rejects_a_wrong_token() {
+        assert!(!token_allowed(Some("wrong"), "abc123"));
+    }
+
+    #[test]
+    fn token_allowed_rejects_a_missing_token() {
+        assert!(!token_allowed(None, "abc123"));
+    }
+
+    #[test]
+    fn token_allowed_rejects_a_token_of_the_wrong_length() {
+        assert!(!token_allowed(Some("abc12"), "abc123"));
+        assert!(!token_allowed(Some("abc1234"), "abc123"));
     }
 
     #[test]

@@ -47,7 +47,7 @@ async fn connect_mock_plugin(
     file_key: &str,
     reply_tag: &'static str,
 ) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
         .await
         .expect("mock plugin connect");
 
@@ -228,9 +228,10 @@ async fn test_fk2_survives_fk1_close() {
     connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Connect fk1 as a raw socket so we can close it deliberately.
-    let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
-        .await
-        .expect("fk1 connect");
+    let (mut fk1_ws, _) =
+        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
+            .await
+            .expect("fk1 connect");
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({
@@ -299,9 +300,10 @@ async fn test_timeout_isolation_two_connections() {
     });
 
     // Connect fk1 as a silent plugin. It registers but never sends EXECUTE replies.
-    let (mut fk1_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
-        .await
-        .expect("fk1 connect");
+    let (mut fk1_ws, _) =
+        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
+            .await
+            .expect("fk1 connect");
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "fk1", "name": "fk1"}).to_string(),

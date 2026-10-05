@@ -46,8 +46,13 @@ async fn start_stack() -> (u16, String, Arc<turbofig::AppState>) {
 /// Connect a mock plugin with `file_key`. The plugin replies to every EXECUTE
 /// frame with `{"ok":true,"result":{"from":<reply_tag>}}`, where `reply_tag`
 /// identifies which plugin sent the reply.
-async fn connect_mock_plugin(ws_port: u16, file_key: &str, reply_tag: &'static str) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/"))
+async fn connect_mock_plugin(
+    ws_port: u16,
+    state: &Arc<turbofig::AppState>,
+    file_key: &str,
+    reply_tag: &'static str,
+) {
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
         .await
         .expect("mock plugin connect");
 
@@ -246,7 +251,7 @@ async fn call_execute(
 async fn test_execute_one_plugin_no_file_key_routes_to_it() {
     let (ws_port, base_url, state) = start_stack().await;
 
-    connect_mock_plugin(ws_port, "fk1", "fk1-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk1", "fk1-reply").await;
     // Wait on observable state, not a fixed sleep.
     let found = wait_for_file_key(&state, "fk1").await;
     assert!(found, "fk1 must register before routing");
@@ -275,8 +280,8 @@ async fn test_execute_one_plugin_no_file_key_routes_to_it() {
 async fn test_execute_two_plugins_explicit_file_key_routes_to_correct_plugin() {
     let (ws_port, base_url, state) = start_stack().await;
 
-    connect_mock_plugin(ws_port, "fk1", "fk1-reply").await;
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk1", "fk1-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
     // Wait on observable state before routing.
     let found1 = wait_for_file_key(&state, "fk1").await;
     let found2 = wait_for_file_key(&state, "fk2").await;
@@ -307,8 +312,8 @@ async fn test_execute_two_plugins_explicit_file_key_routes_to_correct_plugin() {
 async fn test_session_stickiness_after_explicit_file_key() {
     let (ws_port, base_url, state) = start_stack().await;
 
-    connect_mock_plugin(ws_port, "fk1", "fk1-reply").await;
-    connect_mock_plugin(ws_port, "fk2", "fk2-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk1", "fk1-reply").await;
+    connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
     // Wait on observable state before routing.
     let found1 = wait_for_file_key(&state, "fk1").await;
     let found2 = wait_for_file_key(&state, "fk2").await;

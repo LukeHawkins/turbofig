@@ -150,11 +150,14 @@ export function parsePort(input: string): number | null {
 }
 
 /**
- * Returns the WebSocket URL for the given port.
+ * Returns the WebSocket URL for the given port and pairing token.
  * Always connects to 127.0.0.1, which is the address the daemon binds.
+ * The daemon rejects the upgrade with 401 when the `token` query parameter
+ * is missing or wrong (see daemon/src/ws.rs), so every connect and
+ * reconnect, including after a PORT switch, must carry it.
  */
-export function wsUrlForPort(port: number): string {
-  return `ws://127.0.0.1:${port}`;
+export function wsUrlForPort(port: number, token: string): string {
+  return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`;
 }
 
 /**

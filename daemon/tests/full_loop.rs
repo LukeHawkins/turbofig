@@ -72,9 +72,13 @@ async fn spawn_ws(state: Arc<turbofig::AppState>) -> SocketAddr {
 ///   GET_SELECTION  -> returns that frame as the one selected node.
 ///   SCREENSHOT     -> returns a base64 PNG (bytes "hello").
 async fn spawn_design_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "F1", "name": "Design File"})
@@ -324,9 +328,13 @@ async fn test_full_loop_over_http_mcp() {
 /// Spawn a mock plugin that, on GET_SELECTION, echoes the fields and depth it
 /// received back inside the result so the test can assert the daemon forwarded them.
 async fn spawn_echo_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock echo plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock echo plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "Echo", "name": "Echo File"})
@@ -426,9 +434,13 @@ async fn test_get_selection_fields_and_depth_forwarded() {
 /// (well over the 20 000-byte read budget) so the budget warning fires.
 /// The small-result variant reuses spawn_design_plugin, which returns a small object.
 async fn spawn_large_result_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock large-result plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock large-result plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "Big", "name": "Big File"})
@@ -529,9 +541,13 @@ async fn test_get_selection_depth_clamps_at_daemon() {
 /// Spawn a mock plugin whose GET_SELECTION reply carries a selection payload
 /// well over the 20 000-byte read budget so the warning fires.
 async fn spawn_large_selection_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock large-selection plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock large-selection plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "BigSel", "name": "Big Selection File"})
@@ -626,9 +642,13 @@ async fn test_get_selection_small_result_has_no_warning() {
 /// returns the same bytes; re-encoding them gives a base64 string well over the
 /// 100 000-byte inline budget so the warning fires.
 async fn spawn_large_screenshot_plugin(ws_addr: SocketAddr, state: &Arc<turbofig::AppState>) {
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{}/", ws_addr.port()))
-        .await
-        .expect("mock large-screenshot plugin connect");
+    let (mut plugin_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        ws_addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("mock large-screenshot plugin connect");
     plugin_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "BigShot", "name": "Big Screenshot File"})
