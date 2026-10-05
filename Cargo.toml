@@ -5,3 +5,12 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 rust-version = "1.94"
+repository = "https://github.com/LukeHawkins/turbofig"
+homepage = "https://github.com/LukeHawkins/turbofig"
+description = "The always-on Figma design agent: a Rust daemon plus a thin Figma plugin"
+license = "MIT"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
