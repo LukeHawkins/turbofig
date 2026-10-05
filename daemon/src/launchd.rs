@@ -53,12 +53,22 @@ fn xml_escape(s: &str) -> String {
 /// `program` is the stable binary path (see `stable_binary_path`);
 /// `ProgramArguments` is `[program, "serve"]`. `log_path` is used for both
 /// `StandardOutPath` and `StandardErrorPath`. Sets `RunAtLoad` and
-/// `KeepAlive` true, and `TURBOFIG_SUPERVISED=1` in `EnvironmentVariables`
-/// so the running daemon knows to watch for a Homebrew upgrade (see
-/// `ARCHITECTURE.md`'s supervised-restart section).
-pub fn plist_contents(program: &Path, log_path: &Path) -> String {
+/// `KeepAlive` true, and `TURBOFIG_SUPERVISED=1` plus every pair in
+/// `extra_env` in `EnvironmentVariables`, so a `TURBOFIG_*` override set at
+/// `setup` time (bridge dir, ports, timeout) also applies to the launchd
+/// daemon, not only to the one-off `setup` process. `extra_env` entries are
+/// written in the given order; both keys and values are XML-escaped.
+pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, String)]) -> String {
     let program = xml_escape(&program.to_string_lossy());
     let log_path = xml_escape(&log_path.to_string_lossy());
+    let mut extra_env_xml = String::new();
+    for (key, value) in extra_env {
+        extra_env_xml.push_str(&format!(
+            "\t\t<key>{}</key>\n\t\t<string>{}</string>\n",
+            xml_escape(key),
+            xml_escape(value)
+        ));
+    }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -79,7 +89,7 @@ pub fn plist_contents(program: &Path, log_path: &Path) -> String {
 	<dict>
 		<key>TURBOFIG_SUPERVISED</key>
 		<string>1</string>
-	</dict>
+{extra_env_xml}	</dict>
 	<key>StandardOutPath</key>
 	<string>{log_path}</string>
 	<key>StandardErrorPath</key>
@@ -88,6 +98,32 @@ pub fn plist_contents(program: &Path, log_path: &Path) -> String {
 </plist>
 "#
     )
+}
+
+/// Collects every `TURBOFIG_*` environment variable set in the current
+/// process, except `TURBOFIG_SUPERVISED` (the daemon sets its own) and
+/// `TURBOFIG_LAUNCH_AGENTS_DIR` (a `setup`-only seam, never read by the
+/// daemon). Used to carry a `setup`-time override (bridge dir, ports,
+/// timeout) into the launchd plist so the daemon sees the same values.
+pub fn carry_over_turbofig_env() -> Vec<(String, String)> {
+    carry_over_turbofig_env_from(std::env::vars())
+}
+
+/// The pure, testable half of `carry_over_turbofig_env`: filters and sorts a
+/// given iterator of environment pairs instead of reading the real process
+/// environment, so a test never has to mutate global state.
+fn carry_over_turbofig_env_from(
+    vars: impl Iterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
+    let mut vars: Vec<(String, String)> = vars
+        .filter(|(key, _)| {
+            key.starts_with("TURBOFIG_")
+                && key != "TURBOFIG_SUPERVISED"
+                && key != "TURBOFIG_LAUNCH_AGENTS_DIR"
+        })
+        .collect();
+    vars.sort();
+    vars
 }
 
 /// Seam over the two `launchctl` subcommands `setup`/`uninstall` need.
@@ -199,6 +235,7 @@ mod tests {
         let xml = plist_contents(
             Path::new("/opt/homebrew/bin/turbofig"),
             Path::new("/Users/dev/.turbofig/daemon.log"),
+            &[],
         );
         assert!(xml.contains("<string>eu.lukehawkins.turbofig</string>"));
         assert!(xml.contains("<string>/opt/homebrew/bin/turbofig</string>"));
@@ -211,9 +248,69 @@ mod tests {
 
     #[test]
     fn plist_contents_escapes_xml_special_characters_in_paths() {
-        let xml = plist_contents(Path::new("/tmp/a&b"), Path::new("/tmp/log"));
+        let xml = plist_contents(Path::new("/tmp/a&b"), Path::new("/tmp/log"), &[]);
         assert!(xml.contains("a&amp;b"));
         assert!(!xml.contains("a&b<"));
+    }
+
+    #[test]
+    fn plist_contents_carries_extra_env_vars_with_xml_escaping() {
+        let xml = plist_contents(
+            Path::new("/opt/homebrew/bin/turbofig"),
+            Path::new("/tmp/log"),
+            &[
+                ("TURBOFIG_BRIDGE_DIR".to_owned(), "/tmp/a&b".to_owned()),
+                ("TURBOFIG_MCP_PORT".to_owned(), "18999".to_owned()),
+            ],
+        );
+        assert!(xml.contains("<key>TURBOFIG_BRIDGE_DIR</key>\n\t\t<string>/tmp/a&amp;b</string>"));
+        assert!(xml.contains("<key>TURBOFIG_MCP_PORT</key>\n\t\t<string>18999</string>"));
+        // Still carries the daemon's own supervised flag alongside the extras.
+        assert!(xml.contains("<key>TURBOFIG_SUPERVISED</key>\n\t\t<string>1</string>"));
+    }
+
+    #[test]
+    fn carry_over_turbofig_env_from_excludes_supervised_and_launch_agents_dir() {
+        let given = vec![
+            (
+                "TURBOFIG_BRIDGE_DIR".to_owned(),
+                "/tmp/carry-over-test".to_owned(),
+            ),
+            ("TURBOFIG_SUPERVISED".to_owned(), "1".to_owned()),
+            (
+                "TURBOFIG_LAUNCH_AGENTS_DIR".to_owned(),
+                "/tmp/agents".to_owned(),
+            ),
+            ("PATH".to_owned(), "/usr/bin".to_owned()),
+        ];
+
+        let vars = carry_over_turbofig_env_from(given.into_iter());
+
+        assert_eq!(
+            vars,
+            vec![(
+                "TURBOFIG_BRIDGE_DIR".to_owned(),
+                "/tmp/carry-over-test".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn carry_over_turbofig_env_from_sorts_by_key() {
+        let given = vec![
+            ("TURBOFIG_WS_PORT".to_owned(), "18847".to_owned()),
+            ("TURBOFIG_BRIDGE_DIR".to_owned(), "/tmp/x".to_owned()),
+        ];
+
+        let vars = carry_over_turbofig_env_from(given.into_iter());
+
+        assert_eq!(
+            vars,
+            vec![
+                ("TURBOFIG_BRIDGE_DIR".to_owned(), "/tmp/x".to_owned()),
+                ("TURBOFIG_WS_PORT".to_owned(), "18847".to_owned()),
+            ]
+        );
     }
 
     #[test]
