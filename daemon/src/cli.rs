@@ -13,6 +13,7 @@ use crate::token::ensure_token;
 use clap::{Parser, Subcommand};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -79,6 +80,21 @@ pub fn run_setup(
     uid: &str,
     current_exe: &Path,
 ) -> io::Result<SetupOutcome> {
+    run_setup_with_sleep(home, launch_agents_dir, launchctl, uid, current_exe, &|d| {
+        std::thread::sleep(d)
+    })
+}
+
+/// The testable half of `run_setup`: takes an explicit `sleep` so a test can
+/// pass a no-op and exercise `bootstrap`'s retry loop without a real wait.
+fn run_setup_with_sleep(
+    home: &Path,
+    launch_agents_dir: &Path,
+    launchctl: &dyn Launchctl,
+    uid: &str,
+    current_exe: &Path,
+    sleep: &dyn Fn(Duration),
+) -> io::Result<SetupOutcome> {
     let token = ensure_token(home)?;
     let manifest_path = write_plugin_files(home, &token)?;
 
@@ -93,13 +109,40 @@ pub fn run_setup(
     std::fs::write(&plist_path, plist_contents(&program, &log_path, &extra_env))?;
 
     launchctl.bootout(&service_target(uid));
-    launchctl.bootstrap(&domain_target(uid), &plist_path)?;
+    bootstrap_with_retry(launchctl, &domain_target(uid), &plist_path, sleep)?;
 
     Ok(SetupOutcome {
         manifest_path,
         plist_path,
         carried_over_env: extra_env.into_iter().map(|(key, _)| key).collect(),
     })
+}
+
+/// How many times to retry `launchctl bootstrap` after a failure.
+const BOOTSTRAP_MAX_ATTEMPTS: u32 = 5;
+
+/// Calls `launchctl.bootstrap`, retrying up to `BOOTSTRAP_MAX_ATTEMPTS` times
+/// with a short backoff between attempts. `bootstrap` right after `bootout`
+/// often fails on macOS with "Bootstrap failed: 5" while the old service
+/// instance is still shutting down; retrying a few times usually succeeds
+/// without the user having to re-run `setup` themselves.
+fn bootstrap_with_retry(
+    launchctl: &dyn Launchctl,
+    domain_target: &str,
+    plist_path: &Path,
+    sleep: &dyn Fn(Duration),
+) -> io::Result<()> {
+    let mut attempt = 1;
+    loop {
+        match launchctl.bootstrap(domain_target, plist_path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt >= BOOTSTRAP_MAX_ATTEMPTS => return Err(e),
+            Err(_) => {
+                sleep(Duration::from_millis(200 * u64::from(attempt)));
+                attempt += 1;
+            }
+        }
+    }
 }
 
 /// Message printed after `setup` when 1 or more `TURBOFIG_*` variables were
@@ -276,12 +319,22 @@ mod tests {
 
     struct FakeLaunchctl {
         calls: RefCell<Vec<String>>,
+        /// Number of leading `bootstrap` calls that fail before one succeeds.
+        bootstrap_failures_remaining: RefCell<u32>,
     }
 
     impl FakeLaunchctl {
         fn new() -> Self {
             Self {
                 calls: RefCell::new(Vec::new()),
+                bootstrap_failures_remaining: RefCell::new(0),
+            }
+        }
+
+        fn failing_bootstrap_times(n: u32) -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                bootstrap_failures_remaining: RefCell::new(n),
             }
         }
     }
@@ -297,6 +350,11 @@ mod tests {
                 "bootstrap {domain_target} {}",
                 plist_path.display()
             ));
+            let mut remaining = self.bootstrap_failures_remaining.borrow_mut();
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Err(io::Error::other("fake bootstrap failure"));
+            }
             Ok(())
         }
     }
@@ -383,6 +441,69 @@ mod tests {
         let plist_text = std::fs::read_to_string(&outcome.plist_path).expect("read plist");
         assert!(plist_text.contains("<key>TURBOFIG_MCP_PORT</key>\n\t\t<string>19999</string>"));
         assert!(!plist_text.contains("TURBOFIG_LAUNCH_AGENTS_DIR"));
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_setup_retries_bootstrap_after_2_failures_with_no_real_wait() {
+        let home = unique_temp_dir("home-bootstrap-retry");
+        let launch_agents_dir = unique_temp_dir("agents-bootstrap-retry");
+        let launchctl = FakeLaunchctl::failing_bootstrap_times(2);
+        let fake_exe = std::env::current_exe().expect("current_exe");
+        let sleeps: RefCell<Vec<Duration>> = RefCell::new(Vec::new());
+
+        let outcome = run_setup_with_sleep(
+            &home,
+            &launch_agents_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &|d| sleeps.borrow_mut().push(d),
+        );
+
+        assert!(
+            outcome.is_ok(),
+            "setup must succeed once bootstrap stops failing"
+        );
+        assert_eq!(
+            sleeps.borrow().len(),
+            2,
+            "must sleep once per failed attempt before retrying"
+        );
+        assert_eq!(
+            launchctl
+                .calls
+                .borrow()
+                .iter()
+                .filter(|c| c.starts_with("bootstrap"))
+                .count(),
+            3,
+            "2 failures plus 1 success"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_setup_gives_up_after_the_max_bootstrap_attempts() {
+        let home = unique_temp_dir("home-bootstrap-giveup");
+        let launch_agents_dir = unique_temp_dir("agents-bootstrap-giveup");
+        let launchctl = FakeLaunchctl::failing_bootstrap_times(BOOTSTRAP_MAX_ATTEMPTS);
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        let outcome = run_setup_with_sleep(
+            &home,
+            &launch_agents_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &|_| {},
+        );
+
+        assert!(outcome.is_err());
 
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&launch_agents_dir).ok();
