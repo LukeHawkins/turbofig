@@ -135,9 +135,17 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
+    // `initialize` and `tools/list` both answer at once, with no daemon
+    // needed (see `proxy::run`'s doc comment), so the proxy's background
+    // bootstrap (which starts the daemon this test never ran itself) may
+    // still be in flight here. Wait for it before building the guard below,
+    // or a detached daemon it starts just after could outlive this test
+    // unguarded.
+    wait_for_health(&client, mcp_port).await;
     let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
     let stdio_tools = stdio_tools_list(&mut writer, &mut reader).await;
 
@@ -159,11 +167,11 @@ async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let mut writer = proxy.0.stdin.take().expect("proxy stdin");
     let mut reader = tokio::io::BufReader::new(proxy.0.stdout.take().expect("proxy stdout"));
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 
     common::send_json(
         &mut writer,
@@ -185,6 +193,14 @@ async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
     assert_eq!(server_info["version"], json!(env!("CARGO_PKG_VERSION")));
     assert_ne!(server_info["name"], json!("rmcp"));
     assert_ne!(server_info["version"], json!("3.1.0"));
+
+    // `initialize` answers at once, with no daemon needed (see `proxy::run`'s
+    // doc comment), so the proxy's background bootstrap may still be
+    // starting the daemon this test never ran itself. Wait for it before
+    // this function returns, or the detached daemon it starts could outlive
+    // this test with nothing left to guard it.
+    wait_for_health(&client, mcp_port).await;
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
 }
 
 // ── (b) `turbofig mcp` with no daemon running starts one ───────────────────

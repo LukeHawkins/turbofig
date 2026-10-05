@@ -308,3 +308,122 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
 
     plugin_task.abort();
 }
+
+// ── (e) stdio serves at once; a slow handoff drain never blocks initialize ─
+
+/// `initialize` must answer at once over stdio even while the proxy's
+/// background version-handoff restart is still mid-drain: serving stdio no
+/// longer waits on that work (see `proxy::run`'s doc comment). An old daemon
+/// plus a deliberately slow in-flight job (the same fixture test (d) above
+/// uses) makes the restart's drain take noticeably longer than the 1 s
+/// budget this asserts, so a regression back to "handoff before serve"
+/// would fail this with a multi-second `initialize`, not a timeout tuned so
+/// tight it could flake.
+#[tokio::test]
+async fn initialize_answers_within_1s_while_a_slow_version_handoff_drain_is_in_progress() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, Some(OLD_VERSION));
+    wait_for_health(&client, mcp_port).await;
+    let token = tokio::fs::read_to_string(home.path().join("token"))
+        .await
+        .expect("read token")
+        .trim()
+        .to_owned();
+
+    const JOB_DELAY: Duration = Duration::from_millis(1500);
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            json!({"type": "FILE_INFO", "fileKey": "slow-file", "name": "Slow File"}).to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    wait_for_file_connected(&client, mcp_port, &token, "slow-file").await;
+
+    let plugin_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            let TtMessage::Text(text) = msg else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if v["type"] == "EXECUTE" {
+                if let Some(id) = v.get("requestId").and_then(Value::as_u64) {
+                    tokio::time::sleep(JOB_DELAY).await;
+                    let reply = json!({"type": "RESULT", "requestId": id, "ok": true, "result": 1});
+                    let _ = plugin_ws.send(TtMessage::Text(reply.to_string())).await;
+                }
+            }
+        }
+    });
+
+    // Fire a slow job directly against the old daemon, without awaiting it
+    // yet, so the restart's drain this test is about to trigger has
+    // something genuinely slow to wait on.
+    let job_client = client.clone();
+    let job_url = format!("http://127.0.0.1:{mcp_port}/job");
+    let job_token = token.clone();
+    let job_task = tokio::spawn(async move {
+        job_client
+            .post(job_url)
+            .bearer_auth(job_token)
+            .json(&json!({"op": "execute", "fileKey": "slow-file", "code": "return 1;"}))
+            .send()
+            .await
+            .expect("send job")
+    });
+    // Give the slow job a head start so it is registered as in-flight before
+    // the proxy's background handoff requests the restart.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
+    let mut writer = proxy.0.stdin.take().expect("proxy stdin");
+    let mut reader = tokio::io::BufReader::new(proxy.0.stdout.take().expect("proxy stdout"));
+
+    let started = Instant::now();
+    common::send_json(
+        &mut writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+    )
+    .await;
+    let init = common::read_response_for_id(&mut reader, 1).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        init.get("result").is_some(),
+        "initialize must succeed over stdio even while a handoff is in progress: {init}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "initialize must answer within 1s regardless of the in-progress handoff/drain \
+         (JOB_DELAY alone is {JOB_DELAY:?}); took {elapsed:?}"
+    );
+
+    // Let the slow job (and so the drain, and the handoff) finish, and clean
+    // up both daemons. This test never makes a tool call (the whole point is
+    // that `initialize` does not need one), so nothing else here forces the
+    // background bootstrap's restart to finish; wait for the new daemon's
+    // health explicitly before guarding it, or it could still be starting
+    // when this test function returns.
+    let _ = job_task.await.expect("job task");
+    let status = old_daemon.wait().await.expect("wait old daemon");
+    assert!(status.success());
+    wait_for_health(&client, mcp_port).await;
+    let _new_daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    plugin_task.abort();
+}
