@@ -35,10 +35,20 @@ use rmcp::{
     handler::server::wrapper::Parameters, model::*, tool, tool_handler, tool_router,
     transport::io::stdio, ErrorData as McpError, ServerHandler, ServiceExt,
 };
+use std::cmp::Ordering;
 use std::path::PathBuf;
+use std::time::Duration;
+
+/// Longest the proxy waits, after an authenticated `/control restart`, for
+/// `/health` to stop answering before giving up and proceeding with whatever
+/// daemon is still there. The daemon's own drain wait is up to 60 s
+/// (`control::CONTROL_DRAIN_MAX_WAIT`); this must comfortably outlast that.
+const UNREACHABLE_DEADLINE: Duration = Duration::from_secs(65);
+const UNREACHABLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Starts the stdio MCP proxy: ensures a daemon is reachable on `mcp_port`
 /// (starting one via `spawn::spawn_detached_daemon` if `GET /health` fails),
+/// hands off to a newer binary if the running daemon is older than this one,
 /// then serves the four tools over stdio until the client disconnects.
 ///
 /// `turbofig_binary` and `home` are only used if the daemon needs to be
@@ -49,14 +59,20 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
         .build()
         .map_err(|e| format!("turbofig mcp: could not build the HTTP client: {e}"))?;
 
-    if !daemon_is_healthy(&client, mcp_port).await {
-        eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
-        crate::spawn::spawn_detached_daemon(&turbofig_binary, &home)
-            .map_err(|e| format!("turbofig mcp: could not start the daemon: {e}"))?;
-        crate::spawn::wait_for_health(&client, mcp_port)
-            .await
-            .map_err(|e| format!("turbofig mcp: {e}"))?;
-    }
+    let health = match fetch_health(&client, mcp_port).await {
+        Some(h) => h,
+        None => {
+            eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
+            crate::spawn::spawn_detached_daemon(&turbofig_binary, &home)
+                .map_err(|e| format!("turbofig mcp: could not start the daemon: {e}"))?;
+            crate::spawn::wait_for_health(&client, mcp_port)
+                .await
+                .map_err(|e| format!("turbofig mcp: {e}"))?;
+            fetch_health(&client, mcp_port).await.ok_or_else(|| {
+                "turbofig mcp: the daemon answered /health once but not again".to_owned()
+            })?
+        }
+    };
 
     let handler = ProxyHandler {
         client,
@@ -64,6 +80,9 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
         turbofig_binary,
         home,
     };
+
+    let daemon_version = health["version"].as_str().unwrap_or_default();
+    handler.handle_version_handoff(daemon_version).await?;
 
     let service = handler
         .serve(stdio())
@@ -76,12 +95,41 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
     Ok(())
 }
 
-/// Returns true when `GET /health` answers with a success status.
-/// Any failure (connection refused, timeout, a non-success status) is
-/// treated the same: not healthy, try starting a daemon.
-async fn daemon_is_healthy(client: &reqwest::Client, mcp_port: u16) -> bool {
+/// Returns `GET /health`'s parsed JSON body, or `None` for any failure
+/// (connection refused, timeout, a non-success status, an unparseable
+/// body). All of those mean the same thing to a caller of this function:
+/// not currently answerable.
+async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<serde_json::Value> {
     let url = format!("http://127.0.0.1:{mcp_port}/health");
-    matches!(client.get(&url).send().await, Ok(resp) if resp.status().is_success())
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<serde_json::Value>().await.ok()
+}
+
+/// This proxy's own version for the handoff comparison.
+///
+/// Always `CARGO_PKG_VERSION`, with one **debug-build-only** escape hatch:
+/// `TURBOFIG_TEST_OWN_VERSION_OVERRIDE` lets a test simulate "an old proxy
+/// talking to a newer daemon" without a second real build. See
+/// `mcp::reported_version` for the matching daemon-side override and why
+/// `#[cfg(debug_assertions)]` is the right gate for both.
+fn own_version() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("TURBOFIG_TEST_OWN_VERSION_OVERRIDE") {
+        return v;
+    }
+    env!("CARGO_PKG_VERSION").to_owned()
+}
+
+/// Parses both versions as semver and compares them. `None` when either
+/// fails to parse: an unparseable version must never be treated as older or
+/// newer, only as "cannot tell, do nothing".
+fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
+    let va = semver::Version::parse(a).ok()?;
+    let vb = semver::Version::parse(b).ok()?;
+    Some(va.cmp(&vb))
 }
 
 /// The stdio MCP handler. Holds no plugin or session state of its own: every
@@ -156,6 +204,127 @@ impl ProxyHandler {
             .map_err(|e| format!("could not start the daemon: {e}"))?;
         crate::spawn::wait_for_health(&self.client, self.mcp_port).await
     }
+
+    /// Compares `daemon_version` against this proxy's own version, once, at
+    /// startup, and restarts the daemon if it is older. Never restarts a
+    /// daemon that is newer or the same version: an agent session started
+    /// before a `brew upgrade` still runs an old proxy, and it must neither
+    /// downgrade the daemon nor fight a newer proxy for control of it.
+    async fn handle_version_handoff(&self, daemon_version: &str) -> Result<(), String> {
+        let mine = own_version();
+        match compare_versions(daemon_version, &mine) {
+            Some(Ordering::Less) => {
+                eprintln!(
+                    "turbofig mcp: the daemon ({daemon_version}) is older than this proxy ({mine}); restarting it"
+                );
+                self.restart_for_upgrade().await
+            }
+            Some(Ordering::Greater) => {
+                eprintln!(
+                    "turbofig mcp: the daemon ({daemon_version}) is newer than this proxy ({mine}); leaving it running"
+                );
+                Ok(())
+            }
+            Some(Ordering::Equal) | None => Ok(()),
+        }
+    }
+
+    /// Asks the daemon to restart (drain then exit) via the authenticated
+    /// `/control` path, waits for it to actually go away, then makes sure a
+    /// new one is running.
+    ///
+    /// Tolerant of every kind of race on purpose:
+    /// - A concurrent proxy may have already triggered the same restart;
+    ///   `/control` reports `alreadyInProgress` in that case, which this
+    ///   treats exactly like a normal restart ack (still waits, still
+    ///   spawns).
+    /// - The daemon may not go away at all (the restart request failed to
+    ///   reach it, or drained past `UNREACHABLE_DEADLINE`): this logs a
+    ///   warning and falls through to use whatever is still running, rather
+    ///   than blindly spawning a second daemon to fight the first over the
+    ///   port.
+    /// - This proxy's own spawn attempt may lose the port-bind race to
+    ///   another proxy's spawn, or (under `TURBOFIG_SUPERVISED=1`) to
+    ///   launchd relaunching the stable path on its own: a lost race here is
+    ///   silent and never surfaces as an error, since `wait_for_health`
+    ///   below only cares that *some* daemon answers, not which process it
+    ///   is.
+    async fn restart_for_upgrade(&self) -> Result<(), String> {
+        let Some(token) = self.read_token().await else {
+            eprintln!(
+                "turbofig mcp: could not read the pairing token to request a restart; leaving the old daemon running"
+            );
+            return Ok(());
+        };
+
+        let control_url = format!("http://127.0.0.1:{}/control", self.mcp_port);
+        match self
+            .client
+            .post(&control_url)
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"action": "restart"}))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                eprintln!(
+                    "turbofig mcp: the daemon refused the restart request ({}); leaving it running",
+                    resp.status()
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!(
+                    "turbofig mcp: could not reach the daemon to request a restart ({e}); leaving it running"
+                );
+                return Ok(());
+            }
+        }
+
+        if !self.wait_until_unreachable(UNREACHABLE_DEADLINE).await {
+            eprintln!(
+                "turbofig mcp: the daemon was still answering {:?} after the restart request; leaving it running",
+                UNREACHABLE_DEADLINE
+            );
+            return Ok(());
+        }
+
+        // The old daemon is gone. Start a new one; losing this race to
+        // another proxy or to launchd is fine, see this method's doc.
+        if let Err(e) = crate::spawn::spawn_detached_daemon(&self.turbofig_binary, &self.home) {
+            eprintln!(
+                "turbofig mcp: could not start a new daemon after the restart ({e}); hoping another starter wins"
+            );
+        }
+
+        crate::spawn::wait_for_health(&self.client, self.mcp_port).await
+    }
+
+    /// Polls `/health` until it stops answering, or `deadline` elapses.
+    /// Returns true once unreachable, false on timeout.
+    async fn wait_until_unreachable(&self, deadline: Duration) -> bool {
+        let until = tokio::time::Instant::now() + deadline;
+        loop {
+            if fetch_health(&self.client, self.mcp_port).await.is_none() {
+                return true;
+            }
+            if tokio::time::Instant::now() >= until {
+                return false;
+            }
+            tokio::time::sleep(UNREACHABLE_POLL_INTERVAL).await;
+        }
+    }
+
+    /// Reads the pairing token from `<home>/token`, trimmed. `None` on any
+    /// read failure (not yet written, permissions, a racing delete): the
+    /// caller treats that the same as "can't restart", never a panic.
+    async fn read_token(&self) -> Option<String> {
+        tokio::fs::read_to_string(self.home.join("token"))
+            .await
+            .ok()
+            .map(|s| s.trim().to_owned())
+    }
 }
 
 #[tool_router]
@@ -202,5 +371,24 @@ impl ServerHandler for ProxyHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::from_build_env())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compare_versions_orders_older_and_newer_correctly() {
+        assert_eq!(compare_versions("0.1.0", "0.2.0"), Some(Ordering::Less));
+        assert_eq!(compare_versions("0.2.0", "0.1.0"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("1.2.3", "1.2.3"), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn compare_versions_is_none_for_an_unparseable_version() {
+        assert_eq!(compare_versions("not-a-version", "0.1.0"), None);
+        assert_eq!(compare_versions("0.1.0", "not-a-version"), None);
+        assert_eq!(compare_versions("not-a-version", "also-not"), None);
     }
 }

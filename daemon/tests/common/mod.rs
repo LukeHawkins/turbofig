@@ -11,9 +11,12 @@
 //! is expected and allowed rather than a real warning.
 #![allow(dead_code)]
 
+use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
 
 /// Generous default deadline for a condition wait. A healthy condition
 /// resolves in a few milliseconds; this only bounds a genuine hang.
@@ -101,4 +104,286 @@ pub async fn wait_for_no_connections(state: &Arc<turbofig::AppState>, deadline_m
         "all connections to close",
     )
     .await;
+}
+
+// ── real-process helpers (turbofig mcp / turbofig serve as child processes) ─
+//
+// Shared by `proxy.rs` and `version_handoff.rs`: both spawn the real compiled
+// binary and drive it either over stdio (the proxy) or plain HTTP (a daemon
+// started directly for a test fixture).
+
+/// The compiled `turbofig` binary under test.
+pub const BIN: &str = env!("CARGO_BIN_EXE_turbofig");
+const STDIO_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Binds an ephemeral TCP port and returns it, free for a child process to
+/// bind next.
+pub fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind an ephemeral port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
+/// Owns a spawned `turbofig mcp` child. Kills and reaps it on drop, so a
+/// failing assertion never leaks a process holding the test's stdio pipes.
+pub struct ProxyChild(pub Child);
+
+impl Drop for ProxyChild {
+    fn drop(&mut self) {
+        let _ = self.0.start_kill();
+    }
+}
+
+/// Spawns `turbofig mcp` with piped stdin/stdout, pointed at `mcp_port`/
+/// `ws_port`/`home` via the `TURBOFIG_*` env vars.
+///
+/// `own_process_group` puts the child in a process group of its own (pgid ==
+/// its pid), so a test can signal that whole group without also signalling
+/// the test runner.
+///
+/// `own_version_override`, when set, is passed as
+/// `TURBOFIG_TEST_OWN_VERSION_OVERRIDE`: the debug-build-only escape hatch
+/// `proxy::own_version` reads, so a test can simulate "an old proxy talking
+/// to a newer daemon" without a second real build.
+pub fn spawn_proxy(
+    home: &Path,
+    mcp_port: u16,
+    ws_port: u16,
+    own_process_group: bool,
+    own_version_override: Option<&str>,
+) -> ProxyChild {
+    let mut cmd = Command::new(BIN);
+    cmd.arg("mcp")
+        .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
+        .env("TURBOFIG_WS_PORT", ws_port.to_string())
+        .env("TURBOFIG_BRIDGE_DIR", home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    if own_process_group {
+        cmd.process_group(0);
+    }
+    if let Some(v) = own_version_override {
+        cmd.env("TURBOFIG_TEST_OWN_VERSION_OVERRIDE", v);
+    }
+    ProxyChild(cmd.spawn().expect("spawn turbofig mcp"))
+}
+
+/// Spawns `turbofig serve` directly (not detached: the test owns this
+/// `Child` and is responsible for reaping it), pointed at `mcp_port`/
+/// `ws_port`/`home`.
+///
+/// `version_override`, when set, is passed as
+/// `TURBOFIG_TEST_VERSION_OVERRIDE`: the debug-build-only escape hatch
+/// `mcp::reported_version` reads, so a test can stand up a daemon that
+/// reports an arbitrary "old" version without a second real build.
+pub fn spawn_daemon(
+    home: &Path,
+    mcp_port: u16,
+    ws_port: u16,
+    version_override: Option<&str>,
+) -> Child {
+    // Append to <home>/daemon.log, the same destination spawn_detached_daemon
+    // uses for a real detached start: a test asserting on the shared log's
+    // "listening on" lines (the race-safety tests) needs this fixture
+    // daemon's own start recorded there too, not silently discarded.
+    std::fs::create_dir_all(home).expect("create home dir");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.join("daemon.log"))
+        .expect("open daemon.log");
+    let log_err = log.try_clone().expect("clone log handle");
+
+    let mut cmd = Command::new(BIN);
+    cmd.arg("serve")
+        .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
+        .env("TURBOFIG_WS_PORT", ws_port.to_string())
+        .env("TURBOFIG_BRIDGE_DIR", home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err))
+        .kill_on_drop(true);
+    if let Some(v) = version_override {
+        cmd.env("TURBOFIG_TEST_VERSION_OVERRIDE", v);
+    }
+    cmd.spawn().expect("spawn turbofig serve")
+}
+
+// ── stdio MCP framing (newline-delimited JSON, per the MCP stdio transport) ─
+
+pub async fn send_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, msg: &Value) {
+    let line = serde_json::to_string(msg).expect("serialize request");
+    writer
+        .write_all(line.as_bytes())
+        .await
+        .expect("write request line");
+    writer.write_all(b"\n").await.expect("write newline");
+    writer.flush().await.expect("flush request");
+}
+
+/// Reads lines until one parses as JSON with `"id": expected_id`, or panics
+/// after `STDIO_READ_TIMEOUT`. Lines for other ids (there should be none in
+/// these single-client tests) are skipped rather than rejected.
+pub async fn read_response_for_id<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    expected_id: u64,
+) -> Value {
+    let deadline = Instant::now() + STDIO_READ_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            panic!("timed out waiting for stdio response id {expected_id}");
+        }
+        let mut line = String::new();
+        let read = tokio::time::timeout(remaining, reader.read_line(&mut line))
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for stdio response id {expected_id}"))
+            .expect("read a line from the proxy's stdout");
+        if read == 0 {
+            panic!("proxy stdout closed while waiting for response id {expected_id}");
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if value.get("id").and_then(Value::as_u64) == Some(expected_id) {
+            return value;
+        }
+    }
+}
+
+/// Runs the standard MCP stdio handshake (initialize, notifications/
+/// initialized) over `proxy`'s stdin/stdout, and returns the stdin writer and
+/// a buffered reader over stdout for further requests.
+pub async fn handshake(
+    proxy: &mut ProxyChild,
+) -> (
+    tokio::process::ChildStdin,
+    BufReader<tokio::process::ChildStdout>,
+) {
+    let mut writer = proxy.0.stdin.take().expect("proxy stdin");
+    let mut reader = BufReader::new(proxy.0.stdout.take().expect("proxy stdout"));
+
+    send_json(
+        &mut writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+    )
+    .await;
+    let init = read_response_for_id(&mut reader, 1).await;
+    assert!(
+        init.get("result").is_some(),
+        "initialize must succeed over stdio: {init}"
+    );
+
+    send_json(
+        &mut writer,
+        &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .await;
+
+    (writer, reader)
+}
+
+pub async fn stdio_tools_list(
+    writer: &mut tokio::process::ChildStdin,
+    reader: &mut BufReader<tokio::process::ChildStdout>,
+) -> Vec<Value> {
+    send_json(
+        writer,
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    )
+    .await;
+    let resp = read_response_for_id(reader, 2).await;
+    resp["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list must return an array: {resp}"))
+        .clone()
+}
+
+pub async fn stdio_call_tool(
+    writer: &mut tokio::process::ChildStdin,
+    reader: &mut BufReader<tokio::process::ChildStdout>,
+    id: u64,
+    name: &str,
+    arguments: Value,
+) -> Value {
+    send_json(
+        writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}
+        }),
+    )
+    .await;
+    read_response_for_id(reader, id).await
+}
+
+/// Extracts the `ok:...` JSON body a tool call's text content carries, from
+/// a `tools/call` response envelope.
+pub fn tool_call_status(resp: &Value) -> Value {
+    let content = resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tool call must return text content: {resp}"));
+    serde_json::from_str(content).expect("tool content is JSON")
+}
+
+// ── daemon health and cleanup ────────────────────────────────────────────────
+
+/// Returns `GET /health`'s parsed JSON body, or `None` for any failure
+/// (connection refused, timeout, a non-success status, an unparseable body).
+pub async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<Value> {
+    let url = format!("http://127.0.0.1:{mcp_port}/health");
+    let resp = client.get(&url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<Value>().await.ok()
+}
+
+/// Polls `GET /health` until it answers with a success status, or panics
+/// after 5 s.
+pub async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if fetch_health(client, mcp_port).await.is_some() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon on port {mcp_port} never became healthy");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Stops the daemon at `mcp_port` via an authenticated `POST /control`, using
+/// the token it wrote to `<home>/token`. Best-effort: a test that never
+/// managed to start a daemon has no token file and nothing to stop.
+pub async fn stop_daemon(client: &reqwest::Client, mcp_port: u16, home: &Path) {
+    let Ok(token) = tokio::fs::read_to_string(home.join("token")).await else {
+        return;
+    };
+    let _ = client
+        .post(format!("http://127.0.0.1:{mcp_port}/control"))
+        .bearer_auth(token.trim())
+        .json(&json!({"action": "stop"}))
+        .send()
+        .await;
 }

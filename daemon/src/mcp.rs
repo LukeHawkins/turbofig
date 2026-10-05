@@ -389,10 +389,29 @@ async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl axum::response::IntoResponse {
     axum::Json(serde_json::json!({
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": reported_version(),
         "uptimeSeconds": state.uptime_seconds(),
         "connectedFiles": state.named_connections_json(),
     }))
+}
+
+/// The version `/health` reports.
+///
+/// Always the real build version (`CARGO_PKG_VERSION`), with one escape
+/// hatch: in a **debug build only**, `TURBOFIG_TEST_VERSION_OVERRIDE`
+/// overrides it. This exists solely so the version-handoff integration
+/// tests (`daemon/tests/version_handoff.rs`) can stand up a daemon that
+/// reports an arbitrary "old" or "new" version without needing two actual
+/// binary builds. `#[cfg(debug_assertions)]` keeps the whole branch out of a
+/// release binary (`cargo build --release` compiles with
+/// `debug_assertions` off), so a production daemon can never be made to
+/// misreport its own version this way.
+fn reported_version() -> String {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("TURBOFIG_TEST_VERSION_OVERRIDE") {
+        return v;
+    }
+    env!("CARGO_PKG_VERSION").to_owned()
 }
 
 /// `POST /job` handler: runs one bridge-shaped job over plain HTTP and
