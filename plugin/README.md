@@ -72,3 +72,13 @@ These three are a deliberate trade for a local-first, enterprise-friendly
 tool, not an oversight. A Community submission would need to drop
 `enablePrivatePluginApi` (losing the fileKey row) and narrow
 `allowedDomains` to a fixed port (losing the configurable-port feature).
+
+## Why it is not on Figma Community
+
+**It is a development plugin by design, not an unfinished Community
+submission.** It uses `enablePrivatePluginApi` and
+`allowedDomains: ["*"]` for its local WebSocket connection, and it
+connects to `localhost`. None of these pass Community review unchanged,
+and removing them loses a feature turbofig needs (see above). Install it
+from the manifest, the normal path for a development plugin: **Plugins >
+Development > Import plugin from manifest**.
