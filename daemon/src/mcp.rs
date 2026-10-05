@@ -484,6 +484,7 @@ fn reported_version() -> String {
 /// outbox (this endpoint has no outbox).
 async fn job_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     axum::Json(raw): axum::Json<Value>,
 ) -> impl axum::response::IntoResponse {
     let _job = state.begin_job();
@@ -496,9 +497,29 @@ async fn job_handler(
             );
         }
     };
+    let session_id = job_session_id(&headers);
     let output_dir = state.screenshot_dir();
-    let value = process_job(job, &state, output_dir.as_deref()).await;
+    let value = process_job(job, &state, session_id, output_dir.as_deref()).await;
     (axum::http::StatusCode::OK, axum::Json(value))
+}
+
+/// Reads the `X-Turbofig-Session` header `POST /job` carries, when present.
+/// Returns `None` for a missing header, a non-UTF-8 header, or an empty one:
+/// an empty header can never name a real session, so it must fall back to
+/// auto-pick or ambiguity exactly like a missing header, the same rule
+/// `session_id_from_parts` applies to the HTTP MCP transport's
+/// `mcp-session-id`.
+///
+/// `POST /job` has no built-in notion of a session the way the `/mcp`
+/// transport's `mcp-session-id` does; this header is how the stdio MCP
+/// proxy (`proxy.rs`) gives its own job calls the same per-process fileKey
+/// pairing an HTTP MCP session gets (see `routing::resolve_route`), instead
+/// of every stdio call always routing with no session at all.
+fn job_session_id(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get("x-turbofig-session")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
 }
 
 /// Rejects any HTTP request that carries an Origin header, with 403 Forbidden.
@@ -615,6 +636,26 @@ mod tests {
             builder = builder.header("mcp-session-id", v);
         }
         builder.body(()).expect("build request").into_parts().0
+    }
+
+    #[test]
+    fn job_session_id_absent_header_is_none() {
+        let headers = axum::http::HeaderMap::new();
+        assert_eq!(job_session_id(&headers), None);
+    }
+
+    #[test]
+    fn job_session_id_empty_header_is_none() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-turbofig-session", "".parse().unwrap());
+        assert_eq!(job_session_id(&headers), None);
+    }
+
+    #[test]
+    fn job_session_id_valid_header_is_some() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-turbofig-session", "proxy-abc123".parse().unwrap());
+        assert_eq!(job_session_id(&headers), Some("proxy-abc123"));
     }
 
     #[test]
@@ -873,6 +914,116 @@ mod tests {
         (status, value)
     }
 
+    /// POST a job body to `/job` on `router`, with a valid bearer `token` and,
+    /// when `session_id` is `Some`, an `X-Turbofig-Session` header. Returns
+    /// (status, body).
+    async fn post_job_with_session(
+        router: axum::Router,
+        token: &str,
+        session_id: Option<&str>,
+        body: Value,
+    ) -> (axum::http::StatusCode, Value) {
+        let mut builder = axum::http::Request::builder()
+            .method("POST")
+            .uri("/job")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+        if let Some(sid) = session_id {
+            builder = builder.header("x-turbofig-session", sid);
+        }
+        let req = builder
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("build request");
+        let resp = router.oneshot(req).await.expect("router must respond");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let value: Value = serde_json::from_slice(&bytes).expect("valid JSON body");
+        (status, value)
+    }
+
+    /// With 2 files connected and no `fileKey`, `/job` without a session
+    /// header cannot tell which file a call means (this is the plain
+    /// `AppState`-level behaviour `routing::resolve_route`'s own tests
+    /// already cover; asserted here too so the contrast with the next test
+    /// is in one place).
+    #[tokio::test]
+    async fn job_endpoint_with_no_session_header_and_two_files_is_ambiguous() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+        let token = state.token().to_owned();
+        let router = build_router(state);
+
+        let (status, body) =
+            post_job_with_session(router, &token, None, json!({"op": "status"})).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            body["plugin"]["connected"],
+            json!(true),
+            "status with no session and 2 files must not resolve to one specific file: {body}"
+        );
+        assert!(body["plugin"].get("fileKey").is_none());
+    }
+
+    /// A call that explicitly targets `fileKey:"fk2"` and carries an
+    /// `X-Turbofig-Session` header pairs that session to `fk2`; a later call
+    /// on the same session with no `fileKey` must then route back to `fk2`,
+    /// never fail ambiguous, exactly like an HTTP MCP session's
+    /// `mcp-session-id` already does (`routing::resolve_route`). This is the
+    /// stdio MCP proxy's 2-files scenario: every `turbofig mcp` process now
+    /// sends this header with its own session id on every `/job` call.
+    #[tokio::test]
+    async fn job_endpoint_routes_by_the_x_turbofig_session_header_with_two_files_connected() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let (tx1, _rx1) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let conn1 = state.add_connection(tx1);
+        state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
+        let conn2 = state.add_connection(tx2);
+        state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
+        let token = state.token().to_owned();
+        let router = build_router(state);
+
+        let (status1, body1) = post_job_with_session(
+            router.clone(),
+            &token,
+            Some("proxy-session-a"),
+            json!({"op": "status", "fileKey": "fk2"}),
+        )
+        .await;
+        assert_eq!(status1, axum::http::StatusCode::OK);
+        assert_eq!(
+            body1["plugin"]["fileKey"],
+            json!("fk2"),
+            "the explicit fileKey call must resolve to fk2: {body1}"
+        );
+
+        let (status2, body2) = post_job_with_session(
+            router,
+            &token,
+            Some("proxy-session-a"),
+            json!({"op": "status"}),
+        )
+        .await;
+        assert_eq!(status2, axum::http::StatusCode::OK);
+        assert_eq!(
+            body2["plugin"]["fileKey"],
+            json!("fk2"),
+            "the paired session must re-route to fk2 with no explicit fileKey: {body2}"
+        );
+    }
+
     #[tokio::test]
     async fn job_endpoint_status_matches_the_bridge_result() {
         let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
@@ -880,7 +1031,13 @@ mod tests {
         )));
         let router = build_router(state.clone());
 
-        let direct = process_job(Job::parse(&json!({"op": "status"})).unwrap(), &state, None).await;
+        let direct = process_job(
+            Job::parse(&json!({"op": "status"})).unwrap(),
+            &state,
+            None,
+            None,
+        )
+        .await;
         let (status, via_http) = post_job(router, state.token(), json!({"op": "status"})).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
@@ -896,7 +1053,7 @@ mod tests {
         let router = build_router(state.clone());
         let body = json!({"op": "execute", "code": "return 1;"});
 
-        let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
+        let direct = process_job(Job::parse(&body).unwrap(), &state, None, None).await;
         let (status, via_http) = post_job(router, state.token(), body).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
@@ -912,7 +1069,7 @@ mod tests {
         let router = build_router(state.clone());
         let body = json!({"op": "get_selection"});
 
-        let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
+        let direct = process_job(Job::parse(&body).unwrap(), &state, None, None).await;
         let (status, via_http) = post_job(router, state.token(), body).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);
@@ -927,7 +1084,7 @@ mod tests {
         let router = build_router(state.clone());
         let body = json!({"op": "screenshot"});
 
-        let direct = process_job(Job::parse(&body).unwrap(), &state, None).await;
+        let direct = process_job(Job::parse(&body).unwrap(), &state, None, None).await;
         let (status, via_http) = post_job(router, state.token(), body).await;
 
         assert_eq!(status, axum::http::StatusCode::OK);

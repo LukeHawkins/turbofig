@@ -4,10 +4,13 @@
 //! This is for a native MCP client (`claude mcp add turbofig -- turbofig
 //! mcp`) that spawns its own child process and speaks MCP over that child's
 //! stdin/stdout, rather than talking streamable-HTTP to the daemon's `/mcp`
-//! port directly. The daemon itself still owns all state (connected
+//! port directly. The daemon itself still owns all plugin state (connected
 //! plugins, the pairing token, the screenshot directory); this proxy holds
-//! none of it; a lost daemon (crash, `brew upgrade`, a manual `kill`) is
-//! started again once, transparently, from inside a tool call.
+//! only a random per-process session id (see `ProxyHandler::session_id`),
+//! sent with every `/job` call so the daemon's fileKey pairing behaves the
+//! same as an HTTP MCP session's. A lost daemon (crash, `brew upgrade`, a
+//! manual `kill`) is started again once, transparently, from inside a tool
+//! call.
 //!
 //! `ProxyHandler` shares its tool names and parameter types with
 //! `mcp::TurbofigHandler` (the exact same `FileTargetParams`,
@@ -95,6 +98,7 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
         turbofig_binary,
         home,
         token,
+        session_id: crate::token::random_token_hex(),
     };
 
     let daemon_version = health["version"].as_str().unwrap_or_default();
@@ -135,9 +139,13 @@ fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
     Some(va.cmp(&vb))
 }
 
-/// The stdio MCP handler. Holds no plugin or session state of its own: every
-/// tool call is forwarded to the daemon's `POST /job` and the daemon's
-/// answer is returned as-is.
+/// The stdio MCP handler. Holds no plugin state of its own: every tool call
+/// is forwarded to the daemon's `POST /job` and the daemon's answer is
+/// returned as-is. It does hold one piece of session state: `session_id`,
+/// generated once at startup, so this whole proxy process gets the same
+/// fileKey pairing behaviour an HTTP MCP session gets from its
+/// `mcp-session-id` (see `routing::resolve_route`), instead of every stdio
+/// call always routing with no session at all.
 #[derive(Clone)]
 struct ProxyHandler {
     /// Bounds `/health` and `/control` calls to `ADMIN_CLIENT_TIMEOUT` total.
@@ -158,6 +166,16 @@ struct ProxyHandler {
     /// requires it since another local macOS account can also reach
     /// 127.0.0.1 (see `mcp::require_bearer_token`).
     token: String,
+    /// A random id generated once per proxy process (not persisted, not the
+    /// pairing token), sent as the `X-Turbofig-Session` header on every
+    /// `/job` call. The daemon's `job_handler` reads it (`mcp::
+    /// job_session_id`) and routes with it exactly like an HTTP MCP
+    /// session's `mcp-session-id`: with no explicit `fileKey`, the first
+    /// call this process makes against a given file pairs that file to this
+    /// session, and every later call with no `fileKey` re-routes to it,
+    /// which is what lets two files stay open and addressable without every
+    /// stdio call naming a `fileKey` explicitly.
+    session_id: String,
 }
 
 impl ProxyHandler {
@@ -211,6 +229,7 @@ impl ProxyHandler {
             .job_client
             .post(url)
             .bearer_auth(&self.token)
+            .header("X-Turbofig-Session", &self.session_id)
             .json(job)
             .send()
             .await?;

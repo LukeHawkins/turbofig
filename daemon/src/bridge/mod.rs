@@ -450,7 +450,7 @@ async fn scan_and_service(
                 let in_flight_id = job_id.clone();
                 tokio::spawn(async move {
                     let _job_guard = job_guard;
-                    let result = process_job(job, &state, Some(&outbox_owned)).await;
+                    let result = process_job(job, &state, None, Some(&outbox_owned)).await;
                     write_result(&outbox_owned, &job_id, result).await;
                     in_flight
                         .lock()
@@ -519,21 +519,29 @@ async fn delete_stale_result(outbox: &Path, job_id: &str) {
 /// for a job posted to `POST /job` (see `mcp::job_handler`). `None` disables
 /// file-mode output entirely, matching an `AppState` with no screenshot
 /// directory configured (e.g. `AppState::with_timeout` in a test).
-/// The bridge has no MCP session id, so session_id is always None.
+///
+/// `session_id` is the fileKey-pairing session to route this job under (see
+/// `routing::resolve_route`): the filesystem bridge has no notion of a
+/// session at all, so its one call site always passes `None`; `POST /job`
+/// passes whatever `X-Turbofig-Session` header the caller sent (see
+/// `mcp::job_session_id`), which is how the stdio MCP proxy (`proxy.rs`)
+/// gets the same per-session fileKey pairing an HTTP MCP session gets from
+/// its `mcp-session-id` header.
 pub(crate) async fn process_job(
     job: Job,
     state: &Arc<AppState>,
+    session_id: Option<&str>,
     output_dir: Option<&Path>,
 ) -> serde_json::Value {
     match job {
-        Job::Status(p) => crate::ops::run_status(state, None, p.file_key.as_deref()).await,
+        Job::Status(p) => crate::ops::run_status(state, session_id, p.file_key.as_deref()).await,
         Job::Execute(p) => {
-            crate::ops::run_execute(state, None, p.file_key.as_deref(), &p.code).await
+            crate::ops::run_execute(state, session_id, p.file_key.as_deref(), &p.code).await
         }
         Job::GetSelection(p) => {
             crate::ops::run_get_selection(
                 state,
-                None,
+                session_id,
                 p.file_key.as_deref(),
                 p.fields.as_deref(),
                 p.depth,
@@ -543,7 +551,7 @@ pub(crate) async fn process_job(
         Job::Screenshot(p) => {
             crate::ops::run_screenshot(
                 state,
-                None,
+                session_id,
                 p.file_key.as_deref(),
                 p.scale,
                 p.node_id.as_deref(),
