@@ -118,20 +118,23 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function refreshCargoLock(): Promise<boolean> {
+/**
+ * Refresh Cargo.lock for the new workspace version.
+ * Throws when `cargo update` fails, so a stale lockfile never ships silently.
+ * `run` is injectable for tests; it defaults to the real `execFileSync`.
+ */
+export async function refreshCargoLock(run: typeof execFileSync = execFileSync): Promise<void> {
   try {
-    execFileSync("cargo", ["update", "-p", "turbofig", "--offline"], {
+    run("cargo", ["update", "-p", "turbofig", "--offline"], {
       cwd: ROOT,
       stdio: "pipe",
     });
-    return true;
   } catch (err) {
     const stderr =
       err && typeof err === "object" && "stderr" in err
         ? String((err as { stderr: Buffer }).stderr)
         : String(err);
-    console.error(`cargo update failed: ${stderr}`);
-    return false;
+    throw new Error(`cargo update failed, Cargo.lock was not refreshed: ${stderr}`);
   }
 }
 
@@ -168,10 +171,8 @@ async function main() {
   }
 
   if (cargoTomlResult.changed) {
-    const lockOk = await refreshCargoLock();
-    if (lockOk) {
-      changed.push("Cargo.lock");
-    }
+    await refreshCargoLock();
+    changed.push("Cargo.lock");
   }
 
   if (changed.length === 0) {
@@ -185,5 +186,8 @@ async function main() {
 }
 
 if (import.meta.main) {
-  await main();
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
 }

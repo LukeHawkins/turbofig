@@ -13,6 +13,7 @@ import {
   bumpPackageJson,
   bumpWorkspaceCargoToml,
   parseTargetVersion,
+  refreshCargoLock,
 } from "./bump-version.ts";
 
 let tmpDir: string;
@@ -156,5 +157,25 @@ describe("bumpChangelog", () => {
 
   test("throws when no Unreleased heading exists", () => {
     expect(() => bumpChangelog("# Changelog\n", "0.2.0", "2026-10-04")).toThrow();
+  });
+});
+
+describe("refreshCargoLock", () => {
+  test("throws a clear error when cargo update fails", async () => {
+    const failingRun = () => {
+      const err = new Error("exit code 1") as Error & { stderr: Buffer };
+      err.stderr = Buffer.from("error: could not reach registry");
+      throw err;
+    };
+    await expect(
+      refreshCargoLock(failingRun as unknown as typeof import("node:child_process").execFileSync),
+    ).rejects.toThrow(/cargo update failed/);
+  });
+
+  test("resolves without throwing when cargo update succeeds", async () => {
+    const okRun = () => Buffer.from("");
+    await expect(
+      refreshCargoLock(okRun as unknown as typeof import("node:child_process").execFileSync),
+    ).resolves.toBeUndefined();
   });
 });
