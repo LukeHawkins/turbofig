@@ -137,7 +137,7 @@ export function staleWarning(pluginVersion: string, daemonVersion: string): stri
 
 /**
  * Parses a port input string and returns a valid integer port, or null.
- * Accepts integers in the range 1–65535 only.
+ * Accepts integers in the range 1-65535 only.
  * Rejects empty input, non-numeric strings, and fractional numbers (e.g. "8080.5").
  */
 export function parsePort(input: string): number | null {

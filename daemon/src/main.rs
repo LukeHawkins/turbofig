@@ -311,9 +311,9 @@ async fn run_daemon() {
         });
     }
 
-    // A healthy daemon runs forever. Any handle that completes — whether by a
-    // normal return (unexpected for a server), by an Err path that did not call
-    // process::exit, or by a task panic surfacing as a JoinError — means a
+    // A healthy daemon runs forever. Any handle that completes (whether by a
+    // normal return, unexpected for a server; by an Err path that did not call
+    // process::exit; or by a task panic surfacing as a JoinError) means a
     // subsystem is dead. Log the name and exit so launchd KeepAlive restarts.
     tokio::select! {
         res = mcp_handle => {
@@ -351,7 +351,9 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
         Some(target) => target,
         // No baseline could be resolved at startup either; fall back to the
         // stable path itself so later comparisons still have something to
-        // compare against (they will just never fire until it resolves).
+        // compare against. Once the path resolves to a real target, that
+        // target will differ from this unresolved baseline, so the first
+        // resolution after startup fires one restart, not never.
         None => stable.clone(),
     };
     let mut interval = tokio::time::interval(SUPERVISOR_CHECK_INTERVAL);

@@ -81,7 +81,7 @@ function clampTimeoutMs(ms: number): number {
 
 /**
  * Validates and persists a daemon WebSocket port.
- * Returns the saved port when valid (integer, 1–65535), or null when invalid.
+ * Returns the saved port when valid (integer, 1-65535), or null when invalid.
  * Extracted for testability without a live Figma environment.
  */
 export async function applySetPort(storage: ClientStorage, port: number): Promise<number | null> {
