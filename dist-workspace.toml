@@ -16,8 +16,11 @@ tap = "LukeHawkins/homebrew-tap"
 # Publish the Homebrew formula as part of the release
 publish-jobs = ["homebrew"]
 # Custom CI steps (install Bun, build the plugin) to run before each build
-github-build-setup = "build-setup.yml"
+github-build-setup = "../build-setup.yml"
+# release.yml carries one hand-added step (the embedded-plugin check), so dist
+# must not fail the plan because the generated file differs.
+allow-dirty = ["ci"]
 
 [dist.github-custom-runners]
-aarch64-apple-darwin = "macos-14"
-x86_64-apple-darwin = "macos-13"
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15-intel"
