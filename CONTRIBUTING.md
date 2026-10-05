@@ -104,6 +104,27 @@ git config core.hooksPath .githooks
 With the hook enabled, a commit containing either trailer is rejected at
 commit time. If you did not run the config step above, enable it now.
 
+## Good first contributions
+
+- Add a new `tf.*` helper to `plugin/src/helpers.ts` and `helpers/tf-api.md`.
+- Linux build support.
+- Error codes in `turbofig_execute` results, instead of a plain message.
+- More examples in `helpers/tf-api.md`.
+- An auto-update nudge on daemon startup.
+- An optional job audit log for the file bridge.
+
+The maintainer reviews PRs on a best-effort basis.
+
+## Benchmarking
+
+A reproducible benchmark harness lives in `bench/`, documented in
+`bench/README.md`. It measures exact wire bytes and real Claude Code token
+counts, never an estimate. Run it with:
+
+```bash
+bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json
+```
+
 ## Pull request checklist
 
 - [ ] One coherent change per PR. Separate unrelated fixes, features, and
