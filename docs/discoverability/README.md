@@ -5,3 +5,5 @@
 If native MCP is not allowlisted, use the file-bridge instead. Write jobs to `~/.turbofig/inbox/` and read results from `~/.turbofig/outbox/`.
 
 In either case, paste `CLAUDE-snippet.md` into your global `~/.claude/CLAUDE.md`. That snippet tells any Claude instance how to discover and drive turbofig without further instructions.
+
+**Not using Claude?** See [`../agents.md`](../agents.md) for an agent-neutral version of this onboarding text, for Cursor, Codex, Copilot, or any other agent.
