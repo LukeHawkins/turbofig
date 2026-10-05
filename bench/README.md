@@ -85,7 +85,7 @@ page or content the user already has open.
   default (configurable). Set this up in your own `figma-console-mcp`
   checkout; it lives outside this repo.
 - For the agent layer (`bench/agent.ts`): the `claude` CLI on `PATH`. Every
-  invocation spends real Claude Code usage — never loop it without intent.
+  invocation spends real Claude Code usage. Never loop it without intent.
 
 ## Starting each target
 
@@ -207,7 +207,7 @@ claim. `--max-ratio <n>` turns the comparison into an actual gate: the
 process exits non-zero when the measured ratio of
 `(requestBytes + responseBytes)` exceeds `n`, when the run itself is
 invalid, or when no ratio could be computed at all (missing/malformed
-baseline file, a scenario/target mismatch, or an invalid baseline total) —
+baseline file, a scenario/target mismatch, or an invalid baseline total).
 `--max-ratio` never passes silently just because a comparison could not be
 made. `--baseline` accepts either shape: a single `BenchReport` object (the
 committed `bench/baseline.json` shape) or a `BenchReport[]` (whatever
