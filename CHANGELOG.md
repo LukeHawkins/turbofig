@@ -10,25 +10,34 @@ recorded under Unreleased.
 
 ### Added
 
-- `turbofig` CLI (`clap`): `turbofig` with no subcommand or `turbofig serve`
-  runs the daemon in the foreground as before. `turbofig setup` installs the
-  pairing token, writes the embedded Figma plugin to `<home>/figma-plugin/`,
-  writes and loads a launchd service (`~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`,
-  `RunAtLoad` and `KeepAlive`), then prints the 3 steps to import the plugin
-  into Figma. `turbofig uninstall [--purge]` unloads the service and removes
-  the plist, keeping `<home>` unless `--purge` is given. `turbofig status`
-  queries the running daemon's `/health` endpoint and prints a readable
-  report. `--version` and `--help` come from `clap`.
+- `turbofig` CLI (`clap`): `turbofig` with no subcommand, on its first run,
+  installs the pairing token, writes the embedded Figma plugin to
+  `<home>/figma-plugin/`, starts the daemon in the background, and prints
+  the 3 connect steps; a later run prints a 3-line status instead.
+  `turbofig mcp` runs a stdio MCP server that forwards tool calls onto the
+  daemon, starting it first if it is not reachable. `turbofig start` and
+  `turbofig stop` start and stop the background daemon directly.
+  `turbofig serve` runs the daemon in the foreground, for development or for
+  the optional launchd autostart service. `turbofig autostart on|off` turns
+  that launchd service on or off (writes/removes
+  `~/Library/LaunchAgents/eu.lukehawkins.turbofig.plist`, `RunAtLoad` and
+  `KeepAlive`). `turbofig uninstall [--purge]` turns autostart off and
+  removes the plist, keeping `<home>` unless `--purge` is given. `turbofig
+  status` queries the running daemon's `/health` endpoint and prints a
+  readable report. `--version` and `--help` come from `clap`. There is no
+  `turbofig setup` command.
 - `GET /health`: daemon version, uptime, and the connected files (name, key,
   plugin version), with the same Origin and `Host` checks as `/mcp`. Never
   includes the pairing token.
 - Automatic updates after `brew upgrade`: on startup, a daemon with an
   existing `<home>/figma-plugin/` refreshes it if the on-disk copy is stale.
   Under launchd supervision (`TURBOFIG_SUPERVISED=1`, set by the plist
-  `turbofig setup` writes), the daemon polls every 30s for a Homebrew
+  `turbofig autostart on` writes), the daemon polls every 30s for a Homebrew
   upgrade (the stable binary path resolving to a new Cellar version), stops
   accepting new jobs, waits up to 60s for in-flight jobs to finish, then
-  exits cleanly so launchd starts the new binary.
+  exits cleanly so launchd starts the new binary. Without autostart, the
+  next `turbofig mcp` start sees an older daemon, waits for its jobs to
+  finish, then restarts it on the new version.
 - The Figma plugin reports its own version in `FILE_INFO`; `turbofig_status`
   and `/health` flag a mismatch against the daemon's version with
   "reopen the turbofig plugin in Figma".

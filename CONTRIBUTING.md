@@ -28,13 +28,14 @@ hook. Do this once per clone. See "Commit messages" below.
 ## Run the daemon
 
 ```bash
-cargo build --release
-./target/release/turbofig
+cargo run -- serve
 ```
 
-The daemon starts an HTTP MCP endpoint on port `18846`, a WebSocket server on
-port `18847`, and a file-bridge at `~/.turbofig`. Override ports with
-`TURBOFIG_MCP_PORT` and `TURBOFIG_WS_PORT`.
+Or, against a release build: `cargo build --release`, then `turbofig start`
+to run it detached, or `./target/release/turbofig serve` to run it in the
+foreground. The daemon starts an HTTP MCP endpoint on port `18846`, a
+WebSocket server on port `18847`, and a file-bridge at `~/.turbofig`.
+Override ports with `TURBOFIG_MCP_PORT` and `TURBOFIG_WS_PORT`.
 
 ## Load the plugin in Figma
 
@@ -44,9 +45,10 @@ so `~/.turbofig/token` exists: `plugin/build-ui.ts` reads it and injects the
 real token into your local `dist/ui.html`. Skip this step and the build still
 succeeds, but prints a warning and embeds a placeholder that cannot connect.
 
-1. Start the daemon once: `cargo run` (leave it running, or stop it after
-   `~/.turbofig/token` is created).
-2. Build the plugin: `cd plugin && bun run build`.
+1. Start the daemon once: `cargo run -- serve` (leave it running, or stop it
+   after `~/.turbofig/token` is created).
+2. Build the plugin: `cd plugin && bun run build`, or `bun run watch` to
+   rebuild on every change under `src/`.
 3. Open Figma Desktop.
 4. Go to **Plugins > Development > Import plugin from manifest**.
 5. Select `plugin/manifest.json`.

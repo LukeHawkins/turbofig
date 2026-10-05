@@ -78,11 +78,12 @@ could otherwise open the socket and receive the AI's jobs.
   tested by `embedded::tests::embedded_ui_html_always_carries_the_placeholder_never_a_real_token`).
 - **Comparison:** constant-time, so a wrong guess cannot be distinguished by
   timing from a near-miss of the same length.
-- **To rotate it:** the daemon runs under launchd with `KeepAlive`, so you
-  cannot just stop it; launchd restarts it right away. Delete
-  `~/.turbofig/token`, then run `turbofig setup`. `turbofig setup` generates
-  the fresh token, rewrites the plugin files with it, and restarts the
-  service. Then reopen the plugin in Figma.
+- **To rotate it:** delete `~/.turbofig/token`, run `turbofig stop`, then
+  `turbofig start`. The daemon creates a new token and rewrites the plugin
+  files at start. Then reopen the plugin in Figma. If you have autostart on
+  (`turbofig autostart on`), launchd's `KeepAlive` restarts the daemon after
+  `turbofig stop` by itself, so the `turbofig start` step is not needed in
+  that case.
 
 ## Data handling
 
@@ -114,6 +115,15 @@ uptime, and the connected files' names, keys, and plugin versions. It never
 includes the pairing token, and it is subject to the same Origin and `Host`
 checks as every other route on this port (above), so it is no more reachable
 from a browser or a DNS-rebinding attack than `/mcp` is.
+
+## `/job` and `/control`
+
+`POST /job` (used by `turbofig mcp`'s stdio proxy) and `POST /control` (used
+by `turbofig stop` and the upgrade restart) bind to `127.0.0.1` only, like
+every other route, and carry the same Origin and `Host` checks as `/mcp` and
+`/health`. `/control` additionally requires the pairing token as a Bearer
+auth header: a request without the correct token is rejected before it can
+stop or restart the daemon.
 
 Report a finding that breaks one of these guarantees (for example, a port
 that becomes reachable from the network, an `Origin` check that can be

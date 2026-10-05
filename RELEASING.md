@@ -39,7 +39,11 @@ Do this once, before the first release.
    # or, if already installed:
    brew upgrade turbofig
    turbofig --version
+   turbofig
    ```
+   The last command is the first-run flow: it should install the pairing
+   token, write the plugin files, start the daemon, and print the 3 connect
+   steps.
 
 ## If a release fails halfway
 
