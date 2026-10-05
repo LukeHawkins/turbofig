@@ -18,16 +18,19 @@
 Turbofig is a local, always-on daemon that lets any AI agent read and edit
 the Figma file open in Figma Desktop. It talks to a thin Figma plugin over
 a WebSocket and exposes 4 tools to the agent, including one tool that runs
-Figma Plugin API JavaScript directly. Your agent's MCP client starts the
-daemon the first time it needs it, the same way `npx` starts a Node MCP
-server. The daemon then keeps running after your agent session ends.
+Figma Plugin API JavaScript directly. `turbofig mcp`, a stdio MCP server,
+starts the daemon when your agent's MCP client launches it, the same way
+`npx` starts a Node MCP server. The daemon then keeps running after your
+agent session ends.
 
 **Works with:**
 
 - **Platform:** macOS (Apple Silicon and Intel). Windows and Linux are not
   supported yet.
 - **Agents:** any local agent that can read and write files (file bridge),
-  or any MCP client with streamable HTTP, for example Claude Code.
+  any MCP client that starts its own stdio server process, for example
+  Claude Code, or any MCP client with streamable HTTP as an advanced
+  fallback.
 - Chat apps that run in a browser cannot reach your Mac, so they cannot use
   turbofig.
 
@@ -72,9 +75,10 @@ without Figma open, use a REST-based server such as figma-console-mcp or
 Figma's own MCP server. This README makes no claim about Figma's own MCP
 server beyond that it exists.
 
-Both tools are started by the MCP client the same way: on the client's
-first call. The difference is what happens after. turbofig's daemon keeps
-running once started; figma-console-mcp runs only for the life of the
+Both tools are started by the MCP client the same way: the client launches
+a server process at session start. The difference is what happens after.
+turbofig's stdio proxy (`turbofig mcp`) starts the daemon, and the daemon
+keeps running once started; figma-console-mcp runs only for the life of the
 `npx` process the client spawned.
 
 ## Quickstart
@@ -162,7 +166,16 @@ MCP server.
 **Advanced: MCP over HTTP.** The daemon also serves streamable HTTP MCP
 directly at `http://127.0.0.1:18846/mcp`. Point any MCP client that
 supports streamable HTTP at that URL if it cannot start its own stdio
-server process.
+server process. This path requires the pairing token as a Bearer auth
+header:
+
+```bash
+claude mcp add --transport http turbofig http://127.0.0.1:18846/mcp \
+  --header "Authorization: Bearer $(cat ~/.turbofig/token)"
+```
+
+The recommended path (`claude mcp add turbofig -- turbofig mcp`, above)
+needs no header: the stdio proxy reads the token itself.
 
 ## What you can ask it
 
@@ -239,7 +252,8 @@ return list.id;
   infinite-backoff reconnect, so a plugin reopen re-pairs with no
   handshake.
 - MCP HTTP (`POST /mcp`, port 18846) is the native-client path: a request
-  arrives over HTTP and the daemon forwards the call to the plugin.
+  arrives over HTTP, carrying the pairing token as a Bearer auth header, and
+  the daemon forwards the call to the plugin.
 - The file bridge (`~/.turbofig/inbox` and `outbox`) is the default path
   for a locked-down client: it writes a job file, the daemon's watcher
   picks it up, and it reads the result file back.
@@ -258,7 +272,7 @@ return list.id;
 | `turbofig status` | Queries the running daemon's `/health` endpoint and prints a readable report |
 | `turbofig serve` | Runs the daemon in the foreground. For development, or for an autostart launchd service |
 | `turbofig autostart on\|off` | Turns on or off an optional launchd service that starts the daemon at login |
-| `turbofig uninstall [--purge]` | Turns off autostart and removes its plist. With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
+| `turbofig uninstall [--purge]` | Stops the running daemon, turns off autostart, and removes its plist. With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
 
 **Updating:**
 
@@ -273,8 +287,8 @@ Figma import only happens once: reopen the plugin in Figma after an
 upgrade to pick up the refreshed files.
 
 **Uninstalling:** run `turbofig uninstall` before `brew uninstall
-turbofig`, so a launchd autostart service (if you turned one on) is
-unloaded first.
+turbofig`. It stops the running daemon first, so a launchd autostart
+service (if you turned one on) is unloaded cleanly.
 
 ## Configuration
 
@@ -303,7 +317,11 @@ needed).
 Any client that can call this tool has full script access to the open
 Figma file. Both ports bind to `127.0.0.1` only. The HTTP MCP port rejects
 any request carrying an `Origin` header; the WebSocket port accepts only a
-null or missing `Origin` and requires a pairing token on the upgrade. See
+null or missing `Origin` and requires a pairing token on the upgrade.
+`POST /job` and `POST /mcp` also require the pairing token as a Bearer auth
+header, so another macOS account on the same Mac cannot drive Figma through
+the HTTP port; `GET /health` answers with no token but returns only
+`version` and `uptimeSeconds` until one is given. See
 [SECURITY.md](SECURITY.md) for the full threat model and how to report a
 vulnerability.
 
@@ -330,11 +348,14 @@ vulnerability.
   actually down.
 - **"Import plugin from manifest" is missing from the Plugins menu.** Use
   Figma Desktop, not the Figma web app. The menu item does not exist there.
-- **A port is already in use.** Set `TURBOFIG_MCP_PORT` or
-  `TURBOFIG_WS_PORT` to a free port, then run `turbofig stop` followed by
+- **A port is already in use.** Run `turbofig stop` first. Then set
+  `TURBOFIG_MCP_PORT` or `TURBOFIG_WS_PORT` to a free port and run
   `turbofig start` (or, with autostart on, `turbofig autostart on` again so
-  the launchd plist picks up the new value). If you change the WebSocket
-  port, also set the same port in the plugin panel's Advanced screen.
+  the launchd plist picks up the new value). If an MCP client starts its
+  own `turbofig mcp` process, pass the same port to it:
+  `claude mcp add -e TURBOFIG_MCP_PORT=<port> turbofig -- turbofig mcp`. If
+  you change the WebSocket port, also set the same port in the plugin
+  panel's Advanced screen.
 - **MCP is blocked on a managed machine.** Use the file bridge instead:
   click the copy-prompt button in the plugin panel, or read
   `skills/file-bridge.md` directly.
