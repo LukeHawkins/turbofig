@@ -26,9 +26,29 @@ recorded under Unreleased.
   status` queries the running daemon's `/health` endpoint and prints a
   readable report. `--version` and `--help` come from `clap`. There is no
   `turbofig setup` command.
-- `GET /health`: daemon version, uptime, and the connected files (name, key,
-  plugin version), with the same Origin and `Host` checks as `/mcp`. Never
-  includes the pairing token.
+- `GET /health`: daemon version and uptime always; with a valid pairing
+  token, also the connected files (name, key, plugin version) and the
+  daemon's `pid`. Same Origin and `Host` checks as `/mcp`. Never includes
+  the pairing token itself.
+- `POST /job` and `POST /mcp` require `Authorization: Bearer <pairing
+  token>`, like `POST /control`. Another macOS account on the same Mac can
+  no longer drive Figma through the HTTP port. The file-bridge stays
+  tokenless, protected instead by its directory mode (`0700`).
+- `POST /control` replies `202` at once and drains and exits in the
+  background; a caller polls `/health` until it stops answering (up to 65s
+  for `turbofig stop`, autostart on's pre-stop, and the version handoff)
+  instead of holding the connection open for the whole drain.
+- `turbofig stop`, with a missing or changed token file while a daemon still
+  answers `/health`, now exits 1 and names the fallback
+  (`pkill -f 'turbofig serve'`) instead of reporting the same success as
+  "nothing is running".
+- Autostart's `KeepAlive` is `{SuccessfulExit: false}`, not plain `true`: a
+  clean `turbofig stop` (exit 0) leaves the daemon stopped until the next
+  login; a crash still restarts it. The supervised upgrade restart and a
+  supervised `/control restart` exit 75, so `KeepAlive` restarts those with
+  the new binary.
+- CLI calls to `/health` and `/control` (status, start, stop, the version
+  handoff) time out after 2s per request.
 - Automatic updates after `brew upgrade`: on startup, a daemon with an
   existing `<home>/figma-plugin/` refreshes it if the on-disk copy is stale.
   Under launchd supervision (`TURBOFIG_SUPERVISED=1`, set by the plist
