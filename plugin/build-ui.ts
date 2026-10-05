@@ -59,6 +59,23 @@ function readLocalToken(): string {
 
 const pairingToken = readLocalToken();
 
+/**
+ * Stable comment markers wrapped around the token literal in the bundled
+ * output. A local build (see `readLocalToken` above) can embed a real token
+ * straight from `~/.turbofig/token`, and a stray `cargo build` run against
+ * that local `dist/ui.html` would then bake the real token into the daemon
+ * binary, where `write_plugin_files` can no longer replace it (the
+ * placeholder is gone). `daemon/build.rs` fixes this at embed time: it finds
+ * these exact markers and forces whatever sits between them back to the
+ * `__TURBOFIG_PAIRING_TOKEN__` placeholder before `include_str!`-ing the
+ * file, so the embedded copy never carries a real token regardless of what a
+ * contributor's local `dist/ui.html` holds. The markers must bound the token
+ * literal exactly (not a loose regex over the bundle) so the swap never
+ * touches unrelated text; see `daemon/build.rs`'s `normalize_ui_html`.
+ */
+const TOKEN_MARKER_START = "/*TURBOFIG_TOKEN_START*/";
+const TOKEN_MARKER_END = "/*TURBOFIG_TOKEN_END*/";
+
 // Bundle the UI entry point as an IIFE for inline use in a <script> tag.
 // __PLUGIN_VERSION__ and __TURBOFIG_PAIRING_TOKEN__ are replaced with literal
 // strings at build time.
@@ -86,7 +103,16 @@ if (!output) {
   console.error("Build produced no outputs.");
   process.exit(1);
 }
-const bundleText = await output.text();
+let bundleText = await output.text();
+
+// Wrap the exact token literal just substituted above with the stable
+// markers, so daemon/build.rs can locate and normalize it with no regex.
+// Exact-string replace (not a pattern): the literal is the precise text we
+// asked Bun to substitute, so this cannot touch unrelated bundle content.
+const tokenLiteral = JSON.stringify(pairingToken);
+bundleText = bundleText
+  .split(tokenLiteral)
+  .join(`${TOKEN_MARKER_START}${tokenLiteral}${TOKEN_MARKER_END}`);
 
 // Read the HTML template.
 const templatePath = join(scriptDir, "src/ui/template.html");

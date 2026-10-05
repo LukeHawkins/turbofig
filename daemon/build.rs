@@ -30,7 +30,9 @@ fn main() {
     let dest = out_dir.join("embedded_plugin_data.rs");
 
     if manifest_path.exists() && code_path.exists() && ui_path.exists() {
-        write_embedded_source(&dest, &manifest_path, &code_path, &ui_path);
+        let normalized_ui_path = out_dir.join("embedded_ui_normalized.html");
+        normalize_ui_html_file(&ui_path, &normalized_ui_path);
+        write_embedded_source(&dest, &manifest_path, &code_path, &normalized_ui_path);
     } else {
         println!(
             "cargo:warning=turbofig: plugin/dist not found; building without an embedded plugin. \
@@ -61,6 +63,59 @@ pub(crate) fn raw_embedded_plugin() -> Option<(&'static str, &'static str, &'sta
         ui = ui.canonicalize().unwrap_or_else(|_| ui.to_path_buf()),
     );
     std::fs::write(dest, src).expect("write generated embedded_plugin_data.rs");
+}
+
+/// Stable markers `plugin/build-ui.ts` wraps around the pairing-token
+/// literal in the bundled UI output. See that file's design note.
+const TOKEN_MARKER_START: &str = "/*TURBOFIG_TOKEN_START*/";
+const TOKEN_MARKER_END: &str = "/*TURBOFIG_TOKEN_END*/";
+
+/// The placeholder literal (JS string, quotes included) that must always sit
+/// between the markers in the embedded copy. Must match the quoted form
+/// `plugin/build-ui.ts` emits via `JSON.stringify("__TURBOFIG_PAIRING_TOKEN__")`.
+const PLACEHOLDER_LITERAL: &str = "\"__TURBOFIG_PAIRING_TOKEN__\"";
+
+/// Reads `ui_path` (a local `dist/ui.html`, which may embed a real pairing
+/// token read from a contributor's own `~/.turbofig/token`; see
+/// `plugin/build-ui.ts`'s `readLocalToken`), forces whatever sits between
+/// the stable token markers back to the placeholder, and writes the result
+/// to `normalized_path`. The embedded daemon binary must never carry a real
+/// token: `write_plugin_files` replaces the placeholder with the real token
+/// at install time, and it cannot do that if the placeholder is already gone.
+fn normalize_ui_html_file(ui_path: &Path, normalized_path: &Path) {
+    let contents = std::fs::read_to_string(ui_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", ui_path.display()));
+    let normalized = normalize_ui_html(&contents);
+    std::fs::write(normalized_path, normalized)
+        .unwrap_or_else(|e| panic!("write {}: {e}", normalized_path.display()));
+}
+
+/// Pure text transform: finds the first `TOKEN_MARKER_START`/`_END` pair and
+/// replaces everything between them with `PLACEHOLDER_LITERAL`. Emits a
+/// `cargo:warning` and returns `contents` unchanged if the markers are
+/// missing (a `dist/ui.html` built by an older `build-ui.ts`): rebuild the
+/// plugin (`cd plugin && bun run build`) to regenerate it with markers.
+fn normalize_ui_html(contents: &str) -> String {
+    let start = contents.find(TOKEN_MARKER_START);
+    let end = contents.find(TOKEN_MARKER_END);
+    match (start, end) {
+        (Some(start), Some(end)) if end > start => {
+            let inner_start = start + TOKEN_MARKER_START.len();
+            let mut out = String::with_capacity(contents.len());
+            out.push_str(&contents[..inner_start]);
+            out.push_str(PLACEHOLDER_LITERAL);
+            out.push_str(&contents[end..]);
+            out
+        }
+        _ => {
+            println!(
+                "cargo:warning=turbofig: dist/ui.html has no pairing-token markers; it may \
+                 embed a real token verbatim. Run `cd plugin && bun run build` to regenerate \
+                 it with the markers the current build-ui.ts writes."
+            );
+            contents.to_string()
+        }
+    }
 }
 
 /// Writes a stub that makes `embedded_plugin()` return `None`.

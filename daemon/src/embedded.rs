@@ -52,4 +52,35 @@ mod tests {
         assert!(!plugin.code_js.is_empty());
         assert!(!plugin.ui_html.is_empty());
     }
+
+    /// `build.rs` must always normalize the pairing-token slot back to the
+    /// `__TURBOFIG_PAIRING_TOKEN__` placeholder before embedding, even when a
+    /// contributor's local `dist/ui.html` carries a real token read from
+    /// their own `~/.turbofig/token` (`plugin/build-ui.ts`'s
+    /// `readLocalToken`). A real 64-hex-char token baked into the binary can
+    /// never be replaced later by `write_plugin_files`, since the placeholder
+    /// it looks for is gone. See `build.rs`'s `normalize_ui_html`.
+    #[test]
+    fn embedded_ui_html_always_carries_the_placeholder_never_a_real_token() {
+        let plugin = embedded_plugin().expect("plugin/dist must exist in this checkout");
+        assert!(
+            plugin.ui_html.contains("__TURBOFIG_PAIRING_TOKEN__"),
+            "embedded ui.html must contain the pairing-token placeholder"
+        );
+
+        // A real token is 64 lowercase hex characters (see token::TOKEN_BYTES).
+        // Scan for any run of 64+ contiguous lowercase-hex characters; the
+        // placeholder itself is not hex (it contains underscores and
+        // uppercase letters), so this can never false-positive on it.
+        let is_lowercase_hex_digit = |b: &u8| b.is_ascii_digit() || matches!(b, b'a'..=b'f');
+        let hex_run_found = plugin
+            .ui_html
+            .as_bytes()
+            .split(|b| !is_lowercase_hex_digit(b))
+            .any(|run| run.len() >= 64);
+        assert!(
+            !hex_run_found,
+            "embedded ui.html must never contain a real 64-hex-char pairing token"
+        );
+    }
 }
