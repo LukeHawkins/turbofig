@@ -125,6 +125,12 @@ pub struct AppState {
     /// write, building the HTTP response) and any job between `resolve_route`
     /// and the `pending` insert.
     job_counter: Arc<AtomicUsize>,
+    /// Path to the `plugin-seen` marker file (see `plugin_files::mark_plugin_seen`),
+    /// set only by `new_with_token`, the constructor the real daemon binary
+    /// uses. `None` for every other constructor (`new`, `with_timeout`), so
+    /// an in-process test building an `AppState` directly never writes to a
+    /// real `~/.turbofig` on a successful plugin WS authentication.
+    plugin_seen_path: Option<std::path::PathBuf>,
 }
 
 /// RAII guard returned by `AppState::begin_job`. Increments the shared job
@@ -143,7 +149,12 @@ impl Drop for JobGuard {
 
 impl AppState {
     /// Private constructor. All public constructors delegate here.
-    fn build(timeout: Duration, screenshot_dir: Option<std::path::PathBuf>, token: String) -> Self {
+    fn build(
+        timeout: Duration,
+        screenshot_dir: Option<std::path::PathBuf>,
+        token: String,
+        plugin_seen_path: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
             conn_counter: AtomicU64::new(1),
@@ -156,6 +167,7 @@ impl AppState {
             started_at: Instant::now(),
             draining: std::sync::atomic::AtomicBool::new(false),
             job_counter: Arc::new(AtomicUsize::new(0)),
+            plugin_seen_path,
         }
     }
 
@@ -170,6 +182,7 @@ impl AppState {
             request_timeout_from_env(),
             Some(bridge_dir_from_env().join("outbox")),
             random_token_hex(),
+            None,
         )
     }
 
@@ -177,19 +190,24 @@ impl AppState {
     /// Use this in tests to set a short timeout without touching global env.
     /// Sets screenshot_dir to None. Generates a random in-memory pairing token.
     pub fn with_timeout(d: Duration) -> Self {
-        Self::build(d, None, random_token_hex())
+        Self::build(d, None, random_token_hex(), None)
     }
 
     /// Create a new AppState exactly like `new()`, but with an explicit
-    /// pairing token rather than a freshly generated one. The daemon binary
-    /// uses this with the token `token::ensure_token` persisted to
-    /// `~/.turbofig/token`, so the WS upgrade check matches what a client
-    /// reads from that file.
-    pub fn new_with_token(token: String) -> Self {
+    /// pairing token rather than a freshly generated one, and `home`, the
+    /// real bridge directory. The daemon binary uses this with the token
+    /// `token::ensure_token` persisted to `~/.turbofig/token`, so the WS
+    /// upgrade check matches what a client reads from that file, and so the
+    /// first successful plugin authentication writes `<home>/plugin-seen`
+    /// (see `plugin_seen_path` and `ws.rs`). No other constructor sets
+    /// `plugin_seen_path`, so a test building an `AppState` directly never
+    /// writes that marker to a real home directory.
+    pub fn new_with_token(token: String, home: &std::path::Path) -> Self {
         Self::build(
             request_timeout_from_env(),
             Some(bridge_dir_from_env().join("outbox")),
             token,
+            Some(home.join("plugin-seen")),
         )
     }
 
@@ -208,6 +226,26 @@ impl AppState {
     /// Seconds since this `AppState` was constructed, i.e. daemon uptime.
     pub fn uptime_seconds(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+
+    /// Writes the `plugin-seen` marker on the first successful plugin WS
+    /// authentication, if this `AppState` was built with a real home
+    /// directory (`new_with_token`). A no-op for every other constructor, so
+    /// an in-process test never touches a real `~/.turbofig`. Logs a warning
+    /// to stderr on a write failure rather than failing the connection: a
+    /// plugin must still be able to connect even if the marker cannot be
+    /// written.
+    pub(crate) fn mark_plugin_seen(&self) {
+        let Some(path) = self.plugin_seen_path.as_deref() else {
+            return;
+        };
+        let home = match path.parent() {
+            Some(home) => home,
+            None => return,
+        };
+        if let Err(e) = crate::plugin_files::mark_plugin_seen(home) {
+            eprintln!("Turbofig daemon: failed to write the plugin-seen marker: {e}");
+        }
     }
 
     /// Marks the daemon as draining (true) or accepting work again (false).
@@ -791,6 +829,22 @@ mod tests {
         let json = state.named_connections_json();
         let serialized = serde_json::to_string(&json).expect("serialize");
         assert!(!serialized.contains(state.token()));
+    }
+
+    #[test]
+    fn mark_plugin_seen_is_a_no_op_without_a_real_home() {
+        // with_timeout never sets plugin_seen_path; calling mark_plugin_seen
+        // must never touch any real directory.
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        state.mark_plugin_seen();
+    }
+
+    #[test]
+    fn mark_plugin_seen_writes_the_marker_under_a_new_with_token_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = AppState::new_with_token("tok".to_owned(), tmp.path());
+        state.mark_plugin_seen();
+        assert!(tmp.path().join("plugin-seen").exists());
     }
 
     #[test]

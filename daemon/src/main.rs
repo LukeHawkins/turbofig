@@ -76,7 +76,8 @@ async fn main() {
         cmd_check_embedded();
     }
     match cli.command {
-        None | Some(Command::Serve) => run_daemon().await,
+        None => cmd_run().await,
+        Some(Command::Serve) => run_daemon().await,
         Some(Command::Start) => cmd_start().await,
         Some(Command::Stop) => cmd_stop().await,
         Some(Command::Status) => cmd_status().await,
@@ -209,6 +210,118 @@ async fn cmd_uninstall(purge: bool) {
             std::process::exit(1);
         }
     }
+}
+
+/// Returns the real clipboard, unless `TURBOFIG_TEST_FAKE_CLIPBOARD` names a
+/// file path in a debug build, in which case a fake records the copied text
+/// there instead and never shells out to `pbcopy`. Same `#[cfg(debug_assertions)]`
+/// gate as `mcp.rs`'s `TURBOFIG_TEST_VERSION_OVERRIDE`, so this escape hatch
+/// cannot exist in a release binary.
+fn clipboard_for_run() -> Box<dyn turbofig::first_run::Clipboard> {
+    #[cfg(debug_assertions)]
+    if let Ok(path) = std::env::var("TURBOFIG_TEST_FAKE_CLIPBOARD") {
+        return Box::new(turbofig::first_run::FakeClipboard::new(PathBuf::from(path)));
+    }
+    Box::new(turbofig::first_run::RealClipboard)
+}
+
+/// Returns the real Figma-Desktop opener, unless `TURBOFIG_TEST_FAKE_OPENER`
+/// is set to `"success"` or `"fail"` in a debug build, in which case a fake
+/// reports that fixed result and never shells out to `open`. Same
+/// `#[cfg(debug_assertions)]` gate as `clipboard_for_run`.
+fn opener_for_run() -> Box<dyn turbofig::first_run::AppOpener> {
+    #[cfg(debug_assertions)]
+    if let Ok(v) = std::env::var("TURBOFIG_TEST_FAKE_OPENER") {
+        return Box::new(turbofig::first_run::FakeOpener::new(v == "success"));
+    }
+    Box::new(turbofig::first_run::RealAppOpener)
+}
+
+/// Runs the bare `turbofig` command (no subcommand): starts the daemon
+/// detached if it is not already running, then prints either the first-run
+/// walkthrough (no `<home>/plugin-seen` marker yet: add the plugin, connect
+/// an agent) or a short status (the marker already exists: a later run).
+/// Safe to repeat any number of times. Exits 0 on success; exits 1, naming
+/// the daemon log path, if the daemon could not be started or never became
+/// healthy.
+async fn cmd_run() {
+    let mcp_port = turbofig::port_from_env();
+    let ws_port = turbofig::ws_port_from_env();
+    let home = turbofig::bridge_dir_from_env();
+    let client = build_http_client("turbofig");
+    let log_path = home.join("daemon.log");
+
+    if turbofig::spawn::fetch_health(&client, mcp_port)
+        .await
+        .is_none()
+    {
+        let turbofig_binary = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("turbofig: failed to determine the running binary's path: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
+            eprintln!("turbofig: could not start the daemon: {e}");
+            eprintln!("turbofig: see {} for details", log_path.display());
+            std::process::exit(1);
+        }
+        if let Err(e) = turbofig::spawn::wait_for_health(&client, mcp_port).await {
+            eprintln!("turbofig: {e}");
+            eprintln!("turbofig: see {} for details", log_path.display());
+            std::process::exit(1);
+        }
+    }
+
+    let health = turbofig::spawn::fetch_health(&client, mcp_port).await;
+    let version = health
+        .as_ref()
+        .map(|h| health_version(h).to_owned())
+        .unwrap_or_else(|| "unknown".to_owned());
+    let manifest_path = home.join("figma-plugin").join("manifest.json");
+
+    if home.join("plugin-seen").exists() {
+        let connected_file_names: Vec<String> = health
+            .as_ref()
+            .and_then(|h| h.get("connectedFiles"))
+            .and_then(|v| v.as_array())
+            .map(|files| {
+                files
+                    .iter()
+                    .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        print!(
+            "{}",
+            turbofig::first_run::status_text(
+                &version,
+                mcp_port,
+                ws_port,
+                &connected_file_names,
+                &manifest_path,
+            )
+        );
+        return;
+    }
+
+    let clipboard = clipboard_for_run();
+    let opener = opener_for_run();
+    let _ = clipboard.copy(&manifest_path.display().to_string());
+    let figma_opened = opener.open_figma();
+    let binary_path = stable_path_for_running_binary();
+    print!(
+        "{}",
+        turbofig::first_run::first_run_text(
+            &version,
+            mcp_port,
+            ws_port,
+            &manifest_path,
+            &binary_path,
+            figma_opened,
+        )
+    );
 }
 
 /// Starts the daemon detached if it is not already running, waits for
@@ -449,20 +562,27 @@ async fn run_daemon() {
         }
     };
 
-    // If a plugin copy already exists on disk, and this binary embeds a
-    // newer version (or the token rotated), refresh it now so a Homebrew
-    // upgrade's new plugin reaches disk without manual intervention. A
-    // fresh install with no figma-plugin/ yet is left alone here; a later
-    // step makes this write unconditional, matching an always-on first run.
-    let figma_plugin_dir = bridge_dir.join("figma-plugin");
-    if figma_plugin_dir.exists() && turbofig::plugin_files_outdated(&bridge_dir, &token) {
+    // Always ensure the on-disk Figma plugin copy exists and is current:
+    // create it on a fresh install (no figma-plugin/ yet), and refresh it on
+    // a later start when this binary embeds a newer version or the token
+    // rotated. `plugin_files_outdated` already reports true for a missing
+    // directory, so no separate existence check is needed here.
+    let figma_plugin_existed = bridge_dir.join("figma-plugin").exists();
+    if turbofig::plugin_files_outdated(&bridge_dir, &token) {
         match turbofig::write_plugin_files(&bridge_dir, &token) {
-            Ok(_) => println!("Turbofig daemon: refreshed the on-disk Figma plugin files"),
-            Err(e) => eprintln!("Turbofig daemon: failed to refresh the Figma plugin files: {e}"),
+            Ok(_) => {
+                let verb = if figma_plugin_existed {
+                    "refreshed"
+                } else {
+                    "wrote"
+                };
+                println!("Turbofig daemon: {verb} the on-disk Figma plugin files");
+            }
+            Err(e) => eprintln!("Turbofig daemon: failed to write the Figma plugin files: {e}"),
         }
     }
 
-    let state = Arc::new(AppState::new_with_token(token));
+    let state = Arc::new(AppState::new_with_token(token, &bridge_dir));
 
     let mcp_state = state.clone();
     let mcp_handle = tokio::spawn(async move {

@@ -2282,3 +2282,93 @@ async fn test_turbofig_status_never_includes_the_token() {
         "turbofig_status output must never contain the pairing token, got: {status_str}"
     );
 }
+
+/// A plugin connecting with a valid token writes `<home>/plugin-seen`, once,
+/// in a temp home: this must never run against a real `~/.turbofig`, so the
+/// state here is built with `new_with_token` pointed at a `tempfile` dir, not
+/// `AppState::new()`.
+#[tokio::test]
+async fn test_ws_connect_with_a_valid_token_writes_the_plugin_seen_marker_once() {
+    let home = tempfile::tempdir().expect("temp home");
+    let state = Arc::new(turbofig::AppState::new_with_token(
+        "test-token-for-marker".to_owned(),
+        home.path(),
+    ));
+    let marker_path = home.path().join("plugin-seen");
+    assert!(
+        !marker_path.exists(),
+        "marker must not exist before a connect"
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    let state_srv = state.clone();
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state_srv)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let (_ws, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("first WS connect failed");
+
+    wait_until(
+        || marker_path.exists(),
+        common::WAIT_DEADLINE_MS,
+        "plugin-seen marker to be written",
+    )
+    .await;
+    let first_contents = std::fs::read_to_string(&marker_path).expect("read marker");
+
+    // A second connection with the same valid token must not rewrite it.
+    let (_ws2, _) = connect_async(format!(
+        "ws://127.0.0.1:{}/?token={}",
+        addr.port(),
+        state.token()
+    ))
+    .await
+    .expect("second WS connect failed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        std::fs::read_to_string(&marker_path).expect("read marker again"),
+        first_contents,
+        "a second valid connection must never overwrite the marker"
+    );
+}
+
+/// An unauthenticated (missing-token) connect attempt must never write the
+/// marker: only a successful authentication counts as "seen".
+#[tokio::test]
+async fn test_ws_connect_with_an_invalid_token_never_writes_the_plugin_seen_marker() {
+    let home = tempfile::tempdir().expect("temp home");
+    let state = Arc::new(turbofig::AppState::new_with_token(
+        "test-token-for-marker-reject".to_owned(),
+        home.path(),
+    ));
+    let marker_path = home.path().join("plugin-seen");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral WS port");
+    let addr = listener.local_addr().expect("read local addr");
+    tokio::spawn(async move {
+        turbofig::serve_ws(listener, state)
+            .await
+            .expect("serve_ws error in test");
+    });
+
+    let result = connect_async(format!("ws://127.0.0.1:{}/?token=wrong", addr.port())).await;
+    assert!(result.is_err(), "a wrong token must be rejected");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !marker_path.exists(),
+        "a rejected connection must never write the marker"
+    );
+}

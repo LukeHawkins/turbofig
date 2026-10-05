@@ -212,6 +212,10 @@ async fn ws_handler(
         )
             .into_response();
     }
+    // A valid token means a real plugin (or file-bridge-equivalent client)
+    // just authenticated: record it so `turbofig` (the bare command) can
+    // tell a genuine first run from a later one. A no-op past the first call.
+    state.mark_plugin_seen();
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)
         .on_upgrade(move |socket| handle_socket(socket, state))

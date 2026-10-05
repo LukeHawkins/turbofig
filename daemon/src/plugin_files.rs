@@ -137,6 +137,33 @@ fn write_atomic_0600(path: &Path, contents: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Name of the marker file the daemon writes at `<home>/plugin-seen` the
+/// first time a plugin connects with a valid pairing token (see `ws.rs`).
+/// Its presence is what `turbofig` (the bare, no-argument command) uses to
+/// tell a genuine first run from a later one: a first run prints the full
+/// "add the plugin" walkthrough, a later one prints a short status instead.
+const PLUGIN_SEEN_FILE: &str = "plugin-seen";
+
+/// Writes `<home>/plugin-seen` (mode 0600, holding the current Unix time in
+/// seconds) if it does not already exist. A no-op, returning `Ok(false)`,
+/// when the marker is already there: this runs on every successful plugin
+/// WebSocket authentication, not only the first, so it must never overwrite
+/// an existing marker or treat a second call as an error. Returns `Ok(true)`
+/// when this call is the one that created it.
+pub fn mark_plugin_seen(home: &Path) -> io::Result<bool> {
+    let path = home.join(PLUGIN_SEEN_FILE);
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(home)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    write_atomic_0600(&path, format!("{now}\n").as_bytes())?;
+    Ok(true)
+}
+
 /// Sets `path` (a file or directory) to mode 0700 and masks group/world bits
 /// for a file; see `bridge::set_owner_only` for the same reasoning applied to
 /// the file-bridge's inbox/outbox. A failure here is not swallowed, unlike
@@ -302,6 +329,51 @@ mod tests {
         assert!(
             plugin_files_outdated(tmp.path(), "tok"),
             "a leftover root-level ui.html must count as outdated"
+        );
+    }
+
+    #[test]
+    fn mark_plugin_seen_creates_the_marker_with_mode_0600() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wrote = mark_plugin_seen(tmp.path()).expect("mark_plugin_seen");
+        assert!(wrote, "the first call must report that it wrote the marker");
+        let path = tmp.path().join(PLUGIN_SEEN_FILE);
+        assert!(path.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)
+                .expect("stat marker")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let contents = std::fs::read_to_string(&path).expect("read marker");
+        assert!(
+            contents.trim().parse::<u64>().is_ok(),
+            "the marker must hold a numeric timestamp: {contents:?}"
+        );
+    }
+
+    #[test]
+    fn mark_plugin_seen_never_overwrites_an_existing_marker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(mark_plugin_seen(tmp.path()).expect("first call"));
+        let path = tmp.path().join(PLUGIN_SEEN_FILE);
+        let original = std::fs::read_to_string(&path).expect("read marker");
+
+        let wrote_again = mark_plugin_seen(tmp.path()).expect("second call");
+        assert!(
+            !wrote_again,
+            "a second call must report it did not write a new marker"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read marker again"),
+            original,
+            "an existing marker must never be overwritten"
         );
     }
 
