@@ -2,7 +2,7 @@
 
 turbofig may be running on this machine. It drives the open Figma file.
 
-**Prefer the file-bridge.** It is the fastest and most token-efficient path (no MCP tool definitions, no JSON-RPC or SSE envelope) and fires no permission dialog. Use MCP only when the file-bridge is not available.
+**Prefer the file-bridge.** It loads no MCP tool definitions and adds no JSON-RPC or SSE envelope, and it fires no permission dialog. Use MCP only when the file-bridge is not available.
 
 ## File-bridge (recommended)
 

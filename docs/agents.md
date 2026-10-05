@@ -13,9 +13,12 @@ ways to reach it.
 
 ## File bridge (prefer this)
 
-The file bridge is the fastest and most token-efficient path. It loads no
-MCP tool definitions and adds no JSON-RPC or SSE envelope, and it fires no
-permission dialog.
+Prefer the file bridge. It loads no MCP tool definitions and adds no
+JSON-RPC or SSE envelope, and it fires no permission dialog.
+
+These paths assume the default home, `~/.turbofig`. If the daemon runs with
+a custom `TURBOFIG_BRIDGE_DIR`, use that folder instead; the copy-prompt in
+the plugin panel shows the real path.
 
 1. Pick a unique job id for every job. Never reuse an id while an earlier
    job with that id may still be running.
