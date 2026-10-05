@@ -2150,6 +2150,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "futures-util",
+ "getrandom 0.4.3",
  "http",
  "image",
  "notify",

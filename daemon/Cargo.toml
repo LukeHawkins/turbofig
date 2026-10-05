@@ -29,6 +29,7 @@ http = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json"] }
+getrandom = "0.4.3"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

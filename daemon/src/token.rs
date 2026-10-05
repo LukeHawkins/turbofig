@@ -22,21 +22,14 @@ const TOKEN_BYTES: usize = 32;
 
 /// Generates `TOKEN_BYTES` of randomness and returns it hex-encoded.
 ///
-/// No `rand`/`getrandom` dependency: `std::collections::hash_map::RandomState`
-/// draws a fresh SipHash key from the OS CSPRNG on every `RandomState::new()`
-/// call (see `state::random_counter_start`, which uses the same technique for
-/// the request-id counter seed). Hashing a fixed, empty input through 4
-/// independently-seeded hashers yields 4 unrelated `u64`s, i.e. 32 bytes
-/// derived from 256 bits of OS randomness, with no new crate.
+/// Uses `getrandom`, a thin wrapper over the OS CSPRNG (`getentropy`/
+/// `/dev/urandom` on macOS), for the full 256 bits of security this token
+/// relies on. `RandomState`'s SipHash keys are not documented or guaranteed
+/// to be CSPRNG-strength or 128 bits of real entropy; they exist to resist
+/// HashDoS, not to stand in for a pairing secret.
 pub(crate) fn random_token_hex() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let mut bytes = Vec::with_capacity(TOKEN_BYTES);
-    while bytes.len() < TOKEN_BYTES {
-        let word = RandomState::new().build_hasher().finish();
-        bytes.extend_from_slice(&word.to_le_bytes());
-    }
-    bytes.truncate(TOKEN_BYTES);
+    let mut bytes = [0u8; TOKEN_BYTES];
+    getrandom::fill(&mut bytes).expect("OS CSPRNG (getrandom) must be available");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
