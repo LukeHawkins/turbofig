@@ -402,34 +402,61 @@ async fn cmd_stop() {
 /// away. Shared by `cmd_stop` and `cmd_uninstall`'s best-effort stop.
 ///
 /// Returns `Ok(true)` when a daemon was stopped, `Ok(false)` when none was
-/// running (no token file, or the request could not even connect: a stale
-/// token file from a daemon that is already gone), and `Err` with a clear
-/// reason for any other failure (the daemon refused the request, or never
-/// actually went away).
+/// running at all (no token file and `/health` unreachable, or the request
+/// could not even connect and `/health` agrees: a stale token file from a
+/// daemon that is already gone), and `Err` with a clear reason for any other
+/// failure: the daemon refused the request, never actually went away, or
+/// (see `token_trouble_stop_message`) `/health` answers but the token is
+/// missing or no longer matches, so this cannot authenticate `/control` at
+/// all. That last case must never fall through to `Ok(false)`: the daemon is
+/// still running, so "no daemon appears to be running" would be a lie.
 async fn stop_running_daemon(
     client: &reqwest::Client,
     mcp_port: u16,
     home: &std::path::Path,
 ) -> Result<bool, String> {
-    let Ok(token) = tokio::fs::read_to_string(home.join("token")).await else {
-        return Ok(false);
+    let Some(token) = turbofig::read_token_file(home).await else {
+        return if turbofig::spawn::fetch_health(client, mcp_port)
+            .await
+            .is_some()
+        {
+            Err(turbofig::cli::token_trouble_stop_message().to_owned())
+        } else {
+            Ok(false)
+        };
     };
 
     let resp = client
         .post(format!("http://127.0.0.1:{mcp_port}/control"))
-        .bearer_auth(token.trim())
+        .bearer_auth(&token)
         .json(&serde_json::json!({"action": "stop"}))
         .send()
         .await;
     match resp {
         Ok(r) if r.status().is_success() => {}
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
+            return Err(turbofig::cli::token_trouble_stop_message().to_owned());
+        }
         Ok(r) => {
             return Err(format!(
                 "the daemon refused the stop request ({})",
                 r.status()
             ))
         }
-        Err(_) => return Ok(false), // nothing answered: a stale token file
+        Err(_) => {
+            // Nothing answered: usually a stale token file from a daemon
+            // that is already gone, but confirm against /health rather than
+            // assuming, so a daemon that is up but unreachable only on
+            // /control (should not normally happen) is never misreported.
+            return if turbofig::spawn::fetch_health(client, mcp_port)
+                .await
+                .is_some()
+            {
+                Err(turbofig::cli::token_trouble_stop_message().to_owned())
+            } else {
+                Ok(false)
+            };
+        }
     }
 
     if !turbofig::spawn::wait_for_unreachable(client, mcp_port, STOP_UNREACHABLE_DEADLINE).await {

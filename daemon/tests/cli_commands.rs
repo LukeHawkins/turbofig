@@ -69,6 +69,39 @@ async fn stop_stops_a_running_daemon_and_health_goes_unreachable() {
     );
 }
 
+/// `turbofig stop` with a running daemon whose token file was removed (or
+/// no longer matches) must never say "no daemon appears to be running": the
+/// daemon is reachable on /health, so that would be a lie. It must print the
+/// token-trouble message and exit 1 instead, and the daemon must still be
+/// running afterward (stop could not authenticate the request at all).
+#[tokio::test]
+async fn stop_with_a_missing_token_file_reports_trouble_not_nothing_running() {
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+
+    tokio::fs::remove_file(home.path().join("token"))
+        .await
+        .expect("remove the token file to simulate it going missing");
+
+    let (status, stdout, stderr) = run_turbofig(&["stop"], home.path(), mcp_port, ws_port).await;
+    assert_eq!(status.code(), Some(1), "stop must exit 1, stdout: {stdout}");
+    assert!(
+        stderr.contains("token file is missing or changed"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        fetch_health(&client, mcp_port).await.is_some(),
+        "the daemon must still be running: stop never authenticated"
+    );
+
+    let _ = daemon.kill().await;
+}
+
 #[tokio::test]
 async fn stop_when_nothing_is_running_is_a_no_op() {
     let home = tempfile::tempdir().expect("temp home");

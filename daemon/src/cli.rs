@@ -383,6 +383,17 @@ pub fn stop_autostart_restart_hint() -> &'static str {
     "turbofig: autostart is on, so launchd will restart it. Run `turbofig autostart off` to stop that."
 }
 
+/// Message `turbofig stop` prints when `/health` answers (a daemon is
+/// running) but its token file is missing or no longer matches: `stop`
+/// cannot authenticate the `/control` request, so it cannot tell this apart
+/// from "nothing is running" without saying so plainly. This must never be
+/// confused with `stop_nothing_running_message`: that one is success,
+/// this one is a real failure (the daemon stays up) and exits 1.
+pub fn token_trouble_stop_message() -> &'static str {
+    "turbofig is running but its token file is missing or changed, so it cannot be stopped \
+     cleanly. Restore the token, or end it with: pkill -f 'turbofig serve'"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -836,5 +847,12 @@ mod tests {
     #[test]
     fn stop_autostart_restart_hint_names_the_off_command() {
         assert!(stop_autostart_restart_hint().contains("turbofig autostart off"));
+    }
+
+    #[test]
+    fn token_trouble_stop_message_names_the_pkill_fallback() {
+        let msg = token_trouble_stop_message();
+        assert!(msg.contains("token file is missing or changed"));
+        assert!(msg.contains("pkill -f 'turbofig serve'"));
     }
 }
