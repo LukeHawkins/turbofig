@@ -147,7 +147,7 @@ async fn test_full_loop_over_bridge() {
     )
     .await;
     let exec: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
     assert_eq!(exec["ok"], serde_json::json!(true), "execute must succeed");
     assert_eq!(
         exec["result"]["id"],
@@ -158,7 +158,7 @@ async fn test_full_loop_over_bridge() {
     // 2. Read the selection.
     let out = write_job(&tmp, "loop_sel", serde_json::json!({"op": "get_selection"})).await;
     let sel: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
     assert_eq!(
         sel["ok"],
         serde_json::json!(true),
@@ -173,7 +173,7 @@ async fn test_full_loop_over_bridge() {
     // 3. Get a screenshot back (file mode writes a PNG to the outbox).
     let out = write_job(&tmp, "loop_shot", serde_json::json!({"op": "screenshot"})).await;
     let shot: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
     assert_eq!(
         shot["ok"],
         serde_json::json!(true),

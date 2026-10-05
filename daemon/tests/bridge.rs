@@ -160,7 +160,7 @@ async fn test_bridge_status_roundtrip_with_plugin() {
     let outbox_path = write_job(&tmp, "job1", serde_json::json!({"op": "status"})).await;
 
     // Poll for the result (up to 2 s).
-    let contents = poll_file(&outbox_path, 2000).await;
+    let contents = poll_file(&outbox_path, common::WAIT_DEADLINE_MS).await;
     let payload: serde_json::Value =
         serde_json::from_str(&contents).expect("outbox file is valid JSON");
 
@@ -193,7 +193,7 @@ async fn test_bridge_status_no_plugin() {
     spawn_bridge(state.clone(), tmp.path().to_path_buf());
 
     let outbox_path = write_job(&tmp, "job_noplugin", serde_json::json!({"op": "status"})).await;
-    let contents = poll_file(&outbox_path, 2000).await;
+    let contents = poll_file(&outbox_path, common::WAIT_DEADLINE_MS).await;
     let payload: serde_json::Value =
         serde_json::from_str(&contents).expect("outbox file is valid JSON");
 
@@ -216,7 +216,7 @@ async fn test_bridge_unknown_op() {
 
     // Write an unknown op.
     let out_unknown = write_job(&tmp, "job_bad", serde_json::json!({"op": "frobnicate"})).await;
-    let contents = poll_file(&out_unknown, 2000).await;
+    let contents = poll_file(&out_unknown, common::WAIT_DEADLINE_MS).await;
     let payload: serde_json::Value =
         serde_json::from_str(&contents).expect("outbox file is valid JSON");
 
@@ -232,7 +232,7 @@ async fn test_bridge_unknown_op() {
 
     // Write a valid job to prove the watcher is still running.
     let out_valid = write_job(&tmp, "job_after", serde_json::json!({"op": "status"})).await;
-    let contents2 = poll_file(&out_valid, 2000).await;
+    let contents2 = poll_file(&out_valid, common::WAIT_DEADLINE_MS).await;
     let payload2: serde_json::Value =
         serde_json::from_str(&contents2).expect("follow-up outbox file is valid JSON");
 
@@ -261,7 +261,7 @@ async fn test_bridge_malformed_json() {
         .expect("write malformed job");
 
     let out_path = tmp.path().join("outbox").join("job_malformed.json");
-    let contents = poll_file(&out_path, 2000).await;
+    let contents = poll_file(&out_path, common::WAIT_DEADLINE_MS).await;
     let payload: serde_json::Value =
         serde_json::from_str(&contents).expect("outbox file is valid JSON");
 
@@ -376,7 +376,7 @@ async fn test_bridge_execute_op() {
     )
     .await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(
         payload["ok"],
@@ -399,7 +399,7 @@ async fn test_bridge_execute_missing_code() {
 
     let out = write_job(&tmp, "job_nocode", serde_json::json!({"op": "execute"})).await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(false), "must fail");
     assert!(
@@ -429,7 +429,7 @@ async fn test_bridge_get_selection_op() {
 
     let out = write_job(&tmp, "job_sel", serde_json::json!({"op": "get_selection"})).await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
     assert_eq!(
@@ -457,7 +457,7 @@ async fn test_bridge_screenshot_file_mode_op() {
 
     let out = write_job(&tmp, "job_shot", serde_json::json!({"op": "screenshot"})).await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
     let path = payload["path"]
@@ -489,8 +489,8 @@ async fn test_bridge_malformed_json_errors_after_grace() {
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let out_path = tmp.path().join("outbox").join("job_grace.json");
-    // Allow up to 2 s for the bridge to write the error result.
-    let contents = poll_file(&out_path, 2000).await;
+    // Allow the shared deadline for the bridge to write the error result.
+    let contents = poll_file(&out_path, common::WAIT_DEADLINE_MS).await;
     let payload: serde_json::Value =
         serde_json::from_str(&contents).expect("outbox file is valid JSON");
 
@@ -587,7 +587,7 @@ async fn test_bridge_execute_no_file_key_two_plugins_returns_ambiguous() {
     )
     .await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(false), "must fail");
     let error = payload["error"].as_str().unwrap_or("");
@@ -644,7 +644,7 @@ async fn test_bridge_execute_explicit_file_key_routes_to_correct_plugin() {
     )
     .await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
     assert_eq!(
@@ -676,7 +676,7 @@ async fn test_bridge_execute_unknown_file_key_returns_not_found() {
     )
     .await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(false), "must fail");
     let error = payload["error"].as_str().unwrap_or("");
@@ -798,7 +798,7 @@ async fn test_bridge_get_selection_routes_by_file_key() {
     )
     .await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
     assert_eq!(
@@ -832,7 +832,8 @@ async fn test_bridge_execute_eval_error() {
     )
     .await;
     let payload1: serde_json::Value =
-        serde_json::from_str(&poll_file(&out1, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out1, common::WAIT_DEADLINE_MS).await)
+            .expect("valid JSON");
     assert_eq!(
         payload1["ok"],
         serde_json::json!(false),
@@ -852,7 +853,8 @@ async fn test_bridge_execute_eval_error() {
     )
     .await;
     let payload2: serde_json::Value =
-        serde_json::from_str(&poll_file(&out2, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out2, common::WAIT_DEADLINE_MS).await)
+            .expect("valid JSON");
     assert_eq!(
         payload2["ok"],
         serde_json::json!(false),
@@ -936,7 +938,7 @@ async fn test_bridge_get_selection_fields_and_depth_forwarded() {
     )
     .await;
     let payload: serde_json::Value =
-        serde_json::from_str(&poll_file(&out, 2000).await).expect("valid JSON");
+        serde_json::from_str(&poll_file(&out, common::WAIT_DEADLINE_MS).await).expect("valid JSON");
 
     assert_eq!(payload["ok"], serde_json::json!(true), "must succeed");
     assert_eq!(

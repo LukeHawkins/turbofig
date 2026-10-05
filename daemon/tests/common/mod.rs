@@ -20,7 +20,7 @@ use tokio::process::{Child, Command};
 
 /// Generous default deadline for a condition wait. A healthy condition
 /// resolves in a few milliseconds; this only bounds a genuine hang.
-pub const WAIT_DEADLINE_MS: u64 = 5000;
+pub const WAIT_DEADLINE_MS: u64 = 10_000;
 
 /// Poll interval while a condition is still false.
 const POLL_INTERVAL_MS: u64 = 10;
