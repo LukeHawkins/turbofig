@@ -130,10 +130,12 @@ async fn assert_control_drains_and_exits(action: &str) {
 
 #[tokio::test]
 async fn control_stop_with_the_right_token_drains_and_exits_zero() {
+    let _serial = common::serial_process_test().await;
     assert_control_drains_and_exits("stop").await;
 }
 
 #[tokio::test]
 async fn control_restart_with_the_right_token_drains_and_exits_zero() {
+    let _serial = common::serial_process_test().await;
     assert_control_drains_and_exits("restart").await;
 }

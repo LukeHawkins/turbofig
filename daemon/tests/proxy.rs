@@ -129,6 +129,7 @@ fn parse_sse_data(body: &str) -> Value {
 
 #[tokio::test]
 async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -152,6 +153,7 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
 
 #[tokio::test]
 async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -179,6 +181,7 @@ async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() 
 
 #[tokio::test]
 async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -206,6 +209,7 @@ async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
 
 #[tokio::test]
 async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -237,6 +241,7 @@ async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
 
 #[tokio::test]
 async fn two_proxies_started_at_once_share_exactly_one_daemon() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();

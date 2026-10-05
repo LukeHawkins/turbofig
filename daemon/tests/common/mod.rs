@@ -114,6 +114,16 @@ pub async fn wait_for_no_connections(state: &Arc<turbofig::AppState>, deadline_m
 
 /// The compiled `turbofig` binary under test.
 pub const BIN: &str = env!("CARGO_BIN_EXE_turbofig");
+
+/// Runs tests that spawn real turbofig processes one at a time within a test
+/// binary. `free_port` picks a port and then releases it, so 2 parallel tests
+/// can get the same port, and a proxy can then start a daemon that no test
+/// tracks (this leaked detached daemons). Hold the guard for the whole test.
+/// Cargo already runs the test binaries one after another.
+pub async fn serial_process_test() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
 const STDIO_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Guards every real spawn of the `turbofig` binary in this test suite.

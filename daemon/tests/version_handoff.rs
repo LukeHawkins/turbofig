@@ -31,6 +31,7 @@ const OLD_VERSION: &str = "0.0.1";
 
 #[tokio::test]
 async fn old_daemon_and_new_proxy_triggers_a_restart_and_health_reports_the_new_version() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -71,6 +72,7 @@ async fn old_daemon_and_new_proxy_triggers_a_restart_and_health_reports_the_new_
 
 #[tokio::test]
 async fn new_daemon_and_old_proxy_gives_no_restart_and_the_daemon_pid_stays_the_same() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -115,6 +117,7 @@ async fn new_daemon_and_old_proxy_gives_no_restart_and_the_daemon_pid_stays_the_
 
 #[tokio::test]
 async fn two_new_proxies_and_one_old_daemon_give_exactly_one_new_daemon() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -213,6 +216,7 @@ async fn wait_for_file_connected(
 
 #[tokio::test]
 async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();

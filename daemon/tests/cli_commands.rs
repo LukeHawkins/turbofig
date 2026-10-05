@@ -8,6 +8,7 @@ use common::{fetch_health, free_port, run_turbofig, spawn_daemon, stop_daemon, w
 
 #[tokio::test]
 async fn start_detaches_a_daemon_when_none_is_running_and_prints_version_and_ports() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -27,6 +28,7 @@ async fn start_detaches_a_daemon_when_none_is_running_and_prints_version_and_por
 
 #[tokio::test]
 async fn start_when_already_running_prints_already_running_and_exits_zero() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -49,6 +51,7 @@ async fn start_when_already_running_prints_already_running_and_exits_zero() {
 
 #[tokio::test]
 async fn stop_stops_a_running_daemon_and_health_goes_unreachable() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -76,6 +79,7 @@ async fn stop_stops_a_running_daemon_and_health_goes_unreachable() {
 /// running afterward (stop could not authenticate the request at all).
 #[tokio::test]
 async fn stop_with_a_missing_token_file_reports_trouble_not_nothing_running() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -104,6 +108,7 @@ async fn stop_with_a_missing_token_file_reports_trouble_not_nothing_running() {
 
 #[tokio::test]
 async fn stop_when_nothing_is_running_is_a_no_op() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -118,6 +123,7 @@ async fn stop_when_nothing_is_running_is_a_no_op() {
 
 #[tokio::test]
 async fn a_second_serve_exits_at_once_with_the_already_running_message() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();

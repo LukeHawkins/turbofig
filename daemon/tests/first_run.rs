@@ -59,6 +59,7 @@ async fn run_bare_turbofig(
 
 #[tokio::test]
 async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
@@ -124,6 +125,7 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
 
 #[tokio::test]
 async fn bare_turbofig_second_run_with_an_existing_marker_prints_a_short_status() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
