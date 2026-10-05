@@ -80,10 +80,10 @@ page or content the user already has open.
   blank file is fine; the harness creates and removes its own page.
 - turbofig built: `cargo build --release` (or `cargo build` for a debug run).
 - For the `console-mcp` target: a working `figma-console-mcp` install with a
-  Figma personal access token. The owner's own reference setup lives outside
-  this repo, at `console-mcp-setup/` (`./start.sh`, which runs `supergateway` in
-  front of `figma-console-mcp` on port 3846 by default; see `console-mcp-setup/.env`
-  and `console-mcp-setup/setup.sh` in that checkout).
+  Figma personal access token, running behind `supergateway` so it serves
+  streamable HTTP. `supergateway` fronts `figma-console-mcp` on port 3846 by
+  default (configurable). Set this up in your own `figma-console-mcp`
+  checkout; it lives outside this repo.
 - For the agent layer (`bench/agent.ts`): the `claude` CLI on `PATH`. Every
   invocation spends real Claude Code usage — never loop it without intent.
 
@@ -101,9 +101,9 @@ page or content the user already has open.
 
 **console-mcp:**
 
-1. In your `figma-console-mcp` checkout (e.g. `console-mcp-setup/`): `./start.sh`
-   (needs `.env` with `FIGMA_ACCESS_TOKEN` set; see that repo's `setup.sh`
-   if `.env` does not exist yet).
+1. In your `figma-console-mcp` setup: start the `supergateway` wrapper
+   (needs `.env` with `FIGMA_ACCESS_TOKEN` set; see that setup's own
+   instructions if `.env` does not exist yet).
 2. In Figma Desktop, open the file you want to benchmark, then
    **Plugins -> Development -> Figma Console MCP Bridge**.
 3. `console-mcp` now serves `http://127.0.0.1:3846/mcp` for that file.
@@ -278,7 +278,7 @@ bun test bench/
    `bun bench/harness.ts --target turbofig-mcp --scenario all --runs 10 --out out/turbofig-mcp.json`.
    (8-10 min; `read-screenshot` and the two `-plain` builds are the slowest jobs)
 5. Stop the turbofig plugin panel (or close that file). Start your
-   `figma-console-mcp` checkout's gateway (e.g. `./start.sh` in `console-mcp-setup/`).
+   `figma-console-mcp` setup's `supergateway` wrapper.
    Open the same or a second Figma file and run
    **Plugins -> Development -> Figma Console MCP Bridge**. (3 min)
 6. Run the console-mcp target:
