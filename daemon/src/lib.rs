@@ -16,9 +16,11 @@
 //! the daemon. `spawn` starts a detached `turbofig serve` in its own
 //! session; `proxy` is `turbofig mcp`, a stdio MCP server that forwards
 //! every tool call onto `POST /job`, starting the daemon via `spawn` when
-//! it is not already running.
+//! it is not already running. `first_run` holds the text and the clipboard/
+//! Figma-launch seams for the bare `turbofig` command (no subcommand).
 
 pub mod cli;
+pub mod first_run;
 pub mod launchd;
 pub mod proxy;
 pub mod spawn;

@@ -18,7 +18,7 @@ use std::time::Duration;
     name = "turbofig",
     version,
     about = "Bridge any AI to Figma.",
-    long_about = "turbofig: the always-on bridge from Figma to any AI agent.\n\nWith no subcommand, runs the daemon in the foreground (same as `turbofig serve`)."
+    long_about = "turbofig: the always-on bridge from Figma to any AI agent.\n\nWith no subcommand, starts the daemon detached if it is not already running, then prints a first-run walkthrough (or a short status on a later run). Use `turbofig serve` to run the daemon in the foreground instead."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -32,7 +32,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Run the daemon in the foreground. Same as no subcommand.
+    /// Run the daemon in the foreground.
     Serve,
     /// Start the daemon detached in the background, if it is not already
     /// running.
@@ -198,37 +198,6 @@ pub fn autostart_on_message(plist_path: &Path) -> String {
 /// plist.
 pub fn autostart_off_message(plist_path: &Path) -> String {
     format!("turbofig: autostart off (removed {})", plist_path.display())
-}
-
-/// The exact 3 numbered steps plus the 1 optional MCP line the no-arg first
-/// run prints (moved here from the retired `setup` command; wired up by a
-/// later step).
-///
-/// `mcp_port` is the real port the daemon's MCP endpoint listens on
-/// (`TURBOFIG_MCP_PORT`-overridable), not a hardcoded default: a custom
-/// port must show up here too, or the printed command connects to nothing.
-///
-/// `clipboard_copied` is whether the caller already best-effort copied
-/// `manifest_path` to the clipboard: Figma's file picker hides `~/.turbofig`,
-/// so a copy-pasteable path is the practical way in. When true, an
-/// unnumbered hint line is added after step 1, pointing at Figma's "go to
-/// folder" shortcut; this never changes the count of numbered steps.
-pub fn setup_steps_text(manifest_path: &Path, mcp_port: u16, clipboard_copied: bool) -> String {
-    let clipboard_hint = if clipboard_copied {
-        "   (Figma's file picker hides ~/.turbofig: press Cmd+Shift+G, paste the path \
-         - it is on your clipboard - then press Return.)\n"
-    } else {
-        ""
-    };
-    format!(
-        "1. In Figma Desktop: Plugins > Development > Import plugin from manifest, then pick {}.\n\
-{clipboard_hint}\
-2. Run the turbofig plugin in a file.\n\
-3. Click the copy-prompt button in the plugin and paste it into your AI agent.\n\
-\n\
-Optional, for MCP clients: claude mcp add --transport http turbofig http://127.0.0.1:{mcp_port}/mcp\n",
-        manifest_path.display()
-    )
 }
 
 /// Result of a successful `run_uninstall` call.
@@ -668,45 +637,6 @@ mod tests {
 
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&launch_agents_dir).ok();
-    }
-
-    #[test]
-    fn setup_steps_text_has_exactly_three_numbered_steps_and_one_optional_line() {
-        let text = setup_steps_text(
-            Path::new("/tmp/home/figma-plugin/manifest.json"),
-            18846,
-            false,
-        );
-        assert!(text.contains("1. In Figma Desktop"));
-        assert!(text.contains("2. Run the turbofig plugin"));
-        assert!(text.contains("3. Click the copy-prompt button"));
-        assert!(text.contains("Optional, for MCP clients:"));
-        assert!(text.contains("/tmp/home/figma-plugin/manifest.json"));
-        assert_eq!(text.matches("claude mcp add").count(), 1);
-    }
-
-    #[test]
-    fn setup_steps_text_names_a_custom_mcp_port() {
-        let text = setup_steps_text(
-            Path::new("/tmp/home/figma-plugin/manifest.json"),
-            19999,
-            false,
-        );
-        assert!(text.contains("http://127.0.0.1:19999/mcp"));
-        assert!(!text.contains("18846"));
-    }
-
-    #[test]
-    fn setup_steps_text_adds_a_clipboard_hint_only_when_copied() {
-        let without = setup_steps_text(Path::new("/tmp/x/manifest.json"), 18846, false);
-        assert!(!without.contains("Cmd+Shift+G"));
-
-        let with = setup_steps_text(Path::new("/tmp/x/manifest.json"), 18846, true);
-        assert!(with.contains("Cmd+Shift+G"));
-        // The hint must never change the count of numbered steps.
-        assert!(with.contains("1. In Figma Desktop"));
-        assert!(with.contains("2. Run the turbofig plugin"));
-        assert!(with.contains("3. Click the copy-prompt button"));
     }
 
     #[test]
