@@ -1,0 +1,8 @@
+steps:
+  - name: Install Bun
+    uses: oven-sh/setup-bun@v2
+    with:
+      bun-version: "1.3.10"
+  - name: Build the Figma plugin
+    run: cd plugin && bun install && bun run build
+    shell: bash
