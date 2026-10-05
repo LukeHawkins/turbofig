@@ -35,19 +35,23 @@ and what is a bug.
   alone cannot tell the real Figma plugin UI apart from a sandboxed
   `<iframe>` on a malicious web page: both report Origin `null`. See
   "Pairing token" below.
-- **By design, any local process running as the same user can call the
-  daemon.** This matches the trust model of other local MCP servers. The
-  HTTP MCP port still has no token, so a local privilege boundary (a
-  different user account, or a sandboxed process) is the only thing that
-  stops another local process from driving it.
-- **A token on disk would not fix this, so the HTTP port carries none.** A
-  reviewer may read "no token" as a bug and expect one added. A token stored
-  in a file that the same user can read gives no extra protection: any
-  process that runs as that user can also read the file and present the
-  token. The pairing token on the WebSocket port exists for a different
-  reason (it tells the real Figma plugin apart from a malicious page that
-  reports the same null Origin, see "Pairing token" below), not to stop
-  another local process owned by the same user.
+- **`POST /job` and `POST /mcp` require the pairing token, like `POST
+  /control`.** A caller must send `Authorization: Bearer <pairing token>`.
+  This closes the gap that an earlier version of this file documented as
+  open: another macOS account on the same Mac can reach `127.0.0.1`, but it
+  cannot read a different user's `~/.turbofig/token`, so it can no longer
+  drive the Figma plugin through the HTTP port. A missing or wrong token
+  gets 401 before the request does anything else.
+- **`GET /health` splits its payload by the same token.** Without a valid
+  token it returns only `version` and `uptimeSeconds`: enough for a caller
+  to confirm the daemon is alive. With a valid token it also returns the
+  connected-files list and the daemon's `pid`. `/health` never fails with
+  401; the reduced payload is the point, not an error.
+- **Any local process running as the same user that already holds the
+  token can still call the daemon.** This matches the trust model of other
+  local MCP servers: the token stops a different account or a sandboxed
+  process from reading it, not a process that already runs as the owner
+  and can read `~/.turbofig/token` for itself.
 - **The file-bridge directories are mode `0700`.** The default home
   `~/.turbofig` is created and corrected to `0700` on every daemon start,
   because job and result files can carry arbitrary eval code and its output.
@@ -78,7 +82,7 @@ could otherwise open the socket and receive the AI's jobs.
   tested by `embedded::tests::embedded_ui_html_always_carries_the_placeholder_never_a_real_token`).
 - **Comparison:** constant-time, so a wrong guess cannot be distinguished by
   timing from a near-miss of the same length.
-- **To rotate it:** delete `~/.turbofig/token`, run `turbofig stop`, then
+- **To rotate it:** run `turbofig stop`, delete `~/.turbofig/token`, then run
   `turbofig start`. The daemon creates a new token and rewrites the plugin
   files at start. Then reopen the plugin in Figma. If you have autostart on
   (`turbofig autostart on`), launchd's `KeepAlive` restarts the daemon after
@@ -110,20 +114,24 @@ could otherwise open the socket and receive the AI's jobs.
 
 ## `GET /health`
 
-`/health` (same HTTP port as `/mcp`, 18846) returns the daemon version,
-uptime, and the connected files' names, keys, and plugin versions. It never
-includes the pairing token, and it is subject to the same Origin and `Host`
-checks as every other route on this port (above), so it is no more reachable
-from a browser or a DNS-rebinding attack than `/mcp` is.
+`/health` (same HTTP port as `/mcp`, 18846) always answers, with no token
+needed, but its payload depends on one. Without a valid pairing token it
+returns only `version` and `uptimeSeconds`. With a valid token it also
+returns the connected files' names, keys, plugin versions, and the daemon's
+`pid`. It never includes the pairing token itself, and it is subject to the
+same Origin and `Host` checks as every other route on this port (above), so
+it is no more reachable from a browser or a DNS-rebinding attack than `/mcp`
+is.
 
-## `/job` and `/control`
+## `/job`, `/mcp`, and `/control`
 
-`POST /job` (used by `turbofig mcp`'s stdio proxy) and `POST /control` (used
-by `turbofig stop` and the upgrade restart) bind to `127.0.0.1` only, like
-every other route, and carry the same Origin and `Host` checks as `/mcp` and
-`/health`. `/control` additionally requires the pairing token as a Bearer
-auth header: a request without the correct token is rejected before it can
-stop or restart the daemon.
+`POST /job` (used by `turbofig mcp`'s stdio proxy), `POST /mcp` (used by a
+native HTTP MCP client), and `POST /control` (used by `turbofig stop` and the
+upgrade restart) bind to `127.0.0.1` only, like every other route, and carry
+the same Origin and `Host` checks as `/health`. All three also require the
+pairing token as a Bearer auth header: a request without the correct token
+is rejected with 401 before it can run a job, call a tool, or stop or
+restart the daemon.
 
 Report a finding that breaks one of these guarantees (for example, a port
 that becomes reachable from the network, an `Origin` check that can be
