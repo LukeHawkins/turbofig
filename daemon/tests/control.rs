@@ -7,6 +7,9 @@
 //! (missing/wrong token) never reach the exit branch, so those are covered
 //! in-process in `daemon/src/mcp.rs`'s own test module instead.
 
+mod common;
+
+use common::assert_safe_turbofig_spawn;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -50,6 +53,7 @@ async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {
 async fn spawn_daemon(home: &std::path::Path, mcp_port: u16, ws_port: u16) -> DaemonChild {
     // `serve` must be explicit: a bare `turbofig` is the first-run helper,
     // which starts an untracked detached daemon instead of this child.
+    assert_safe_turbofig_spawn(&["serve"], &[]);
     let child = Command::new(BIN)
         .arg("serve")
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())

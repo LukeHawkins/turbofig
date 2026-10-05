@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{free_port, stop_daemon, wait_for_health, BIN};
+use common::{assert_safe_turbofig_spawn, free_port, stop_daemon, wait_for_health, BIN};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -19,6 +19,10 @@ use tokio::process::Command;
 /// faking the clipboard (recording the copied text to `clipboard_record`) and
 /// the Figma-open result (`opener_succeeds`). Returns the exit status and
 /// captured stdout.
+///
+/// This is the one place in the suite allowed to spawn a bare `turbofig`:
+/// `assert_safe_turbofig_spawn` below only lets that through because both
+/// fakes are always set here, never because the check was skipped.
 async fn run_bare_turbofig(
     home: &std::path::Path,
     mcp_port: u16,
@@ -26,15 +30,24 @@ async fn run_bare_turbofig(
     clipboard_record: &std::path::Path,
     opener_succeeds: bool,
 ) -> (std::process::ExitStatus, String) {
+    let opener_value = if opener_succeeds { "success" } else { "fail" };
+    let clipboard_record_str = clipboard_record.display().to_string();
+    assert_safe_turbofig_spawn(
+        &[],
+        &[
+            (
+                "TURBOFIG_TEST_FAKE_CLIPBOARD",
+                clipboard_record_str.as_str(),
+            ),
+            ("TURBOFIG_TEST_FAKE_OPENER", opener_value),
+        ],
+    );
     let output = Command::new(BIN)
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
         .env("TURBOFIG_WS_PORT", ws_port.to_string())
         .env("TURBOFIG_BRIDGE_DIR", home)
         .env("TURBOFIG_TEST_FAKE_CLIPBOARD", clipboard_record)
-        .env(
-            "TURBOFIG_TEST_FAKE_OPENER",
-            if opener_succeeds { "success" } else { "fail" },
-        )
+        .env("TURBOFIG_TEST_FAKE_OPENER", opener_value)
         .output()
         .await
         .expect("run bare turbofig");

@@ -116,6 +116,36 @@ pub async fn wait_for_no_connections(state: &Arc<turbofig::AppState>, deadline_m
 pub const BIN: &str = env!("CARGO_BIN_EXE_turbofig");
 const STDIO_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Guards every real spawn of the `turbofig` binary in this test suite.
+///
+/// A bare spawn (no subcommand: `args` empty) runs the first-run helper,
+/// which shells out to the real `open -a Figma` and `pbcopy` unless both
+/// `TURBOFIG_TEST_FAKE_CLIPBOARD` and `TURBOFIG_TEST_FAKE_OPENER` are set
+/// (`main.rs`'s `clipboard_for_run`/`opener_for_run`): a test that forgot
+/// this once brought Figma to the front and overwrote the developer's
+/// clipboard on every test run, and left its detached daemon untracked (see
+/// git history). Call this immediately before every real spawn, passing the
+/// exact `args` and the env pairs the spawn sets, so a future test can never
+/// reintroduce that mistake silently: an explicit subcommand (`serve`,
+/// `mcp`, `start`, `stop`, `status`, ...) is always safe and needs no env
+/// check; a bare spawn panics here unless both fakes are present.
+pub fn assert_safe_turbofig_spawn(args: &[&str], envs: &[(&str, &str)]) {
+    if !args.is_empty() {
+        return;
+    }
+    let has_fake_clipboard = envs
+        .iter()
+        .any(|(k, _)| *k == "TURBOFIG_TEST_FAKE_CLIPBOARD");
+    let has_fake_opener = envs.iter().any(|(k, _)| *k == "TURBOFIG_TEST_FAKE_OPENER");
+    assert!(
+        has_fake_clipboard && has_fake_opener,
+        "a bare `turbofig` spawn (no subcommand) must set TURBOFIG_TEST_FAKE_CLIPBOARD and \
+         TURBOFIG_TEST_FAKE_OPENER, or it opens the real Figma app and overwrites the real \
+         clipboard. Pass an explicit subcommand (serve/mcp/start/stop/status) instead, unless \
+         this really is a first-run test."
+    );
+}
+
 /// Binds an ephemeral TCP port and returns it, free for a child process to
 /// bind next.
 pub fn free_port() -> u16 {
@@ -224,6 +254,7 @@ pub async fn run_turbofig(
     mcp_port: u16,
     ws_port: u16,
 ) -> (std::process::ExitStatus, String, String) {
+    assert_safe_turbofig_spawn(args, &[]);
     let output = Command::new(BIN)
         .args(args)
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
@@ -417,4 +448,41 @@ pub async fn stop_daemon(client: &reqwest::Client, mcp_port: u16, home: &Path) {
         .json(&json!({"action": "stop"}))
         .send()
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_safe_turbofig_spawn_allows_any_explicit_subcommand() {
+        assert_safe_turbofig_spawn(&["serve"], &[]);
+        assert_safe_turbofig_spawn(&["mcp"], &[]);
+        assert_safe_turbofig_spawn(&["start"], &[]);
+        assert_safe_turbofig_spawn(&["stop"], &[]);
+        assert_safe_turbofig_spawn(&["status"], &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "must set TURBOFIG_TEST_FAKE_CLIPBOARD")]
+    fn assert_safe_turbofig_spawn_rejects_a_bare_spawn_with_no_fakes() {
+        assert_safe_turbofig_spawn(&[], &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "must set TURBOFIG_TEST_FAKE_CLIPBOARD")]
+    fn assert_safe_turbofig_spawn_rejects_a_bare_spawn_missing_the_opener_fake() {
+        assert_safe_turbofig_spawn(&[], &[("TURBOFIG_TEST_FAKE_CLIPBOARD", "/tmp/x")]);
+    }
+
+    #[test]
+    fn assert_safe_turbofig_spawn_allows_a_bare_spawn_with_both_fakes() {
+        assert_safe_turbofig_spawn(
+            &[],
+            &[
+                ("TURBOFIG_TEST_FAKE_CLIPBOARD", "/tmp/x"),
+                ("TURBOFIG_TEST_FAKE_OPENER", "success"),
+            ],
+        );
+    }
 }
