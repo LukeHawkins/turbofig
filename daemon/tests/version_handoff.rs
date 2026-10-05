@@ -315,12 +315,12 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
 /// background version-handoff restart is still mid-drain: serving stdio no
 /// longer waits on that work (see `proxy::run`'s doc comment). An old daemon
 /// plus a deliberately slow in-flight job (the same fixture test (d) above
-/// uses) makes the restart's drain take noticeably longer than the 1 s
-/// budget this asserts, so a regression back to "handoff before serve"
-/// would fail this with a multi-second `initialize`, not a timeout tuned so
-/// tight it could flake.
+/// uses) makes the restart's drain take `JOB_DELAY`, far longer than
+/// `INITIALIZE_BUDGET`, so a regression back to "handoff before serve" would
+/// fail this with a multi-second `initialize`, not a bound tuned so tight it
+/// could flake under CPU contention from the rest of the suite.
 #[tokio::test]
-async fn initialize_answers_within_1s_while_a_slow_version_handoff_drain_is_in_progress() {
+async fn initialize_answers_well_before_a_slow_version_handoff_drain_finishes() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
@@ -335,7 +335,15 @@ async fn initialize_answers_within_1s_while_a_slow_version_handoff_drain_is_in_p
         .trim()
         .to_owned();
 
-    const JOB_DELAY: Duration = Duration::from_millis(1500);
+    // Deliberately long, and the pass/fail check below deliberately loose
+    // (seconds, not milliseconds): this only needs to prove `initialize`
+    // comes back in a small fraction of JOB_DELAY, not race a tight clock.
+    // `initialize` itself does no I/O at all (see `proxy::run`'s doc
+    // comment), but a loaded CI machine can still delay when this test's own
+    // process gets scheduled; a wide margin absorbs that without weakening
+    // what the test actually proves.
+    const JOB_DELAY: Duration = Duration::from_secs(8);
+    const INITIALIZE_BUDGET: Duration = Duration::from_secs(3);
     let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
         .await
         .expect("mock plugin connect");
@@ -409,9 +417,9 @@ async fn initialize_answers_within_1s_while_a_slow_version_handoff_drain_is_in_p
         "initialize must succeed over stdio even while a handoff is in progress: {init}"
     );
     assert!(
-        elapsed < Duration::from_secs(1),
-        "initialize must answer within 1s regardless of the in-progress handoff/drain \
-         (JOB_DELAY alone is {JOB_DELAY:?}); took {elapsed:?}"
+        elapsed < INITIALIZE_BUDGET,
+        "initialize must answer within {INITIALIZE_BUDGET:?} regardless of the in-progress \
+         handoff/drain (JOB_DELAY alone is {JOB_DELAY:?}); took {elapsed:?}"
     );
 
     // Let the slow job (and so the drain, and the handoff) finish, and clean
