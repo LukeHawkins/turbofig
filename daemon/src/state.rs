@@ -213,13 +213,13 @@ impl AppState {
     /// Marks the daemon as draining (true) or accepting work again (false).
     /// See the `draining` field doc for who sets this and why.
     pub fn set_draining(&self, value: bool) {
-        self.draining.store(value, Ordering::Relaxed);
+        self.draining.store(value, Ordering::SeqCst);
     }
 
     /// True once `set_draining(true)` has been called. `resolve_route`
     /// checks this before resolving any new job.
     pub fn is_draining(&self) -> bool {
-        self.draining.load(Ordering::Relaxed)
+        self.draining.load(Ordering::SeqCst)
     }
 
     /// Number of whole tool calls (MCP and bridge) currently in progress.

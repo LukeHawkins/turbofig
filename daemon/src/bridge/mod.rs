@@ -73,9 +73,12 @@ const OUTBOX_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 /// panics.  Only `create_dir_all` and watcher-setup errors propagate.
 ///
 /// `inbox/` and `outbox/` are set to mode 0700 (owner-only) by
-/// [`prepare_dirs`], on both first creation and an existing install.
+/// [`prepare_dirs`], on both first creation and an existing install. `dir`
+/// itself is also tightened to 0700 when it is the default home (no
+/// `TURBOFIG_BRIDGE_DIR` override); see `prepare_dirs`.
 pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result<()> {
-    let (inbox, outbox) = prepare_dirs(&dir).await?;
+    let is_default_home = std::env::var("TURBOFIG_BRIDGE_DIR").is_err();
+    let (inbox, outbox) = prepare_dirs(&dir, is_default_home).await?;
 
     // The watcher callback runs on its own thread. It signals the async loop
     // through an unbounded channel. A signal means "something changed, rescan".
@@ -97,7 +100,13 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
 /// returns their paths. A job file can carry arbitrary eval code and a result
 /// file can carry the response, so group- or world-readable bridge
 /// directories would let another local user read or queue jobs.
-async fn prepare_dirs(dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
+///
+/// Also tightens `dir` itself to 0700, but only when it is the default
+/// `~/.turbofig` the daemon owns outright (i.e. `is_default_home` is true).
+/// A custom `TURBOFIG_BRIDGE_DIR` can be an existing, shared path the user
+/// pointed us at (`/tmp`, a project folder); the daemon does not own its
+/// mode there and must never touch it or fail startup because it could not.
+async fn prepare_dirs(dir: &Path, is_default_home: bool) -> std::io::Result<(PathBuf, PathBuf)> {
     let inbox = dir.join("inbox");
     let outbox = dir.join("outbox");
 
@@ -105,13 +114,14 @@ async fn prepare_dirs(dir: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
     tokio::fs::create_dir_all(&inbox).await?;
     tokio::fs::create_dir_all(&outbox).await?;
 
-    // Only chmod the two subdirectories the daemon creates and owns for its
-    // own job/result files. `dir` itself (TURBOFIG_BRIDGE_DIR) can be an
-    // existing, shared path the user pointed us at (`/tmp`, a project
-    // folder); the daemon does not own its mode and must never touch it or
-    // fail startup because it could not. A failure to tighten inbox/outbox
-    // is logged, not fatal: a locked-down bridge dir is a hardening goal,
-    // not a precondition for the daemon to run at all.
+    // A failure to tighten any of these is logged, not fatal: a locked-down
+    // bridge dir is a hardening goal, not a precondition for the daemon to
+    // run at all.
+    if is_default_home {
+        if let Err(e) = set_owner_only(dir).await {
+            eprintln!("Turbofig bridge: could not set the home dir to owner-only: {e}");
+        }
+    }
     if let Err(e) = set_owner_only(&inbox).await {
         eprintln!("Turbofig bridge: could not set inbox to owner-only: {e}");
     }
@@ -404,6 +414,13 @@ async fn scan_and_service(
                     continue;
                 }
 
+                // Take the job-counter guard before the claim, not inside the
+                // spawned task: `jobs_in_flight` must count this job for the
+                // whole span from "claimed" onward, so the supervised-restart
+                // drain wait never sees 0 while a just-claimed job has not
+                // reached its own `tokio::spawn` yet.
+                let job_guard = state.begin_job();
+
                 // Claim the complete job by removing the inbox file.
                 if let Err(e) = tokio::fs::remove_file(&path).await {
                     if e.kind() == std::io::ErrorKind::NotFound {
@@ -432,7 +449,7 @@ async fn scan_and_service(
                 let in_flight = in_flight.clone();
                 let in_flight_id = job_id.clone();
                 tokio::spawn(async move {
-                    let _job_guard = state.begin_job();
+                    let _job_guard = job_guard;
                     let result = process_job(job, &state, &outbox_owned).await;
                     write_result(&outbox_owned, &job_id, result).await;
                     in_flight
@@ -600,11 +617,13 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         let dir = tmp.path().join("fresh");
 
-        prepare_dirs(&dir).await.expect("prepare bridge dirs");
+        prepare_dirs(&dir, true).await.expect("prepare bridge dirs");
 
-        // `dir` itself is never chmod'd: it can be a pre-existing, shared
-        // path the user pointed TURBOFIG_BRIDGE_DIR at. Only the
-        // subdirectories the daemon creates and owns are tightened.
+        assert_eq!(
+            mode_bits(&dir),
+            0o700,
+            "the default home must be owner-only"
+        );
         assert_eq!(
             mode_bits(&dir.join("inbox")),
             0o700,
@@ -634,10 +653,13 @@ mod tests {
         std::fs::set_permissions(&outbox, std::fs::Permissions::from_mode(0o777))
             .expect("chmod outbox");
 
-        prepare_dirs(&dir).await.expect("prepare bridge dirs");
+        prepare_dirs(&dir, true).await.expect("prepare bridge dirs");
 
-        // `dir` keeps whatever mode it had: the daemon does not own it.
-        assert_eq!(mode_bits(&dir), 0o777, "dir's mode must be left untouched");
+        assert_eq!(
+            mode_bits(&dir),
+            0o700,
+            "an existing default home must be corrected"
+        );
         assert_eq!(
             mode_bits(&inbox),
             0o700,
@@ -647,6 +669,41 @@ mod tests {
             mode_bits(&outbox),
             0o700,
             "an existing outbox must be corrected"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepare_dirs_leaves_a_custom_bridge_dirs_own_mode_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dir = tmp.path().join("custom");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("mkdir custom dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod dir");
+
+        prepare_dirs(&dir, false)
+            .await
+            .expect("prepare bridge dirs");
+
+        // A custom TURBOFIG_BRIDGE_DIR can be an existing, shared path the
+        // user pointed us at; the daemon does not own its mode.
+        assert_eq!(
+            mode_bits(&dir),
+            0o777,
+            "a custom bridge dir's own mode must be left untouched"
+        );
+        assert_eq!(
+            mode_bits(&dir.join("inbox")),
+            0o700,
+            "inbox must still be owner-only"
+        );
+        assert_eq!(
+            mode_bits(&dir.join("outbox")),
+            0o700,
+            "outbox must still be owner-only"
         );
     }
 
@@ -843,6 +900,45 @@ mod tests {
 
         assert!(!outbox.join("job1.json").exists());
         assert!(!outbox.join("job1.json.tmp").exists());
+    }
+
+    #[tokio::test]
+    async fn claiming_a_job_counts_it_in_flight_before_its_spawned_task_runs() {
+        // The job-counter guard must be taken synchronously in the scan, not
+        // inside the spawned task: otherwise a drain check racing right after
+        // scan_and_service returns could see 0 in-flight jobs for a job that
+        // was already claimed and is about to run.
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inbox = tmp.path().join("inbox");
+        let outbox = tmp.path().join("outbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&outbox).await.unwrap();
+        tokio::fs::write(inbox.join("job1.json"), br#"{"op":"status"}"#)
+            .await
+            .unwrap();
+
+        let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
+            100,
+        )));
+        let mut first_seen = HashMap::new();
+        let mut given_up = HashSet::new();
+        let in_flight = Arc::new(std::sync::Mutex::new(HashSet::new()));
+
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
+
+        assert_eq!(
+            state.jobs_in_flight(),
+            1,
+            "the claimed job must already be counted before its spawned task is polled"
+        );
     }
 
     #[tokio::test]
