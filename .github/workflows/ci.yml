@@ -70,3 +70,18 @@ jobs:
 
       - name: Benchmark dry-run
         run: bun bench/harness.ts --dry-run --scenario webpage-plain --baseline bench/baseline.json --max-ratio 1.2
+
+      - name: Install Rust stable (embedded-plugin build check)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build daemon with the plugin just built embedded
+        run: cargo build
+        # Proves the embedded-plugin path (daemon/build.rs, daemon/src/embedded.rs)
+        # actually compiles against a real plugin/dist, not just the
+        # no-plugin-found stub the Rust-only job above exercises. A fresh
+        # CI runner has no ~/.turbofig/token, so plugin/dist/ui.html still
+        # carries the __TURBOFIG_PAIRING_TOKEN__ placeholder here; no real
+        # token ever reaches this build.
