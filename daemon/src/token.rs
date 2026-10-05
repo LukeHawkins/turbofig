@@ -75,18 +75,38 @@ pub fn ensure_token(home: &Path) -> io::Result<String> {
 
 /// Creates `path` exclusively (fails if it already exists), writes a fresh
 /// random token with mode 0600, and returns it.
+///
+/// Writes to a sibling temp file first, flushes and `fsync`s it, then
+/// `hard_link`s it into `path`: `hard_link` fails with `AlreadyExists` if
+/// `path` already exists, the same atomicity `create_new` gave, but without
+/// the 2-step create-then-write window where a concurrent reader could see
+/// a freshly created, still-empty `path`, or a failed write could leave a
+/// short, corrupt token behind. The temp file is always removed afterward,
+/// whether the link succeeded or not.
 #[cfg(unix)]
 fn create_token_file(path: &Path) -> io::Result<String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+
     let token = random_token_hex();
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(token.as_bytes())?;
-    Ok(token)
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    let tmp_path = std::path::PathBuf::from(tmp_name);
+
+    let result = (|| -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::hard_link(&tmp_path, path)
+    })();
+
+    let _ = std::fs::remove_file(&tmp_path);
+    result.map(|()| token)
 }
 
 /// Non-Unix fallback: no POSIX mode to set at creation; still exclusive-create.
@@ -99,6 +119,7 @@ fn create_token_file(path: &Path) -> io::Result<String> {
         .create_new(true)
         .open(path)?;
     file.write_all(token.as_bytes())?;
+    file.sync_all()?;
     Ok(token)
 }
 
@@ -181,5 +202,36 @@ mod tests {
         std::fs::write(tmp.path().join("token"), "preset-token-value").expect("preset token");
         let token = ensure_token(tmp.path()).expect("ensure_token");
         assert_eq!(token, "preset-token-value");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_token_file_loses_the_race_when_the_path_already_exists() {
+        // Simulates another process winning the create-token race between
+        // `create_token_file` picking its random token and hard_linking the
+        // temp file into place: the destination already exists by the time
+        // the link happens.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("token");
+        std::fs::write(&path, "already-here").expect("preset token");
+
+        let err = create_token_file(&path).expect_err("hard_link must fail: path exists");
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        // The pre-existing token must survive untouched, and no leftover
+        // .tmp.<pid> file from the failed attempt may remain in the dir.
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read token"),
+            "already-here"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .expect("read_dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp file must be cleaned up: {leftovers:?}"
+        );
     }
 }
