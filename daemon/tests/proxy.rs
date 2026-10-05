@@ -12,11 +12,13 @@
 mod common;
 
 use common::{
-    free_port, handshake, spawn_proxy, stdio_call_tool, stdio_tools_list, tool_call_status,
-    wait_for_health, DaemonGuard,
+    fetch_health_with_token, free_port, handshake, read_response_for_id, send_json, spawn_daemon,
+    spawn_proxy, stdio_call_tool, stdio_tools_list, tool_call_status, wait_for_health, DaemonGuard,
 };
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 // ── HTTP MCP tools/list, for comparison against the stdio one (test a) ──────
 
@@ -332,4 +334,175 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
         listening_lines, 1,
         "exactly one daemon may ever bind {mcp_port}, got log:\n{log}"
     );
+}
+
+// ── (e) the retry-once path: a lost daemon is restarted exactly once ───────
+
+/// A daemon that dies mid-session (a crash, a `kill`) makes the next call's
+/// connect attempt fail outright; `run_job` must restart it exactly once and
+/// retry, so the call still succeeds.
+#[tokio::test]
+async fn a_mid_session_daemon_death_is_retried_once_and_the_call_succeeds() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+
+    let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
+    let (mut writer, mut reader) = handshake(&mut proxy).await;
+
+    let resp = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
+    assert_eq!(
+        tool_call_status(&resp)["ok"],
+        json!(true),
+        "the first call must reach the original daemon: {resp}"
+    );
+
+    // Kill the original daemon outright and wait for its port to actually
+    // free up, so the next call's connect attempt fails rather than racing
+    // a half-closed socket.
+    daemon.kill().await.expect("kill the original daemon");
+    let _ = daemon.wait().await;
+    turbofig::spawn::wait_for_unreachable(&client, mcp_port, Duration::from_secs(5)).await;
+
+    let resp2 = stdio_call_tool(&mut writer, &mut reader, 3, "turbofig_status", json!({})).await;
+    assert_eq!(
+        tool_call_status(&resp2)["ok"],
+        json!(true),
+        "the proxy must restart the daemon once and the retried call must succeed: {resp2}"
+    );
+
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+}
+
+/// Polls the daemon's `/health` `connectedFiles` until `file_key` appears.
+/// Shared shape with `version_handoff.rs`'s identical helper: both tests
+/// connect a mock plugin directly to a real spawned daemon's WS port (not
+/// through an in-process `AppState`), so this is the only way to know the
+/// plugin has actually registered.
+async fn wait_for_file_connected(
+    client: &reqwest::Client,
+    mcp_port: u16,
+    token: &str,
+    file_key: &str,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(health) = fetch_health_with_token(client, mcp_port, token).await {
+            if health["connectedFiles"]
+                .as_array()
+                .map(|files| files.iter().any(|f| f["fileKey"] == json!(file_key)))
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+        if Instant::now() >= deadline {
+            panic!("plugin for fileKey {file_key} never registered");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A request that has already reached the daemon (and the plugin) before the
+/// daemon dies must never be retried: the daemon may have already acted on
+/// it, so retrying could run it twice. The error must say so, not just that
+/// the call failed.
+#[tokio::test]
+async fn an_in_flight_request_killed_mid_call_is_never_retried() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+    let token = tokio::fs::read_to_string(home.path().join("token"))
+        .await
+        .expect("read token")
+        .trim()
+        .to_owned();
+
+    // A mock plugin that never replies to EXECUTE: once it forwards the
+    // request, the job stays in flight from the daemon's point of view for
+    // as long as the daemon itself is alive.
+    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
+        .await
+        .expect("mock plugin connect");
+    plugin_ws
+        .send(TtMessage::Text(
+            json!({"type": "FILE_INFO", "fileKey": "silent-file", "name": "Silent File"})
+                .to_string(),
+        ))
+        .await
+        .expect("send FILE_INFO");
+    wait_for_file_connected(&client, mcp_port, &token, "silent-file").await;
+
+    // Fires once the plugin has actually received the EXECUTE request,
+    // proving the job reached the daemon (and the plugin) before the daemon
+    // is killed below, not merely that the proxy attempted to send it.
+    let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+    let plugin_task = tokio::spawn(async move {
+        let mut reached_tx = Some(reached_tx);
+        while let Some(Ok(msg)) = plugin_ws.next().await {
+            let TtMessage::Text(text) = msg else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if v["type"] == "EXECUTE" {
+                if let Some(tx) = reached_tx.take() {
+                    let _ = tx.send(());
+                }
+                // Never reply: the job must stay in flight.
+            }
+        }
+    });
+
+    let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
+    let (mut writer, mut reader) = handshake(&mut proxy).await;
+
+    send_json(
+        &mut writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "turbofig_execute",
+                "arguments": {"code": "return 1;", "fileKey": "silent-file"}
+            }
+        }),
+    )
+    .await;
+    reached_rx
+        .await
+        .expect("the plugin must receive the EXECUTE request before the daemon dies");
+
+    daemon.kill().await.expect("kill the daemon mid-call");
+    let _ = daemon.wait().await;
+
+    let resp = read_response_for_id(&mut reader, 2).await;
+    let status = tool_call_status(&resp);
+    assert_eq!(status["ok"], json!(false), "the call must fail: {resp}");
+    let error = status["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("may already have run"),
+        "the error must say the job may already have run, not just that it failed: {error}"
+    );
+
+    // Not retried: an in-flight failure must never trigger the proxy's
+    // reconnect-and-restart path, so no fresh daemon ever came up.
+    assert!(
+        turbofig::spawn::fetch_health(&client, mcp_port)
+            .await
+            .is_none(),
+        "an in-flight failure must never cause the proxy to restart the daemon"
+    );
+
+    plugin_task.abort();
 }
