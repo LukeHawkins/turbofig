@@ -40,6 +40,9 @@ let currentPort = 18847;
 /** MCP HTTP port received from the daemon on WELCOME. Default matches TURBOFIG_MCP_PORT default. */
 let daemonMcpPort = 18846;
 
+/** File-bridge home directory received from the daemon on WELCOME. Empty until the first WELCOME arrives; formatConnectPrompt falls back to DEFAULT_BRIDGE_HOME. */
+let daemonBridgeHome = "";
+
 // Resolve panel elements once on load.
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
 const sessionLineEl = document.getElementById("session-line") as HTMLElement;
@@ -194,7 +197,7 @@ if (copyConnectBtn) {
   copyConnectBtn.addEventListener("click", () => {
     if (copyConnectBtn.classList.contains("copied")) return;
     if (!latestFileInfo) return;
-    const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort);
+    const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort, daemonBridgeHome);
     if (!prompt) return;
     if (clipboardCopy(prompt)) {
       setCopiedFeedback(copyConnectBtn);
@@ -281,6 +284,7 @@ function connect(): void {
     if (action === "welcome") {
       daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
       daemonMcpPort = typeof parsed.mcpPort === "number" ? parsed.mcpPort : 18846;
+      daemonBridgeHome = typeof parsed.bridgeHome === "string" ? parsed.bridgeHome : "";
       const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
       if (staleWarningEl) {
         staleWarningEl.textContent = warning;

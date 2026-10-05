@@ -94,6 +94,33 @@ pub fn bridge_dir_from_env() -> PathBuf {
     )
 }
 
+/// A display form of the bridge directory for the plugin panel's copy-prompt
+/// (see `ws.rs`'s `welcome_message`): the real `$HOME` prefix shown as `~`
+/// when the bridge dir lives under it, so a user running the default install
+/// never sees their own home directory's absolute path in a prompt meant to
+/// be pasted elsewhere. Falls back to the plain path when the bridge dir is
+/// not under `$HOME` (a custom `TURBOFIG_BRIDGE_DIR`) or `$HOME` is unset.
+pub fn bridge_dir_display() -> String {
+    bridge_dir_display_for(
+        &bridge_dir_from_env(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// The pure, testable half of `bridge_dir_display`.
+fn bridge_dir_display_for(dir: &std::path::Path, home: Option<&str>) -> String {
+    if let Some(home) = home {
+        if let Ok(rel) = dir.strip_prefix(home) {
+            return if rel.as_os_str().is_empty() {
+                "~".to_owned()
+            } else {
+                PathBuf::from("~").join(rel).to_string_lossy().into_owned()
+            };
+        }
+    }
+    dir.to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +228,31 @@ mod tests {
     fn bridge_dir_explicit_value_wins_over_home() {
         let path = bridge_dir_or(Some("/override"), Some("/home/alice"));
         assert_eq!(path, PathBuf::from("/override"));
+    }
+
+    #[test]
+    fn bridge_dir_display_shows_tilde_for_the_default_under_home() {
+        let display =
+            bridge_dir_display_for(&PathBuf::from("/home/alice/.turbofig"), Some("/home/alice"));
+        assert_eq!(display, "~/.turbofig");
+    }
+
+    #[test]
+    fn bridge_dir_display_shows_plain_tilde_when_the_dir_is_home_itself() {
+        let display = bridge_dir_display_for(&PathBuf::from("/home/alice"), Some("/home/alice"));
+        assert_eq!(display, "~");
+    }
+
+    #[test]
+    fn bridge_dir_display_shows_the_plain_path_for_a_custom_dir_outside_home() {
+        let display =
+            bridge_dir_display_for(&PathBuf::from("/tmp/custom-bridge"), Some("/home/alice"));
+        assert_eq!(display, "/tmp/custom-bridge");
+    }
+
+    #[test]
+    fn bridge_dir_display_shows_the_plain_path_when_home_is_unset() {
+        let display = bridge_dir_display_for(&PathBuf::from("/home/alice/.turbofig"), None);
+        assert_eq!(display, "/home/alice/.turbofig");
     }
 }

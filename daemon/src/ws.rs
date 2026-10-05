@@ -1,6 +1,6 @@
 //! The plugin WebSocket server: one connection per open Figma file.
 
-use crate::config::port_from_env;
+use crate::config::{bridge_dir_display, port_from_env};
 use crate::state::AppState;
 use crate::token::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket};
@@ -22,13 +22,17 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_WS_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
-/// Returns a JSON string with `type`, `version`, and `mcpPort` fields.
-/// `mcpPort` is the HTTP MCP port so the plugin panel can show a ready-to-paste connect prompt.
+/// Returns a JSON string with `type`, `version`, `mcpPort`, and `bridgeHome`
+/// fields. `mcpPort` is the HTTP MCP port and `bridgeHome` is the file-bridge
+/// home directory (see `config::bridge_dir_display`), so the plugin panel can
+/// show a ready-to-paste connect prompt that names the real bridge directory
+/// even under a custom `TURBOFIG_BRIDGE_DIR`.
 pub(crate) fn welcome_message() -> String {
     json!({
         "type": "WELCOME",
         "version": env!("CARGO_PKG_VERSION"),
-        "mcpPort": port_from_env()
+        "mcpPort": port_from_env(),
+        "bridgeHome": bridge_dir_display()
     })
     .to_string()
 }
@@ -248,6 +252,11 @@ mod tests {
             v["mcpPort"].as_u64(),
             Some(u64::from(port_from_env())),
             "mcpPort must equal port_from_env()"
+        );
+        assert_eq!(
+            v["bridgeHome"],
+            json!(bridge_dir_display()),
+            "bridgeHome must equal bridge_dir_display()"
         );
     }
 

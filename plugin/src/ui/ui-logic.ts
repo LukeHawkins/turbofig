@@ -160,15 +160,26 @@ export function wsUrlForPort(port: number, token: string): string {
   return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`;
 }
 
+/** The file-bridge home shown in the connect prompt when the daemon has not yet reported one. */
+export const DEFAULT_BRIDGE_HOME = "~/.turbofig";
+
 /**
  * Returns a self-bootstrapping connect prompt for Claude Code.
- * The prompt names the MCP HTTP port and the file key so a user can paste it
- * directly into Claude Code without any manual configuration.
+ * The prompt names the MCP HTTP port, the file key, and the file-bridge home
+ * directory so a user can paste it directly into Claude Code without any
+ * manual configuration. `bridgeHome` should be the daemon's own reported
+ * value (WELCOME's `bridgeHome`); falls back to `DEFAULT_BRIDGE_HOME` when
+ * empty, e.g. before the first WELCOME arrives.
  * Returns an empty string when fileKey is empty (no active file).
  */
-export function formatConnectPrompt(fileKey: string, mcpPort: number): string {
+export function formatConnectPrompt(
+  fileKey: string,
+  mcpPort: number,
+  bridgeHome: string = DEFAULT_BRIDGE_HOME,
+): string {
   if (!fileKey) return "";
-  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ~/.turbofig/inbox/<unique-id>.json (id unique per job) → read ~/.turbofig/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
+  const home = bridgeHome || DEFAULT_BRIDGE_HOME;
+  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ${home}/inbox/<unique-id>.json (id unique per job) → read ${home}/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
 }
 
 /**

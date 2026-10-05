@@ -31,7 +31,10 @@ mod token;
 mod ws;
 
 pub use bridge::serve_bridge;
-pub use config::{bridge_dir_from_env, port_from_env, request_timeout_from_env, ws_port_from_env};
+pub use config::{
+    bridge_dir_display, bridge_dir_from_env, port_from_env, request_timeout_from_env,
+    ws_port_from_env,
+};
 pub use embedded::{
     embedded_plugin, ui_html_contains_a_real_token, ui_html_has_placeholder, EmbeddedPlugin,
 };

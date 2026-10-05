@@ -283,6 +283,14 @@ built by `buildFileInfo`; `plugin/build-code.ts` injects
 warning when it differs from the daemon's own version, in both
 `turbofig_status` and `/health` (see above).
 
+`WELCOME` (daemon to plugin) carries `version`, `mcpPort`, and
+`bridgeHome`: the file-bridge home directory (`config::bridge_dir_display`),
+shown with the real `$HOME` prefix replaced by `~` for the default install.
+The plugin panel's copy-prompt button (`formatConnectPrompt`) uses it to
+name the real inbox/outbox paths even under a custom
+`TURBOFIG_BRIDGE_DIR`, falling back to `~/.turbofig` before the first
+`WELCOME` arrives or against an older daemon that never sent it.
+
 ## Environment variables
 
 | Variable | Default | Purpose |

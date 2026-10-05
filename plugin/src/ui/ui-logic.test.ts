@@ -441,4 +441,17 @@ describe("formatConnectPrompt", () => {
     const result = formatConnectPrompt("someKey", 18846);
     expect(result.indexOf("inbox")).toBeLessThan(result.indexOf("/mcp"));
   });
+
+  test("uses a custom bridge home when given", () => {
+    const result = formatConnectPrompt("someKey", 18846, "/tmp/custom-bridge");
+    expect(result).toContain("/tmp/custom-bridge/inbox/");
+    expect(result).toContain("/tmp/custom-bridge/outbox/");
+    expect(result).not.toContain("~/.turbofig");
+  });
+
+  test("falls back to ~/.turbofig when bridgeHome is empty", () => {
+    const result = formatConnectPrompt("someKey", 18846, "");
+    expect(result).toContain("~/.turbofig/inbox/");
+    expect(result).toContain("~/.turbofig/outbox/");
+  });
 });
