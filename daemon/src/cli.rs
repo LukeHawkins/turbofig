@@ -5,7 +5,8 @@
 //! instead.
 
 use crate::launchd::{
-    domain_target, plist_contents, plist_file_name, service_target, stable_binary_path, Launchctl,
+    carry_over_turbofig_env, domain_target, plist_contents, plist_file_name, service_target,
+    stable_binary_path, Launchctl,
 };
 use crate::plugin_files::write_plugin_files;
 use crate::token::ensure_token;
@@ -39,9 +40,10 @@ pub enum Command {
     Setup,
     /// Unload the launchd service and remove its plist.
     Uninstall {
-        /// Also delete the whole turbofig home directory (token, plugin
-        /// files, bridge inbox/outbox). Without this flag, the home
-        /// directory is kept.
+        /// Also delete the turbofig entries in the home directory (token,
+        /// plugin files, bridge inbox/outbox, log), then the directory
+        /// itself if left empty. Without this flag, the home directory is
+        /// kept.
         #[arg(long)]
         purge: bool,
     },
@@ -54,6 +56,10 @@ pub enum Command {
 pub struct SetupOutcome {
     pub manifest_path: PathBuf,
     pub plist_path: PathBuf,
+    /// Names of the `TURBOFIG_*` environment variables that were set at
+    /// `setup` time and carried into the plist's `EnvironmentVariables`, in
+    /// the order written. Empty when none were set.
+    pub carried_over_env: Vec<String>,
 }
 
 /// Runs the full, idempotent setup sequence: ensure the pairing token,
@@ -83,7 +89,8 @@ pub fn run_setup(
     let program = stable_binary_path(&canonical_exe);
     let log_path = home.join("daemon.log");
     let plist_path = launch_agents_dir.join(plist_file_name());
-    std::fs::write(&plist_path, plist_contents(&program, &log_path))?;
+    let extra_env = carry_over_turbofig_env();
+    std::fs::write(&plist_path, plist_contents(&program, &log_path, &extra_env))?;
 
     launchctl.bootout(&service_target(uid));
     launchctl.bootstrap(&domain_target(uid), &plist_path)?;
@@ -91,7 +98,21 @@ pub fn run_setup(
     Ok(SetupOutcome {
         manifest_path,
         plist_path,
+        carried_over_env: extra_env.into_iter().map(|(key, _)| key).collect(),
     })
+}
+
+/// Message printed after `setup` when 1 or more `TURBOFIG_*` variables were
+/// carried from the `setup` process's own environment into the plist. Empty
+/// when `carried_over_env` is empty.
+pub fn carried_over_env_message(carried_over_env: &[String]) -> String {
+    if carried_over_env.is_empty() {
+        return String::new();
+    }
+    format!(
+        "turbofig: carried {} into the launchd service.\n",
+        carried_over_env.join(", ")
+    )
 }
 
 /// The exact 3 numbered steps plus the 1 optional MCP line `setup` prints.
@@ -114,8 +135,9 @@ pub struct UninstallOutcome {
 }
 
 /// Unloads the launchd service and removes its plist. With `purge`, also
-/// deletes `home` entirely. A missing plist or a missing `home` is not an
-/// error: uninstall is idempotent too.
+/// deletes the known turbofig entries inside `home` (see `purge_home`). A
+/// missing plist or a missing `home` is not an error: uninstall is
+/// idempotent too.
 pub fn run_uninstall(
     home: &Path,
     launch_agents_dir: &Path,
@@ -129,13 +151,50 @@ pub fn run_uninstall(
     ignore_not_found(std::fs::remove_file(&plist_path))?;
 
     if purge {
-        ignore_not_found(std::fs::remove_dir_all(home))?;
+        purge_home(home)?;
     }
 
     Ok(UninstallOutcome {
         home: home.to_path_buf(),
         purged: purge,
     })
+}
+
+/// The exact entries `turbofig` writes directly under its home directory.
+/// `--purge` removes only these, never the whole directory, so a `home` that
+/// is a shared folder or `$HOME` is never wiped out from under the user.
+const PURGE_ENTRIES: &[&str] = &["token", "figma-plugin", "inbox", "outbox", "daemon.log"];
+
+/// Deletes the known turbofig entries inside `home`, then removes `home`
+/// itself only if it is left empty. Anything else in `home` (a file the user
+/// put there, or one a future version of turbofig did not know to list) is
+/// left in place, and the directory is not removed with it still inside.
+fn purge_home(home: &Path) -> io::Result<()> {
+    for entry in PURGE_ENTRIES {
+        let path = home.join(entry);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        if metadata.is_dir() {
+            ignore_not_found(std::fs::remove_dir_all(&path))?;
+        } else {
+            ignore_not_found(std::fs::remove_file(&path))?;
+        }
+    }
+
+    match std::fs::read_dir(home) {
+        Ok(mut entries) => {
+            if entries.next().is_none() {
+                ignore_not_found(std::fs::remove_dir(home))?;
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+
+    Ok(())
 }
 
 /// Returns `Ok(())` for a successful result or a `NotFound` error; propagates
@@ -206,7 +265,14 @@ mod tests {
     use crate::launchd::Launchctl;
     use serde_json::json;
     use std::cell::RefCell;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// `run_setup` reads the real process environment for `TURBOFIG_*`
+    /// variables. Every test that touches one of those variables (directly,
+    /// or indirectly by calling `run_setup`) must hold this lock first, so
+    /// two such tests never race on shared global state.
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct FakeLaunchctl {
         calls: RefCell<Vec<String>>,
@@ -245,6 +311,7 @@ mod tests {
 
     #[test]
     fn run_setup_is_idempotent_across_two_runs() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = unique_temp_dir("home");
         let launch_agents_dir = unique_temp_dir("agents");
         let launchctl = FakeLaunchctl::new();
@@ -283,6 +350,53 @@ mod tests {
 
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_setup_carries_a_turbofig_env_var_into_the_plist() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-env-carry");
+        let launch_agents_dir = unique_temp_dir("agents-env-carry");
+        let launchctl = FakeLaunchctl::new();
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        // SAFETY: test-only env mutation; no other test in this module reads
+        // TURBOFIG_MCP_PORT or TURBOFIG_LAUNCH_AGENTS_DIR.
+        unsafe {
+            std::env::set_var("TURBOFIG_MCP_PORT", "19999");
+            std::env::set_var("TURBOFIG_LAUNCH_AGENTS_DIR", "/should/not/appear");
+        }
+
+        let outcome = run_setup(&home, &launch_agents_dir, &launchctl, "501", &fake_exe);
+
+        unsafe {
+            std::env::remove_var("TURBOFIG_MCP_PORT");
+            std::env::remove_var("TURBOFIG_LAUNCH_AGENTS_DIR");
+        }
+
+        let outcome = outcome.expect("setup");
+        assert_eq!(
+            outcome.carried_over_env,
+            vec!["TURBOFIG_MCP_PORT".to_owned()]
+        );
+
+        let plist_text = std::fs::read_to_string(&outcome.plist_path).expect("read plist");
+        assert!(plist_text.contains("<key>TURBOFIG_MCP_PORT</key>\n\t\t<string>19999</string>"));
+        assert!(!plist_text.contains("TURBOFIG_LAUNCH_AGENTS_DIR"));
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn carried_over_env_message_is_empty_with_nothing_carried() {
+        assert_eq!(carried_over_env_message(&[]), "");
+    }
+
+    #[test]
+    fn carried_over_env_message_names_the_carried_variables() {
+        let msg = carried_over_env_message(&["TURBOFIG_MCP_PORT".to_owned()]);
+        assert!(msg.contains("TURBOFIG_MCP_PORT"));
     }
 
     #[test]
@@ -337,6 +451,42 @@ mod tests {
         assert!(outcome.purged);
         assert!(!home.exists());
 
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_uninstall_with_purge_removes_only_known_entries_and_keeps_an_unrelated_file() {
+        let home = unique_temp_dir("home-purge-mixed");
+        let launch_agents_dir = unique_temp_dir("agents-purge-mixed");
+        std::fs::create_dir_all(&home).expect("mkdir home");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        std::fs::write(home.join("token"), "deadbeef").expect("write token");
+        std::fs::write(home.join("daemon.log"), "log").expect("write log");
+        std::fs::create_dir_all(home.join("figma-plugin/dist")).expect("mkdir figma-plugin");
+        std::fs::create_dir_all(home.join("inbox")).expect("mkdir inbox");
+        std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");
+        std::fs::write(home.join("not-turbofigs.txt"), "keep me").expect("write unrelated file");
+        let launchctl = FakeLaunchctl::new();
+
+        let outcome =
+            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", true).expect("uninstall");
+
+        assert!(outcome.purged);
+        assert!(
+            home.exists(),
+            "home must survive purge when it still holds an unrelated file"
+        );
+        assert!(!home.join("token").exists());
+        assert!(!home.join("daemon.log").exists());
+        assert!(!home.join("figma-plugin").exists());
+        assert!(!home.join("inbox").exists());
+        assert!(!home.join("outbox").exists());
+        assert!(
+            home.join("not-turbofigs.txt").exists(),
+            "an unrelated file in home must survive --purge"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 
