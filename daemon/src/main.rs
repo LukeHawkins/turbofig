@@ -364,7 +364,7 @@ async fn cmd_run() {
 
     let clipboard = clipboard_for_run();
     let opener = opener_for_run();
-    let _ = clipboard.copy(&manifest_path.display().to_string());
+    let clipboard_copied = clipboard.copy(&manifest_path.display().to_string());
     let figma_opened = opener.open_figma();
     let binary_path = stable_path_for_running_binary();
     print!(
@@ -376,6 +376,7 @@ async fn cmd_run() {
             &manifest_path,
             &binary_path,
             figma_opened,
+            clipboard_copied,
         )
     );
 }

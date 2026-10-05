@@ -107,9 +107,19 @@ impl AppOpener for FakeOpener {
 /// `figma_opened` is whether `AppOpener::open_figma` already succeeded: when
 /// true, the first line of step 1 reads "Figma is opening now."; when false
 /// (no Figma Desktop installed, or `open` failed for any other reason), it
-/// reads "Open Figma Desktop." instead. The clipboard copy's own success or
-/// failure never changes this text: the manifest path is printed either way,
-/// so pasting it by hand always works even when the clipboard copy failed.
+/// reads "Open Figma Desktop." instead.
+///
+/// `clipboard_copied` is whether `Clipboard::copy` already succeeded: when
+/// true, step 1's paste line reads "it is on your clipboard"; when false (no
+/// `pbcopy`, or it failed for any other reason), it reads "copy this path"
+/// instead. The manifest path is printed either way, so pasting it by hand
+/// always works even when the clipboard copy failed.
+///
+/// Every indented line below uses an explicit `\n   ` inside the string
+/// literal, not a `\`-continued source line followed by indentation on the
+/// next line: a `\` line continuation consumes the newline *and* all leading
+/// whitespace on the following source line, so writing the 3-space indent on
+/// its own line there silently strips it from the output.
 pub fn first_run_text(
     version: &str,
     mcp_port: u16,
@@ -117,26 +127,20 @@ pub fn first_run_text(
     manifest_path: &Path,
     binary_path: &Path,
     figma_opened: bool,
+    clipboard_copied: bool,
 ) -> String {
     let figma_line = if figma_opened {
         "Figma is opening now."
     } else {
         "Open Figma Desktop."
     };
+    let clipboard_hint = if clipboard_copied {
+        "it is on your clipboard"
+    } else {
+        "copy this path"
+    };
     format!(
-        "turbofig {version} is running (MCP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).\n\
-\n\
-1. Add the Figma plugin (once). {figma_line}\n\
-   Plugins > Development > Import plugin from manifest...\n\
-   Press Cmd+Shift+G, paste the path (it is on your clipboard), then press Return:\n\
-   {manifest}\n\
-\n\
-2. Connect your agent (once):\n\
-   Claude Code:   claude mcp add turbofig -- turbofig mcp\n\
-   Other MCP clients, add this server:\n\
-     {{\"command\": \"{binary}\", \"args\": [\"mcp\"]}}\n\
-\n\
-3. MCP blocked on your machine? Run the plugin in Figma and click \"Copy prompt\".\n",
+        "turbofig {version} is running (MCP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).\n\n1. Add the Figma plugin (once). {figma_line}\n   Plugins > Development > Import plugin from manifest...\n   Press Cmd+Shift+G, paste the path ({clipboard_hint}), then press Return:\n   {manifest}\n\n2. Connect your agent (once):\n   Claude Code:   claude mcp add turbofig -- turbofig mcp\n   Other MCP clients, add this server:\n     {{\"command\": \"{binary}\", \"args\": [\"mcp\"]}}\n\n3. MCP blocked on your machine? Run the plugin in Figma and click \"Copy prompt\".\n",
         manifest = manifest_path.display(),
         binary = binary_path.display(),
     )
@@ -181,6 +185,7 @@ mod tests {
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
             Path::new("/opt/homebrew/bin/turbofig"),
             true,
+            true,
         );
         assert!(text.contains("Figma is opening now."));
         assert!(!text.contains("Open Figma Desktop."));
@@ -195,6 +200,7 @@ mod tests {
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
             Path::new("/opt/homebrew/bin/turbofig"),
             false,
+            true,
         );
         assert!(text.contains("Open Figma Desktop."));
         assert!(!text.contains("Figma is opening now."));
@@ -208,6 +214,7 @@ mod tests {
             19998,
             Path::new("/tmp/manifest.json"),
             Path::new("/opt/homebrew/bin/turbofig"),
+            true,
             true,
         );
         assert!(text.contains("turbofig 1.2.3 is running"));
@@ -224,6 +231,7 @@ mod tests {
             Path::new("/tmp/manifest.json"),
             Path::new("/opt/homebrew/bin/turbofig"),
             true,
+            true,
         );
         assert!(text.contains("1. Add the Figma plugin"));
         assert!(text.contains("2. Connect your agent"));
@@ -239,6 +247,7 @@ mod tests {
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
             Path::new("/opt/homebrew/bin/turbofig"),
             true,
+            true,
         );
         assert!(text.contains("/Users/dev/.turbofig/figma-plugin/manifest.json"));
     }
@@ -251,6 +260,7 @@ mod tests {
             18847,
             Path::new("/tmp/manifest.json"),
             Path::new("/opt/homebrew/bin/turbofig"),
+            true,
             true,
         );
         assert!(text.contains("claude mcp add turbofig -- turbofig mcp"));
@@ -272,6 +282,7 @@ mod tests {
             Path::new("/tmp/manifest.json"),
             cellar_resolved,
             true,
+            true,
         );
         assert!(text.contains("\"command\": \"/opt/homebrew/bin/turbofig\""));
         assert!(!text.contains("/Cellar/"));
@@ -284,8 +295,80 @@ mod tests {
             Path::new("/tmp/manifest.json"),
             dev_checkout,
             true,
+            true,
         );
         assert!(text.contains("\"command\": \"/Users/dev/turbofig/target/release/turbofig\""));
+    }
+
+    #[test]
+    fn first_run_text_says_it_is_on_your_clipboard_when_the_copy_succeeded() {
+        let text = first_run_text(
+            "1.2.3",
+            18846,
+            18847,
+            Path::new("/tmp/manifest.json"),
+            Path::new("/opt/homebrew/bin/turbofig"),
+            true,
+            true,
+        );
+        assert!(text.contains("it is on your clipboard"));
+        assert!(!text.contains("copy this path"));
+    }
+
+    #[test]
+    fn first_run_text_says_copy_this_path_when_the_copy_failed() {
+        let text = first_run_text(
+            "1.2.3",
+            18846,
+            18847,
+            Path::new("/tmp/manifest.json"),
+            Path::new("/opt/homebrew/bin/turbofig"),
+            true,
+            false,
+        );
+        assert!(text.contains("copy this path"));
+        assert!(!text.contains("it is on your clipboard"));
+    }
+
+    /// A `\`-continued source line that is followed by indentation on the
+    /// next line silently strips that indentation from the output (the
+    /// continuation eats the newline *and* every leading whitespace
+    /// character). This asserts the exact indentation of every step line, so
+    /// a future edit that reintroduces that pattern fails loudly instead of
+    /// shipping flush-left text under a numbered step.
+    #[test]
+    fn first_run_text_keeps_the_3_space_indent_on_every_step_line() {
+        let text = first_run_text(
+            "1.2.3",
+            18846,
+            18847,
+            Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
+            Path::new("/opt/homebrew/bin/turbofig"),
+            true,
+            true,
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[3],
+            "   Plugins > Development > Import plugin from manifest..."
+        );
+        assert_eq!(
+            lines[4],
+            "   Press Cmd+Shift+G, paste the path (it is on your clipboard), then press Return:"
+        );
+        assert_eq!(
+            lines[5],
+            "   /Users/dev/.turbofig/figma-plugin/manifest.json"
+        );
+        assert_eq!(
+            lines[8],
+            "   Claude Code:   claude mcp add turbofig -- turbofig mcp"
+        );
+        assert_eq!(lines[9], "   Other MCP clients, add this server:");
+        assert_eq!(
+            lines[10],
+            "     {\"command\": \"/opt/homebrew/bin/turbofig\", \"args\": [\"mcp\"]}"
+        );
     }
 
     #[test]
