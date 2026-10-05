@@ -35,13 +35,13 @@ cargo build --release
 ./target/release/turbofig
 ```
 
-To start the daemon at login, install the launchd service. This step is macOS only.
+To install turbofig and start the daemon at login, use Homebrew. This step is
+macOS only.
 
 ```bash
-./install/install-macos.sh
+brew install LukeHawkins/tap/turbofig
+turbofig setup
 ```
-
-The script builds the binary if needed, fills the template, and loads the service.
 
 ### 2. Open the plugin in Figma Desktop
 
