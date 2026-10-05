@@ -48,7 +48,10 @@ async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {
 }
 
 async fn spawn_daemon(home: &std::path::Path, mcp_port: u16, ws_port: u16) -> DaemonChild {
+    // `serve` must be explicit: a bare `turbofig` is the first-run helper,
+    // which starts an untracked detached daemon instead of this child.
     let child = Command::new(BIN)
+        .arg("serve")
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
         .env("TURBOFIG_WS_PORT", ws_port.to_string())
         .env("TURBOFIG_BRIDGE_DIR", home)

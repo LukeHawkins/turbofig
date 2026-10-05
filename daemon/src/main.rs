@@ -236,27 +236,51 @@ async fn cmd_uninstall(purge: bool) {
     }
 }
 
-/// Returns the real clipboard, unless `TURBOFIG_TEST_FAKE_CLIPBOARD` names a
-/// file path in a debug build, in which case a fake records the copied text
-/// there instead and never shells out to `pbcopy`. Same `#[cfg(debug_assertions)]`
-/// gate as `mcp.rs`'s `TURBOFIG_TEST_VERSION_OVERRIDE`, so this escape hatch
-/// cannot exist in a release binary.
+/// True when a debug build may touch the real desktop (clipboard, Figma).
+///
+/// Debug builds are what `cargo test` and `cargo run` produce. A test that
+/// ran the bare binary once brought Figma to the front and overwrote the
+/// developer's clipboard on every test run, so a debug build now leaves the
+/// desktop alone unless `TURBOFIG_DEV_REAL_DESKTOP=1` is set. Release builds
+/// (what Homebrew installs) always use the real clipboard and opener.
+#[cfg(debug_assertions)]
+fn debug_real_desktop_allowed() -> bool {
+    std::env::var("TURBOFIG_DEV_REAL_DESKTOP").as_deref() == Ok("1")
+}
+
+/// Returns the real clipboard. In a debug build, `TURBOFIG_TEST_FAKE_CLIPBOARD`
+/// names a file where a fake records the copied text instead, and without
+/// `TURBOFIG_DEV_REAL_DESKTOP=1` the copy goes nowhere. Neither escape hatch
+/// exists in a release binary.
 fn clipboard_for_run() -> Box<dyn turbofig::first_run::Clipboard> {
     #[cfg(debug_assertions)]
-    if let Ok(path) = std::env::var("TURBOFIG_TEST_FAKE_CLIPBOARD") {
-        return Box::new(turbofig::first_run::FakeClipboard::new(PathBuf::from(path)));
+    {
+        if let Ok(path) = std::env::var("TURBOFIG_TEST_FAKE_CLIPBOARD") {
+            return Box::new(turbofig::first_run::FakeClipboard::new(PathBuf::from(path)));
+        }
+        if !debug_real_desktop_allowed() {
+            return Box::new(turbofig::first_run::FakeClipboard::new(PathBuf::from(
+                "/dev/null",
+            )));
+        }
     }
     Box::new(turbofig::first_run::RealClipboard)
 }
 
-/// Returns the real Figma-Desktop opener, unless `TURBOFIG_TEST_FAKE_OPENER`
-/// is set to `"success"` or `"fail"` in a debug build, in which case a fake
-/// reports that fixed result and never shells out to `open`. Same
-/// `#[cfg(debug_assertions)]` gate as `clipboard_for_run`.
+/// Returns the real Figma-Desktop opener. In a debug build,
+/// `TURBOFIG_TEST_FAKE_OPENER` (`"success"` or `"fail"`) selects a fake with
+/// that fixed result, and without `TURBOFIG_DEV_REAL_DESKTOP=1` the opener
+/// never runs `open` and reports a failure. Neither escape hatch exists in a
+/// release binary.
 fn opener_for_run() -> Box<dyn turbofig::first_run::AppOpener> {
     #[cfg(debug_assertions)]
-    if let Ok(v) = std::env::var("TURBOFIG_TEST_FAKE_OPENER") {
-        return Box::new(turbofig::first_run::FakeOpener::new(v == "success"));
+    {
+        if let Ok(v) = std::env::var("TURBOFIG_TEST_FAKE_OPENER") {
+            return Box::new(turbofig::first_run::FakeOpener::new(v == "success"));
+        }
+        if !debug_real_desktop_allowed() {
+            return Box::new(turbofig::first_run::FakeOpener::new(false));
+        }
     }
     Box::new(turbofig::first_run::RealAppOpener)
 }
