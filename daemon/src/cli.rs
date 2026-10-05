@@ -290,7 +290,8 @@ pub fn run_uninstall(
 /// is a shared folder or `$HOME` is never wiped out from under the user.
 /// Keep this in sync with every file the daemon writes to `home` (see
 /// `token.rs`'s `ensure_token`, `plugin_files.rs`'s `write_plugin_files` and
-/// `mark_plugin_seen`, `first_run.rs`, and `main.rs`'s `daemon.log` open):
+/// `mark_plugin_seen`, `first_run.rs`, `main.rs`'s `daemon.log` open, and
+/// `spawn.rs`'s `rotate_log_if_oversize`, which can produce `daemon.log.1`):
 /// an entry missing here survives a `--purge`, so the directory is never
 /// left empty, is never removed, and a reinstall wrongly skips the
 /// first-run walkthrough because `plugin-seen` is still there.
@@ -300,6 +301,7 @@ const PURGE_ENTRIES: &[&str] = &[
     "inbox",
     "outbox",
     "daemon.log",
+    "daemon.log.1",
     "plugin-seen",
 ];
 
@@ -874,6 +876,7 @@ mod tests {
         std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
         std::fs::write(home.join("token"), "deadbeef").expect("write token");
         std::fs::write(home.join("daemon.log"), "log").expect("write log");
+        std::fs::write(home.join("daemon.log.1"), "rotated log").expect("write rotated log");
         std::fs::create_dir_all(home.join("figma-plugin/dist")).expect("mkdir figma-plugin");
         std::fs::create_dir_all(home.join("inbox")).expect("mkdir inbox");
         std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");
@@ -891,6 +894,7 @@ mod tests {
         );
         assert!(!home.join("token").exists());
         assert!(!home.join("daemon.log").exists());
+        assert!(!home.join("daemon.log.1").exists());
         assert!(!home.join("figma-plugin").exists());
         assert!(!home.join("inbox").exists());
         assert!(!home.join("outbox").exists());
@@ -918,6 +922,7 @@ mod tests {
         std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
         std::fs::write(home.join("token"), "deadbeef").expect("write token");
         std::fs::write(home.join("daemon.log"), "log").expect("write log");
+        std::fs::write(home.join("daemon.log.1"), "rotated log").expect("write rotated log");
         std::fs::create_dir_all(home.join("figma-plugin/dist")).expect("mkdir figma-plugin");
         std::fs::create_dir_all(home.join("inbox")).expect("mkdir inbox");
         std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");

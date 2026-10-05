@@ -52,18 +52,45 @@ pub fn build_job_client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
+/// `daemon.log` is rotated once it grows past this size: the current log is
+/// renamed to `daemon.log.1` (replacing any older `.1`), and a fresh,
+/// empty `daemon.log` is started. Exactly one rotated generation is kept,
+/// never more: this is a size cap, not a full log-retention scheme.
+const LOG_ROTATE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Rotates `<home>/daemon.log` to `<home>/daemon.log.1` if it is currently
+/// over `LOG_ROTATE_THRESHOLD_BYTES`. A missing log (nothing to rotate yet)
+/// is not an error; any other failure to read its size is propagated.
+fn rotate_log_if_oversize(home: &Path) -> io::Result<()> {
+    let log_path = home.join("daemon.log");
+    let metadata = match std::fs::metadata(&log_path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if metadata.len() <= LOG_ROTATE_THRESHOLD_BYTES {
+        return Ok(());
+    }
+    // A rename onto an existing daemon.log.1 replaces it (same filesystem,
+    // same directory), so this always keeps exactly one rotated generation.
+    std::fs::rename(&log_path, home.join("daemon.log.1"))
+}
+
 /// Spawns `<turbofig_binary> serve` fully detached into its own session.
 ///
 /// `home` is the daemon's `TURBOFIG_BRIDGE_DIR`; `<home>/daemon.log` gets
 /// the child's stdout and stderr, appended (never truncated, so a repeated
-/// start never loses earlier log lines). The child inherits this process's
-/// environment unchanged, so any `TURBOFIG_*` override already in the
-/// caller's environment reaches the child the same way it reached the
-/// caller. The returned child is intentionally never waited on here: once
-/// `setsid` detaches it, it is no longer this process's job to reap or
-/// supervise.
+/// start never loses earlier log lines), unless it has grown past
+/// `LOG_ROTATE_THRESHOLD_BYTES`, in which case it is first rotated to
+/// `daemon.log.1` (see `rotate_log_if_oversize`) and a fresh file is opened.
+/// The child inherits this process's environment unchanged, so any
+/// `TURBOFIG_*` override already in the caller's environment reaches the
+/// child the same way it reached the caller. The returned child is
+/// intentionally never waited on here: once `setsid` detaches it, it is no
+/// longer this process's job to reap or supervise.
 pub fn spawn_detached_daemon(turbofig_binary: &Path, home: &Path) -> io::Result<()> {
     std::fs::create_dir_all(home)?;
+    rotate_log_if_oversize(home)?;
     let log_path = home.join("daemon.log");
     let stdout_log = std::fs::OpenOptions::new()
         .create(true)
@@ -391,6 +418,82 @@ mod tests {
         assert!(
             contents.starts_with("earlier line\n"),
             "an existing log must never be truncated: {contents:?}"
+        );
+    }
+
+    #[test]
+    fn rotate_log_if_oversize_is_a_no_op_when_the_log_is_small() {
+        let tmp = tempfile::tempdir().expect("temp home");
+        let log_path = tmp.path().join("daemon.log");
+        std::fs::write(&log_path, b"small\n").expect("seed a small log");
+
+        rotate_log_if_oversize(tmp.path()).expect("rotate check must not fail");
+
+        assert!(log_path.exists(), "the small log must stay in place");
+        assert!(!tmp.path().join("daemon.log.1").exists());
+    }
+
+    #[test]
+    fn rotate_log_if_oversize_is_a_no_op_when_there_is_no_log_yet() {
+        let tmp = tempfile::tempdir().expect("temp home");
+        rotate_log_if_oversize(tmp.path()).expect("a missing log must not be an error");
+        assert!(!tmp.path().join("daemon.log").exists());
+    }
+
+    #[test]
+    fn rotate_log_if_oversize_rotates_an_oversize_log_to_dot_1() {
+        let tmp = tempfile::tempdir().expect("temp home");
+        let log_path = tmp.path().join("daemon.log");
+        let oversize = vec![b'x'; (LOG_ROTATE_THRESHOLD_BYTES + 1) as usize];
+        std::fs::write(&log_path, &oversize).expect("seed an oversize log");
+
+        rotate_log_if_oversize(tmp.path()).expect("rotate must succeed");
+
+        assert!(
+            !log_path.exists(),
+            "the oversize log must be moved out of the way"
+        );
+        let rotated = std::fs::read(tmp.path().join("daemon.log.1")).expect("read rotated log");
+        assert_eq!(rotated.len(), oversize.len());
+    }
+
+    #[test]
+    fn rotate_log_if_oversize_replaces_an_older_dot_1_keeping_only_one_generation() {
+        let tmp = tempfile::tempdir().expect("temp home");
+        let log_path = tmp.path().join("daemon.log");
+        let rotated_path = tmp.path().join("daemon.log.1");
+        std::fs::write(&rotated_path, b"stale generation").expect("seed a stale .1");
+        let oversize = vec![b'y'; (LOG_ROTATE_THRESHOLD_BYTES + 1) as usize];
+        std::fs::write(&log_path, &oversize).expect("seed an oversize log");
+
+        rotate_log_if_oversize(tmp.path()).expect("rotate must succeed");
+
+        let rotated = std::fs::read(&rotated_path).expect("read rotated log");
+        assert_eq!(
+            rotated.len(),
+            oversize.len(),
+            "the stale .1 must be replaced by the just-rotated log, not kept"
+        );
+    }
+
+    #[test]
+    fn spawn_detached_daemon_rotates_an_oversize_log_before_appending() {
+        let tmp = tempfile::tempdir().expect("temp home");
+        let log_path = tmp.path().join("daemon.log");
+        let oversize = vec![b'z'; (LOG_ROTATE_THRESHOLD_BYTES + 1) as usize];
+        std::fs::write(&log_path, &oversize).expect("seed an oversize log");
+
+        spawn_detached_daemon(Path::new("/bin/echo"), tmp.path())
+            .expect("spawn a trivial detached process");
+        std::thread::sleep(Duration::from_millis(200));
+
+        let rotated =
+            std::fs::metadata(tmp.path().join("daemon.log.1")).expect("rotated log must exist");
+        assert_eq!(rotated.len(), oversize.len() as u64);
+        let fresh = std::fs::metadata(&log_path).expect("fresh log must exist");
+        assert!(
+            fresh.len() < oversize.len() as u64,
+            "the fresh log must not still carry the oversize content"
         );
     }
 }
