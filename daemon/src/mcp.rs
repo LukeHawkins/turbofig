@@ -283,8 +283,21 @@ pub(crate) fn call_tool_result(value: Value) -> CallToolResult {
 impl ServerHandler for TurbofigHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
+            .with_server_info(turbofig_server_info())
     }
+}
+
+/// This daemon's own `serverInfo` (name "turbofig", this crate's version).
+///
+/// `Implementation::from_build_env()` reads `CARGO_CRATE_NAME` and
+/// `CARGO_PKG_VERSION` from inside the `rmcp` crate's own source, at `rmcp`'s
+/// own compile time (an `env!` macro always resolves where it is *written*,
+/// not where it is called from), so it always reports `rmcp 3.1.0` rather
+/// than this daemon's own name and version. Both MCP transports (this HTTP
+/// one, and the stdio proxy in `proxy.rs`) must report `turbofig` and this
+/// crate's real version, so build it explicitly instead.
+pub(crate) fn turbofig_server_info() -> Implementation {
+    Implementation::new("turbofig", env!("CARGO_PKG_VERSION"))
 }
 
 /// Help text returned by GET / and the fallback handler on the MCP HTTP port.
@@ -1046,6 +1059,58 @@ mod tests {
 
         let resp = router.oneshot(req).await.expect("router must respond");
         assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    /// `initialize` over the HTTP MCP transport must report this daemon's
+    /// own name and version, never `rmcp`'s (see `turbofig_server_info`'s
+    /// doc comment for why `Implementation::from_build_env()` alone gets
+    /// this wrong).
+    #[tokio::test]
+    async fn mcp_endpoint_initialize_reports_the_turbofig_server_info() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let token = state.token().to_owned();
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(axum::body::Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                        "capabilities": {}
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("build request");
+
+        let resp = router.oneshot(req).await.expect("router must respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body = String::from_utf8_lossy(&bytes);
+        let expected_version = format!("\"version\":\"{}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            body.contains("\"name\":\"turbofig\""),
+            "serverInfo must name turbofig: {body}"
+        );
+        assert!(
+            body.contains(&expected_version),
+            "serverInfo must carry this crate's version, not rmcp's: {body}"
+        );
+        assert!(!body.contains("\"name\":\"rmcp\""));
     }
 
     #[tokio::test]

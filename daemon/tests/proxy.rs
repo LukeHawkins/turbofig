@@ -149,6 +149,42 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
     assert_eq!(stdio_tools.len(), 4, "the tool surface is exactly 4 tools");
 }
 
+// ── (a2) stdio initialize reports the turbofig serverInfo, not rmcp's ──────
+
+#[tokio::test]
+async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+
+    let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
+    let mut writer = proxy.0.stdin.take().expect("proxy stdin");
+    let mut reader = tokio::io::BufReader::new(proxy.0.stdout.take().expect("proxy stdout"));
+    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+
+    common::send_json(
+        &mut writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        }),
+    )
+    .await;
+    let init = common::read_response_for_id(&mut reader, 1).await;
+    let server_info = &init["result"]["serverInfo"];
+    assert_eq!(server_info["name"], json!("turbofig"));
+    assert_eq!(server_info["version"], json!(env!("CARGO_PKG_VERSION")));
+    assert_ne!(server_info["name"], json!("rmcp"));
+    assert_ne!(server_info["version"], json!("3.1.0"));
+}
+
 // ── (b) `turbofig mcp` with no daemon running starts one ───────────────────
 
 #[tokio::test]

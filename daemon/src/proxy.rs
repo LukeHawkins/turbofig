@@ -373,7 +373,7 @@ impl ProxyHandler {
 impl ServerHandler for ProxyHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
+            .with_server_info(crate::mcp::turbofig_server_info())
     }
 }
 
@@ -393,5 +393,17 @@ mod tests {
         assert_eq!(compare_versions("not-a-version", "0.1.0"), None);
         assert_eq!(compare_versions("0.1.0", "not-a-version"), None);
         assert_eq!(compare_versions("not-a-version", "also-not"), None);
+    }
+
+    /// The stdio proxy must report its own name and version, not `rmcp`'s
+    /// (see `mcp::turbofig_server_info`'s doc comment for why
+    /// `Implementation::from_build_env()` alone gets this wrong).
+    #[test]
+    fn proxy_handler_reports_turbofig_name_and_its_own_version() {
+        let info = crate::mcp::turbofig_server_info();
+        assert_eq!(info.name, "turbofig");
+        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert_ne!(info.name, "rmcp");
+        assert_ne!(info.version, "3.1.0");
     }
 }
