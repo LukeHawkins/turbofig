@@ -65,14 +65,15 @@ files, `Cargo.lock`, and the changelog), run `bun scripts/bump-version.ts
 
 ## Run all tests and checks
 
-These are the same commands CI runs:
+These are close to the commands CI runs; see `.github/workflows/ci.yml` for
+the exact steps:
 
 ```bash
 # Rust
 cargo build
 cargo build --release
 cargo test
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 bash scripts/handshake.sh
 
@@ -83,7 +84,10 @@ bunx @biomejs/biome check .
 bun test
 cd plugin && bun run build
 cd ..
-bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json
+bun bench/harness.ts --dry-run --scenario webpage-plain --baseline bench/baseline.json --max-ratio 1.2
+
+# Rust again, to prove the daemon builds with the plugin just built embedded
+cargo build
 ```
 
 Run only the checks that cover the files you changed day to day; run the
@@ -122,7 +126,7 @@ A reproducible benchmark harness lives in `bench/`, documented in
 counts, never an estimate. Run it with:
 
 ```bash
-bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json
+bun bench/harness.ts --dry-run --scenario webpage-plain --baseline bench/baseline.json --max-ratio 1.2
 ```
 
 ## Pull request checklist
@@ -136,7 +140,8 @@ bun bench/harness.ts --dry-run --scenario webpage --baseline bench/baseline.json
 - [ ] `bun run typecheck`, `bunx @biomejs/biome check .`, and `bun test`
       pass for any TypeScript change.
 - [ ] If you touched `plugin/src/`, you ran `cd plugin && bun run build`
-      and the rebuilt `dist/` output is included.
+      to regenerate `dist/ui.html`. `dist/` is gitignored, so do not commit
+      it; CI and the release build regenerate it themselves.
 - [ ] No `Co-Authored-By`, `Signed-off-by`, or AI attribution trailer in any
       commit message.
 - [ ] `ARCHITECTURE.md` is updated in the same commit if you changed the
