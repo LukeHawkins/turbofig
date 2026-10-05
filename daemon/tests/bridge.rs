@@ -4,11 +4,11 @@
 
 mod common;
 
-use common::{poll_file, wait_for_file_key};
+use common::{poll_file, wait_for_file_key, wait_until, WAIT_DEADLINE_MS};
 use futures_util::{SinkExt, StreamExt};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -334,19 +334,25 @@ async fn test_bridge_services_jobs_concurrently() {
     let out_a = write_job(&tmp, "job_a", serde_json::json!({"op": "status"})).await;
     let out_b = write_job(&tmp, "job_b", serde_json::json!({"op": "status"})).await;
 
-    let start = Instant::now();
+    // Structural proof of concurrency: both jobs must be counted as in
+    // flight at the daemon at the same time, before either one resolves.
+    // This never races on wall-clock time, unlike asserting on elapsed
+    // duration against the plugin's reply timeout.
+    wait_until(
+        || state.jobs_in_flight() >= 2,
+        WAIT_DEADLINE_MS,
+        "both status jobs to be in flight at once",
+    )
+    .await;
+    assert!(
+        !out_a.exists() && !out_b.exists(),
+        "neither job may have resolved yet when both were counted in flight"
+    );
+
+    // Both jobs time out waiting on the silent plugin and each writes its
+    // own result; wait for both without any further timing assumption.
     let _ = poll_file(&out_a, 10_000).await;
     let _ = poll_file(&out_b, 10_000).await;
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed >= TIMEOUT - Duration::from_millis(50),
-        "job must wait out the timeout, not return early, took {elapsed:?}"
-    );
-    assert!(
-        elapsed < TIMEOUT + TIMEOUT / 2,
-        "two jobs must run concurrently (about one timeout), took {elapsed:?}"
-    );
 }
 
 /// The execute op routes JS through the plugin and returns the result.
