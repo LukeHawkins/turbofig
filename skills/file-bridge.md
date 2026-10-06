@@ -68,14 +68,37 @@ Status result with a plugin connected:
 Status result with no plugin connected:
 
 ```json
-{ "ok": true, "plugin": { "connected": false } }
+{
+  "ok": true,
+  "saturated": false,
+  "plugin": {
+    "connected": false,
+    "reason": "no Figma plugin connected: open the turbofig plugin in Figma (Plugins > Development > turbofig)",
+    "lastDisconnectAgoMs": 42000
+  }
+}
 ```
+
+`lastDisconnectAgoMs` is present only once a plugin has connected and then disconnected at least once; it is absent on a daemon that has never seen one. A daemon cannot launch the Figma plugin itself: Figma does not allow it. After a Figma restart, open the plugin by hand (Plugins > Development > turbofig).
+
+Every connected file in `plugins` (and the one in `plugin` when connected) also carries queue health: `pendingJobs`, `inFlight`, `oldestPendingAgeMs`, `lastJobCompletedAgoMs`, and `saturated`. A top-level `saturated` is true when any connected file is at its admission-control cap.
 
 Error result:
 
 ```json
-{ "ok": false, "error": "unknown op" }
+{ "ok": false, "code": "busy", "error": "too many jobs in flight on this connection (4); retry after 1000ms", "queueDepth": 4, "retryAfterMs": 1000 }
 ```
+
+Every error result carries a machine-readable `code`. Retry guidance by code:
+
+- **`busy`**: the connection already has `TURBOFIG_MAX_INFLIGHT` (default 4) execute/screenshot jobs running. Wait `retryAfterMs`, then retry the same job unchanged.
+- **`not_started`**: the plugin never began this job (no timeout, no reply). Safe to retry.
+- **`started_unknown`**: the plugin began this job, then the call timed out or the plugin disconnected before it replied. The job may have run. Check the file (e.g. `get_selection`, or look for the expected node) before retrying, so a non-idempotent mutation (node creation, a write) is never silently duplicated.
+- **`timeout`**: a `status` call got no reply in time. Harmless to retry: status never mutates.
+- **`plugin_disconnected`**: no plugin reached the daemon for this job at all (never admitted, never sent). Safe to retry once a plugin is connected.
+- **`file_not_connected`**: the named `fileKey` is not an open file right now.
+- **`script_error`**: the job's own code threw. Fix the code; retrying unchanged will not help.
+- **`result_too_large`**: the reply exceeded the 16 MiB protocol cap. Shape the request (fields/depth, or `screenshot`'s file mode) instead of retrying as-is.
 
 `ok:true` always means the daemon is alive. The `plugin` object reports the plugin state.
 

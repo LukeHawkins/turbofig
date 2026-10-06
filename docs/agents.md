@@ -38,6 +38,36 @@ Example job:
 
 Full protocol and job and result shapes: `skills/file-bridge.md`.
 
+## Retrying a failed job
+
+Every `ok:false` result carries a machine-readable `code`. Do not retry
+blindly on every failure: that is how a handful of concurrent callers turns
+into a thundering herd against one plugin connection.
+
+- **`busy`**: the connection is already running the daemon's admission cap
+  of jobs (default 4). Wait the given `retryAfterMs`, then retry unchanged.
+- **`not_started`**: the plugin never began the job. Always safe to retry.
+- **`started_unknown`**: the plugin began the job, then the call timed out
+  or disconnected before a reply came back. The job may have run. For
+  `execute` or `screenshot`, check the file first (e.g. a `get_selection`
+  call) before retrying, so a node creation or a write is never silently
+  duplicated.
+- **`timeout`**: a `status` call got no reply. Harmless to retry; `status`
+  never mutates.
+- **`plugin_disconnected`**: no plugin was reachable at all. Safe to retry
+  once one connects.
+- **`file_not_connected`**: the `fileKey` you named is not open right now.
+- **`script_error`**: your own code threw. Fix it; retrying as-is will not help.
+- **`result_too_large`**: the reply exceeded the 16 MiB cap. Shape the
+  request (fields/depth, or `screenshot`'s file mode) instead of retrying.
+
+A `status` call's `plugin` object also reports queue health
+(`pendingJobs`, `inFlight`, `saturated`) and, when no plugin is connected at
+all, a `reason` and `lastDisconnectAgoMs`. turbofig cannot launch the Figma
+plugin itself (Figma does not allow it): if `status` reports no plugin
+connected after a Figma restart, tell the user to reopen it by hand
+(Plugins > Development > turbofig in Figma).
+
 ## MCP (fallback)
 
 Use this only when the file bridge is not available. If you can add an MCP

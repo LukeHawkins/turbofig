@@ -2,9 +2,11 @@
 
 use crate::image;
 use crate::ops::budget::{inline_screenshot_warning, with_warning};
-use crate::plugin_call::{call_plugin, CallOutcome};
+use crate::plugin_call::{
+    busy_json, call_plugin, idempotency_error_json, plugin_disconnected_json, CallOutcome,
+};
 use crate::routing::{resolve_route, route_error_to_json};
-use crate::state::AppState;
+use crate::state::{try_admit, AppState};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -17,20 +19,14 @@ use std::sync::Arc;
 const MIN_SCALE: f64 = 0.1;
 const MAX_SCALE: f64 = 4.0;
 
-/// Build a timeout error message that names the request id and warns that a
-/// retry is not safe.
-fn timeout_error(id: u64) -> String {
-    format!(
-        "plugin timed out (requestId {id}); the job may still be running in Figma, \
-         a retry is not idempotent"
-    )
-}
-
 /// Capture a PNG screenshot of a Figma node and return a JSON value.
 ///
-/// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
-/// Plugin replies with ok:false -> `{"ok":false,"error":"..."}`.
-/// Timeout -> `{"ok":false,"error":"plugin timed out (requestId N); ..."}`.
+/// No plugin connected -> `{"ok":false,"code":"plugin_disconnected","error":"..."}`.
+/// Plugin replies with ok:false -> `{"ok":false,"code":"...","error":"..."}`.
+/// Timeout or mid-call disconnect -> `code":"not_started"`/`"started_unknown"`
+///   (see `plugin_call::idempotency_error_json`).
+/// Lane already at the admission-control cap -> `code":"busy"` (see
+///   `state::try_admit`), without ever reaching the plugin.
 /// On success with return_mode "inline": returns `{"ok":true,"w":w,"h":h,"png":<base64>}`.
 /// On success with return_mode "file": decodes base64, writes to
 ///   `output_dir/<requestId>-<nanos>.png`, returns `{"ok":true,"path":"...","w":w,"h":h}`.
@@ -54,6 +50,11 @@ pub async fn run_screenshot(
         Err(e) => return route_error_to_json(e),
     };
 
+    let _admit = match try_admit(state, conn_id) {
+        Ok(guard) => guard,
+        Err(busy) => return busy_json(busy.queue_depth, busy.retry_after_ms),
+    };
+
     let scale = scale.clamp(MIN_SCALE, MAX_SCALE);
     let timeout_ms = state.request_timeout.as_millis().min(u128::from(u64::MAX)) as u64;
     let request = json!({
@@ -68,9 +69,9 @@ pub async fn run_screenshot(
 
     let reply = match outcome {
         CallOutcome::Reply(reply) => reply,
-        CallOutcome::Disconnected => return json!({"ok": false, "error": "plugin disconnected"}),
-        CallOutcome::NotConnected => return json!({"ok": false, "error": "plugin send failed"}),
-        CallOutcome::TimedOut => return json!({"ok": false, "error": timeout_error(id)}),
+        CallOutcome::Disconnected(started) => return idempotency_error_json(id, started),
+        CallOutcome::NotConnected => return plugin_disconnected_json(),
+        CallOutcome::TimedOut(started) => return idempotency_error_json(id, started),
     };
 
     if !reply.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -79,7 +80,12 @@ pub async fn run_screenshot(
             .and_then(|v| v.as_str())
             .unwrap_or("screenshot failed")
             .to_owned();
-        return json!({"ok": false, "error": error});
+        let code = reply
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("script_error")
+            .to_owned();
+        return json!({"ok": false, "error": error, "code": code});
     }
     let Some(png_b64) = reply.get("png").and_then(|v| v.as_str()) else {
         return json!({"ok": false, "error": "screenshot failed"});

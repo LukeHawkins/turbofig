@@ -21,19 +21,26 @@ pub(crate) enum RouteError {
 /// Convert a RouteError into the caller-facing JSON shape.
 pub(crate) fn route_error_to_json(e: RouteError) -> Value {
     match e {
-        RouteError::NoPlugin => json!({"ok": false, "error": "no plugin connected"}),
+        RouteError::NoPlugin => json!({
+            "ok": false,
+            "code": "plugin_disconnected",
+            "error": "no plugin connected"
+        }),
         RouteError::Ambiguous(fks) => json!({
             "ok": false,
+            "code": "ambiguous_target",
             "error": "multiple files connected; specify fileKey",
             "files": fks
         }),
         RouteError::NotFound(fk, available) => json!({
             "ok": false,
+            "code": "file_not_connected",
             "error": format!("file not connected: {fk}"),
             "files": available
         }),
         RouteError::Draining => json!({
             "ok": false,
+            "code": "draining",
             "error": "daemon is restarting after an upgrade; retry shortly"
         }),
     }
@@ -125,6 +132,26 @@ pub(crate) fn resolve_route(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn route_error_to_json_carries_a_machine_readable_code_for_every_variant() {
+        assert_eq!(
+            route_error_to_json(RouteError::NoPlugin)["code"],
+            json!("plugin_disconnected")
+        );
+        assert_eq!(
+            route_error_to_json(RouteError::Ambiguous(vec!["fk1".to_owned()]))["code"],
+            json!("ambiguous_target")
+        );
+        assert_eq!(
+            route_error_to_json(RouteError::NotFound("fk1".to_owned(), vec![]))["code"],
+            json!("file_not_connected")
+        );
+        assert_eq!(
+            route_error_to_json(RouteError::Draining)["code"],
+            json!("draining")
+        );
+    }
 
     #[test]
     fn resolve_route_no_connections_returns_no_plugin() {

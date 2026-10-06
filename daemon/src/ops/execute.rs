@@ -1,9 +1,11 @@
 //! `turbofig_execute`: run JavaScript in the Figma plugin context.
 
 use crate::ops::budget::{read_budget_warning, with_warning};
-use crate::plugin_call::{call_plugin, CallOutcome};
+use crate::plugin_call::{
+    busy_json, call_plugin, idempotency_error_json, plugin_disconnected_json, CallOutcome,
+};
 use crate::routing::{resolve_route, route_error_to_json};
-use crate::state::AppState;
+use crate::state::{try_admit, AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,20 +18,17 @@ use std::time::Duration;
 /// the race.
 const EXECUTE_GRACE: Duration = Duration::from_millis(1_000);
 
-/// Build a timeout error message that names the request id and warns that a
-/// retry is not safe: the eval may still be running in Figma.
-fn timeout_error(id: u64) -> String {
-    format!(
-        "plugin timed out (requestId {id}); the job may still be running in Figma, \
-         a retry is not idempotent"
-    )
-}
-
 /// Send `code` to the target plugin and return the result as a JSON value.
 ///
-/// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
-/// Plugin replies -> pass the RESULT through.
-/// Timeout -> `{"ok":false,"error":"plugin timed out (requestId N); ..."}`.
+/// No plugin connected -> `{"ok":false,"code":"plugin_disconnected","error":"no plugin connected"}`.
+/// Plugin replies -> pass the RESULT through, plus the plugin's own `code`
+///   when it is `ok:false` (default `"script_error"` if the plugin sent none).
+/// Timeout or mid-call disconnect -> `code":"not_started"` when no STARTED
+///   frame ever arrived for this job, `"started_unknown"` when one did (see
+///   `plugin_call::idempotency_error_json`).
+/// Lane already at the admission-control cap -> `code":"busy"` with a
+///   `queueDepth` and a `retryAfterMs` hint, without ever reaching the
+///   plugin (see `state::try_admit`).
 ///
 /// Reused by both `turbofig_execute` (MCP) and the filesystem bridge.
 pub async fn run_execute(
@@ -41,6 +40,11 @@ pub async fn run_execute(
     let (conn_id, tx, _, _) = match resolve_route(state, session_id, file_key) {
         Ok(r) => r,
         Err(e) => return route_error_to_json(e),
+    };
+
+    let _admit = match try_admit(state, conn_id) {
+        Ok(guard) => guard,
+        Err(busy) => return busy_json(busy.queue_depth, busy.retry_after_ms),
     };
 
     let timeout_ms = state.request_timeout.as_millis().min(u128::from(u64::MAX)) as u64;
@@ -66,17 +70,16 @@ pub async fn run_execute(
                     .and_then(|v| v.as_str())
                     .unwrap_or("eval failed")
                     .to_owned();
-                json!({"ok": false, "error": error})
+                let code = reply
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("script_error")
+                    .to_owned();
+                json!({"ok": false, "error": error, "code": code})
             }
         }
-        CallOutcome::Disconnected => {
-            json!({"ok": false, "error": "plugin disconnected"})
-        }
-        CallOutcome::NotConnected => {
-            json!({"ok": false, "error": "plugin send failed"})
-        }
-        CallOutcome::TimedOut => {
-            json!({"ok": false, "error": timeout_error(id)})
-        }
+        CallOutcome::Disconnected(started) => idempotency_error_json(id, started),
+        CallOutcome::NotConnected => plugin_disconnected_json(),
+        CallOutcome::TimedOut(started) => idempotency_error_json(id, started),
     }
 }

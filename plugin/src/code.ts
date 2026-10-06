@@ -13,6 +13,7 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  buildStarted,
   capResultMessage,
   isInboundMessage,
   PREAMBLE_LINE_OFFSET,
@@ -133,6 +134,7 @@ export async function handleExecute(
         buildExecuteError(
           requestId,
           `job timed out in the plugin after ${timeoutMs}ms; it may still be running; a retry is not idempotent`,
+          "started_unknown",
         ),
       );
     }, clampTimeoutMs(timeoutMs));
@@ -241,7 +243,11 @@ async function emitStoredPort(figma: PluginAPI, post: (msg: unknown) => void): P
  * queue: it never ran, so a retry is unconditionally safe.
  */
 function queueExpiredResult(requestId: number): ResultMessage {
-  return buildExecuteError(requestId, "expired in the queue; the job did not run; a retry is safe");
+  return buildExecuteError(
+    requestId,
+    "expired in the queue; the job did not run; a retry is safe",
+    "not_started",
+  );
 }
 
 /**
@@ -253,6 +259,7 @@ function queueRunTimeoutResult(requestId: number, ms: number): ResultMessage {
   return buildExecuteError(
     requestId,
     `job timed out after ${ms}ms (queue wait + run time); it may still be running; a retry is not idempotent`,
+    "started_unknown",
   );
 }
 
@@ -296,6 +303,17 @@ export function createDispatcher(
   ): Promise<ResultMessage> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return queueExpiredResult(requestId);
+    // Only announce STARTED once the job is actually about to run: a job
+    // that expired in the queue above never ran, so it must never be told
+    // apart as "started" by a daemon-side caller checking for idempotency.
+    // A failing post (e.g. a transiently closed UI channel) must never stop
+    // the job itself from running: STARTED is a best-effort progress signal,
+    // not a precondition for the actual work.
+    try {
+      post(buildStarted(requestId));
+    } catch {
+      // Swallowed: see comment above.
+    }
     return Promise.race([job(), queueRunTimeout(requestId, remaining)]);
   }
 

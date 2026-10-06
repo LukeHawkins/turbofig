@@ -25,20 +25,48 @@ pub async fn run_status(
     let (conn_id, tx, fk, name) = match resolve_route(state, session_id, file_key) {
         Ok(r) => r,
         Err(RouteError::NoPlugin) => {
-            return json!({"ok": true, "plugin": {"connected": false}, "plugins": []});
+            // No plugin connected at all: name why, and how long ago one was
+            // last seen, so a caller recovering from a Figma restart (the
+            // plugin cannot be auto-launched; see skills/file-bridge.md)
+            // knows what to tell the user instead of just retrying blind.
+            let mut plugin = json!({
+                "connected": false,
+                "reason": "no Figma plugin connected: open the turbofig plugin \
+                           in Figma (Plugins > Development > turbofig)"
+            });
+            if let Some(ago) = state.last_disconnect_ago_ms() {
+                plugin["lastDisconnectAgoMs"] = json!(ago);
+            }
+            return json!({
+                "ok": true,
+                "saturated": false,
+                "plugin": plugin,
+                "plugins": []
+            });
         }
         Err(RouteError::Ambiguous(_)) => {
             let plugins = state.named_connections_json();
-            return json!({"ok": true, "plugin": {"connected": true}, "plugins": plugins});
+            return json!({
+                "ok": true,
+                "saturated": state.any_saturated(),
+                "plugin": {"connected": true},
+                "plugins": plugins
+            });
         }
         Err(RouteError::NotFound(_, _)) => {
             let plugins = state.named_connections_json();
-            return json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins});
+            return json!({
+                "ok": true,
+                "saturated": state.any_saturated(),
+                "plugin": {"connected": false},
+                "plugins": plugins
+            });
         }
         Err(RouteError::Draining) => {
             return json!({
                 "ok": true,
                 "draining": true,
+                "saturated": false,
                 "plugin": {"connected": false},
                 "plugins": []
             });
@@ -63,6 +91,7 @@ pub async fn run_status(
             let plugins = state.named_connections_json();
             json!({
                 "ok": true,
+                "saturated": state.any_saturated(),
                 "plugin": {
                     "connected": true,
                     "fileKey": fk,
@@ -71,18 +100,25 @@ pub async fn run_status(
                 "plugins": plugins
             })
         }
-        CallOutcome::Disconnected | CallOutcome::NotConnected => {
+        CallOutcome::Disconnected(_) | CallOutcome::NotConnected => {
             let plugins = state.named_connections_json();
-            json!({"ok": true, "plugin": {"connected": false}, "plugins": plugins})
+            json!({
+                "ok": true,
+                "saturated": state.any_saturated(),
+                "plugin": {"connected": false},
+                "plugins": plugins
+            })
         }
-        CallOutcome::TimedOut => {
+        CallOutcome::TimedOut(_) => {
             let plugins = state.named_connections_json();
             // Name the unresponsive file so the caller knows which one is silent.
             json!({
                 "ok": true,
+                "saturated": state.any_saturated(),
                 "plugin": {
                     "connected": true,
                     "responsive": false,
+                    "code": "timeout",
                     "fileKey": fk,
                     "name": name,
                     "requestId": id

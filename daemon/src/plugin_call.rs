@@ -8,6 +8,7 @@
 
 use crate::state::AppState;
 use serde_json::Value;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -16,13 +17,72 @@ use tokio::sync::mpsc;
 pub(crate) enum CallOutcome {
     /// The plugin replied before the timeout.
     Reply(Value),
-    /// The plugin's connection closed before it replied.
-    Disconnected,
-    /// No reply arrived within the allotted wait.
-    TimedOut,
+    /// The plugin's connection closed before it replied. Carries whether a
+    /// STARTED frame for this request had already arrived, so the caller can
+    /// tell "did not start, safe to retry" from "started, may have run".
+    Disconnected(bool),
+    /// No reply arrived within the allotted wait. Carries the same started
+    /// flag as `Disconnected`, for the same reason.
+    TimedOut(bool),
     /// The connection closed between picking the route and registering the
-    /// pending request (or the send itself failed).
+    /// pending request (or the send itself failed). The job was never sent,
+    /// so there is no idempotency question here: it is always safe to retry.
     NotConnected,
+}
+
+/// Builds the caller-facing JSON for a timed-out or disconnected call.
+/// `id` is the request id (named in the message so a caller can correlate it
+/// against a later STARTED/RESULT if one ever turns up); `started` is the
+/// outcome's own flag (see `CallOutcome::TimedOut`/`Disconnected`).
+///
+/// This is the one place `not_started`/`started_unknown` text and codes are
+/// built, shared by `ops::run_execute`, `ops::run_get_selection`, and
+/// `ops::run_screenshot`, so a caller on any transport (MCP, `POST /job`, the
+/// filesystem bridge) sees the same wording and the same machine-readable
+/// `code` for the same situation.
+pub(crate) fn idempotency_error_json(id: u64, started: bool) -> Value {
+    if started {
+        serde_json::json!({
+            "ok": false,
+            "code": "started_unknown",
+            "error": format!(
+                "requestId {id}: started, may have run, check before retrying"
+            )
+        })
+    } else {
+        serde_json::json!({
+            "ok": false,
+            "code": "not_started",
+            "error": format!("requestId {id}: did not start, safe to retry")
+        })
+    }
+}
+
+/// Builds the caller-facing JSON for `CallOutcome::NotConnected`: the
+/// connection closed before the request was ever sent, so there is no
+/// idempotency question, only "nothing reached the plugin".
+pub(crate) fn plugin_disconnected_json() -> Value {
+    serde_json::json!({
+        "ok": false,
+        "code": "plugin_disconnected",
+        "error": "plugin not connected"
+    })
+}
+
+/// Builds the caller-facing JSON for an admission-control rejection (see
+/// `state::try_admit`). `queue_depth` is how many jobs are already admitted
+/// on the lane that rejected this one; `retry_after_ms` is the daemon's own
+/// backoff hint, scaled by that depth.
+pub(crate) fn busy_json(queue_depth: usize, retry_after_ms: u64) -> Value {
+    serde_json::json!({
+        "ok": false,
+        "code": "busy",
+        "error": format!(
+            "too many jobs in flight on this connection ({queue_depth}); retry after {retry_after_ms}ms"
+        ),
+        "queueDepth": queue_depth,
+        "retryAfterMs": retry_after_ms
+    })
 }
 
 /// Removes a pending entry from `state` when dropped, unless it was already
@@ -56,7 +116,7 @@ pub(crate) async fn call_plugin(
     mut request: Value,
     wait: Duration,
 ) -> (u64, CallOutcome) {
-    let Some((id, rx)) = state.register_pending_if_connected(conn_id) else {
+    let Some((id, rx, started)) = state.register_pending_if_connected(conn_id) else {
         return (0, CallOutcome::NotConnected);
     };
     if let Some(obj) = request.as_object_mut() {
@@ -81,9 +141,9 @@ pub(crate) async fn call_plugin(
         }
         Ok(Err(_)) => {
             guard.active = false; // the sender side dropped; nothing left to cancel
-            CallOutcome::Disconnected
+            CallOutcome::Disconnected(started.load(Ordering::SeqCst))
         }
-        Err(_elapsed) => CallOutcome::TimedOut, // guard cancels on drop below
+        Err(_elapsed) => CallOutcome::TimedOut(started.load(Ordering::SeqCst)), // guard cancels on drop below
     };
     (id, outcome)
 }
@@ -138,7 +198,38 @@ mod tests {
             Duration::from_millis(50),
         )
         .await;
-        assert!(matches!(outcome, CallOutcome::TimedOut));
+        assert!(matches!(outcome, CallOutcome::TimedOut(false)));
+    }
+
+    #[tokio::test]
+    async fn call_plugin_times_out_with_started_true_once_a_started_frame_arrived() {
+        // A STARTED frame arriving before the daemon-side wait elapses must
+        // flip the timeout outcome's started flag, so the caller can tell
+        // "may have run" from "never ran" even though neither ever gets a
+        // RESULT.
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(200)));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+
+        let state2 = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("parse frame");
+                let id = req["requestId"].as_u64().expect("requestId");
+                state2.mark_started(id, conn_id);
+                // Never sends a RESULT: the call must time out.
+            }
+        });
+
+        let (_id, outcome) = call_plugin(
+            &state,
+            conn_id,
+            &tx,
+            json!({"type": "EXECUTE"}),
+            Duration::from_millis(100),
+        )
+        .await;
+        assert!(matches!(outcome, CallOutcome::TimedOut(true)));
     }
 
     #[tokio::test]
@@ -211,5 +302,36 @@ mod tests {
             CallOutcome::Reply(v) => assert_eq!(v["ok"], json!(true)),
             _ => panic!("expected a reply"),
         }
+    }
+
+    #[test]
+    fn idempotency_error_json_not_started_carries_the_not_started_code() {
+        let v = idempotency_error_json(42, false);
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], json!("not_started"));
+        assert!(v["error"].as_str().unwrap().contains("safe to retry"));
+    }
+
+    #[test]
+    fn idempotency_error_json_started_carries_the_started_unknown_code() {
+        let v = idempotency_error_json(42, true);
+        assert_eq!(v["code"], json!("started_unknown"));
+        assert!(v["error"].as_str().unwrap().contains("may have run"));
+    }
+
+    #[test]
+    fn plugin_disconnected_json_carries_its_code() {
+        let v = plugin_disconnected_json();
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], json!("plugin_disconnected"));
+    }
+
+    #[test]
+    fn busy_json_carries_queue_depth_and_retry_after() {
+        let v = busy_json(3, 750);
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], json!("busy"));
+        assert_eq!(v["queueDepth"], json!(3));
+        assert_eq!(v["retryAfterMs"], json!(750));
     }
 }

@@ -7,6 +7,7 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  buildStarted,
   capResultMessage,
   DEPRECATION_PREAMBLE,
   encodeBase64,
@@ -155,6 +156,20 @@ describe("buildExecuteError", () => {
   test("result passes the isDaemonMessage guard", () => {
     expect(isDaemonMessage(buildExecuteError(1, "err"))).toBe(true);
   });
+
+  test("defaults to the script_error code", () => {
+    expect(buildExecuteError(1, "err").code).toBe("script_error");
+  });
+
+  test("an explicit code overrides the default", () => {
+    expect(buildExecuteError(1, "err", "not_started").code).toBe("not_started");
+  });
+});
+
+describe("buildStarted", () => {
+  test("builds a STARTED message echoing requestId", () => {
+    expect(buildStarted(7)).toEqual({ type: "STARTED", requestId: 7 });
+  });
 });
 
 describe("safeResult", () => {
@@ -243,6 +258,7 @@ describe("capResultMessage", () => {
     expect(capped.requestId).toBe(5);
     expect(capped.error).toContain("result too large");
     expect(capped.error).toContain("16 MiB");
+    expect(capped.code).toBe("result_too_large");
   });
 
   test("a message at exactly the cap is not replaced", () => {

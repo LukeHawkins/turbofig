@@ -2,12 +2,12 @@
 //! pending-request map that ties a tool call to the plugin reply that
 //! resolves it.
 
-use crate::config::{bridge_dir_from_env, request_timeout_from_env};
+use crate::config::{bridge_dir_from_env, max_inflight_from_env, request_timeout_from_env};
 use crate::token::random_token_hex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use std::time::{Duration, Instant};
@@ -62,6 +62,125 @@ fn random_counter_start() -> u64 {
     1 + (r % ((1u64 << 40) - 1))
 }
 
+/// Default hint, in milliseconds, given back on a `busy` admission rejection
+/// for a connection with the smallest possible queue depth. Scaled up by
+/// queue depth (see `try_admit`) and capped at `MAX_RETRY_AFTER_MS`, so a
+/// caller retrying on the hint backs off further the busier the lane is,
+/// without ever asking it to wait an unreasonable amount of time.
+const BASE_RETRY_AFTER_MS: u64 = 250;
+/// Longest `retryAfterMs` hint a `busy` rejection ever gives.
+const MAX_RETRY_AFTER_MS: u64 = 4_000;
+
+/// Per-connection admission-control lane for EXECUTE and SCREENSHOT jobs
+/// (see `try_admit`). STATUS and GET_SELECTION never touch this: they bypass
+/// admission control entirely, so a health check or a read never queues
+/// behind a saturated mutation lane.
+#[derive(Default)]
+struct Lane {
+    /// Jobs currently admitted (between `try_admit` succeeding and its
+    /// `AdmitGuard` dropping), i.e. actually out to the plugin and awaited.
+    in_flight: usize,
+    /// When the oldest still-admitted job in this lane was let through.
+    /// Cleared back to `None` once `in_flight` returns to zero.
+    oldest_admitted: Option<Instant>,
+    /// When a job in this lane last finished (success, error, or timeout).
+    last_completed: Option<Instant>,
+}
+
+/// Per-connection queue-health snapshot, the shape `named_connections_json`
+/// (and so `turbofig_status`, the bridge status op, and `/health`) reports
+/// for one connected file. See the field docs on `Lane` and on `pending` for
+/// what each number measures.
+pub(crate) struct QueueStats {
+    /// Requests of any kind (STATUS, EXECUTE, GET_SELECTION, SCREENSHOT)
+    /// currently sent to the plugin and awaiting its RESULT.
+    pub pending_jobs: usize,
+    /// EXECUTE/SCREENSHOT jobs currently admitted under this connection's
+    /// admission-control lane. Saturates at the daemon's `max_inflight`.
+    pub in_flight: usize,
+    /// Age, in milliseconds, of the oldest currently-pending request on this
+    /// connection. `None` when nothing is pending.
+    pub oldest_pending_age_ms: Option<u64>,
+    /// Milliseconds since a job in this connection's admission lane last
+    /// completed. `None` when none ever has.
+    pub last_job_completed_ago_ms: Option<u64>,
+    /// True when this connection's admission lane is at capacity: a new
+    /// EXECUTE/SCREENSHOT job would get `busy` right now.
+    pub saturated: bool,
+}
+
+/// An error returned by `try_admit` when a connection's admission lane is
+/// already at capacity.
+#[derive(Debug)]
+pub(crate) struct BusyInfo {
+    /// Jobs currently admitted on the lane that rejected this one.
+    pub queue_depth: usize,
+    /// How long, in milliseconds, the caller should wait before retrying.
+    pub retry_after_ms: u64,
+}
+
+/// RAII guard returned by `try_admit`. Releases this job's slot in its
+/// connection's admission lane on drop (including an early return or a
+/// panic unwind), so a call site never has to remember to release by hand on
+/// every exit path.
+pub(crate) struct AdmitGuard {
+    state: Arc<AppState>,
+    conn_id: u64,
+}
+
+impl std::fmt::Debug for AdmitGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdmitGuard")
+            .field("conn_id", &self.conn_id)
+            .finish()
+    }
+}
+
+impl Drop for AdmitGuard {
+    fn drop(&mut self) {
+        let mut lanes = self.state.lanes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(lane) = lanes.get_mut(&self.conn_id) {
+            lane.in_flight = lane.in_flight.saturating_sub(1);
+            lane.last_completed = Some(Instant::now());
+            if lane.in_flight == 0 {
+                lane.oldest_admitted = None;
+            }
+        }
+    }
+}
+
+/// Try to admit one EXECUTE/SCREENSHOT job onto `conn_id`'s lane.
+///
+/// Returns an `AdmitGuard` holding the slot open until it drops, or a
+/// `BusyInfo` when the lane already holds `max_inflight` jobs. This is the
+/// one shared admission-control path: `ops::run_execute` and
+/// `ops::run_screenshot` both call it, and both are in turn shared by the
+/// MCP tools, `POST /job`, and the filesystem bridge, so a caller on any of
+/// the three transports gets the same `busy` response under load. STATUS and
+/// GET_SELECTION never call this, by design: a health check or a read must
+/// never queue behind a saturated mutation lane.
+pub(crate) fn try_admit(state: &Arc<AppState>, conn_id: u64) -> Result<AdmitGuard, BusyInfo> {
+    let mut lanes = state.lanes.lock().unwrap_or_else(|e| e.into_inner());
+    let lane = lanes.entry(conn_id).or_default();
+    if lane.in_flight >= state.max_inflight {
+        let queue_depth = lane.in_flight;
+        let retry_after_ms = (BASE_RETRY_AFTER_MS * queue_depth as u64).min(MAX_RETRY_AFTER_MS);
+        return Err(BusyInfo {
+            queue_depth,
+            retry_after_ms,
+        });
+    }
+    lane.in_flight += 1;
+    if lane.oldest_admitted.is_none() {
+        lane.oldest_admitted = Some(Instant::now());
+    }
+    drop(lanes);
+    Ok(AdmitGuard {
+        state: state.clone(),
+        conn_id,
+    })
+}
+
 /// An active plugin connection.
 /// Holds the file key, the document name, and a sender for outbound JSON messages.
 pub struct PluginConn {
@@ -91,10 +210,14 @@ pub struct AppState {
     /// Pruned by age (SESSION_TTL) and by count (SESSION_CAP) on insert.
     sessions: Mutex<HashMap<String, (String, Instant)>>,
     /// Pending tool-call requests waiting for a RESULT frame from the plugin.
-    /// Value is (conn_id, oneshot sender). The conn_id lets one file closing
-    /// cancel only its own in-flight requests, and lets `resolve` refuse a
-    /// RESULT whose connection does not own the pending entry.
-    pending: Mutex<HashMap<u64, (u64, oneshot::Sender<Value>)>>,
+    /// The conn_id lets one file closing cancel only its own in-flight
+    /// requests, and lets `resolve` refuse a RESULT whose connection does not
+    /// own the pending entry. `registered_at` feeds `oldestPendingAgeMs` in
+    /// status output. `started` is set by `mark_started` when the plugin's
+    /// STARTED frame for this request id arrives, and is read by
+    /// `plugin_call::call_plugin` after a timeout or disconnect to tell a
+    /// caller "did not start, safe to retry" from "started, may have run".
+    pending: Mutex<HashMap<u64, PendingEntry>>,
     /// Monotonically increasing request-ID counter, started at a random value.
     counter: AtomicU64,
     /// How long to wait for a plugin reply before returning a timeout response.
@@ -142,6 +265,25 @@ pub struct AppState {
     /// an in-process test building an `AppState` directly never writes to a
     /// real `~/.turbofig` on a successful plugin WS authentication.
     plugin_seen_path: Option<std::path::PathBuf>,
+    /// Per-connection EXECUTE/SCREENSHOT admission-control lanes. See `Lane`
+    /// and `try_admit`.
+    lanes: Mutex<HashMap<u64, Lane>>,
+    /// Admission-control cap per connection, read once at construction from
+    /// `TURBOFIG_MAX_INFLIGHT` (see `config::max_inflight_from_env`).
+    max_inflight: usize,
+    /// When any plugin connection last closed, regardless of which file. Used
+    /// only to report `lastDisconnectAgoMs` in `turbofig_status`'s "no plugin
+    /// connected" reply, so a caller can tell "never connected" from
+    /// "disconnected a moment ago" after a Figma restart.
+    last_disconnect: Mutex<Option<Instant>>,
+}
+
+/// One pending request awaiting a plugin reply. See `AppState::pending`.
+struct PendingEntry {
+    conn_id: u64,
+    registered_at: Instant,
+    started: Arc<AtomicBool>,
+    tx: oneshot::Sender<Value>,
 }
 
 /// RAII guard returned by `AppState::begin_job`. Increments the shared job
@@ -165,6 +307,7 @@ impl AppState {
         screenshot_dir: Option<std::path::PathBuf>,
         token: String,
         plugin_seen_path: Option<std::path::PathBuf>,
+        max_inflight: usize,
     ) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
@@ -180,6 +323,9 @@ impl AppState {
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             job_counter: Arc::new(AtomicUsize::new(0)),
             plugin_seen_path,
+            lanes: Mutex::new(HashMap::new()),
+            max_inflight,
+            last_disconnect: Mutex::new(None),
         }
     }
 
@@ -195,14 +341,26 @@ impl AppState {
             Some(bridge_dir_from_env().join("outbox")),
             random_token_hex(),
             None,
+            max_inflight_from_env(),
         )
     }
 
     /// Create a new AppState with an explicit request timeout.
     /// Use this in tests to set a short timeout without touching global env.
     /// Sets screenshot_dir to None. Generates a random in-memory pairing token.
+    /// Reads the admission-control cap from `TURBOFIG_MAX_INFLIGHT` like
+    /// `new()`; use `with_timeout_and_max_inflight` for a test that needs a
+    /// deterministic cap without touching global env.
     pub fn with_timeout(d: Duration) -> Self {
-        Self::build(d, None, random_token_hex(), None)
+        Self::build(d, None, random_token_hex(), None, max_inflight_from_env())
+    }
+
+    /// Create a new AppState exactly like `with_timeout`, but with an
+    /// explicit admission-control cap instead of reading
+    /// `TURBOFIG_MAX_INFLIGHT`. Lets a test exercise `try_admit`'s `busy`
+    /// rejection deterministically, regardless of the process environment.
+    pub fn with_timeout_and_max_inflight(d: Duration, max_inflight: usize) -> Self {
+        Self::build(d, None, random_token_hex(), None, max_inflight)
     }
 
     /// Create a new AppState exactly like `new()`, but with an explicit
@@ -220,6 +378,7 @@ impl AppState {
             Some(bridge_dir_from_env().join("outbox")),
             token,
             Some(home.join("plugin-seen")),
+            max_inflight_from_env(),
         )
     }
 
@@ -393,9 +552,31 @@ impl AppState {
     }
 
     /// Remove a connection from the registry. Call this when the socket closes.
+    /// Also drops the connection's admission-control lane (`lanes`), so a
+    /// closed connection's slot never lingers for a conn_id that can never
+    /// be admitted against again, and records `last_disconnect` for
+    /// `turbofig_status`'s "no plugin connected" reason text.
     pub(crate) fn remove_connection(&self, conn_id: u64) {
         let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         guard.remove(&conn_id);
+        drop(guard);
+        self.lanes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&conn_id);
+        *self
+            .last_disconnect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    /// Milliseconds since any plugin connection last closed, or `None` if
+    /// none ever has in this `AppState`'s lifetime. See `last_disconnect`.
+    pub(crate) fn last_disconnect_ago_ms(&self) -> Option<u64> {
+        self.last_disconnect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|at| at.elapsed().as_millis() as u64)
     }
 
     /// Return all connections as (conn_id, file_key, name) tuples.
@@ -467,7 +648,7 @@ impl AppState {
     pub(crate) fn named_connections_json(&self) -> Vec<Value> {
         self.connections_named()
             .into_iter()
-            .map(|(_, _, fk, name, plugin_version)| {
+            .map(|(id, _, fk, name, plugin_version)| {
                 let mut obj = serde_json::json!({
                     "fileKey": fk,
                     "name": name,
@@ -476,9 +657,72 @@ impl AppState {
                 if let Some(warning) = version_mismatch_warning(&plugin_version) {
                     obj["warning"] = Value::String(warning);
                 }
+                let stats = self.queue_stats(id);
+                let map = obj.as_object_mut().expect("json!({}) is always an object");
+                map.insert("pendingJobs".to_owned(), Value::from(stats.pending_jobs));
+                map.insert("inFlight".to_owned(), Value::from(stats.in_flight));
+                map.insert(
+                    "oldestPendingAgeMs".to_owned(),
+                    stats
+                        .oldest_pending_age_ms
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                );
+                map.insert(
+                    "lastJobCompletedAgoMs".to_owned(),
+                    stats
+                        .last_job_completed_ago_ms
+                        .map(Value::from)
+                        .unwrap_or(Value::Null),
+                );
+                map.insert("saturated".to_owned(), Value::from(stats.saturated));
                 obj
             })
             .collect()
+    }
+
+    /// Build the queue-health snapshot for one connection. See `QueueStats`.
+    pub(crate) fn queue_stats(&self, conn_id: u64) -> QueueStats {
+        let now = Instant::now();
+        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending_jobs = 0usize;
+        let mut oldest: Option<Instant> = None;
+        for entry in pending.values() {
+            if entry.conn_id == conn_id {
+                pending_jobs += 1;
+                oldest = Some(match oldest {
+                    Some(o) if o <= entry.registered_at => o,
+                    _ => entry.registered_at,
+                });
+            }
+        }
+        drop(pending);
+
+        let lanes = self.lanes.lock().unwrap_or_else(|e| e.into_inner());
+        let lane = lanes.get(&conn_id);
+        let in_flight = lane.map(|l| l.in_flight).unwrap_or(0);
+        let last_completed = lane.and_then(|l| l.last_completed);
+        drop(lanes);
+
+        QueueStats {
+            pending_jobs,
+            in_flight,
+            oldest_pending_age_ms: oldest.map(|i| now.duration_since(i).as_millis() as u64),
+            last_job_completed_ago_ms: last_completed
+                .map(|i| now.duration_since(i).as_millis() as u64),
+            saturated: in_flight >= self.max_inflight,
+        }
+    }
+
+    /// True when any connected file's admission lane is currently saturated.
+    /// `turbofig_status`, the bridge status op, and `/health` all surface
+    /// this as a single top-level `"saturated"` boolean, so a caller does not
+    /// have to scan every entry in `plugins`/`connectedFiles` itself to learn
+    /// whether the daemon is under load right now.
+    pub fn any_saturated(&self) -> bool {
+        self.connections_named()
+            .into_iter()
+            .any(|(id, ..)| self.queue_stats(id).saturated)
     }
 
     /// Look up the file key paired to an MCP session, if any and not expired.
@@ -530,21 +774,48 @@ impl AppState {
     /// checked (we return None) or must wait for us to finish (and then
     /// `cancel_pending_for_conn` correctly cancels the entry we just made).
     ///
-    /// Returns the allocated request id and a receiver that resolves when the
-    /// plugin replies, or `None` if the connection is already gone.
+    /// Returns the allocated request id, a receiver that resolves when the
+    /// plugin replies, and the shared `started` flag `mark_started` sets once
+    /// a STARTED frame for this id arrives (read by `plugin_call::call_plugin`
+    /// after a timeout or disconnect to build a `not_started`/`started_unknown`
+    /// response). Returns `None` if the connection is already gone.
     pub(crate) fn register_pending_if_connected(
         &self,
         conn_id: u64,
-    ) -> Option<(u64, oneshot::Receiver<Value>)> {
+    ) -> Option<(u64, oneshot::Receiver<Value>, Arc<AtomicBool>)> {
         let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if !connections.contains_key(&conn_id) {
             return None;
         }
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
+        let started = Arc::new(AtomicBool::new(false));
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.insert(id, (conn_id, tx));
-        Some((id, rx))
+        pending.insert(
+            id,
+            PendingEntry {
+                conn_id,
+                registered_at: Instant::now(),
+                started: started.clone(),
+                tx,
+            },
+        );
+        Some((id, rx, started))
+    }
+
+    /// Record that the plugin has dequeued and begun running the job tagged
+    /// `id`, i.e. a STARTED frame arrived on `conn_id`. Only sets the flag
+    /// when `conn_id` matches the connection the request was registered
+    /// against, for the same forgery reason `resolve` checks it: a STARTED
+    /// claiming an id owned by a different connection is ignored. A no-op
+    /// for an unknown or already-resolved id.
+    pub(crate) fn mark_started(&self, id: u64, conn_id: u64) {
+        let guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.get(&id) {
+            if entry.conn_id == conn_id {
+                entry.started.store(true, Ordering::SeqCst);
+            }
+        }
     }
 
     /// Resolve a pending request with the plugin's response value.
@@ -558,9 +829,9 @@ impl AppState {
     pub(crate) fn resolve(&self, id: u64, conn_id: u64, value: Value) {
         let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if let std::collections::hash_map::Entry::Occupied(entry) = guard.entry(id) {
-            if entry.get().0 == conn_id {
-                let (_, tx) = entry.remove();
-                let _ = tx.send(value);
+            if entry.get().conn_id == conn_id {
+                let entry = entry.remove();
+                let _ = entry.tx.send(value);
             }
             // Owned by a different connection: leave it in place for its
             // rightful owner, and drop this forged reply.
@@ -580,7 +851,7 @@ impl AppState {
     /// Other files' pending requests are not affected.
     pub(crate) fn cancel_pending_for_conn(&self, conn_id: u64) {
         let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|_, (cid, _)| *cid != conn_id);
+        guard.retain(|_, entry| entry.conn_id != conn_id);
     }
 
     /// Number of currently pending requests. Lets a test observe that a
@@ -642,10 +913,10 @@ mod tests {
         state.set_connection_info(conn1, "fk1".to_owned(), "File 1".to_owned());
         state.set_connection_info(conn2, "fk2".to_owned(), "File 2".to_owned());
 
-        let (id1, rx1) = state
+        let (id1, rx1, _started1) = state
             .register_pending_if_connected(conn1)
             .expect("conn1 live");
-        let (id2, rx2) = state
+        let (id2, rx2, _started2) = state
             .register_pending_if_connected(conn2)
             .expect("conn2 live");
 
@@ -687,7 +958,7 @@ mod tests {
         let conn1 = state.add_connection(tx1);
         state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
 
-        let (_id, mut pending_rx) = state
+        let (_id, mut pending_rx, _started) = state
             .register_pending_if_connected(conn1)
             .expect("conn1 live");
 
@@ -715,7 +986,7 @@ mod tests {
         let (tx2, _rx2) = mpsc::unbounded_channel::<String>();
         let conn1 = state.add_connection(tx1);
         state.set_connection_info(conn1, "dup".to_owned(), "First".to_owned());
-        let (id, rx) = state
+        let (id, rx, _started) = state
             .register_pending_if_connected(conn1)
             .expect("conn1 live");
 
@@ -961,7 +1232,7 @@ mod tests {
         let state = AppState::with_timeout(Duration::from_millis(200));
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn_id = state.add_connection(tx);
-        let (id, mut rx) = state
+        let (id, mut rx, _started) = state
             .register_pending_if_connected(conn_id)
             .expect("conn live");
 
@@ -1034,5 +1305,109 @@ mod tests {
             "oldest session must be evicted"
         );
         assert_eq!(state.session_lookup("s-new"), Some("fk".to_owned()));
+    }
+
+    #[test]
+    fn try_admit_allows_up_to_max_inflight_then_rejects_as_busy() {
+        let state = Arc::new(AppState::with_timeout_and_max_inflight(
+            Duration::from_millis(100),
+            2,
+        ));
+        let g1 = try_admit(&state, 1).expect("first admit must succeed");
+        let g2 = try_admit(&state, 1).expect("second admit must succeed");
+        let busy = try_admit(&state, 1).expect_err("third admit on the same lane must be busy");
+        assert_eq!(busy.queue_depth, 2);
+        assert!(busy.retry_after_ms > 0);
+        drop(g1);
+        let g3 = try_admit(&state, 1).expect("a released slot must be admittable again");
+        drop(g2);
+        drop(g3);
+    }
+
+    #[test]
+    fn try_admit_tracks_each_connection_independently() {
+        let state = Arc::new(AppState::with_timeout_and_max_inflight(
+            Duration::from_millis(100),
+            1,
+        ));
+        let _g1 = try_admit(&state, 1).expect("conn 1 admits");
+        let _g2 = try_admit(&state, 2).expect("conn 2's lane is independent of conn 1's");
+    }
+
+    #[test]
+    fn admit_guard_drop_releases_the_slot_and_records_last_completed() {
+        let state = Arc::new(AppState::with_timeout_and_max_inflight(
+            Duration::from_millis(100),
+            1,
+        ));
+        let stats_before = state.queue_stats(1);
+        assert_eq!(stats_before.in_flight, 0);
+        assert!(stats_before.last_job_completed_ago_ms.is_none());
+
+        let guard = try_admit(&state, 1).expect("admit must succeed");
+        assert_eq!(state.queue_stats(1).in_flight, 1);
+        drop(guard);
+
+        let stats_after = state.queue_stats(1);
+        assert_eq!(stats_after.in_flight, 0);
+        assert!(stats_after.last_job_completed_ago_ms.is_some());
+    }
+
+    #[test]
+    fn queue_stats_saturated_matches_the_configured_max_inflight() {
+        let state = Arc::new(AppState::with_timeout_and_max_inflight(
+            Duration::from_millis(100),
+            1,
+        ));
+        assert!(!state.queue_stats(1).saturated);
+        let _guard = try_admit(&state, 1).expect("admit must succeed");
+        assert!(state.queue_stats(1).saturated);
+    }
+
+    #[tokio::test]
+    async fn mark_started_sets_the_flag_only_for_the_owning_connection() {
+        let state = AppState::with_timeout(Duration::from_millis(200));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx);
+        let (id, _rx2, started) = state
+            .register_pending_if_connected(conn_id)
+            .expect("conn live");
+
+        state.mark_started(id, conn_id + 999);
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "a STARTED from a different connection must not set the flag"
+        );
+
+        state.mark_started(id, conn_id);
+        assert!(
+            started.load(Ordering::SeqCst),
+            "a STARTED from the owning connection must set the flag"
+        );
+    }
+
+    #[test]
+    fn named_connections_json_carries_queue_stats() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned());
+
+        let json = state.named_connections_json();
+        assert_eq!(json[0]["pendingJobs"], json!(0));
+        assert_eq!(json[0]["inFlight"], json!(0));
+        assert_eq!(json[0]["saturated"], json!(false));
+        assert!(json[0]["oldestPendingAgeMs"].is_null());
+        assert!(json[0]["lastJobCompletedAgoMs"].is_null());
+    }
+
+    #[test]
+    fn last_disconnect_ago_ms_is_none_before_any_disconnect_and_some_after() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        assert!(state.last_disconnect_ago_ms().is_none());
+        let conn_id = state.add_connection(tx);
+        state.remove_connection(conn_id);
+        assert!(state.last_disconnect_ago_ms().is_some());
     }
 }

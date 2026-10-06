@@ -139,6 +139,22 @@ export interface SelectionItem {
   h: number;
 }
 
+/**
+ * Sent by the plugin main thread to the daemon the moment a queued job
+ * (EXECUTE, GET_SELECTION, or SCREENSHOT) is dequeued and begins running,
+ * i.e. right before its handler is invoked, not when the frame first
+ * arrived. The daemon records this (`state::AppState::mark_started`) so a
+ * later timeout or disconnect can tell a caller "did not start, safe to
+ * retry" from "started, may have run, check before retrying" instead of
+ * always warning that a retry might duplicate a mutation. Never sent for a
+ * job that expires in the queue before it ever runs (`queueExpiredResult`):
+ * that job never started, so no STARTED is warranted.
+ */
+export interface StartedMessage {
+  type: "STARTED";
+  requestId: number;
+}
+
 /** Sent by the plugin to the daemon in reply to a command. requestId echoes the request. */
 export interface ResultMessage {
   type: "RESULT";
@@ -148,6 +164,16 @@ export interface ResultMessage {
   name?: string;
   result?: unknown;
   error?: string;
+  /**
+   * Machine-readable error reason, present whenever `ok` is false. One of
+   * `"not_started"` (the job never ran; safe to retry), `"started_unknown"`
+   * (the job started; its effect is unknown, check before retrying), or
+   * `"script_error"` (the user's code threw) or `"result_too_large"` (see
+   * `capResultMessage`). The daemon falls back to `"script_error"` for any
+   * `ok:false` reply that carries no code, so an older plugin build never
+   * leaves a caller without one.
+   */
+  code?: string;
   selection?: SelectionItem[];
   png?: string;
   w?: number;
@@ -162,7 +188,8 @@ export type DaemonMessage =
   | ExecuteMessage
   | GetSelectionMessage
   | ScreenshotMessage
-  | ResultMessage;
+  | ResultMessage
+  | StartedMessage;
 
 /**
  * Union of messages the plugin main thread can receive.
@@ -289,11 +316,26 @@ export function buildExecuteSuccess(requestId: number, result: unknown): ResultM
 }
 
 /**
- * Builds a failure RESULT reply for an EXECUTE request.
- * Echoes requestId and carries the error message string.
+ * Builds a failure RESULT reply for an EXECUTE/GET_SELECTION/SCREENSHOT
+ * request. Echoes requestId and carries the error message string plus a
+ * machine-readable `code` (default `"script_error"`, the right default for
+ * a handler's own catch block: everywhere else a caller passes an explicit
+ * code for a queue-expiry, in-flight timeout, or oversized-result reply).
  */
-export function buildExecuteError(requestId: number, message: string): ResultMessage {
-  return { type: "RESULT", requestId, ok: false, error: message };
+export function buildExecuteError(
+  requestId: number,
+  message: string,
+  code = "script_error",
+): ResultMessage {
+  return { type: "RESULT", requestId, ok: false, error: message, code };
+}
+
+/**
+ * Builds the STARTED message sent the moment a queued job is dequeued and
+ * begins running. See `StartedMessage`'s doc comment for why this exists.
+ */
+export function buildStarted(requestId: number): StartedMessage {
+  return { type: "STARTED", requestId };
 }
 
 /**
@@ -499,6 +541,7 @@ export function capResultMessage(msg: ResultMessage): ResultMessage {
   return buildExecuteError(
     msg.requestId,
     `result too large (${mib} MiB > 16 MiB); return less data or use file mode`,
+    "result_too_large",
   );
 }
 

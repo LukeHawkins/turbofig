@@ -153,6 +153,14 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
                 state.resolve(id, conn_id, json.clone());
             }
         }
+        Some("STARTED") => {
+            if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
+                // Same conn_id ownership check as RESULT: a STARTED claiming
+                // an id owned by a different connection is ignored. See
+                // state::AppState::mark_started.
+                state.mark_started(id, conn_id);
+            }
+        }
         // Unknown type: ignore safely, never panic.
         _ => {}
     }
@@ -354,7 +362,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let real_conn = state.add_connection(tx.clone());
         state.set_connection_info(real_conn, "fk1".to_owned(), "Real".to_owned());
-        let (id, mut pending_rx) = state
+        let (id, mut pending_rx, _started) = state
             .register_pending_if_connected(real_conn)
             .expect("real connection live");
 
@@ -365,6 +373,47 @@ mod tests {
         assert!(
             pending_rx.try_recv().is_err(),
             "a RESULT from an unregistered conn_id must not resolve a pending request"
+        );
+    }
+
+    #[test]
+    fn dispatch_started_marks_the_pending_entry_for_the_owning_connection() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            200,
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+        state.set_connection_info(conn_id, "fk1".to_owned(), "Doc".to_owned());
+        let (id, _rx2, started) = state
+            .register_pending_if_connected(conn_id)
+            .expect("conn live");
+
+        let msg = json!({"type": "STARTED", "requestId": id});
+        dispatch(&msg, &state, &tx, conn_id);
+
+        assert!(
+            started.load(std::sync::atomic::Ordering::SeqCst),
+            "a STARTED from the owning connection must set the started flag"
+        );
+    }
+
+    #[test]
+    fn dispatch_started_from_another_connection_is_ignored() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            200,
+        )));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+        let (id, _rx2, started) = state
+            .register_pending_if_connected(conn_id)
+            .expect("conn live");
+
+        let msg = json!({"type": "STARTED", "requestId": id});
+        dispatch(&msg, &state, &tx, conn_id + 999);
+
+        assert!(
+            !started.load(std::sync::atomic::Ordering::SeqCst),
+            "a STARTED from a different connection must not set the started flag"
         );
     }
 }

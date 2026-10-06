@@ -70,6 +70,36 @@ pub fn request_timeout_from_env() -> Duration {
     ))
 }
 
+/// Default per-connection admission limit: how many EXECUTE/SCREENSHOT jobs
+/// the daemon lets run at once against one plugin connection before it starts
+/// answering `busy` instead of forwarding more work. See `state::try_admit`.
+const DEFAULT_MAX_INFLIGHT: usize = 4;
+
+/// Narrowest and widest a caller may set `TURBOFIG_MAX_INFLIGHT` to.
+const MIN_MAX_INFLIGHT: usize = 1;
+const MAX_MAX_INFLIGHT: usize = 32;
+
+/// Parse a `usize` env value, falling back to `default` when `raw` is absent
+/// or fails to parse, then clamps to `[MIN_MAX_INFLIGHT, MAX_MAX_INFLIGHT]`.
+/// The clamp always applies, even to the default and to a parsed value: a
+/// missing, unparsable, or out-of-range value never disables admission
+/// control (0) and never lets one runaway caller starve every other
+/// connection (an unbounded value).
+fn max_inflight_or(raw: Option<&str>, default: usize) -> usize {
+    raw.and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(default)
+        .clamp(MIN_MAX_INFLIGHT, MAX_MAX_INFLIGHT)
+}
+
+/// Read the per-connection admission limit from `TURBOFIG_MAX_INFLIGHT`.
+/// Default 4. See `max_inflight_or` for the clamp.
+pub fn max_inflight_from_env() -> usize {
+    max_inflight_or(
+        std::env::var("TURBOFIG_MAX_INFLIGHT").ok().as_deref(),
+        DEFAULT_MAX_INFLIGHT,
+    )
+}
+
 /// Resolve the bridge directory from optional env string values.
 ///
 /// - If `bridge_dir_val` is `Some(path)`, use it directly.
@@ -254,5 +284,30 @@ mod tests {
     fn bridge_dir_display_shows_the_plain_path_when_home_is_unset() {
         let display = bridge_dir_display_for(&PathBuf::from("/home/alice/.turbofig"), None);
         assert_eq!(display, "/home/alice/.turbofig");
+    }
+
+    #[test]
+    fn max_inflight_defaults_to_4_when_unset() {
+        assert_eq!(max_inflight_or(None, DEFAULT_MAX_INFLIGHT), 4);
+    }
+
+    #[test]
+    fn max_inflight_parses_a_valid_value() {
+        assert_eq!(max_inflight_or(Some("8"), DEFAULT_MAX_INFLIGHT), 8);
+    }
+
+    #[test]
+    fn max_inflight_falls_back_on_garbage_input() {
+        assert_eq!(max_inflight_or(Some("nope"), DEFAULT_MAX_INFLIGHT), 4);
+    }
+
+    #[test]
+    fn max_inflight_clamps_below_the_minimum() {
+        assert_eq!(max_inflight_or(Some("0"), DEFAULT_MAX_INFLIGHT), 1);
+    }
+
+    #[test]
+    fn max_inflight_clamps_above_the_maximum() {
+        assert_eq!(max_inflight_or(Some("999"), DEFAULT_MAX_INFLIGHT), 32);
     }
 }

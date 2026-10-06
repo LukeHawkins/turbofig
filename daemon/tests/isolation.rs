@@ -22,8 +22,14 @@ use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
 
 /// Start a shared WS + HTTP server pair. Returns (ws_port, http_base_url, state).
 async fn start_stack() -> (u16, String, Arc<turbofig::AppState>) {
-    // Short timeout: routing failures surface quickly in tests.
-    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_secs(5)));
+    // Short timeout: routing failures surface quickly in tests. A generous
+    // admission-control cap: this test's whole point is proving isolation
+    // under N concurrent calls per file, not exercising `busy` (see
+    // `stress_admission.rs` for that), so the cap must comfortably clear N.
+    let state = Arc::new(turbofig::AppState::with_timeout_and_max_inflight(
+        Duration::from_secs(5),
+        16,
+    ));
 
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

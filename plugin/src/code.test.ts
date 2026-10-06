@@ -400,9 +400,9 @@ describe("createDispatcher", () => {
 
   test("EXECUTE, GET_SELECTION and SCREENSHOT run FIFO, not interleaved", async () => {
     const order: number[] = [];
-    const posted: { requestId?: number }[] = [];
+    const posted: { type?: string; requestId?: number }[] = [];
     const dispatch = createDispatcher(makeMockFigma(), (m) =>
-      posted.push(m as { requestId?: number }),
+      posted.push(m as { type?: string; requestId?: number }),
     );
     // Job 1 is slower than job 2; FIFO means 1 must still finish first.
     dispatch({
@@ -417,16 +417,50 @@ describe("createDispatcher", () => {
       code: "return 3;",
     });
     await new Promise((r) => setTimeout(r, 100));
+    // Only RESULT completion order matters here: each job also posts a
+    // STARTED frame first (see "each queued job announces STARTED..." below).
     for (const msg of posted) {
-      if (msg.requestId !== undefined) order.push(msg.requestId);
+      if (msg.type === "RESULT" && msg.requestId !== undefined) order.push(msg.requestId);
     }
     expect(order).toEqual([1, 2, 3]);
   });
 
-  test("an oversized EXECUTE result is capped to an ok:false error before posting", async () => {
-    const posted: { ok?: boolean; error?: string; requestId?: number }[] = [];
+  test("each queued job announces STARTED before its RESULT, in FIFO order", async () => {
+    const posted: { type?: string; requestId?: number }[] = [];
     const dispatch = createDispatcher(makeMockFigma(), (m) =>
-      posted.push(m as { ok?: boolean; error?: string; requestId?: number }),
+      posted.push(m as { type?: string; requestId?: number }),
+    );
+    dispatch({ type: "EXECUTE", requestId: 1, code: "return 1;" });
+    dispatch({ type: "GET_SELECTION", requestId: 2 });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(posted.map((m) => [m.type, m.requestId])).toEqual([
+      ["STARTED", 1],
+      ["RESULT", 1],
+      ["STARTED", 2],
+      ["RESULT", 2],
+    ]);
+  });
+
+  test("a job that expires in the queue never gets a STARTED frame", async () => {
+    const posted: { type?: string; requestId?: number }[] = [];
+    const dispatch = createDispatcher(makeMockFigma(), (m) =>
+      posted.push(m as { type?: string; requestId?: number }),
+    );
+    dispatch({
+      type: "EXECUTE",
+      requestId: 1,
+      code: "await new Promise((r) => setTimeout(r, 50)); return 1;",
+    });
+    dispatch({ type: "GET_SELECTION", requestId: 2, timeoutMs: 10 });
+    await new Promise((r) => setTimeout(r, 100));
+    const startedForJob2 = posted.find((m) => m.type === "STARTED" && m.requestId === 2);
+    expect(startedForJob2).toBeUndefined();
+  });
+
+  test("an oversized EXECUTE result is capped to an ok:false error before posting", async () => {
+    const posted: { type?: string; ok?: boolean; error?: string; requestId?: number }[] = [];
+    const dispatch = createDispatcher(makeMockFigma(), (m) =>
+      posted.push(m as { type?: string; ok?: boolean; error?: string; requestId?: number }),
     );
     dispatch({
       type: "EXECUTE",
@@ -434,10 +468,10 @@ describe("createDispatcher", () => {
       code: `return "x".repeat(17 * 1024 * 1024);`,
     });
     await new Promise((r) => setTimeout(r, 20));
-    expect(posted).toHaveLength(1);
-    expect(posted[0]?.ok).toBe(false);
-    expect(posted[0]?.error).toContain("result too large");
-    expect(posted[0]?.requestId).toBe(4);
+    const result = posted.find((m) => m.type === "RESULT");
+    expect(result?.ok).toBe(false);
+    expect(result?.error).toContain("result too large");
+    expect(result?.requestId).toBe(4);
   });
 
   test("RESIZE calls figma.ui.resize with the given dimensions", () => {
@@ -506,40 +540,46 @@ describe("createDispatcher", () => {
       currentPage: { selection: [mockNode] },
       base64Encode: () => "",
     });
-    const posted: { requestId?: number; ok?: boolean; error?: string }[] = [];
+    const posted: { type?: string; requestId?: number; ok?: boolean; error?: string }[] = [];
     const dispatch = createDispatcher(figma, (m) =>
-      posted.push(m as { requestId?: number; ok?: boolean; error?: string }),
+      posted.push(m as { type?: string; requestId?: number; ok?: boolean; error?: string }),
     );
     dispatch({ type: "SCREENSHOT", requestId: 9, timeoutMs: 20 });
     await new Promise((r) => setTimeout(r, 60));
-    expect(posted).toHaveLength(1);
-    expect(posted[0]?.ok).toBe(false);
-    expect(posted[0]?.error).toContain("timed out");
-    expect(posted[0]?.requestId).toBe(9);
+    const result = posted.find((m) => m.type === "RESULT");
+    expect(result?.ok).toBe(false);
+    expect(result?.error).toContain("timed out");
+    expect(result?.requestId).toBe(9);
   });
 
   test("defaults the queue budget to 30000ms when timeoutMs is absent", async () => {
-    const posted: { requestId?: number; ok?: boolean }[] = [];
+    const posted: { type?: string; requestId?: number; ok?: boolean }[] = [];
     const dispatch = createDispatcher(makeMockFigma(), (m) =>
-      posted.push(m as { requestId?: number; ok?: boolean }),
+      posted.push(m as { type?: string; requestId?: number; ok?: boolean }),
     );
     dispatch({ type: "GET_SELECTION", requestId: 11 });
     await new Promise((r) => setTimeout(r, 20));
-    expect(posted[0]?.requestId).toBe(11);
-    expect(posted[0]?.ok).toBe(true);
+    const result = posted.find((m) => m.type === "RESULT");
+    expect(result?.requestId).toBe(11);
+    expect(result?.ok).toBe(true);
   });
 
-  test("a throwing post on one job does not drop every later queued job", async () => {
-    let calls = 0;
-    const posted: { requestId?: number }[] = [];
+  test("a throwing post on one job's RESULT does not drop every later queued job", async () => {
+    const posted: { type?: string; requestId?: number }[] = [];
     const dispatch = createDispatcher(makeMockFigma(), (m) => {
-      calls++;
-      if (calls === 1) throw new Error("boom");
-      posted.push(m as { requestId?: number });
+      const msg = m as { type?: string; requestId?: number };
+      // Simulate job 1's RESULT post failing (e.g. a transiently closed UI
+      // channel); every other post, including job 1's own STARTED, succeeds.
+      if (msg.type === "RESULT" && msg.requestId === 1) throw new Error("boom");
+      posted.push(msg);
     });
     dispatch({ type: "EXECUTE", requestId: 1, code: "return 1;" });
     dispatch({ type: "EXECUTE", requestId: 2, code: "return 2;" });
     await new Promise((r) => setTimeout(r, 20));
-    expect(posted.map((m) => m.requestId)).toEqual([2]);
+    expect(posted.map((m) => [m.type, m.requestId])).toEqual([
+      ["STARTED", 1],
+      ["STARTED", 2],
+      ["RESULT", 2],
+    ]);
   });
 });

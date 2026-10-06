@@ -427,6 +427,7 @@ async fn health_handler(
         "version": reported_version(),
         "uptimeSeconds": state.uptime_seconds(),
         "connectedFiles": state.named_connections_json(),
+        "saturated": state.any_saturated(),
         "pid": std::process::id(),
         "supervised": crate::supervisor::is_supervised(),
     }))

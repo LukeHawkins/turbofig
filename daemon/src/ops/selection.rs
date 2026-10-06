@@ -1,7 +1,9 @@
 //! `turbofig_get_selection`: return the current Figma selection, shaped.
 
 use crate::ops::budget::{read_budget_warning, with_warning};
-use crate::plugin_call::{call_plugin, CallOutcome};
+use crate::plugin_call::{
+    call_plugin, idempotency_error_json, plugin_disconnected_json, CallOutcome,
+};
 use crate::routing::{resolve_route, route_error_to_json};
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -9,11 +11,15 @@ use std::sync::Arc;
 
 /// Send GET_SELECTION to the target plugin and return the result as a JSON value.
 ///
-/// No plugin connected -> `{"ok":false,"error":"no plugin connected"}`.
+/// No plugin connected -> `{"ok":false,"code":"plugin_disconnected","error":"..."}`.
 /// Plugin replies with ok:true -> `{"ok":true,"selection":[...]}`.
-/// Plugin replies with ok:false -> `{"ok":false,"error":"..."}`.
-/// Recv error -> `{"ok":false,"error":"plugin disconnected"}`.
-/// Timeout -> `{"ok":false,"error":"plugin timed out (requestId N); ..."}`.
+/// Plugin replies with ok:false -> `{"ok":false,"code":"...","error":"..."}`.
+/// Mid-call disconnect or timeout -> `code":"not_started"`/`"started_unknown"`
+///   (see `plugin_call::idempotency_error_json`). Read-only, so either is
+///   always safe to retry regardless of which one comes back.
+///
+/// GET_SELECTION never goes through admission control (`state::try_admit`):
+/// a read must never queue behind a saturated EXECUTE/SCREENSHOT lane.
 ///
 /// `fields` adds named node properties to each item beyond the base seven.
 /// `depth` controls child traversal (0 = top-level only, clamped to 5).
@@ -66,23 +72,16 @@ pub async fn run_get_selection(
                     .and_then(|v| v.as_str())
                     .unwrap_or("get_selection failed")
                     .to_owned();
-                json!({"ok": false, "error": error})
+                let code = reply
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("script_error")
+                    .to_owned();
+                json!({"ok": false, "error": error, "code": code})
             }
         }
-        CallOutcome::Disconnected => {
-            json!({"ok": false, "error": "plugin disconnected"})
-        }
-        CallOutcome::NotConnected => {
-            json!({"ok": false, "error": "plugin send failed"})
-        }
-        CallOutcome::TimedOut => {
-            json!({
-                "ok": false,
-                "error": format!(
-                    "plugin timed out (requestId {id}); the job may still be running in Figma, \
-                     a retry is not idempotent"
-                )
-            })
-        }
+        CallOutcome::Disconnected(started) => idempotency_error_json(id, started),
+        CallOutcome::NotConnected => plugin_disconnected_json(),
+        CallOutcome::TimedOut(started) => idempotency_error_json(id, started),
     }
 }

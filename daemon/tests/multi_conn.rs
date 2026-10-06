@@ -330,17 +330,18 @@ async fn test_timeout_isolation_two_connections() {
         async move { turbofig::run_execute(&state2, None, Some("fk2"), "return 1;").await },
     );
 
-    // fk1 must time out.
+    // fk1 must time out. A silent plugin never sends STARTED either, so the
+    // daemon reports it as "did not start, safe to retry" (code
+    // "not_started"), not the old "requestId N; timed out" wording.
     assert_eq!(
         result_fk1["ok"],
         serde_json::json!(false),
         "fk1 must time out (ok:false), got: {result_fk1}"
     );
-    assert!(
-        result_fk1["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("timed out")),
-        "fk1 error must mention timed out, got: {result_fk1}"
+    assert_eq!(
+        result_fk1["code"],
+        serde_json::json!("not_started"),
+        "fk1 must report not_started: no STARTED frame ever arrived, got: {result_fk1}"
     );
 
     // fk2 must succeed despite the concurrent fk1 timeout.
