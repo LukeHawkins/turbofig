@@ -976,6 +976,23 @@ async fn run_daemon() {
     let ws_listener = match tokio::net::TcpListener::bind(&ws_addr).await {
         Ok(l) => l,
         Err(e) => {
+            // Same race as the MCP bind above (two `serve`s launched within
+            // the same instant, e.g. a proxy or app spawn racing a daemon
+            // that is already up): if the WS port is taken because a healthy
+            // daemon already holds it, exit quietly with one clear line
+            // instead of logging "failed to bind" as an error. Without this,
+            // a losing `serve` logged the raw bind failure twice (once per
+            // port) even though losing a race here is the expected, healthy
+            // outcome, not a real startup failure.
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                if let Some(health) = already_running_health(mcp_port).await {
+                    eprintln!(
+                        "{}",
+                        already_running_message(health_version(&health), mcp_port)
+                    );
+                    std::process::exit(already_running_exit_code());
+                }
+            }
             eprintln!("turbofig daemon: failed to bind WS port {ws_addr}: {e}");
             std::process::exit(1);
         }
