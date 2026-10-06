@@ -497,9 +497,9 @@ async fn job_handler(
             );
         }
     };
-    let session_id = job_session_id(&headers);
+    let session_id = job_session_id(&headers).map(stdio_session_key);
     let output_dir = state.screenshot_dir();
-    let value = process_job(job, &state, session_id, output_dir.as_deref()).await;
+    let value = process_job(job, &state, session_id.as_deref(), output_dir.as_deref()).await;
     (axum::http::StatusCode::OK, axum::Json(value))
 }
 
@@ -514,12 +514,23 @@ async fn job_handler(
 /// transport's `mcp-session-id` does; this header is how the stdio MCP
 /// proxy (`proxy.rs`) gives its own job calls the same per-process fileKey
 /// pairing an HTTP MCP session gets (see `routing::resolve_route`), instead
-/// of every stdio call always routing with no session at all.
+/// of every stdio call always routing with no session at all. The raw value
+/// returned here is never used as a map key directly: `job_handler` always
+/// runs it through `stdio_session_key` first.
 fn job_session_id(headers: &axum::http::HeaderMap) -> Option<&str> {
     headers
         .get("x-turbofig-session")
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
+}
+
+/// Prefixes a stdio `X-Turbofig-Session` id before it is used as a key into
+/// `AppState`'s shared session-pairing map. That map is also keyed by the
+/// HTTP transport's `mcp-session-id` (`session_id_from_parts`); without a
+/// distinct prefix, a stdio proxy id and an HTTP session id that happened to
+/// be the same literal string would collide and share one fileKey pairing.
+fn stdio_session_key(id: &str) -> String {
+    format!("stdio:{id}")
 }
 
 /// Rejects any HTTP request that carries an Origin header, with 403 Forbidden.
@@ -656,6 +667,20 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("x-turbofig-session", "proxy-abc123".parse().unwrap());
         assert_eq!(job_session_id(&headers), Some("proxy-abc123"));
+    }
+
+    #[test]
+    fn stdio_session_key_prefixes_the_raw_id() {
+        assert_eq!(stdio_session_key("abc123"), "stdio:abc123");
+    }
+
+    #[test]
+    fn stdio_session_key_cannot_collide_with_an_http_session_of_the_same_literal_id() {
+        // The HTTP transport uses the raw mcp-session-id as the map key
+        // (`session_id_from_parts`); the stdio key must never equal it for
+        // the same literal id, or the two sessions would share one pairing.
+        let id = "same-id";
+        assert_ne!(stdio_session_key(id), id);
     }
 
     #[test]
