@@ -51,7 +51,7 @@ fn clamp_request_timeout(d: Duration) -> Duration {
     let max = Duration::from_millis(MAX_REQUEST_TIMEOUT_MS);
     if d > max {
         eprintln!(
-            "Turbofig: TURBOFIG_REQUEST_TIMEOUT_MS ({}ms) exceeds the {}ms maximum; clamping",
+            "turbofig: TURBOFIG_REQUEST_TIMEOUT_MS ({}ms) exceeds the {}ms maximum; clamping",
             d.as_millis(),
             MAX_REQUEST_TIMEOUT_MS
         );

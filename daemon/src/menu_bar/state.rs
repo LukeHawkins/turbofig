@@ -84,7 +84,7 @@ pub fn build_menu_state(
     bridge_dir: &str,
     mcp_port: u16,
 ) -> MenuState {
-    let header = format!("Turbofig {}", env!("CARGO_PKG_VERSION"));
+    let header = format!("turbofig {}", env!("CARGO_PKG_VERSION"));
     let connected = connected_files_from_health(health);
 
     let (status_text, icon_state) = if health.is_none() {
@@ -171,7 +171,7 @@ mod tests {
         let state = build_menu_state(None, "/tmp/bridge", 18846);
         assert_eq!(
             state.header,
-            format!("Turbofig {}", env!("CARGO_PKG_VERSION"))
+            format!("turbofig {}", env!("CARGO_PKG_VERSION"))
         );
     }
 

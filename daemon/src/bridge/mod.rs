@@ -119,14 +119,14 @@ async fn prepare_dirs(dir: &Path, is_default_home: bool) -> std::io::Result<(Pat
     // run at all.
     if is_default_home {
         if let Err(e) = set_owner_only(dir).await {
-            eprintln!("Turbofig bridge: could not set the home dir to owner-only: {e}");
+            eprintln!("turbofig bridge: could not set the home dir to owner-only: {e}");
         }
     }
     if let Err(e) = set_owner_only(&inbox).await {
-        eprintln!("Turbofig bridge: could not set inbox to owner-only: {e}");
+        eprintln!("turbofig bridge: could not set inbox to owner-only: {e}");
     }
     if let Err(e) = set_owner_only(&outbox).await {
-        eprintln!("Turbofig bridge: could not set outbox to owner-only: {e}");
+        eprintln!("turbofig bridge: could not set outbox to owner-only: {e}");
     }
 
     Ok((inbox, outbox))
@@ -226,7 +226,7 @@ async fn prune_old_outbox(outbox: &Path) {
     let mut entries = match tokio::fs::read_dir(outbox).await {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("Turbofig bridge: failed to read outbox for pruning: {e}");
+            eprintln!("turbofig bridge: failed to read outbox for pruning: {e}");
             return;
         }
     };
@@ -273,7 +273,7 @@ async fn give_up_on(path: &Path, job_id: Option<&str>, reason: String) -> GiveUp
     match job_id {
         Some(id) => GiveUp::WriteError(id.to_owned(), reason),
         None => {
-            eprintln!("Turbofig bridge: giving up on unreadable inbox entry: {reason}");
+            eprintln!("turbofig bridge: giving up on unreadable inbox entry: {reason}");
             GiveUp::JustForget
         }
     }
@@ -300,7 +300,7 @@ async fn scan_and_service(
     let mut entries = match tokio::fs::read_dir(inbox).await {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("Turbofig bridge: failed to read inbox: {e}");
+            eprintln!("turbofig bridge: failed to read inbox: {e}");
             return;
         }
     };
@@ -375,7 +375,7 @@ async fn scan_and_service(
                         if let Err(e) = tokio::fs::remove_file(&path).await {
                             if e.kind() != std::io::ErrorKind::NotFound {
                                 eprintln!(
-                                    "Turbofig bridge: could not remove invalid job {path:?}: {e}"
+                                    "turbofig bridge: could not remove invalid job {path:?}: {e}"
                                 );
                             }
                         }
@@ -460,7 +460,7 @@ async fn scan_and_service(
             }
             Ok(None) => break,
             Err(e) => {
-                eprintln!("Turbofig bridge: read_dir entry error: {e}");
+                eprintln!("turbofig bridge: read_dir entry error: {e}");
                 break;
             }
         }
@@ -574,12 +574,12 @@ async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
     match tokio::fs::write(&out_tmp, result.to_string()).await {
         Ok(()) => {
             if let Err(e) = tokio::fs::rename(&out_tmp, &out_final).await {
-                eprintln!("Turbofig bridge: rename failed for {job_id}: {e}");
+                eprintln!("turbofig bridge: rename failed for {job_id}: {e}");
                 let _ = tokio::fs::remove_file(&out_tmp).await;
             }
         }
         Err(e) => {
-            eprintln!("Turbofig bridge: write failed for {job_id}: {e}");
+            eprintln!("turbofig bridge: write failed for {job_id}: {e}");
         }
     }
 }

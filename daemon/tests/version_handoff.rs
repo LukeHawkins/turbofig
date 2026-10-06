@@ -180,7 +180,7 @@ async fn two_new_proxies_and_one_old_daemon_give_exactly_one_new_daemon() {
         .expect("read daemon.log");
     let listening_lines = log
         .lines()
-        .filter(|l| l.contains("Turbofig MCP listening on") && l.contains(&mcp_port.to_string()))
+        .filter(|l| l.contains("turbofig MCP listening on") && l.contains(&mcp_port.to_string()))
         .count();
     assert_eq!(
         listening_lines, 2,

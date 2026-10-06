@@ -260,9 +260,9 @@ Plugin manifest: {manifest}\n",
 }
 
 /// The 2-line text the bare `turbofig` command prints on macOS once
-/// `Turbofig.app` is installed/refreshed, the daemon is running, and the
+/// `turbofig.app` is installed/refreshed, the daemon is running, and the
 /// bundle has been opened: the app itself (its tray icon, and the About
-/// window behind "About Turbofig…") is now the onboarding surface, so the
+/// window behind "About turbofig…") is now the onboarding surface, so the
 /// terminal only needs to point at it.
 ///
 /// `used_home_fallback` names the real install location: `false` (the
@@ -278,8 +278,8 @@ pub fn app_first_run_text(used_home_fallback: bool) -> String {
         "in your Applications folder"
     };
     format!(
-        "Turbofig is {location} and your menu bar (look for the tf icon).\n\
-         Click it and choose About Turbofig… to get started. No icon? Run: turbofig status\n"
+        "turbofig is {location} and your menu bar (look for the tf icon).\n\
+         Click it and choose About turbofig… to get started. No icon? Run: turbofig status\n"
     )
 }
 
@@ -301,10 +301,10 @@ pub fn app_first_run_outcome(
     used_home_fallback: bool,
 ) -> Result<String, String> {
     if let Some(reason) = bundle_install_err {
-        return Err(format!("could not install Turbofig.app: {reason}"));
+        return Err(format!("could not install turbofig.app: {reason}"));
     }
     if !opened {
-        return Err("could not open Turbofig.app".to_owned());
+        return Err("could not open turbofig.app".to_owned());
     }
     Ok(app_first_run_text(used_home_fallback))
 }
@@ -586,8 +586,8 @@ mod tests {
 
     #[test]
     fn fake_opener_reports_the_fixed_result_for_open_new_instance() {
-        assert!(FakeOpener::new(true).open_new_instance(Path::new("/Applications/Turbofig.app")));
-        assert!(!FakeOpener::new(false).open_new_instance(Path::new("/Applications/Turbofig.app")));
+        assert!(FakeOpener::new(true).open_new_instance(Path::new("/Applications/turbofig.app")));
+        assert!(!FakeOpener::new(false).open_new_instance(Path::new("/Applications/turbofig.app")));
     }
 
     #[test]
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "must be exactly 2 lines: {text:?}");
         assert!(lines[0].contains("menu bar"));
         assert!(lines[0].contains("tf icon"));
-        assert!(lines[1].contains("About Turbofig"));
+        assert!(lines[1].contains("About turbofig"));
         assert!(lines[1].contains("turbofig status"));
     }
 
@@ -638,14 +638,14 @@ mod tests {
         let result = app_first_run_outcome(Some("disk full".to_owned()), true, false);
         assert_eq!(
             result,
-            Err("could not install Turbofig.app: disk full".to_owned())
+            Err("could not install turbofig.app: disk full".to_owned())
         );
     }
 
     #[test]
     fn app_first_run_outcome_fails_when_open_fails_even_though_install_succeeded() {
         let result = app_first_run_outcome(None, false, false);
-        assert_eq!(result, Err("could not open Turbofig.app".to_owned()));
+        assert_eq!(result, Err("could not open turbofig.app".to_owned()));
     }
 
     #[test]
@@ -655,7 +655,7 @@ mod tests {
         let result = app_first_run_outcome(Some("no space left".to_owned()), true, false);
         assert_eq!(
             result,
-            Err("could not install Turbofig.app: no space left".to_owned())
+            Err("could not install turbofig.app: no space left".to_owned())
         );
     }
 }

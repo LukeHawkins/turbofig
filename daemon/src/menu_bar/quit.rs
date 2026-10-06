@@ -1,4 +1,4 @@
-//! The "Quit Turbofig" sequence: stop the daemon, wait briefly until
+//! The "Quit turbofig" sequence: stop the daemon, wait briefly until
 //! `/health` stops answering, then exit the app. `DaemonStopper` is the seam:
 //! `quit_sequence` itself is pure control flow with no network or process
 //! dependency, tested with a fake that records call order; `mod.rs`'s real

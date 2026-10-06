@@ -45,7 +45,7 @@ pub fn signal_quit_running_app(home: &Path) -> std::io::Result<bool> {
 
 /// Asks a running app instance (if any) to quit, then waits until
 /// `<home>/app.lock` is free or `deadline` elapses. Used by the bare
-/// `turbofig` command after it refreshes an outdated `Turbofig.app`
+/// `turbofig` command after it refreshes an outdated `turbofig.app`
 /// (`main.rs`'s `try_app_first_run`): the old instance is still running the
 /// stale binary, so it must exit before the freshly installed bundle is
 /// reopened, rather than the open just re-activating the stale one.
@@ -105,7 +105,7 @@ use tray_icon::TrayIconBuilder;
 
 /// How often the background poller refetches `/health`.
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// How long "Quit Turbofig" waits for `/health` to go unreachable before
+/// How long "Quit turbofig" waits for `/health` to go unreachable before
 /// exiting anyway. Shorter than `STOP_UNREACHABLE_DEADLINE` in `main.rs`
 /// (65s): a stuck quit must never leave the user staring at a tray icon
 /// that refuses to go away.
@@ -159,7 +159,7 @@ struct RealDaemonStopper {
 impl RealDaemonStopper {
     /// Builds a `RealDaemonStopper` for `home`/`mcp_port`: its own small
     /// single-thread `tokio` runtime and HTTP client, ready for `stop`/
-    /// `wait_unreachable`. Shared by the tray menu's "Quit Turbofig" and the
+    /// `wait_unreachable`. Shared by the tray menu's "Quit turbofig" and the
     /// About window's `quit` IPC command, so both go through one
     /// construction path.
     fn new(home: PathBuf, mcp_port: u16) -> Self {
@@ -211,7 +211,7 @@ enum UserEvent {
     /// already open.
     OpenAboutWindow,
     /// `turbofig uninstall` signalled this one over `<home>/app.sock` to
-    /// quit, the same as its own "Quit Turbofig" menu item.
+    /// quit, the same as its own "Quit turbofig" menu item.
     QuitRequested,
 }
 
@@ -221,7 +221,7 @@ enum UserEvent {
 /// (so `mod.rs` can hand it to the tray builder), and the item ids.
 ///
 /// The menu is exactly: the disabled status line, a separator, "About
-/// Turbofig…", "Settings…", a separator, "Quit Turbofig". Every other
+/// turbofig…", "Settings…", a separator, "Quit turbofig". Every other
 /// action (copying the agent prompt or the manifest path, revealing the
 /// plugin in Finder, opening Figma, Start at Login, Open Log) moved into
 /// the About or Settings window; "Open Figma" was removed entirely. See
@@ -237,9 +237,9 @@ struct MenuHandles {
 fn build_menu(status_text: &str) -> MenuHandles {
     let menu = Menu::new();
     let status_item = MenuItem::new(status_text, false, None);
-    let about_item = MenuItem::new("About Turbofig\u{2026}", true, None);
+    let about_item = MenuItem::new("About turbofig\u{2026}", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
-    let quit_item = MenuItem::new("Quit Turbofig", true, None);
+    let quit_item = MenuItem::new("Quit turbofig", true, None);
 
     let _ = menu.append_items(&[
         &status_item,
@@ -260,7 +260,7 @@ fn build_menu(status_text: &str) -> MenuHandles {
 }
 
 /// Opens the About window, or brings it to the front if it is already open.
-/// Shared by "About Turbofig…", the first-use auto-open, and a second
+/// Shared by "About turbofig…", the first-use auto-open, and a second
 /// instance's signal, so all 3 paths behave identically.
 fn open_or_focus_about_window(
     target: &EventLoopWindowTarget<UserEvent>,
@@ -342,7 +342,7 @@ fn set_start_at_login(enabled: bool, home: &Path) -> Result<(), String> {
 /// health poller, then runs the main-thread event loop forever. Never
 /// returns; every exit path goes through `std::process::exit`.
 ///
-/// Only ever reached from `running_inside_app_bundle` (a real `Turbofig.app`
+/// Only ever reached from `running_inside_app_bundle` (a real `turbofig.app`
 /// launch) or the hidden `turbofig app run` dev command, both already
 /// gated; this function itself does not re-check either.
 pub async fn run_menu_bar_app() {
@@ -512,7 +512,7 @@ pub async fn run_menu_bar_app() {
     let tray_icon = icon::icon_for_state(initial_state.icon_state);
     let mut tray_builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("Turbofig");
+        .with_tooltip("turbofig");
     if let Some(icon) = tray_icon {
         tray_builder = tray_builder.with_icon_templated(icon);
     }
@@ -594,7 +594,7 @@ async fn read_token(home: &Path) -> Option<String> {
 }
 
 /// Stops the daemon and confirms it is gone, then exits. Shared by "Quit
-/// Turbofig" (the tray menu, and the About window's `quit` IPC command via
+/// turbofig" (the tray menu, and the About window's `quit` IPC command via
 /// `handle_ipc_message`) and `UserEvent::QuitRequested` (a
 /// `turbofig uninstall` signal over `<home>/app.sock`), so all 3 paths quit
 /// identically. Never returns.

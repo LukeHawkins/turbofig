@@ -74,8 +74,8 @@ fn start_at_login_checked() -> bool {
     crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env())
 }
 
-/// Builds the Settings window: a 360x260, non-resizable, titled "Turbofig
-/// Settings" window hosting a webview over `SETTINGS_HTML`. Activates the
+/// Builds the Settings window: a 360x260, non-resizable, titled "turbofig
+/// settings" window hosting a webview over `SETTINGS_HTML`. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
 pub fn create_settings_window<T: 'static>(
@@ -83,7 +83,7 @@ pub fn create_settings_window<T: 'static>(
     ctx: SettingsWindowContext,
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
-        .with_title("Turbofig Settings")
+        .with_title("turbofig settings")
         .with_inner_size(LogicalSize::new(360.0, 260.0))
         .with_resizable(false)
         .build(target)

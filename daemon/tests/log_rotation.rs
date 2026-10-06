@@ -45,7 +45,7 @@ async fn a_supervised_daemon_rotates_its_oversize_log_and_keeps_logging_to_the_f
         "the fresh log must not still be the oversize one"
     );
     assert!(
-        fresh_log.contains("Turbofig MCP listening on"),
+        fresh_log.contains("turbofig MCP listening on"),
         "the daemon's own startup lines must land in the fresh log, proving stdout was \
          reopened onto it rather than still writing into the renamed-away daemon.log.1: {fresh_log:?}"
     );

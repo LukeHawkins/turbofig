@@ -1,4 +1,4 @@
-//! Assembles `Turbofig.app`: a macOS app bundle the daemon builds itself on
+//! Assembles `turbofig.app`: a macOS app bundle the daemon builds itself on
 //! the user's own Mac, so it carries no Gatekeeper quarantine flag and opens
 //! with no "unidentified developer" prompt, even though the `turbofig`
 //! binary itself is not notarized. macOS-only: a bundle, an `Info.plist`, an
@@ -14,7 +14,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// The app bundle's own identifier, distinct from the daemon's CLI, so
-/// `uninstall` can tell a Turbofig.app we wrote from an unrelated app that
+/// `uninstall` can tell a turbofig.app we wrote from an unrelated app that
 /// happens to share the name.
 pub const BUNDLE_IDENTIFIER: &str = "eu.lukehawkins.turbofig.app";
 
@@ -75,7 +75,7 @@ pub fn home_applications_dir() -> PathBuf {
     PathBuf::from(home).join("Applications")
 }
 
-/// True when `dir` already holds a `Turbofig.app` bundle that is ours (its
+/// True when `dir` already holds a `turbofig.app` bundle that is ours (its
 /// `Info.plist` carries `BUNDLE_IDENTIFIER`): a foreign app that happens to
 /// share the name does not count. Used by the resolver below so an
 /// existing install is always found and reused, never duplicated.
@@ -83,11 +83,11 @@ pub fn has_our_bundle(dir: &Path) -> bool {
     bundle_identifier_at(dir).as_deref() == Some(BUNDLE_IDENTIFIER)
 }
 
-/// Reads `<dir>/Turbofig.app`'s own `CFBundleIdentifier`, or `None` if no
+/// Reads `<dir>/turbofig.app`'s own `CFBundleIdentifier`, or `None` if no
 /// bundle (or no readable `Info.plist`) is there. Shared by `has_our_bundle`
 /// and `remove_turbofig_app_bundle`'s ownership check.
 fn bundle_identifier_at(dir: &Path) -> Option<String> {
-    let plist = std::fs::read_to_string(dir.join("Turbofig.app/Contents/Info.plist")).ok()?;
+    let plist = std::fs::read_to_string(dir.join("turbofig.app/Contents/Info.plist")).ok()?;
     extract_plist_string(&plist, "CFBundleIdentifier")
 }
 
@@ -104,7 +104,7 @@ pub fn dir_is_writable(dir: &Path) -> bool {
     unsafe { libc::access(c_path.as_ptr(), libc::W_OK) == 0 }
 }
 
-/// Resolves the directory `Turbofig.app` lives (or should be installed)
+/// Resolves the directory `turbofig.app` lives (or should be installed)
 /// in: every caller that needs the bundle's location goes through this one
 /// function (the outdated check, autostart, uninstall, the app
 /// LaunchAgent's `ProgramArguments`, and `set_start_at_login`), so there is
@@ -198,9 +198,9 @@ fn info_plist_contents(build_id: &str) -> String {
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>Turbofig</string>
+	<string>turbofig</string>
 	<key>CFBundleDisplayName</key>
-	<string>Turbofig</string>
+	<string>turbofig</string>
 	<key>CFBundleIdentifier</key>
 	<string>{BUNDLE_IDENTIFIER}</string>
 	<key>CFBundleExecutable</key>
@@ -324,7 +324,7 @@ impl LaunchServicesRegistrar for NoopLaunchServicesRegistrar {
     }
 }
 
-/// Assembles `<applications_dir>/Turbofig.app`: `Contents/Info.plist`, the
+/// Assembles `<applications_dir>/turbofig.app`: `Contents/Info.plist`, the
 /// placeholder icon, and a byte copy of `own_exe` (symlinks resolved first)
 /// at `Contents/MacOS/turbofig`. Ad-hoc signs the finished bundle
 /// best-effort (a failure is logged, never returned), then registers it
@@ -354,7 +354,7 @@ pub fn install_app_bundle_with_signer(
 ) -> io::Result<PathBuf> {
     refuse_real_applications_dir(applications_dir)?;
 
-    let bundle_dir = applications_dir.join("Turbofig.app");
+    let bundle_dir = applications_dir.join("turbofig.app");
     let contents_dir = bundle_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     let resources_dir = contents_dir.join("Resources");
@@ -400,6 +400,81 @@ pub fn install_app_bundle_with_signer(
     Ok(bundle_dir)
 }
 
+/// Reads the actual on-disk directory entry name for our bundle inside
+/// `applications_dir`, whatever its case: `has_our_bundle`'s own
+/// ownership check (`CFBundleIdentifier` matches `BUNDLE_IDENTIFIER`), but
+/// returning the literal entry name rather than a bool. Needed because
+/// macOS disks are usually case-insensitive but case-preserving: a lookup
+/// by either `turbofig.app` or `Turbofig.app` finds the same directory, so
+/// only reading the directory listing itself tells the two apart.
+fn actual_bundle_dir_name(applications_dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(applications_dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("turbofig.app") {
+            continue;
+        }
+        let plist =
+            std::fs::read_to_string(applications_dir.join(name).join("Contents/Info.plist"));
+        let Ok(plist) = plist else {
+            continue;
+        };
+        if extract_plist_string(&plist, "CFBundleIdentifier").as_deref() == Some(BUNDLE_IDENTIFIER)
+        {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+/// Renames an existing, differently-cased bundle (`Turbofig.app`, from
+/// before the lowercase brand rename) to `turbofig.app`, then re-registers
+/// it with Launch Services so Spotlight/Launchpad show the new name.
+///
+/// macOS disks are usually case-insensitive (but case-preserving), so a
+/// direct rename to a name that differs only by case can fail or silently
+/// do nothing: the kernel resolves the destination to the same file it is
+/// renaming from. The rename goes through a temp name in the same folder
+/// first, so it always takes effect, on a case-insensitive volume or not.
+///
+/// Returns `Ok(true)` when a rename actually happened, `Ok(false)` when no
+/// bundle was there, it already carried the lowercase name, or it belonged
+/// to someone else (never touched, same ownership check as
+/// `remove_turbofig_app_bundle`).
+pub fn migrate_legacy_bundle_name(
+    applications_dir: &Path,
+    registrar: &dyn LaunchServicesRegistrar,
+) -> io::Result<bool> {
+    let Some(actual_name) = actual_bundle_dir_name(applications_dir) else {
+        return Ok(false);
+    };
+    if actual_name == "turbofig.app" {
+        return Ok(false);
+    }
+
+    let legacy_dir = applications_dir.join(&actual_name);
+    let new_dir = applications_dir.join("turbofig.app");
+    let tmp_dir = applications_dir.join(format!(".turbofig-rename-{}.tmp", std::process::id()));
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)?;
+    }
+    std::fs::rename(&legacy_dir, &tmp_dir)?;
+    std::fs::rename(&tmp_dir, &new_dir)?;
+
+    if let Err(e) = registrar.register(&new_dir) {
+        eprintln!(
+            "turbofig: warning: could not register {} with Launch Services after the lowercase \
+             rename (Spotlight/Launchpad may not find it until the next reindex): {e}",
+            new_dir.display()
+        );
+    }
+
+    Ok(true)
+}
+
 /// Extracts the string value following `<key>{key}</key>` in a plist's XML.
 /// Only ever reads a plist this module itself wrote, so this narrow scan
 /// (not a general XML/plist parser) is enough.
@@ -411,7 +486,7 @@ fn extract_plist_string(xml: &str, key: &str) -> Option<String> {
     Some(after_key[value_start..value_start + value_end].to_owned())
 }
 
-/// True when `<applications_dir>/Turbofig.app` exists but is stale against
+/// True when `<applications_dir>/turbofig.app` exists but is stale against
 /// `own_exe` (the binary that would be installed): its executable is
 /// missing, its `CFBundleShortVersionString` differs from this binary's own
 /// version, or (the same version, but a rebuild: see `build_id_for_bytes`)
@@ -424,7 +499,7 @@ fn extract_plist_string(xml: &str, key: &str) -> Option<String> {
 /// installed copy): cheaper than a byte-for-byte compare of both binaries,
 /// since the installed copy's id is already sitting in its `Info.plist`.
 pub fn app_bundle_outdated(applications_dir: &Path, own_exe: &Path) -> bool {
-    let bundle_dir = applications_dir.join("Turbofig.app");
+    let bundle_dir = applications_dir.join("turbofig.app");
     let Ok(plist_contents) = std::fs::read_to_string(bundle_dir.join("Contents/Info.plist")) else {
         return false;
     };
@@ -448,12 +523,12 @@ pub fn app_bundle_outdated(applications_dir: &Path, own_exe: &Path) -> bool {
         != Some(own_build_id.as_str())
 }
 
-/// The bundle directory itself: `<applications_dir>/Turbofig.app`.
+/// The bundle directory itself: `<applications_dir>/turbofig.app`.
 pub fn app_bundle_path(applications_dir: &Path) -> PathBuf {
-    applications_dir.join("Turbofig.app")
+    applications_dir.join("turbofig.app")
 }
 
-/// The bundle's own executable: `<applications_dir>/Turbofig.app/Contents/MacOS/turbofig`.
+/// The bundle's own executable: `<applications_dir>/turbofig.app/Contents/MacOS/turbofig`.
 /// Used by the app LaunchAgent (`cli::run_autostart_on_app`) to pin its
 /// `ProgramArguments` at the bundle itself, not the Homebrew binary.
 pub fn app_bundle_executable_path(applications_dir: &Path) -> PathBuf {
@@ -462,7 +537,7 @@ pub fn app_bundle_executable_path(applications_dir: &Path) -> PathBuf {
 
 /// True when the running binary's own canonical path is inside a `.app`
 /// bundle's `Contents/MacOS/`: i.e. this process was launched by opening
-/// `Turbofig.app`, not by a CLI invocation. Step 2 uses this to switch into
+/// `turbofig.app`, not by a CLI invocation. Step 2 uses this to switch into
 /// the menu-bar app; for now `main.rs` only uses it to pick the stub
 /// `run_menu_bar_app`.
 pub fn running_inside_app_bundle() -> bool {
@@ -475,13 +550,13 @@ pub fn running_inside_app_bundle() -> bool {
         .unwrap_or(false)
 }
 
-/// Removes `<applications_dir>/Turbofig.app`, but only if its `Info.plist`
-/// carries our own `BUNDLE_IDENTIFIER`: a foreign `Turbofig.app` (an
+/// Removes `<applications_dir>/turbofig.app`, but only if its `Info.plist`
+/// carries our own `BUNDLE_IDENTIFIER`: a foreign `turbofig.app` (an
 /// unrelated app that happens to share the name) is left untouched. Returns
 /// `Ok(true)` when a bundle was actually removed, `Ok(false)` when none was
 /// there or it belonged to someone else: both are success, not an error.
 pub fn remove_turbofig_app_bundle(applications_dir: &Path) -> io::Result<bool> {
-    let bundle_dir = applications_dir.join("Turbofig.app");
+    let bundle_dir = applications_dir.join("turbofig.app");
     let Ok(plist_contents) = std::fs::read_to_string(bundle_dir.join("Contents/Info.plist")) else {
         return Ok(false);
     };
@@ -502,7 +577,7 @@ mod tests {
     fn app_bundle_path_joins_turbofig_app() {
         assert_eq!(
             app_bundle_path(Path::new("/Users/dev/Applications")),
-            PathBuf::from("/Users/dev/Applications/Turbofig.app")
+            PathBuf::from("/Users/dev/Applications/turbofig.app")
         );
     }
 
@@ -510,7 +585,7 @@ mod tests {
     fn app_bundle_executable_path_points_at_contents_macos() {
         assert_eq!(
             app_bundle_executable_path(Path::new("/Users/dev/Applications")),
-            PathBuf::from("/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig")
+            PathBuf::from("/Users/dev/Applications/turbofig.app/Contents/MacOS/turbofig")
         );
     }
 
@@ -544,7 +619,7 @@ mod tests {
         )
         .expect("install_app_bundle_with_signer");
 
-        assert_eq!(bundle_dir, applications_dir.join("Turbofig.app"));
+        assert_eq!(bundle_dir, applications_dir.join("turbofig.app"));
         let info_plist = bundle_dir.join("Contents/Info.plist");
         assert!(info_plist.exists());
         run_plutil_lint(&info_plist);
@@ -569,11 +644,11 @@ mod tests {
 
         assert_eq!(
             extract_plist_string(&contents, "CFBundleName").as_deref(),
-            Some("Turbofig")
+            Some("turbofig")
         );
         assert_eq!(
             extract_plist_string(&contents, "CFBundleDisplayName").as_deref(),
-            Some("Turbofig")
+            Some("turbofig")
         );
         assert_eq!(
             extract_plist_string(&contents, "CFBundleIdentifier").as_deref(),
@@ -781,7 +856,7 @@ mod tests {
             remove_turbofig_app_bundle(&applications_dir).expect("remove_turbofig_app_bundle");
 
         assert!(removed);
-        assert!(!applications_dir.join("Turbofig.app").exists());
+        assert!(!applications_dir.join("turbofig.app").exists());
 
         std::fs::remove_dir_all(&applications_dir).ok();
     }
@@ -797,7 +872,7 @@ mod tests {
     #[test]
     fn remove_turbofig_app_bundle_never_touches_a_foreign_bundle() {
         let applications_dir = unique_temp_dir("uninstall-foreign");
-        let foreign_bundle = applications_dir.join("Turbofig.app");
+        let foreign_bundle = applications_dir.join("turbofig.app");
         let foreign_contents = foreign_bundle.join("Contents");
         std::fs::create_dir_all(&foreign_contents).expect("mkdir foreign bundle");
         std::fs::write(
@@ -809,7 +884,7 @@ mod tests {
         let removed =
             remove_turbofig_app_bundle(&applications_dir).expect("remove_turbofig_app_bundle");
 
-        assert!(!removed, "a foreign Turbofig.app must never be removed");
+        assert!(!removed, "a foreign turbofig.app must never be removed");
         assert!(foreign_bundle.exists());
 
         std::fs::remove_dir_all(&applications_dir).ok();
@@ -819,10 +894,10 @@ mod tests {
     fn assert_install_refuses(real_dir: &Path, label: &str) {
         let own_exe = std::env::current_exe().expect("current_exe");
 
-        // The developer may have a real Turbofig.app installed, so compare
+        // The developer may have a real turbofig.app installed, so compare
         // before and after instead of asserting that nothing is there. The
         // guard must refuse before it touches the filesystem at all.
-        let bundle = real_dir.join("Turbofig.app");
+        let bundle = real_dir.join("turbofig.app");
         let snapshot = |path: &Path| -> Option<(std::time::SystemTime, Vec<u8>)> {
             let modified = std::fs::metadata(path).ok()?.modified().ok()?;
             let plist = std::fs::read(path.join("Contents/Info.plist")).unwrap_or_default();
@@ -899,7 +974,7 @@ mod tests {
     #[test]
     fn has_our_bundle_is_false_for_a_foreign_bundle() {
         let dir = unique_temp_dir("resolver-foreign");
-        let foreign_contents = dir.join("Turbofig.app/Contents");
+        let foreign_contents = dir.join("turbofig.app/Contents");
         std::fs::create_dir_all(&foreign_contents).expect("mkdir foreign bundle");
         std::fs::write(
             foreign_contents.join("Info.plist"),
@@ -910,6 +985,94 @@ mod tests {
         assert!(!has_our_bundle(&dir));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migrate_legacy_bundle_name_is_a_no_op_when_nothing_is_there() {
+        let applications_dir = unique_temp_dir("migrate-missing");
+        let renamed = migrate_legacy_bundle_name(&applications_dir, &NoopLaunchServicesRegistrar)
+            .expect("migrate_legacy_bundle_name");
+        assert!(!renamed);
+    }
+
+    #[test]
+    fn migrate_legacy_bundle_name_is_a_no_op_when_already_lowercase() {
+        let applications_dir = unique_temp_dir("migrate-already-lowercase");
+        let own_exe = std::env::current_exe().expect("current_exe");
+        install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+
+        let renamed = migrate_legacy_bundle_name(&applications_dir, &NoopLaunchServicesRegistrar)
+            .expect("migrate_legacy_bundle_name");
+
+        assert!(!renamed);
+        assert!(applications_dir.join("turbofig.app").exists());
+
+        std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[test]
+    fn migrate_legacy_bundle_name_never_touches_a_foreign_bundle() {
+        let applications_dir = unique_temp_dir("migrate-foreign");
+        let foreign_bundle = applications_dir.join("turbofig.app");
+        let foreign_contents = foreign_bundle.join("Contents");
+        std::fs::create_dir_all(&foreign_contents).expect("mkdir foreign bundle");
+        std::fs::write(
+            foreign_contents.join("Info.plist"),
+            "<plist><dict><key>CFBundleIdentifier</key><string>com.example.other</string></dict></plist>",
+        )
+        .expect("write foreign plist");
+
+        let renamed = migrate_legacy_bundle_name(&applications_dir, &NoopLaunchServicesRegistrar)
+            .expect("migrate_legacy_bundle_name");
+
+        assert!(!renamed, "a foreign turbofig.app must never be renamed");
+        assert!(foreign_bundle.exists());
+
+        std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    /// The exact migration scenario: an owner upgrading from a pre-rename
+    /// install, with a real `turbofig.app` still on disk under the old,
+    /// capitalized name. Exercises the 2-step rename through a temp name,
+    /// which must work whether or not the volume is case-insensitive.
+    #[test]
+    fn migrate_legacy_bundle_name_renames_an_old_capitalized_bundle() {
+        let applications_dir = unique_temp_dir("migrate-rename");
+        let own_exe = std::env::current_exe().expect("current_exe");
+        let lowercase_bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+        // Simulate a pre-rename install: move the freshly installed
+        // lowercase bundle back to the old, capitalized name via the same
+        // 2-step temp-name dance the migration itself uses, so this setup
+        // works on a case-insensitive volume too.
+        let tmp = applications_dir.join("setup-tmp.app");
+        std::fs::rename(&lowercase_bundle_dir, &tmp).expect("rename to tmp");
+        std::fs::rename(&tmp, applications_dir.join("Turbofig.app")).expect("rename to legacy");
+
+        let renamed = migrate_legacy_bundle_name(&applications_dir, &NoopLaunchServicesRegistrar)
+            .expect("migrate_legacy_bundle_name");
+
+        assert!(renamed);
+        assert_eq!(
+            actual_bundle_dir_name(&applications_dir).as_deref(),
+            Some("turbofig.app")
+        );
+        assert!(applications_dir
+            .join("turbofig.app/Contents/MacOS/turbofig")
+            .exists());
+
+        std::fs::remove_dir_all(&applications_dir).ok();
     }
 
     #[test]

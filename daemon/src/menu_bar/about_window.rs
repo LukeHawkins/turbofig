@@ -74,14 +74,14 @@ pub struct AboutWindowContext {
 /// `Option` for the app's whole lifetime, replacing it with `None` only if
 /// the window is ever closed by the user (not implemented as a separate
 /// close handler today: closing the window just drops focus, the handle
-/// stays, "About Turbofig…" or the second-instance signal refocuses it).
+/// stays, "About turbofig…" or the second-instance signal refocuses it).
 pub struct AboutWindowHandle {
     window: Window,
     webview: WebView,
 }
 
 impl AboutWindowHandle {
-    /// Brings the window to the front, e.g. when "About Turbofig…" is
+    /// Brings the window to the front, e.g. when "About turbofig…" is
     /// clicked again, or a second instance signals this one. Activates the
     /// app first: under `ActivationPolicy::Accessory` a plain
     /// `set_focus()` alone can leave the window non-key, so the Figma-side
@@ -142,7 +142,7 @@ fn mcp_json() -> String {
     )
 }
 
-/// Builds the About window: a 420x520, non-resizable, titled "Turbofig"
+/// Builds the About window: a 420x520, non-resizable, titled "turbofig"
 /// window hosting a webview over `ABOUT_HTML`, wired to the given IPC
 /// command set and a navigation handler that blocks every navigation away
 /// from the embedded page. Activates the app and focuses the window once
@@ -153,7 +153,7 @@ pub fn create_about_window<T: 'static>(
     ctx: AboutWindowContext,
 ) -> Result<AboutWindowHandle, String> {
     let window = WindowBuilder::new()
-        .with_title("Turbofig")
+        .with_title("turbofig")
         .with_inner_size(LogicalSize::new(420.0, 520.0))
         .with_resizable(false)
         .build(target)

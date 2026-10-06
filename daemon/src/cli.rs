@@ -19,7 +19,7 @@ use std::time::Duration;
     name = "turbofig",
     version,
     about = "Bridge any AI to Figma.",
-    long_about = "turbofig: the always-on bridge from Figma to any AI agent.\n\nWith no subcommand, starts the daemon detached if it is not already running. On macOS, also installs/refreshes Turbofig.app and opens it: look for the tf icon in your menu bar, and choose About Turbofig... to get started. On any other OS, or if the app could not be opened, prints a first-run walkthrough (or a short status on a later run) instead. Use `turbofig serve` to run the daemon in the foreground."
+    long_about = "turbofig: the always-on bridge from Figma to any AI agent.\n\nWith no subcommand, starts the daemon detached if it is not already running. On macOS, also installs/refreshes turbofig.app and opens it: look for the tf icon in your menu bar, and choose About turbofig... to get started. On any other OS, or if the app could not be opened, prints a first-run walkthrough (or a short status on a later run) instead. Use `turbofig serve` to run the daemon in the foreground."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -81,7 +81,7 @@ pub enum Command {
 #[cfg(target_os = "macos")]
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
-    /// Assemble `Turbofig.app` and print its path.
+    /// Assemble `turbofig.app` and print its path.
     Install,
     /// Dev-only: starts app mode (tray icon, menu) with no bundle. Hidden;
     /// a debug build refuses unless `TURBOFIG_DEV_REAL_DESKTOP=1`, since
@@ -234,7 +234,7 @@ fn run_autostart_on_with_sleep(
 }
 
 /// Turns the **app** autostart service on (the default, no `--headless`):
-/// ensures `Turbofig.app` exists (installing it from `own_exe` if its
+/// ensures `turbofig.app` exists (installing it from `own_exe` if its
 /// executable is missing; `install_app_bundle` carries its own debug guard
 /// against writing a real Applications folder), writes
 /// `eu.lukehawkins.turbofig.app`'s plist pointing at the bundle's own
@@ -1108,14 +1108,14 @@ mod tests {
         .expect("autostart on (app)");
 
         assert!(applications_dir
-            .join("Turbofig.app/Contents/MacOS/turbofig")
+            .join("turbofig.app/Contents/MacOS/turbofig")
             .exists());
         assert!(outcome.plist_path.exists());
         let plist_text = std::fs::read_to_string(&outcome.plist_path).expect("read plist");
         assert!(plist_text.contains("eu.lukehawkins.turbofig.app"));
         assert!(plist_text.contains(
             applications_dir
-                .join("Turbofig.app/Contents/MacOS/turbofig")
+                .join("turbofig.app/Contents/MacOS/turbofig")
                 .to_string_lossy()
                 .as_ref()
         ));
@@ -1343,7 +1343,7 @@ mod tests {
 
     /// Full `run_uninstall`: with a real app bundle installed at
     /// `applications_dir`, uninstall must remove it, regardless of `purge`.
-    /// A foreign `Turbofig.app` with a different bundle identifier must
+    /// A foreign `turbofig.app` with a different bundle identifier must
     /// survive untouched.
     #[cfg(target_os = "macos")]
     #[test]
@@ -1373,7 +1373,7 @@ mod tests {
 
         assert!(!outcome.purged);
         assert!(
-            !applications_dir.join("Turbofig.app").exists(),
+            !applications_dir.join("turbofig.app").exists(),
             "uninstall must remove our own app bundle even without --purge"
         );
 

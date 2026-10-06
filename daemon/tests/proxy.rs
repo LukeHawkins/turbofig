@@ -361,7 +361,7 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
         .expect("read daemon.log");
     let listening_lines = log
         .lines()
-        .filter(|l| l.contains("Turbofig MCP listening on") && l.contains(&mcp_port.to_string()))
+        .filter(|l| l.contains("turbofig MCP listening on") && l.contains(&mcp_port.to_string()))
         .count();
     assert_eq!(
         listening_lines, 1,

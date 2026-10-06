@@ -147,13 +147,13 @@ pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, Str
 /// Builds the full `eu.lukehawkins.turbofig.app.plist` contents: the app
 /// autostart service (`autostart on`, the default, no `--headless`).
 ///
-/// `bundle_exe` is `Turbofig.app`'s own executable
+/// `bundle_exe` is `turbofig.app`'s own executable
 /// (`app_bundle::app_bundle_executable_path`); `ProgramArguments` is just
 /// `[bundle_exe]`, no extra argument, so launchd invokes the bare command,
 /// which (`main.rs`'s `cmd_run_or_app_mode`) dispatches into the menu-bar
 /// app because the path resolves inside a `.app/Contents/MacOS/`. `KeepAlive`
 /// is plain `false`, unlike the headless service's `{SuccessfulExit: false}`:
-/// a user who quits the app (its own "Quit Turbofig") keeps it quit until the
+/// a user who quits the app (its own "Quit turbofig") keeps it quit until the
 /// next login, rather than launchd relaunching it right away. `extra_env`
 /// carries the same `TURBOFIG_*` overrides the headless plist does, but never
 /// `TURBOFIG_SUPERVISED`: the app is not `serve`, so the supervised-restart
@@ -201,6 +201,28 @@ pub fn app_plist_contents(
 </plist>
 "#
     )
+}
+
+/// Rewrites the app LaunchAgent plist's `ProgramArguments` after the
+/// bundle's lowercase-name rename (`app_bundle::migrate_legacy_bundle_name`),
+/// so an owner's existing autostart entry keeps pointing at a real file
+/// with no manual step. A plain on-disk text rewrite: the next `autostart
+/// on` (or daemon restart) picks the live value up anyway, so this never
+/// shells out to `launchctl` itself.
+///
+/// A no-op (`Ok(false)`) when no app plist is there yet (autostart was
+/// never turned on), or it already names the lowercase bundle.
+pub fn migrate_app_plist_bundle_name(launch_agents_dir: &Path) -> io::Result<bool> {
+    let plist_path = launch_agents_dir.join(app_plist_file_name());
+    let Ok(contents) = std::fs::read_to_string(&plist_path) else {
+        return Ok(false);
+    };
+    if !contents.contains("/Turbofig.app/") {
+        return Ok(false);
+    }
+    let rewritten = contents.replace("/Turbofig.app/", "/turbofig.app/");
+    std::fs::write(&plist_path, rewritten)?;
+    Ok(true)
 }
 
 /// `TURBOFIG_*` variables that name a filesystem path. A value copied into
@@ -562,6 +584,63 @@ mod tests {
     }
 
     #[test]
+    fn migrate_app_plist_bundle_name_is_a_no_op_when_no_plist_exists() {
+        let dir = unique_temp_dir("migrate-missing");
+        let migrated = migrate_app_plist_bundle_name(&dir).expect("migrate_app_plist_bundle_name");
+        assert!(!migrated);
+    }
+
+    #[test]
+    fn migrate_app_plist_bundle_name_rewrites_the_old_bundle_path() {
+        let dir = unique_temp_dir("migrate-rewrite");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let xml = app_plist_contents(
+            Path::new("/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/Users/dev/.turbofig/daemon.log"),
+            &[],
+        );
+        std::fs::write(dir.join(app_plist_file_name()), xml).expect("write plist");
+
+        let migrated = migrate_app_plist_bundle_name(&dir).expect("migrate_app_plist_bundle_name");
+
+        assert!(migrated);
+        let rewritten =
+            std::fs::read_to_string(dir.join(app_plist_file_name())).expect("read rewritten");
+        assert!(rewritten.contains(
+            "<string>/Users/dev/Applications/turbofig.app/Contents/MacOS/turbofig</string>"
+        ));
+        assert!(!rewritten.contains("/Turbofig.app/"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migrate_app_plist_bundle_name_is_a_no_op_when_already_lowercase() {
+        let dir = unique_temp_dir("migrate-already-lowercase");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let xml = app_plist_contents(
+            Path::new("/Users/dev/Applications/turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/Users/dev/.turbofig/daemon.log"),
+            &[],
+        );
+        std::fs::write(dir.join(app_plist_file_name()), xml).expect("write plist");
+
+        let migrated = migrate_app_plist_bundle_name(&dir).expect("migrate_app_plist_bundle_name");
+
+        assert!(!migrated);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("turbofig-launchd-test-{label}-{nanos}"))
+    }
+
+    #[test]
     fn service_target_and_domain_target_are_formatted_correctly() {
         assert_eq!(service_target("501"), "gui/501/eu.lukehawkins.turbofig");
         assert_eq!(domain_target("501"), "gui/501");
@@ -583,13 +662,13 @@ mod tests {
     #[test]
     fn app_plist_contents_carries_the_bundle_exe_run_at_load_and_plain_keep_alive_false() {
         let xml = app_plist_contents(
-            Path::new("/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/Users/dev/Applications/turbofig.app/Contents/MacOS/turbofig"),
             Path::new("/Users/dev/.turbofig/daemon.log"),
             &[],
         );
         assert!(xml.contains("<string>eu.lukehawkins.turbofig.app</string>"));
         assert!(xml.contains(
-            "<string>/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig</string>"
+            "<string>/Users/dev/Applications/turbofig.app/Contents/MacOS/turbofig</string>"
         ));
         // Exactly 1 ProgramArguments entry: no "serve" argument, unlike the
         // headless plist.
@@ -605,7 +684,7 @@ mod tests {
     #[test]
     fn app_plist_contents_carries_extra_env_vars() {
         let xml = app_plist_contents(
-            Path::new("/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/Applications/turbofig.app/Contents/MacOS/turbofig"),
             Path::new("/tmp/log"),
             &[("TURBOFIG_MCP_PORT".to_owned(), "18999".to_owned())],
         );
@@ -616,7 +695,7 @@ mod tests {
     #[test]
     fn app_plist_contents_omits_the_environment_variables_dict_with_no_extra_env() {
         let xml = app_plist_contents(
-            Path::new("/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/Applications/turbofig.app/Contents/MacOS/turbofig"),
             Path::new("/tmp/log"),
             &[],
         );

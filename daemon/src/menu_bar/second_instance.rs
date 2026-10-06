@@ -18,7 +18,7 @@ use std::path::Path;
 pub enum SignalMessage {
     /// Open the About window, or focus it if it is already open.
     OpenAbout,
-    /// Quit the app (same as its own "Quit Turbofig" menu item).
+    /// Quit the app (same as its own "Quit turbofig" menu item).
     Quit,
 }
 

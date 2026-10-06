@@ -149,7 +149,7 @@ pub(crate) async fn control_handler(
             .await;
             if !drained {
                 eprintln!(
-                    "Turbofig daemon: {} job(s) still in flight after {:?}; exiting anyway for /control {:?}",
+                    "turbofig daemon: {} job(s) still in flight after {:?}; exiting anyway for /control {:?}",
                     state.jobs_in_flight(),
                     CONTROL_DRAIN_MAX_WAIT,
                     action,

@@ -256,7 +256,7 @@ impl AppState {
             None => return,
         };
         if let Err(e) = crate::plugin_files::mark_plugin_seen(home) {
-            eprintln!("Turbofig daemon: failed to write the plugin-seen marker: {e}");
+            eprintln!("turbofig daemon: failed to write the plugin-seen marker: {e}");
         }
     }
 

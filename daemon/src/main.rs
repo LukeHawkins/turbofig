@@ -102,7 +102,7 @@ async fn main() {
 
 /// Dispatches the bare `turbofig` invocation (no subcommand): into the
 /// menu-bar app stub when this process was launched from inside
-/// `Turbofig.app` with no extra CLI args, otherwise the ordinary first-run/
+/// `turbofig.app` with no extra CLI args, otherwise the ordinary first-run/
 /// status flow (`cmd_run`). macOS-only check; every other OS always runs
 /// `cmd_run`.
 async fn cmd_run_or_app_mode() {
@@ -128,7 +128,7 @@ async fn run_menu_bar_app() {
 /// app bundle in place. Hidden; a debug build refuses unless
 /// `TURBOFIG_DEV_REAL_DESKTOP=1` is set, since this shows a real tray icon
 /// and menu. A release build (what Homebrew installs, and what
-/// `Turbofig.app` actually launches) always runs it.
+/// `turbofig.app` actually launches) always runs it.
 #[cfg(target_os = "macos")]
 async fn cmd_app_run() {
     #[cfg(debug_assertions)]
@@ -143,7 +143,7 @@ async fn cmd_app_run() {
 }
 
 /// `turbofig app install`: a manual-testing surface for step 4. Assembles
-/// (or refreshes) `Turbofig.app` and prints its path.
+/// (or refreshes) `turbofig.app` and prints its path.
 #[cfg(target_os = "macos")]
 async fn cmd_app_install() {
     let applications_dir = turbofig::app_bundle::applications_dir_from_env();
@@ -306,7 +306,7 @@ fn cmd_autostart_off() {
     }
 }
 
-/// The directory `uninstall` removes `Turbofig.app` from, on macOS. An
+/// The directory `uninstall` removes `turbofig.app` from, on macOS. An
 /// unused empty path on every other OS: `run_uninstall`'s own
 /// `remove_app_bundle_best_effort` is a no-op there, so the value is never
 /// read.
@@ -460,7 +460,7 @@ async fn cmd_run() {
     }
 
     // On macOS, the app (its tray icon and About window) is now the
-    // onboarding surface: install/refresh Turbofig.app, open it, and point
+    // onboarding surface: install/refresh turbofig.app, open it, and point
     // the terminal at it, falling back to the ordinary text walkthrough
     // below only if either step fails.
     #[cfg(target_os = "macos")]
@@ -527,14 +527,14 @@ async fn cmd_run() {
 
 /// Longest the bare `turbofig` command waits, after asking a running app
 /// instance to quit, for `<home>/app.lock` to be released before reopening
-/// a just-refreshed `Turbofig.app` anyway. See `try_app_first_run`.
+/// a just-refreshed `turbofig.app` anyway. See `try_app_first_run`.
 #[cfg(target_os = "macos")]
 const APP_REFRESH_RESTART_DEADLINE: Duration = Duration::from_secs(5);
 /// How often that wait re-checks the lock.
 #[cfg(target_os = "macos")]
 const APP_REFRESH_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Moves an existing `~/Applications/Turbofig.app` to `/Applications` when
+/// Moves an existing `~/Applications/turbofig.app` to `/Applications` when
 /// `/Applications` has become writable (the user gained admin rights, or
 /// this is simply the first run after an install that predates this
 /// migration) and nothing is already there. A no-op in every other case:
@@ -551,6 +551,8 @@ const APP_REFRESH_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// against whatever `applications_dir_from_env` resolves to next.
 #[cfg(target_os = "macos")]
 fn migrate_app_bundle_to_global_if_possible(own_exe: &Path, agents_dir: &Path) {
+    rename_legacy_bundle_name_if_needed(agents_dir);
+
     if std::env::var("TURBOFIG_APPLICATIONS_DIR").is_ok() {
         return; // the override always wins; never migrate under it
     }
@@ -567,13 +569,13 @@ fn migrate_app_bundle_to_global_if_possible(own_exe: &Path, agents_dir: &Path) {
     let to = turbofig::app_bundle::app_bundle_path(&global);
     if let Err(e) = std::fs::rename(&from, &to) {
         eprintln!(
-            "turbofig: warning: could not move Turbofig.app to {}: {e}",
+            "turbofig: warning: could not move turbofig.app to {}: {e}",
             global.display()
         );
         return;
     }
     println!(
-        "turbofig: moved Turbofig.app to your Applications folder ({})",
+        "turbofig: moved turbofig.app to your Applications folder ({})",
         global.display()
     );
 
@@ -586,7 +588,7 @@ fn migrate_app_bundle_to_global_if_possible(own_exe: &Path, agents_dir: &Path) {
             Err(e) => {
                 eprintln!(
                     "turbofig: warning: could not update the app LaunchAgent after moving \
-                     Turbofig.app: failed to determine the current user id: {e}"
+                     turbofig.app: failed to determine the current user id: {e}"
                 );
                 return;
             }
@@ -602,13 +604,52 @@ fn migrate_app_bundle_to_global_if_possible(own_exe: &Path, agents_dir: &Path) {
         ) {
             eprintln!(
                 "turbofig: warning: could not update the app LaunchAgent after moving \
-                 Turbofig.app: {e}"
+                 turbofig.app: {e}"
             );
         }
     }
 }
 
-/// Installs/refreshes `Turbofig.app` and opens it (through the `AppOpener`
+/// Renames an on-disk `turbofig.app` to `turbofig.app` wherever
+/// `applications_dir_from_env` resolves (the lowercase brand rename,
+/// 2026-10): an owner upgrading from a pre-rename install keeps a bundle at
+/// its old, capitalized name until this runs once. Also rewrites the app
+/// LaunchAgent's on-disk `ProgramArguments`, if one exists, so an existing
+/// autostart entry keeps pointing at a real file.
+///
+/// Called before `migrate_app_bundle_to_global_if_possible` resolves
+/// anything: a no-op when no bundle is there, it already carries the
+/// lowercase name, or it belongs to someone else. A failure at any step is
+/// only ever a warning, never fatal.
+#[cfg(target_os = "macos")]
+fn rename_legacy_bundle_name_if_needed(agents_dir: &Path) {
+    let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+    let renamed = match turbofig::app_bundle::migrate_legacy_bundle_name(
+        &applications_dir,
+        &turbofig::app_bundle::RealLaunchServicesRegistrar,
+    ) {
+        Ok(renamed) => renamed,
+        Err(e) => {
+            eprintln!("turbofig: warning: could not rename turbofig.app to turbofig.app: {e}");
+            return;
+        }
+    };
+    if !renamed {
+        return;
+    }
+    println!("turbofig: renamed turbofig.app to turbofig.app");
+
+    match turbofig::launchd::migrate_app_plist_bundle_name(agents_dir) {
+        Ok(true) => println!("turbofig: updated the app LaunchAgent for the renamed bundle"),
+        Ok(false) => {}
+        Err(e) => eprintln!(
+            "turbofig: warning: could not update the app LaunchAgent after the lowercase \
+             rename: {e}"
+        ),
+    }
+}
+
+/// Installs/refreshes `turbofig.app` and opens it (through the `AppOpener`
 /// seam, `open <bundle path>`). `Some(text)`: both steps succeeded, print
 /// `app_first_run_text()` instead of the ordinary walkthrough. `None`: one
 /// of them failed; already printed a 1-line reason, the caller falls back
@@ -650,7 +691,7 @@ fn try_app_first_run() -> Option<String> {
             &|d| std::thread::sleep(d),
         );
         if restarted {
-            println!("Updated Turbofig.app and restarted it.");
+            println!("Updated turbofig.app and restarted it.");
         }
     }
 
@@ -927,7 +968,7 @@ async fn run_daemon() {
                     std::process::exit(already_running_exit_code());
                 }
             }
-            eprintln!("Turbofig daemon: failed to bind MCP port {mcp_addr}: {e}");
+            eprintln!("turbofig daemon: failed to bind MCP port {mcp_addr}: {e}");
             std::process::exit(1);
         }
     };
@@ -935,20 +976,20 @@ async fn run_daemon() {
     let ws_listener = match tokio::net::TcpListener::bind(&ws_addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("Turbofig daemon: failed to bind WS port {ws_addr}: {e}");
+            eprintln!("turbofig daemon: failed to bind WS port {ws_addr}: {e}");
             std::process::exit(1);
         }
     };
 
     println!(
-        "Turbofig MCP listening on {}",
+        "turbofig MCP listening on {}",
         mcp_listener.local_addr().expect("local addr after bind")
     );
     println!(
-        "Turbofig WS  listening on {}",
+        "turbofig WS  listening on {}",
         ws_listener.local_addr().expect("local addr after bind")
     );
-    println!("Turbofig bridge dir: {}", bridge_dir.display());
+    println!("turbofig bridge dir: {}", bridge_dir.display());
 
     // Ensure the pairing token exists (created on first run, never overwritten
     // on a later one) before any server starts accepting connections. See
@@ -958,7 +999,7 @@ async fn run_daemon() {
     let token = match turbofig::ensure_token(&bridge_dir) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Turbofig daemon: failed to create or read the pairing token: {e}");
+            eprintln!("turbofig daemon: failed to create or read the pairing token: {e}");
             std::process::exit(1);
         }
     };
@@ -977,9 +1018,9 @@ async fn run_daemon() {
                 } else {
                     "wrote"
                 };
-                println!("Turbofig daemon: {verb} the on-disk Figma plugin files");
+                println!("turbofig daemon: {verb} the on-disk Figma plugin files");
             }
-            Err(e) => eprintln!("Turbofig daemon: failed to write the Figma plugin files: {e}"),
+            Err(e) => eprintln!("turbofig daemon: failed to write the Figma plugin files: {e}"),
         }
     }
 
@@ -994,11 +1035,11 @@ async fn run_daemon() {
         if turbofig::app_bundle::app_bundle_outdated(&applications_dir, &own_exe) {
             match turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe) {
                 Ok(path) => println!(
-                    "Turbofig daemon: reinstalled the outdated app bundle at {}",
+                    "turbofig daemon: reinstalled the outdated app bundle at {}",
                     path.display()
                 ),
                 Err(e) => {
-                    eprintln!("Turbofig daemon: failed to reinstall the outdated app bundle: {e}")
+                    eprintln!("turbofig daemon: failed to reinstall the outdated app bundle: {e}")
                 }
             }
         }
@@ -1009,7 +1050,7 @@ async fn run_daemon() {
     let mcp_state = state.clone();
     let mcp_handle = tokio::spawn(async move {
         if let Err(e) = turbofig::serve_with_state(mcp_listener, mcp_state).await {
-            eprintln!("Turbofig daemon: MCP server error: {e}");
+            eprintln!("turbofig daemon: MCP server error: {e}");
             std::process::exit(1);
         }
     });
@@ -1017,7 +1058,7 @@ async fn run_daemon() {
     let ws_state = state.clone();
     let ws_handle = tokio::spawn(async move {
         if let Err(e) = turbofig::serve_ws(ws_listener, ws_state).await {
-            eprintln!("Turbofig daemon: WS server error: {e}");
+            eprintln!("turbofig daemon: WS server error: {e}");
             std::process::exit(1);
         }
     });
@@ -1025,7 +1066,7 @@ async fn run_daemon() {
     let bridge_state = state.clone();
     let bridge_handle = tokio::spawn(async move {
         if let Err(e) = turbofig::serve_bridge(bridge_state, bridge_dir).await {
-            eprintln!("Turbofig daemon: bridge error: {e}");
+            eprintln!("turbofig daemon: bridge error: {e}");
             std::process::exit(1);
         }
     });
@@ -1048,20 +1089,20 @@ async fn run_daemon() {
     tokio::select! {
         res = mcp_handle => {
             match res {
-                Ok(()) => eprintln!("Turbofig daemon: MCP server task ended unexpectedly"),
-                Err(e) => eprintln!("Turbofig daemon: MCP server task panicked: {e}"),
+                Ok(()) => eprintln!("turbofig daemon: MCP server task ended unexpectedly"),
+                Err(e) => eprintln!("turbofig daemon: MCP server task panicked: {e}"),
             }
         }
         res = ws_handle => {
             match res {
-                Ok(()) => eprintln!("Turbofig daemon: WS server task ended unexpectedly"),
-                Err(e) => eprintln!("Turbofig daemon: WS server task panicked: {e}"),
+                Ok(()) => eprintln!("turbofig daemon: WS server task ended unexpectedly"),
+                Err(e) => eprintln!("turbofig daemon: WS server task panicked: {e}"),
             }
         }
         res = bridge_handle => {
             match res {
-                Ok(()) => eprintln!("Turbofig daemon: bridge task ended unexpectedly"),
-                Err(e) => eprintln!("Turbofig daemon: bridge task panicked: {e}"),
+                Ok(()) => eprintln!("turbofig daemon: bridge task ended unexpectedly"),
+                Err(e) => eprintln!("turbofig daemon: bridge task panicked: {e}"),
             }
         }
     }
@@ -1100,7 +1141,7 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
             consecutive_unresolved += 1;
             if should_log_binary_gone(consecutive_unresolved) {
                 eprintln!(
-                    "Turbofig daemon: the turbofig binary is gone; run `turbofig uninstall` or reinstall"
+                    "turbofig daemon: the turbofig binary is gone; run `turbofig uninstall` or reinstall"
                 );
             }
             continue;
@@ -1109,7 +1150,7 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
         if upgrade_detected(&baseline, current.as_deref()) {
             let current = current.expect("checked is_none above");
             println!(
-                "Turbofig daemon: detected an upgrade ({} -> {}); draining and restarting",
+                "turbofig daemon: detected an upgrade ({} -> {}); draining and restarting",
                 baseline.display(),
                 current.display()
             );
@@ -1122,7 +1163,7 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
             .await;
             if !drained {
                 eprintln!(
-                    "Turbofig daemon: {} job(s) still in flight after {:?}; restarting anyway",
+                    "turbofig daemon: {} job(s) still in flight after {:?}; restarting anyway",
                     state.jobs_in_flight(),
                     SUPERVISOR_DRAIN_MAX_WAIT
                 );
