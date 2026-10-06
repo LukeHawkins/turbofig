@@ -214,6 +214,9 @@ enum UserEvent {
     /// `turbofig uninstall` signalled this one over `<home>/app.sock` to
     /// quit, the same as its own "Quit turbofig" menu item.
     QuitRequested,
+    /// "Start at login" changed in the Settings window: re-render it so its
+    /// text shows the new state (the page has no JavaScript).
+    ReloadSettings,
 }
 
 /// Builds the static part of the menu (every item, in the exact documented
@@ -428,7 +431,6 @@ pub async fn run_menu_bar_app() {
         home: home.clone(),
         current_state: current_state.clone(),
     };
-    let settings_ctx = SettingsWindowContext { home: home.clone() };
     // Tracks the last-seen keyboard modifiers, so the Cmd+W handler below
     // can tell a plain "w" from Cmd+W without its own event-loop state.
     let current_modifiers: Rc<Cell<ModifiersState>> = Rc::new(Cell::new(ModifiersState::empty()));
@@ -436,6 +438,15 @@ pub async fn run_menu_bar_app() {
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
     let proxy = event_loop.create_proxy();
+    let reload_proxy = std::sync::Mutex::new(proxy.clone());
+    let settings_ctx = SettingsWindowContext {
+        home: home.clone(),
+        reload: std::sync::Arc::new(move || {
+            if let Ok(p) = reload_proxy.lock() {
+                let _ = p.send_event(UserEvent::ReloadSettings);
+            }
+        }),
+    };
 
     // The background health poller: its own small tokio runtime on its own
     // thread, so the main thread stays free for the tao event loop (macOS
@@ -550,6 +561,10 @@ pub async fn run_menu_bar_app() {
             Event::UserEvent(UserEvent::QuitRequested) => {
                 perform_quit(&home, mcp_port);
             }
+            Event::UserEvent(UserEvent::ReloadSettings) => {
+                settings_window_handle.borrow_mut().take();
+                open_or_focus_settings_window(target, &settings_window_handle, &settings_ctx);
+            }
             Event::NewEvents(StartCause::Init) => {
                 if should_auto_open_about {
                     open_or_focus_about_window(target, &about_window_handle, &about_ctx);
@@ -600,11 +615,12 @@ fn handle_window_event(
             current_modifiers.set(*modifiers);
         }
         WindowEvent::KeyboardInput {
-            event: KeyEvent {
-                physical_key: KeyCode::KeyW,
-                state: ElementState::Pressed,
-                ..
-            },
+            event:
+                KeyEvent {
+                    physical_key: KeyCode::KeyW,
+                    state: ElementState::Pressed,
+                    ..
+                },
             ..
         } if current_modifiers.get().contains(ModifiersState::SUPER) => {
             close_window_if_match(window_id, about_window_handle, settings_window_handle);

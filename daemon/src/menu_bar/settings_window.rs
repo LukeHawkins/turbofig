@@ -27,6 +27,9 @@ const SETTINGS_HTML_TEMPLATE: &str = include_str!("../../assets/settings/setting
 #[derive(Clone)]
 pub struct SettingsWindowContext {
     pub home: PathBuf,
+    /// Asks the event loop to re-render the window after "Start at login"
+    /// changes, because the page has no JavaScript to update itself.
+    pub reload: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Holds the window and webview alive for as long as the Settings window
@@ -118,11 +121,13 @@ fn dispatch_settings_action(action: SettingsAction, ctx: &SettingsWindowContext)
             if let Err(e) = super::set_start_at_login(true, &ctx.home) {
                 eprintln!("turbofig: Start at Login -> true failed: {e}");
             }
+            (ctx.reload)();
         }
         SettingsAction::StartAtLoginOff => {
             if let Err(e) = super::set_start_at_login(false, &ctx.home) {
                 eprintln!("turbofig: Start at Login -> false failed: {e}");
             }
+            (ctx.reload)();
         }
         SettingsAction::CopyPath => {
             let manifest_path = ctx.home.join("figma-plugin").join("manifest.json");
