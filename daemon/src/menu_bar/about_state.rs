@@ -70,7 +70,10 @@ mod tests {
     #[test]
     fn parse_action_link_rejects_actions_moved_elsewhere_or_removed() {
         assert_eq!(parse_action_link("turbofig-action://open-docs"), None);
-        assert_eq!(parse_action_link("turbofig-action://copy-mcp-command"), None);
+        assert_eq!(
+            parse_action_link("turbofig-action://copy-mcp-command"),
+            None
+        );
         assert_eq!(parse_action_link("turbofig-action://copy-mcp-json"), None);
         assert_eq!(parse_action_link("turbofig-action://quit"), None);
         assert_eq!(parse_action_link("turbofig-action://page-ready"), None);
@@ -116,8 +119,13 @@ mod tests {
             "the page must have no <script> at all"
         );
         assert!(ABOUT_HTML.contains(README_HREF), "expected the README link");
-        assert!(ABOUT_HTML.contains(WEBSITE_HREF), "expected the website link");
-        let without_allowed = ABOUT_HTML.replacen(README_HREF, "", 1).replacen(WEBSITE_HREF, "", 1);
+        assert!(
+            ABOUT_HTML.contains(WEBSITE_HREF),
+            "expected the website link"
+        );
+        let without_allowed = ABOUT_HTML
+            .replacen(README_HREF, "", 1)
+            .replacen(WEBSITE_HREF, "", 1);
         assert!(
             !without_allowed.contains("src=\"http"),
             "no src attribute may point at a remote URL"

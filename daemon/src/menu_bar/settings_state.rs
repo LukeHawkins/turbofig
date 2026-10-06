@@ -76,7 +76,10 @@ mod tests {
     fn parse_action_link_rejects_anything_else() {
         assert_eq!(parse_action_link(""), None);
         assert_eq!(parse_action_link("turbofig-action://"), None);
-        assert_eq!(parse_action_link("turbofig-action://Start-At-Login-On"), None);
+        assert_eq!(
+            parse_action_link("turbofig-action://Start-At-Login-On"),
+            None
+        );
         assert_eq!(parse_action_link("turbofig-action://copy-path "), None);
         assert_eq!(parse_action_link("https://example.com"), None);
     }
