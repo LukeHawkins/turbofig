@@ -46,3 +46,4 @@ tower = { version = "0.5", features = ["util"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = "0.26"
 tao = "0.37"
+wry = "0.57"

@@ -140,3 +140,44 @@ that becomes reachable from the network, an `Origin` check that can be
 bypassed, or a file-bridge directory with loose permissions). A report that
 only restates "the execute tool runs arbitrary code" is not a vulnerability;
 that is the documented design.
+
+## Menu-bar app: the About window's webview
+
+The macOS menu-bar app (`daemon/src/menu_bar/`) opens a native window hosting
+a `wry` webview (About Turbofig…, or automatically on first use). It is
+deliberately narrow:
+
+- **It loads exactly 1 embedded page, never a URL.** `about_window.rs` calls
+  `WebViewBuilder::with_html` on a string `include_str!`'d from
+  `daemon/assets/about/about.html` at compile time. No `with_url`, no
+  network fetch, no remote resource of any kind: the page's own CSS and JS
+  are inline, and `about_state`'s `the_about_page_has_no_remote_urls_except_the_docs_link`
+  test asserts no `src="http`/`href="http` appears anywhere in that file
+  except the one deliberate exception, the "Docs" link's own `href` to the
+  GitHub repo.
+- **A navigation handler blocks every navigation away from that page.**
+  `about_window::navigation_is_allowed` allows only the initial `about:`
+  load `with_html` itself performs; the "Docs" link's `onclick` intercepts
+  the click first (prevents the default navigation and sends `open_docs`
+  over IPC instead), and the navigation handler is a backstop that opens
+  that one URL externally (through the `AppOpener` seam, i.e. `open <url>`,
+  never inside the webview) and cancels the in-webview navigation either
+  way. Nothing else ever reaches an `Allow` decision.
+- **The webview can only ever send 1 of 7 fixed IPC commands.** The page's
+  JS calls `window.ipc.postMessage("<command>")`; `about_state::parse_ipc_command`
+  accepts exactly `copy_manifest_path`, `open_figma`, `copy_agent_prompt`,
+  `copy_mcp_command`, `copy_mcp_json`, `open_docs`, and `quit`, and rejects
+  anything else (including a reasonable-looking payload like
+  `{"op":"quit"}` or an unknown command) with no action taken. The handler
+  never evaluates or interprets the raw message as code; it is a plain
+  string compared against the 7 literals.
+- **Every command that touches the clipboard or opens something goes
+  through the existing `Clipboard`/`AppOpener` seams**, the same ones the
+  bare `turbofig` command and the tray menu use, including their debug-build
+  guard (a debug build never touches the real clipboard, Figma, or the
+  browser unless `TURBOFIG_DEV_REAL_DESKTOP=1` is set).
+- **The second-instance signal (`<home>/app.sock`) is a local Unix socket,
+  mode `0600`, carrying 1 fixed literal string.** It only ever tells the
+  first instance to open or focus the About window; it cannot run a job,
+  read a file, or carry arbitrary data, and (like every other `<home>` path)
+  only the owning user's account can read or connect to it.

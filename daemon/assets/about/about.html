@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turbofig</title>
+    <style>
+      /* === DESIGN TOKENS =================================================
+         Reuses the plugin panel's token names and values
+         (plugin/src/ui/template.html). This window is native, not hosted
+         inside Figma, so there is no --figma-color-* injection: light
+         values are the same fallbacks the plugin uses, dark values are
+         set explicitly below via prefers-color-scheme. */
+      :root {
+        --bg: #ffffff;
+        --bg-secondary: #f5f5f5;
+        --bg-brand: #0d99ff;
+        --text: #1a1a1a;
+        --text-secondary: #6b6b6b;
+        --text-onbrand: #ffffff;
+        --border: #e6e6e6;
+        --icon: #333333;
+        --c-connected: #1e6b3a;
+        --c-offline: #b91c1c;
+
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 16px;
+        --sp-5: 24px;
+
+        --fs-xs: 12px;
+        --fs-sm: 14px;
+        --fs-md: 16px;
+        --fs-lg: 20px;
+
+        --ff-display: "Inter", "Space Grotesk", Arial, sans-serif;
+        --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
+        --ff-mono: "SF Mono", "Fira Code", Consolas, monospace;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e1e1e;
+          --bg-secondary: #2a2a2a;
+          --text: #f2f2f2;
+          --text-secondary: #a3a3a3;
+          --border: #3a3a3a;
+          --icon: #d4d4d4;
+          --c-connected: #4ade80;
+          --c-offline: #f87171;
+        }
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        font-family: var(--ff-body);
+        font-size: var(--fs-sm);
+        line-height: 1.5;
+        color: var(--text);
+        background: var(--bg);
+        margin: 0;
+        padding: var(--sp-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+      }
+
+      /* === HEADER (reuses .wordmark's ghost-trail trick) ================ */
+      .header {
+        display: flex;
+        align-items: baseline;
+        gap: var(--sp-2);
+        padding-bottom: var(--sp-2);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .wordmark {
+        font-family: var(--ff-display);
+        font-size: var(--fs-lg);
+        font-weight: 900;
+        letter-spacing: -0.05em;
+        line-height: 1;
+        color: var(--text);
+        text-shadow:
+          8px 0 0 color-mix(in srgb, var(--text) 44%, transparent),
+          15px 0 0 color-mix(in srgb, var(--text) 22%, transparent),
+          23px 0 0 color-mix(in srgb, var(--text) 10%, transparent),
+          32px 0 0 color-mix(in srgb, var(--text) 4%, transparent);
+      }
+
+      .header-version {
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+        opacity: 0.7;
+      }
+
+      .tagline {
+        margin: 0;
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+      }
+
+      /* === STATUS CHIPS =================================================== */
+      .chips {
+        display: flex;
+        gap: var(--sp-2);
+      }
+
+      .chip {
+        font-size: var(--fs-xs);
+        padding: var(--sp-1) var(--sp-2);
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text-secondary);
+      }
+
+      .chip.chip-ok {
+        color: var(--c-connected);
+        border-color: var(--c-connected);
+      }
+
+      .chip.chip-off {
+        color: var(--c-offline);
+        border-color: var(--c-offline);
+      }
+
+      /* === TABS =========================================================== */
+      .tab-bar {
+        display: flex;
+        gap: var(--sp-3);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .tab-btn {
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        color: var(--text-secondary);
+        font-family: var(--ff-body);
+        font-size: var(--fs-sm);
+        cursor: pointer;
+        padding: var(--sp-2) 0;
+      }
+
+      .tab-btn.active {
+        color: var(--text);
+        border-bottom-color: var(--bg-brand);
+      }
+
+      .tab-panel {
+        display: none;
+        flex-direction: column;
+        gap: var(--sp-4);
+        flex: 1;
+      }
+
+      .tab-panel.active {
+        display: flex;
+      }
+
+      /* === STEPS ========================================================= */
+      .step {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+      }
+
+      .step-title {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        font-size: var(--fs-sm);
+        font-weight: 600;
+      }
+
+      .step-check {
+        display: none;
+        color: var(--c-connected);
+      }
+
+      .step-hint {
+        margin: 0;
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+      }
+
+      .step-actions {
+        display: flex;
+        gap: var(--sp-2);
+      }
+
+      /* === BUTTONS ======================================================= */
+      .btn {
+        font-family: var(--ff-body);
+        font-size: var(--fs-xs);
+        padding: var(--sp-1) var(--sp-3);
+        border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--icon);
+      }
+
+      .btn-brand {
+        background: var(--bg-brand);
+        border: none;
+        color: var(--text-onbrand);
+      }
+
+      /* === CODE BLOCKS =================================================== */
+      .code-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+
+      .code {
+        flex: 1;
+        min-width: 0;
+        font-family: var(--ff-mono);
+        font-size: var(--fs-xs);
+        background: var(--bg-secondary);
+        border-radius: 4px;
+        padding: var(--sp-2);
+        overflow-x: auto;
+        white-space: pre;
+      }
+
+      .fallback-note {
+        margin: 0;
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+      }
+
+      /* === FOOTER ========================================================= */
+      .footer {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-top: var(--sp-2);
+        border-top: 1px solid var(--border);
+        font-size: var(--fs-xs);
+      }
+
+      .footer-left {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        color: var(--text-secondary);
+      }
+
+      .footer-right {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-4);
+      }
+
+      .link {
+        color: var(--text-secondary);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
+      .link:hover {
+        color: var(--text);
+      }
+
+      .danger-link {
+        background: none;
+        border: none;
+        color: var(--c-offline);
+        font-family: var(--ff-body);
+        font-size: var(--fs-xs);
+        cursor: pointer;
+        padding: 0;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="header">
+      <span class="wordmark">turbofig</span>
+      <span class="header-version">v<span id="version-text"></span></span>
+    </header>
+    <p class="tagline">Bridge any AI to Figma</p>
+
+    <div class="chips">
+      <span id="chip-bridge" class="chip">Bridge not running</span>
+      <span id="chip-figma" class="chip">waiting</span>
+    </div>
+
+    <div class="tab-bar" role="tablist">
+      <button id="tab-btn-howto" class="tab-btn active" type="button" data-tab="tab-howto">How to use</button>
+      <button id="tab-btn-mcp" class="tab-btn" type="button" data-tab="tab-mcp">Claude Code / MCP</button>
+    </div>
+
+    <section id="tab-howto" class="tab-panel active">
+      <div class="step">
+        <p class="step-title">1. Add the turbofig plugin to Figma (once)</p>
+        <div class="step-actions">
+          <button class="btn" type="button" data-ipc="copy_manifest_path">Copy manifest path</button>
+          <button class="btn" type="button" data-ipc="open_figma">Open Figma</button>
+        </div>
+        <p class="step-hint">Plugins &gt; Development &gt; Import plugin from manifest&hellip;, then Cmd+Shift+G and paste.</p>
+      </div>
+
+      <div class="step">
+        <p class="step-title">
+          2. Run turbofig in your Figma file
+          <span id="step2-check" class="step-check" aria-hidden="true">&check;</span>
+        </p>
+      </div>
+
+      <div class="step">
+        <p class="step-title">3. Ask your agent</p>
+        <div class="step-actions">
+          <button class="btn btn-brand" type="button" data-ipc="copy_agent_prompt">Copy agent prompt</button>
+        </div>
+        <p class="step-hint">Paste it into Claude Code, Cursor, Copilot or any agent.</p>
+      </div>
+    </section>
+
+    <section id="tab-mcp" class="tab-panel">
+      <div class="step">
+        <p class="step-title">Claude Code</p>
+        <div class="code-row">
+          <code class="code">claude mcp add turbofig -- turbofig mcp</code>
+          <button class="btn" type="button" data-ipc="copy_mcp_command">Copy</button>
+        </div>
+      </div>
+
+      <div class="step">
+        <p class="step-title">Other MCP clients</p>
+        <div class="code-row">
+          <code id="mcp-json" class="code">{"command": "turbofig", "args": ["mcp"]}</code>
+          <button class="btn" type="button" data-ipc="copy_mcp_json">Copy</button>
+        </div>
+      </div>
+
+      <p class="fallback-note">Blocked by your company? Use the How to use tab, it works everywhere.</p>
+    </section>
+
+    <div class="footer">
+      <div class="footer-left">
+        <label>
+          <input id="start-at-login" type="checkbox" disabled />
+          Start at login
+        </label>
+      </div>
+      <div class="footer-right">
+        <a id="docs-link" class="link" href="https://github.com/LukeHawkins/turbofig" data-ipc="open_docs">Docs</a>
+        <button class="danger-link" type="button" data-ipc="quit">Quit Turbofig</button>
+      </div>
+    </div>
+
+    <script>
+      function ipc(cmd) {
+        window.ipc.postMessage(cmd);
+      }
+
+      document.querySelectorAll("[data-ipc]").forEach(function (el) {
+        el.addEventListener("click", function (event) {
+          if (el.tagName === "A") event.preventDefault();
+          ipc(el.getAttribute("data-ipc"));
+        });
+      });
+
+      document.querySelectorAll(".tab-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          document.querySelectorAll(".tab-btn").forEach(function (b) {
+            b.classList.remove("active");
+          });
+          document.querySelectorAll(".tab-panel").forEach(function (p) {
+            p.classList.remove("active");
+          });
+          btn.classList.add("active");
+          document.getElementById(btn.getAttribute("data-tab")).classList.add("active");
+        });
+      });
+
+      /* Called from Rust (WebView::evaluate_script) after every health poll
+         and once at window creation. figmaConnected drives the step-2
+         checkmark; bridgeRunning and figmaChipText are already-formatted
+         text (see menu_bar::about_state::chips_from_connected_files). */
+      window.turbofigSetStatus = function (bridgeRunning, figmaChipText, figmaConnected) {
+        var bridgeEl = document.getElementById("chip-bridge");
+        bridgeEl.textContent = bridgeRunning ? "Bridge running" : "Bridge not running";
+        bridgeEl.classList.toggle("chip-ok", bridgeRunning);
+        bridgeEl.classList.toggle("chip-off", !bridgeRunning);
+
+        var figmaEl = document.getElementById("chip-figma");
+        figmaEl.textContent = figmaChipText;
+        figmaEl.classList.toggle("chip-ok", figmaConnected);
+        figmaEl.classList.toggle("chip-off", !figmaConnected);
+
+        var check = document.getElementById("step2-check");
+        check.style.display = figmaConnected ? "inline" : "none";
+      };
+
+      /* Called once from Rust at window creation. */
+      window.turbofigSetStatic = function (version, mcpJson) {
+        document.getElementById("version-text").textContent = version;
+        document.getElementById("mcp-json").textContent = mcpJson;
+      };
+    </script>
+  </body>
+</html>

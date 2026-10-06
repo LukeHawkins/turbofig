@@ -1,19 +1,25 @@
-//! The menu-bar app: tray icon, menu, status polling, and the Quit
-//! sequence. Step 2 of the macOS app bundle (step 1: `app_bundle.rs`; step
-//! 3: the setup window; step 4: first-run, login item, docs).
+//! The menu-bar app: tray icon, menu, status polling, the Quit sequence,
+//! and the About window. Steps 2 and 3 of the macOS app bundle (step 1:
+//! `app_bundle.rs`; step 4: first-run, login item, docs).
 //!
 //! Every piece of actual logic lives in a sibling module with no
-//! `tray-icon`/`tao` dependency at all (`state`: the health-to-`MenuState`
-//! translation; `icon`: PNG decoding; `lock`: the single-instance guard;
-//! `quit`: the stop-then-confirm sequence), so it is unit-tested with no
-//! window, no tray icon, and no event loop ever created. This file is the
-//! only place that builds a real tray icon or runs a real event loop;
-//! nothing in the crate's test suite calls `run_menu_bar_app`, and this
-//! module carries no `#[cfg(test)]` block of its own.
+//! `tray-icon`/`tao`/`wry` dependency at all (`state`: the health-to-
+//! `MenuState` translation; `icon`: PNG decoding; `lock`: the single-instance
+//! guard; `quit`: the stop-then-confirm sequence; `about_state`: the About
+//! window's IPC parsing, chip mapping, and first-use rule; `second_instance`:
+//! the cross-process open-about signal), so it is unit-tested with no
+//! window, no tray icon, no webview, and no event loop ever created. This
+//! file and `about_window.rs` are the only places that build a real tray
+//! icon, window, webview, or event loop; nothing in the crate's test suite
+//! calls `run_menu_bar_app` or `create_about_window`, and neither carries a
+//! `#[cfg(test)]` block of its own.
 
+mod about_state;
+mod about_window;
 mod icon;
 mod lock;
 mod quit;
+mod second_instance;
 mod state;
 
 pub use lock::{try_acquire, AppLock};
@@ -21,11 +27,14 @@ pub use quit::{quit_sequence, DaemonStopper};
 pub use state::{build_menu_state, ConnectedFileInfo, IconState, MenuState};
 
 use crate::first_run::{AppOpener, Clipboard, FakeClipboard, FakeOpener, NullClipboard};
+use about_window::{create_about_window, AboutWindowContext, AboutWindowHandle};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tao::event::{Event, StartCause};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
@@ -83,6 +92,25 @@ struct RealDaemonStopper {
     home: PathBuf,
 }
 
+impl RealDaemonStopper {
+    /// Builds a `RealDaemonStopper` for `home`/`mcp_port`: its own small
+    /// single-thread `tokio` runtime and HTTP client, ready for `stop`/
+    /// `wait_unreachable`. Shared by the tray menu's "Quit Turbofig" and the
+    /// About window's `quit` IPC command, so both go through one
+    /// construction path.
+    fn new(home: PathBuf, mcp_port: u16) -> Self {
+        Self {
+            rt: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build a tokio runtime for the quit sequence"),
+            client: crate::spawn::build_admin_client().unwrap_or_else(|_| reqwest::Client::new()),
+            mcp_port,
+            home,
+        }
+    }
+}
+
 impl DaemonStopper for RealDaemonStopper {
     fn stop(&self) -> bool {
         self.rt.block_on(async {
@@ -109,10 +137,15 @@ impl DaemonStopper for RealDaemonStopper {
     }
 }
 
-/// `UserEvent`: the only thing crossing from the background health poller
-/// thread into the tao event loop's handler.
+/// `UserEvent`: the only thing crossing from a background thread (the
+/// health poller, or the second-instance signal listener) into the tao
+/// event loop's handler.
 enum UserEvent {
     Health(Option<serde_json::Value>),
+    /// A second instance signalled this one over `<home>/app.sock`
+    /// (`second_instance`): open the About window, or focus it if it is
+    /// already open.
+    OpenAboutWindow,
 }
 
 /// Builds the static part of the menu (every item, in the exact documented
@@ -125,7 +158,7 @@ struct MenuHandles {
     copy_prompt_item: MenuItem,
     copy_manifest_item: MenuItem,
     open_figma_item: MenuItem,
-    open_setup_item: MenuItem,
+    about_item: MenuItem,
     start_at_login_item: CheckMenuItem,
     open_log_item: MenuItem,
     quit_item: MenuItem,
@@ -138,7 +171,7 @@ fn build_menu(header: &str, status_text: &str) -> MenuHandles {
     let copy_prompt_item = MenuItem::new("Copy Agent Prompt", true, None);
     let copy_manifest_item = MenuItem::new("Copy Plugin Manifest Path", true, None);
     let open_figma_item = MenuItem::new("Open Figma", true, None);
-    let open_setup_item = MenuItem::new("Open Setup\u{2026}", true, None);
+    let about_item = MenuItem::new("About Turbofig\u{2026}", true, None);
     let start_at_login_item = CheckMenuItem::new("Start at Login", true, false, None);
     let open_log_item = MenuItem::new("Open Log", true, None);
     let quit_item = MenuItem::new("Quit Turbofig", true, None);
@@ -150,7 +183,7 @@ fn build_menu(header: &str, status_text: &str) -> MenuHandles {
         &copy_prompt_item,
         &copy_manifest_item,
         &open_figma_item,
-        &open_setup_item,
+        &about_item,
         &PredefinedMenuItem::separator(),
         &start_at_login_item,
         &open_log_item,
@@ -164,18 +197,38 @@ fn build_menu(header: &str, status_text: &str) -> MenuHandles {
         copy_prompt_item,
         copy_manifest_item,
         open_figma_item,
-        open_setup_item,
+        about_item,
         start_at_login_item,
         open_log_item,
         quit_item,
     }
 }
 
-/// Step 3 implements the real setup window. For now this only logs, so the
-/// menu item is already wired end to end and step 3 only needs to replace
-/// this function's body.
-fn open_setup_window() {
-    eprintln!("turbofig: Open Setup… is not implemented yet (step 3)");
+/// Opens the About window, or brings it to the front if it is already open.
+/// Shared by "About Turbofig…", the first-use auto-open, and a second
+/// instance's signal, so all 3 paths behave identically.
+fn open_or_focus_about_window(
+    target: &EventLoopWindowTarget<UserEvent>,
+    handle_cell: &Rc<RefCell<Option<AboutWindowHandle>>>,
+    ctx: &AboutWindowContext,
+    last_health: &Rc<RefCell<Option<serde_json::Value>>>,
+) {
+    let mut guard = handle_cell.borrow_mut();
+    if let Some(handle) = guard.as_ref() {
+        handle.focus();
+        return;
+    }
+    match create_about_window(target, ctx.clone()) {
+        Ok(handle) => {
+            let health = last_health.borrow();
+            let names = state::connected_file_names_from_health(health.as_ref());
+            handle.push_status(health.is_some(), &names);
+            *guard = Some(handle);
+        }
+        Err(e) => {
+            eprintln!("turbofig: could not open the About window: {e}");
+        }
+    }
 }
 
 /// Step 4 implements persisting this as a real login item. For now this
@@ -206,7 +259,12 @@ pub async fn run_menu_bar_app() {
             std::mem::forget(lock);
         }
         Ok(None) => {
-            eprintln!("turbofig: another instance is already running; exiting");
+            let socket_path = home.join("app.sock");
+            match second_instance::signal_open_about(&socket_path) {
+                Ok(true) => eprintln!("turbofig: another instance is already running; told it to open the About window"),
+                Ok(false) => eprintln!("turbofig: another instance is already running (no listener found); exiting"),
+                Err(e) => eprintln!("turbofig: another instance is already running; could not signal it: {e}"),
+            }
             std::process::exit(0);
         }
         Err(e) => {
@@ -265,13 +323,21 @@ pub async fn run_menu_bar_app() {
         copy_prompt_item,
         copy_manifest_item,
         open_figma_item,
-        open_setup_item,
+        about_item,
         start_at_login_item,
         open_log_item,
         quit_item,
     } = build_menu(&initial_state.header, &initial_state.status_text);
 
     let current_state = Arc::new(Mutex::new(initial_state.clone()));
+    let last_health = Rc::new(RefCell::new(initial_health.clone()));
+    let about_window_handle: Rc<RefCell<Option<AboutWindowHandle>>> = Rc::new(RefCell::new(None));
+    let should_auto_open_about = about_state::should_auto_open_about_window(&home);
+    let about_ctx = AboutWindowContext {
+        home: home.clone(),
+        mcp_port,
+        current_state: current_state.clone(),
+    };
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -281,6 +347,7 @@ pub async fn run_menu_bar_app() {
     // thread, so the main thread stays free for the tao event loop (macOS
     // requires the event loop to run on the main thread).
     let poll_home = home.clone();
+    let poll_proxy = proxy.clone();
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -301,12 +368,36 @@ pub async fn run_menu_bar_app() {
                 let token = read_token(&poll_home).await;
                 crate::spawn::fetch_health_with_token(&client, mcp_port, token.as_deref()).await
             });
-            if proxy.send_event(UserEvent::Health(health)).is_err() {
+            if poll_proxy.send_event(UserEvent::Health(health)).is_err() {
                 return; // the event loop is gone; stop polling.
             }
             std::thread::sleep(HEALTH_POLL_INTERVAL);
         }
     });
+
+    // The second-instance signal listener: binds <home>/app.sock and, for
+    // every connection that carries the open-about message, asks the event
+    // loop to open (or focus) the About window. A bind failure here is a
+    // warning, not fatal: the app still works, a second launch just will
+    // not be able to signal this one (it logs its own warning and exits).
+    let socket_path = home.join("app.sock");
+    match second_instance::bind(&socket_path) {
+        Ok(listener) => {
+            let about_proxy = proxy.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    if second_instance::read_is_open_about(stream)
+                        && about_proxy.send_event(UserEvent::OpenAboutWindow).is_err()
+                    {
+                        return; // the event loop is gone; stop listening.
+                    }
+                }
+            });
+        }
+        Err(e) => {
+            eprintln!("turbofig: could not bind the second-instance socket: {e}");
+        }
+    }
 
     let bridge_dir_display = home.display().to_string();
     let tray_icon = icon::icon_for_state(initial_state.icon_state);
@@ -327,12 +418,12 @@ pub async fn run_menu_bar_app() {
     let copy_prompt_id = copy_prompt_item.id().clone();
     let copy_manifest_id = copy_manifest_item.id().clone();
     let open_figma_id = open_figma_item.id().clone();
-    let open_setup_id = open_setup_item.id().clone();
+    let about_id = about_item.id().clone();
     let start_at_login_id = start_at_login_item.id().clone();
     let open_log_id = open_log_item.id().clone();
     let quit_id = quit_item.id().clone();
 
-    event_loop.run(move |event, _target, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
@@ -342,16 +433,27 @@ pub async fn run_menu_bar_app() {
                 if let Some(icon) = icon::icon_for_state(new_state.icon_state) {
                     let _ = tray.set_icon_templated(Some(icon));
                 }
+                let names = state::connected_file_names_from_health(health.as_ref());
+                if let Some(handle) = about_window_handle.borrow().as_ref() {
+                    handle.push_status(health.is_some(), &names);
+                }
+                *last_health.borrow_mut() = health;
                 if let Ok(mut guard) = current_state.lock() {
                     *guard = new_state;
                 }
             }
+            Event::UserEvent(UserEvent::OpenAboutWindow) => {
+                open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
+            }
             Event::NewEvents(StartCause::Init) => {
-                // The tray icon and menu are already built above; nothing
-                // else to do on init. tao requires the event loop to have
-                // started before some platform calls are safe, which is
-                // why the tray itself is built just before `run` rather
-                // than here.
+                if should_auto_open_about {
+                    open_or_focus_about_window(
+                        target,
+                        &about_window_handle,
+                        &about_ctx,
+                        &last_health,
+                    );
+                }
             }
             _ => {}
         }
@@ -365,24 +467,15 @@ pub async fn run_menu_bar_app() {
                 clipboard_for_app().copy(&manifest_path.display().to_string());
             } else if event.id == open_figma_id {
                 opener_for_app().open_figma();
-            } else if event.id == open_setup_id {
-                open_setup_window();
+            } else if event.id == about_id {
+                open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
             } else if event.id == start_at_login_id {
                 let checked = start_at_login_item.is_checked();
                 set_start_at_login_stub(checked);
             } else if event.id == open_log_id {
                 opener_for_app().open_app_with_path("Console", &log_path);
             } else if event.id == quit_id {
-                let stopper = RealDaemonStopper {
-                    rt: tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .expect("build a tokio runtime for the quit sequence"),
-                    client: crate::spawn::build_admin_client()
-                        .unwrap_or_else(|_| reqwest::Client::new()),
-                    mcp_port,
-                    home: home.clone(),
-                };
+                let stopper = RealDaemonStopper::new(home.clone(), mcp_port);
                 if !quit_sequence(&stopper) {
                     eprintln!("turbofig: the daemon was still answering after Quit's stop request");
                 }

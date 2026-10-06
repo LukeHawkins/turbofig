@@ -72,17 +72,22 @@ impl Clipboard for NullClipboard {
     }
 }
 
-/// Opens Figma Desktop, or any other macOS app by name. `RealAppOpener`
-/// shells out to `open -a <app>`; a test uses `FakeOpener` instead. Shared
-/// by the bare `turbofig` command (`open_figma`) and the menu bar's "Open
-/// Log" item (`open_app_with_path`, e.g. `open -a Console <path>`), so both
-/// go through the same seam and the same debug-build guard.
+/// Opens Figma Desktop, any other macOS app by name, or a URL in the
+/// default browser. `RealAppOpener` shells out to `open`; a test uses
+/// `FakeOpener` instead. Shared by the bare `turbofig` command
+/// (`open_figma`), the menu bar's "Open Log" item (`open_app_with_path`,
+/// e.g. `open -a Console <path>`), and the About window's "Docs" link
+/// (`open_url`), so all 3 go through the same seam and the same debug-build
+/// guard.
 pub trait AppOpener {
     /// Attempts to open Figma Desktop. Returns whether it succeeded.
     fn open_figma(&self) -> bool;
     /// Opens `path` with the named macOS app (`open -a <app> <path>`).
     /// Returns whether it succeeded.
     fn open_app_with_path(&self, app: &str, path: &Path) -> bool;
+    /// Opens `url` in the default browser (`open <url>`). Returns whether
+    /// it succeeded.
+    fn open_url(&self, url: &str) -> bool;
 }
 
 /// The real opener: `open -a Figma`, macOS-only (the whole daemon is).
@@ -101,6 +106,14 @@ impl AppOpener for RealAppOpener {
         std::process::Command::new("open")
             .args(["-a", app])
             .arg(path)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    fn open_url(&self, url: &str) -> bool {
+        std::process::Command::new("open")
+            .arg(url)
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
@@ -124,6 +137,10 @@ impl AppOpener for FakeOpener {
     }
 
     fn open_app_with_path(&self, _app: &str, _path: &Path) -> bool {
+        self.succeeds
+    }
+
+    fn open_url(&self, _url: &str) -> bool {
         self.succeeds
     }
 }
@@ -472,5 +489,11 @@ mod tests {
     fn fake_opener_reports_the_fixed_result_for_open_app_with_path() {
         assert!(FakeOpener::new(true).open_app_with_path("Console", Path::new("/tmp/daemon.log")));
         assert!(!FakeOpener::new(false).open_app_with_path("Console", Path::new("/tmp/daemon.log")));
+    }
+
+    #[test]
+    fn fake_opener_reports_the_fixed_result_for_open_url() {
+        assert!(FakeOpener::new(true).open_url("https://github.com/LukeHawkins/turbofig"));
+        assert!(!FakeOpener::new(false).open_url("https://github.com/LukeHawkins/turbofig"));
     }
 }

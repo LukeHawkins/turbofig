@@ -59,6 +59,17 @@ fn connected_files_from_health(health: Option<&serde_json::Value>) -> Vec<Connec
         .unwrap_or_default()
 }
 
+/// The connected files' names only, for the About window's chips
+/// (`about_state::chips_from_connected_files`) and its step-2 checkmark.
+/// Thin wrapper over `connected_files_from_health` so both callers share
+/// the one parsing rule.
+pub(crate) fn connected_file_names_from_health(health: Option<&serde_json::Value>) -> Vec<String> {
+    connected_files_from_health(health)
+        .into_iter()
+        .map(|f| f.name)
+        .collect()
+}
+
 /// Builds the full `MenuState` from `/health`'s parsed body (`None` when the
 /// daemon did not answer), the bridge directory and the MCP port (both
 /// already known locally; never read from `/health`).

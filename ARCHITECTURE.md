@@ -74,7 +74,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
 | `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `Turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort; `app_bundle_outdated`, `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
 | `agent_prompt.rs` | Not macOS-only: the agent-connect prompt's fill logic (`fill_agent_prompt`), shared byte-for-byte with the plugin's own copy via `prompts/agent-prompt.txt` (`include_str!` here, inlined by `plugin/build-ui.ts` there). A golden test on each side checks the same inputs give identical text |
-| `menu_bar/` | macOS-only: the menu-bar app (`mod.rs`'s `run_menu_bar_app`, the only thing in the crate that builds a real tray icon or event loop); `state.rs` (`MenuState`, the pure `/health`-to-menu translation); `icon.rs` (PNG decode for the 2 tray-icon states); `lock.rs` (the single-instance `flock` guard); `quit.rs` (the stop-then-confirm sequence, seamed off a real HTTP stopper via `DaemonStopper`). See "Menu-bar app" below |
+| `menu_bar/` | macOS-only: the menu-bar app (`mod.rs`'s `run_menu_bar_app`, and `about_window.rs`'s `create_about_window`, the only things in the crate that build a real tray icon, window, webview, or event loop); `state.rs` (`MenuState`, the pure `/health`-to-menu translation); `icon.rs` (PNG decode for the 2 tray-icon states); `lock.rs` (the single-instance `flock` guard); `quit.rs` (the stop-then-confirm sequence, seamed off a real HTTP stopper via `DaemonStopper`); `about_state.rs` (the About window's IPC command parsing, `/health`-to-chip mapping, and first-use rule); `about_window.rs` (the `tao`/`wry` glue); `second_instance.rs` (the `<home>/app.sock` signal a second launch uses to ask the first to open the window). See "Menu-bar app" below |
 
 ## Plugin
 
@@ -338,14 +338,16 @@ come from `clap`.
 
 ## Menu-bar app (`daemon/src/menu_bar/`)
 
-Step 2 of the macOS app bundle (step 1: `app_bundle.rs`, above; step 3: the
-setup window; step 4: first-run, login item, docs). Reached either by
-opening `Turbofig.app` (`main.rs`'s `cmd_run_or_app_mode` dispatches into it
-when `running_inside_app_bundle()` is true) or the hidden dev command
-`turbofig app run`. macOS-only, same target-gating as its 2 extra
-dependencies, `tray-icon` (with its `muda` menus) and `tao` (the main-thread
-event loop), both `[target.'cfg(target_os = "macos")'.dependencies]` so
-Linux CI never resolves either.
+Steps 2 (tray icon, menu, status polling, Quit) and 3 (the About window) of
+the macOS app bundle, both here (step 1: `app_bundle.rs`, above; step 4:
+first-run, login item, docs, still to come). Reached either by opening
+`Turbofig.app` (`main.rs`'s `cmd_run_or_app_mode` dispatches into it when
+`running_inside_app_bundle()` is true) or the hidden dev command `turbofig
+app run`. macOS-only, same target-gating as its 3 extra dependencies,
+`tray-icon` (with its `muda` menus), `tao` (the main-thread event loop), and
+`wry` (the About window's webview), all
+`[target.'cfg(target_os = "macos")'.dependencies]` so Linux CI never
+resolves any of them.
 
 - **Single instance.** Before doing anything else, `run_menu_bar_app` takes
   an exclusive, non-blocking `flock` on `<home>/app.lock` (`lock::try_acquire`).
@@ -384,8 +386,8 @@ Linux CI never resolves either.
   `set_icon_templated`) so macOS tints it for light and dark mode.
 - **Menu**, in order: a disabled header, a disabled status line, a
   separator, "Copy Agent Prompt", "Copy Plugin Manifest Path", "Open Figma",
-  "Open Setup…" (`open_setup_window`, a step-3 stub that only logs for now),
-  a separator, "Start at Login" (a `CheckMenuItem`, shown unchecked; its
+  "About Turbofig…" (opens, or focuses, the About window below), a
+  separator, "Start at Login" (a `CheckMenuItem`, shown unchecked; its
   toggle is a step-4 stub that only logs), "Open Log" (`open -a Console
   <home>/daemon.log`, through the `first_run::AppOpener` seam's
   `open_app_with_path`), a separator, "Quit Turbofig". Clicks are read each
@@ -408,6 +410,54 @@ Linux CI never resolves either.
   no bundle in place, for manual testing. A debug build refuses it unless
   `TURBOFIG_DEV_REAL_DESKTOP=1` is set, since it shows a real tray icon and
   menu; a release build (what `Turbofig.app` itself launches) always runs it.
+
+### About window (step 3: `about_window.rs`, `about_state.rs`, `second_instance.rs`)
+
+A real `tao` window (420x520, not resizable, titled "Turbofig") hosting 1
+`wry` webview over exactly 1 embedded page
+(`daemon/assets/about/about.html`, `include_str!`'d, never a URL; see
+`SECURITY.md`'s "Menu-bar app: the About window's webview"). Opens
+automatically on first use (`about_state::should_auto_open_about_window`:
+`<home>/plugin-seen` does not exist yet), from "About Turbofig…", or from a
+second instance's signal; already open, any of those 3 just calls
+`AboutWindowHandle::focus` instead of building a second window.
+
+- **The page** reuses the plugin panel's CSS tokens and ghost-wordmark trick
+  (`plugin/src/ui/template.html`'s `--figma-color-*`-named custom
+  properties and the `.wordmark` text-shadow), with its own light/dark
+  values (no Figma host to inject them here) switched by
+  `prefers-color-scheme`. Header: wordmark, version, the tagline "Bridge any
+  AI to Figma". Two live status chips. Two tabs: "How to use" (default: add
+  the plugin, run it in a file, ask the agent, with a checkmark on step 2
+  once a file connects) and "Claude Code / MCP" (the `claude mcp add`
+  command and the other-clients JSON, both with Copy; the same 2 strings
+  `first_run::first_run_text` already shows in the bare command's
+  first-run walkthrough, kept in sync by hand today, not a shared
+  constant). Footer: a
+  disabled "Start at login" checkbox (step 4 wires it up), "Docs" (the
+  GitHub repo), "Quit Turbofig".
+- **IPC**: the page only ever calls `window.ipc.postMessage("<command>")`
+  with 1 of 7 fixed strings; `about_state::parse_ipc_command` parses them
+  into an `IpcCommand`, rejecting anything else. `about_window::handle_ipc_message`
+  dispatches each to the same `Clipboard`/`AppOpener` seams and the same
+  `quit_sequence` the tray menu uses (`copy_mcp_command`/`copy_mcp_json`
+  build their own text directly, from the stable binary path, rather than
+  reading anything back from the DOM).
+- **Navigation** is blocked everywhere except the initial load; see
+  `about_window::navigation_is_allowed` and `SECURITY.md`.
+- **Live status**: the same background health poller that updates the tray
+  (`UserEvent::Health`) also calls `AboutWindowHandle::push_status`, which
+  runs `window.turbofigSetStatus(...)` (`WebView::evaluate_script`) with the
+  2 chip strings (`about_state::chips_from_connected_files`, the same
+  bridge-reachable/connected-file-names shape `MenuState` is built from) and
+  whether the step-2 checkmark should show.
+- **Second instance** (`second_instance.rs`): a Unix socket at
+  `<home>/app.sock`, mode `0600`. A second launch, once `lock::try_acquire`
+  finds `<home>/app.lock` already held, connects and sends 1 fixed message,
+  then exits 0; the first instance's listener thread (bound before the tray
+  is built) forwards that as `UserEvent::OpenAboutWindow` into the event
+  loop, which opens or focuses the window exactly like "About Turbofig…"
+  does.
 
 ## `/health`, `/job`, and `/mcp` auth
 
