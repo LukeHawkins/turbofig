@@ -602,6 +602,14 @@ async fn run_daemon() {
     let ws_port = turbofig::ws_port_from_env();
     let bridge_dir = turbofig::bridge_dir_from_env();
 
+    // `spawn_detached_daemon`'s own log rotation only ever runs in the
+    // process that (re)spawns a daemon, so a long-running launchd-supervised
+    // daemon's log is otherwise never rotated across its lifetime. Give this
+    // `serve` the same chance, before anything below writes a line to
+    // stdout/stderr that a rotation-and-reopen must not lose. A no-op
+    // outside launchd supervision (see the function's own doc comment).
+    turbofig::spawn::rotate_daemon_log_and_reopen_std_streams(&bridge_dir);
+
     // Check before any other side effect (reading the token, binding a
     // port): a second `turbofig serve` while one is already healthy on this
     // port must exit at once with a clear message, not silently fail later.

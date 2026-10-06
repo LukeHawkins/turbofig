@@ -253,6 +253,36 @@ pub fn spawn_daemon(
     cmd.spawn().expect("spawn turbofig serve")
 }
 
+/// Spawns a daemon exactly like `spawn_daemon`, but with
+/// `TURBOFIG_SUPERVISED=1`, simulating a launchd-managed `serve`: the plist's
+/// `StandardOutPath`/`StandardErrorPath` already point stdout/stderr at
+/// `<home>/daemon.log` before `exec`, which is exactly what opening the log
+/// here (append, before `spawn`) and handing it to the child as its stdout/
+/// stderr also does. Used to test `spawn::rotate_daemon_log_and_reopen_std_streams`'s
+/// startup rotation against a pre-seeded oversize log.
+pub fn spawn_supervised_daemon(home: &Path, mcp_port: u16, ws_port: u16) -> Child {
+    std::fs::create_dir_all(home).expect("create home dir");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.join("daemon.log"))
+        .expect("open daemon.log");
+    let log_err = log.try_clone().expect("clone log handle");
+
+    Command::new(BIN)
+        .arg("serve")
+        .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
+        .env("TURBOFIG_WS_PORT", ws_port.to_string())
+        .env("TURBOFIG_BRIDGE_DIR", home)
+        .env("TURBOFIG_SUPERVISED", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_err))
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn turbofig serve")
+}
+
 /// Runs the `turbofig` binary with `args` to completion, pointed at
 /// `mcp_port`/`ws_port`/`home` via the `TURBOFIG_*` env vars, and returns its
 /// exit status plus captured stdout and stderr. For a one-shot CLI command

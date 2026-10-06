@@ -183,8 +183,14 @@ and writes its own files on every start.
   `<turbofig binary> serve` in its own session (`setsid`), with `<home>` as its
   working directory, stdin from `/dev/null`, and stdout/stderr appended to
   `<home>/daemon.log`. A background thread reaps the child, so a stopped
-  daemon never stays a zombie. At startup the daemon rotates a `daemon.log`
-  over 5 MiB to `daemon.log.1` (one rotated file is kept). Both `turbofig`
+  daemon never stays a zombie. `daemon.log` over 5 MiB is rotated to
+  `daemon.log.1` (one rotated file is kept) by whichever process starts the
+  next daemon: `spawn_detached_daemon`'s caller for an ad-hoc start, or
+  `run_daemon` itself (`spawn::rotate_daemon_log_and_reopen_std_streams`) for
+  a launchd-managed one, since nothing else ever respawns that long-running
+  process to trigger the first path. The launchd case also reopens stdout
+  and stderr (`dup2`) onto the fresh file: the plist's `StandardOutPath`
+  keeps them pointed at the pre-rotation inode otherwise. Both `turbofig`
   (bare, no subcommand) and `turbofig mcp` call this the same way: check
   `/health` first, start detached only if nothing answers, then poll
   `/health` until it does (`spawn::wait_for_health`) or give up with a clear

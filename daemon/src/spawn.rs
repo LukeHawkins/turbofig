@@ -61,6 +61,14 @@ const LOG_ROTATE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
 /// Rotates `<home>/daemon.log` to `<home>/daemon.log.1` if it is currently
 /// over `LOG_ROTATE_THRESHOLD_BYTES`. A missing log (nothing to rotate yet)
 /// is not an error; any other failure to read its size is propagated.
+///
+/// Two callers can race this (two proxies, or a proxy and this process's own
+/// startup, both deciding the daemon needs (re)starting at once): if this
+/// caller's `metadata` read sees the log over threshold but a concurrent
+/// caller already renamed it away by the time this one calls `rename`, that
+/// rename fails with `NotFound`. That is not a real failure, just a lost
+/// race to do the exact same rotation: the log has already been rotated by
+/// the winner, which is all this call was ever trying to accomplish.
 fn rotate_log_if_oversize(home: &Path) -> io::Result<()> {
     let log_path = home.join("daemon.log");
     let metadata = match std::fs::metadata(&log_path) {
@@ -73,8 +81,116 @@ fn rotate_log_if_oversize(home: &Path) -> io::Result<()> {
     }
     // A rename onto an existing daemon.log.1 replaces it (same filesystem,
     // same directory), so this always keeps exactly one rotated generation.
-    std::fs::rename(&log_path, home.join("daemon.log.1"))
+    rename_log_tolerating_concurrent_rotation(&log_path, &home.join("daemon.log.1"))
 }
+
+/// Renames `log_path` to `rotated_path`, treating `NotFound` as success: the
+/// expected cause is a concurrent caller already having won the race to
+/// rotate this exact log (see `rotate_log_if_oversize`'s doc comment), so
+/// there is nothing left for this caller to do, not a real failure. A
+/// `rename` also reports `NotFound` for a missing destination directory,
+/// which this cannot tell apart from a lost race; `rotate_daemon_log_best_effort`
+/// only ever rotates within `home`, which must already exist by the time
+/// this runs, so that case is not expected in practice.
+fn rename_log_tolerating_concurrent_rotation(
+    log_path: &Path,
+    rotated_path: &Path,
+) -> io::Result<()> {
+    match std::fs::rename(log_path, rotated_path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Rotates `<home>/daemon.log` if it is oversize (see `rotate_log_if_oversize`),
+/// never failing the caller: any error (other than the already-handled
+/// concurrent-rotation race) is logged as a warning and otherwise ignored.
+/// A log that could not be rotated is not a reason to refuse to start the
+/// daemon; the log just grows a little further until the next chance.
+pub fn rotate_daemon_log_best_effort(home: &Path) {
+    if let Err(e) = rotate_log_if_oversize(home) {
+        eprintln!(
+            "turbofig: could not rotate {}: {e}",
+            home.join("daemon.log").display()
+        );
+    }
+}
+
+/// Rotates `<home>/daemon.log` the same way `spawn_detached_daemon` does
+/// (`rotate_daemon_log_best_effort`), then, only when this process is itself
+/// the one launchd is supervising (`supervisor::is_supervised`), reopens
+/// stdout and stderr onto a fresh `<home>/daemon.log`.
+///
+/// `spawn_detached_daemon`'s rotation only ever runs in the *parent* that
+/// starts a new daemon process, so the long-running launchd-supervised
+/// daemon's own log (the plist's `StandardOutPath`/`StandardErrorPath`) is
+/// never rotated across its lifetime: nothing else ever (re)spawns it to
+/// trigger that parent-side check. Call this once, early in `serve`'s
+/// startup, so a launchd-managed daemon gets the same chance to rotate an
+/// oversize log as an ad-hoc detached one does, every time launchd starts
+/// (or restarts) it.
+///
+/// Under launchd, a rename does not affect an already-open file descriptor:
+/// the old `daemon.log` (now `daemon.log.1`) stays backing this process's
+/// stdout/stderr until they are explicitly reopened, so every `println!`/
+/// `eprintln!` after a rotation would otherwise keep landing in the rotated
+/// file forever, not the fresh one. `dup2` onto a newly opened handle on the
+/// same path fixes that. Outside supervision (a dev `cargo run`, a bare
+/// `turbofig serve`), stdout/stderr are a real terminal or whatever the
+/// caller piped them to, so this never touches them: redirecting a
+/// developer's terminal output to a file on their behalf would be a
+/// surprising, unrelated side effect.
+pub fn rotate_daemon_log_and_reopen_std_streams(home: &Path) {
+    rotate_daemon_log_best_effort(home);
+    if !crate::supervisor::is_supervised() {
+        return;
+    }
+    reopen_std_streams_onto(&home.join("daemon.log"));
+}
+
+/// Opens `path` (create, append) and `dup2`s both stdout (fd 1) and stderr
+/// (fd 2) onto it, so every later write to either goes to this fresh file
+/// handle instead of whatever they were pointing at before. Best-effort: a
+/// failure to open or dup2 is logged (to whatever stderr still is) and
+/// otherwise ignored, never fails startup.
+#[cfg(unix)]
+fn reopen_std_streams_onto(path: &Path) {
+    use std::os::fd::AsRawFd;
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "turbofig: could not reopen {} after rotation: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is a valid, open file descriptor owned by `file` for the
+    // duration of this call; `dup2` with valid fd arguments has no other
+    // preconditions. `file` is intentionally leaked (not closed) after this:
+    // fd 1/2 now also reference its underlying open file description, so
+    // closing `file`'s own fd here would not affect them, but keeping it
+    // alive for the process lifetime (by leaking) avoids relying on that.
+    unsafe {
+        let _ = libc::dup2(fd, libc::STDOUT_FILENO);
+        let _ = libc::dup2(fd, libc::STDERR_FILENO);
+    }
+    std::mem::forget(file);
+}
+
+/// No-op on non-Unix platforms: there is no POSIX fd model to `dup2` into.
+/// The daemon, launchd integration, and this whole crate are macOS-only
+/// today; this keeps the crate buildable elsewhere rather than failing to
+/// compile.
+#[cfg(not(unix))]
+fn reopen_std_streams_onto(_path: &Path) {}
 
 /// Spawns `<turbofig_binary> serve` fully detached into its own session.
 ///
@@ -99,7 +215,7 @@ fn rotate_log_if_oversize(home: &Path) -> io::Result<()> {
 /// function (or its caller) blocking on it.
 pub fn spawn_detached_daemon(turbofig_binary: &Path, home: &Path) -> io::Result<()> {
     std::fs::create_dir_all(home)?;
-    rotate_log_if_oversize(home)?;
+    rotate_daemon_log_best_effort(home);
     let log_path = home.join("daemon.log");
     let stdout_log = std::fs::OpenOptions::new()
         .create(true)
@@ -595,6 +711,34 @@ mod tests {
             oversize.len(),
             "the stale .1 must be replaced by the just-rotated log, not kept"
         );
+    }
+
+    #[test]
+    fn rename_log_tolerating_concurrent_rotation_treats_a_missing_source_as_success() {
+        // Simulates a concurrent caller having already won the rotation race
+        // between this caller's own `metadata` check and its `rename`: the
+        // source is gone by the time this call runs, the same `NotFound`
+        // kind a losing `rename` call would get.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let already_gone = tmp.path().join("daemon.log");
+        let rotated = tmp.path().join("daemon.log.1");
+
+        rename_log_tolerating_concurrent_rotation(&already_gone, &rotated)
+            .expect("a concurrent winner already rotating this log must not be an error");
+        assert!(
+            !rotated.exists(),
+            "losing the race must not create a destination out of nothing"
+        );
+    }
+
+    #[test]
+    fn rotate_daemon_log_best_effort_never_panics_on_an_unrotatable_log() {
+        // No log and no home directory at all: rotate_log_if_oversize's own
+        // `metadata` call fails with NotFound, which is already a no-op, so
+        // this just exercises that the best-effort wrapper never panics
+        // regardless of the underlying result.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        rotate_daemon_log_best_effort(&tmp.path().join("does-not-exist"));
     }
 
     #[test]
