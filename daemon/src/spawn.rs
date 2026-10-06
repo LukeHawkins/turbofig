@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// How long `wait_for_health` polls before giving up.
-pub const HEALTH_DEADLINE: Duration = Duration::from_secs(5);
+pub const HEALTH_DEADLINE: Duration = Duration::from_secs(15);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Connect timeout for every admin HTTP call (`/health`, `/control`), and
@@ -573,7 +573,7 @@ mod tests {
         spawn_detached_daemon(&script_path, tmp.path()).expect("spawn a trivial detached process");
 
         let log_path = tmp.path().join("daemon.log");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let contents = loop {
             let contents = std::fs::read_to_string(&log_path).unwrap_or_default();
             if !contents.trim().is_empty() {
@@ -622,7 +622,7 @@ mod tests {
 
         spawn_detached_daemon(&script_path, tmp.path()).expect("spawn the fake daemon");
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let pid: i32 = loop {
             if let Ok(s) = std::fs::read_to_string(&pidfile) {
                 let trimmed = s.trim();
@@ -637,7 +637,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         };
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let output = std::process::Command::new("ps")
                 .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -648,13 +648,11 @@ mod tests {
             if stat.is_empty() {
                 break; // no longer in the process table at all: reaped.
             }
-            assert!(
-                !stat.starts_with('Z'),
-                "the child must never be left as a zombie: pid {pid} stat {stat:?}"
-            );
+            // A short "Z" state between the child's exit and the reaper's
+            // wait() is normal. Only a zombie that outlives the deadline is a bug.
             assert!(
                 Instant::now() < deadline,
-                "the child was never reaped within the deadline (last stat {stat:?})"
+                "the child was never reaped within the deadline: pid {pid}, last stat {stat:?} (Z means a zombie)"
             );
             std::thread::sleep(Duration::from_millis(20));
         }

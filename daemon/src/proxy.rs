@@ -54,7 +54,10 @@ const UNREACHABLE_DEADLINE: Duration = Duration::from_secs(65);
 /// `UNREACHABLE_DEADLINE`). This is a backstop, not the expected wait: it
 /// only matters if a future change to that work drops one of its own
 /// deadlines, so a tool call still fails cleanly instead of hanging forever.
-const TOOL_CALL_BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(90);
+/// It must outlast the slowest healthy path: about 114 s (2 s health check,
+/// 2 s control request, `UNREACHABLE_DEADLINE` 65 s, the 30 s wait for a
+/// launchd relaunch, then `spawn::HEALTH_DEADLINE` 15 s).
+const TOOL_CALL_BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(150);
 
 /// Longest `restart_for_upgrade` waits for launchd's own relaunch of a
 /// supervised daemon to answer `/health`, before giving up on it and
