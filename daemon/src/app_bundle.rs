@@ -569,17 +569,27 @@ mod tests {
         };
         let own_exe = std::env::current_exe().expect("current_exe");
 
-        // This must fail before touching the filesystem at all: no write,
-        // no create_dir_all, nothing under the real ~/Applications.
+        // The developer may have a real Turbofig.app installed, so compare
+        // before and after instead of asserting that nothing is there. The
+        // guard must refuse before it touches the filesystem at all.
+        let bundle = real_dir.join("Turbofig.app");
+        let snapshot = |path: &Path| -> Option<(std::time::SystemTime, Vec<u8>)> {
+            let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+            let plist = std::fs::read(path.join("Contents/Info.plist")).unwrap_or_default();
+            Some((modified, plist))
+        };
+        let before = snapshot(&bundle);
+
         let result = install_app_bundle_with_signer(&real_dir, &own_exe, &NoopCodeSigner);
 
         assert!(
             result.is_err(),
             "a debug build must refuse to install into the real ~/Applications"
         );
-        assert!(
-            !real_dir.join("Turbofig.app").exists(),
-            "the guard must refuse before writing anything"
+        assert_eq!(
+            snapshot(&bundle),
+            before,
+            "the guard must refuse before writing anything under the real ~/Applications"
         );
     }
 }
