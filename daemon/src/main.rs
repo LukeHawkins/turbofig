@@ -2,6 +2,8 @@ use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(target_os = "macos")]
+use turbofig::cli::AppAction;
 use turbofig::cli::{
     already_running_message, autostart_off_message, autostart_on_message, autostart_plist_exists,
     carried_over_env_message, format_health, non_cellar_binary_warning, run_autostart_off,
@@ -79,7 +81,7 @@ async fn main() {
         cmd_check_embedded();
     }
     match cli.command {
-        None => cmd_run().await,
+        None => cmd_run_or_app_mode().await,
         Some(Command::Serve) => run_daemon().await,
         Some(Command::Start) => cmd_start().await,
         Some(Command::Stop) => cmd_stop().await,
@@ -87,6 +89,80 @@ async fn main() {
         Some(Command::Autostart { state }) => cmd_autostart(state).await,
         Some(Command::Uninstall { purge }) => cmd_uninstall(purge).await,
         Some(Command::Mcp) => cmd_mcp().await,
+        #[cfg(target_os = "macos")]
+        Some(Command::App {
+            action: AppAction::Install,
+        }) => cmd_app_install().await,
+    }
+}
+
+/// Dispatches the bare `turbofig` invocation (no subcommand): into the
+/// menu-bar app stub when this process was launched from inside
+/// `Turbofig.app` with no extra CLI args, otherwise the ordinary first-run/
+/// status flow (`cmd_run`). macOS-only check; every other OS always runs
+/// `cmd_run`.
+async fn cmd_run_or_app_mode() {
+    #[cfg(target_os = "macos")]
+    {
+        if turbofig::app_bundle::running_inside_app_bundle() && std::env::args().count() == 1 {
+            run_menu_bar_app().await;
+            return;
+        }
+    }
+    cmd_run().await
+}
+
+/// Step 1 stub: the real menu-bar UI is step 2. For now, app mode only
+/// ensures the daemon is running (the same detached start the bare command
+/// uses) and exits. Never reached unless `running_inside_app_bundle` is
+/// true, so this never runs without a bundle already in place.
+#[cfg(target_os = "macos")]
+async fn run_menu_bar_app() {
+    let mcp_port = turbofig::port_from_env();
+    let home = turbofig::bridge_dir_from_env();
+    let client = build_http_client("turbofig (app)");
+
+    if turbofig::spawn::fetch_health(&client, mcp_port)
+        .await
+        .is_none()
+    {
+        let turbofig_binary = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("turbofig: failed to determine the running binary's path: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
+            eprintln!("turbofig: could not start the daemon: {e}");
+            std::process::exit(1);
+        }
+        if let Err(e) = turbofig::spawn::wait_for_health(&client, mcp_port).await {
+            eprintln!("turbofig: {e}");
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(0);
+}
+
+/// `turbofig app install`: a manual-testing surface for step 4. Assembles
+/// (or refreshes) `Turbofig.app` and prints its path.
+#[cfg(target_os = "macos")]
+async fn cmd_app_install() {
+    let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+    let own_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("turbofig app install: failed to determine the running binary's path: {e}");
+            std::process::exit(1);
+        }
+    };
+    match turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe) {
+        Ok(path) => println!("{}", path.display()),
+        Err(e) => {
+            eprintln!("turbofig app install: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -205,9 +281,24 @@ fn cmd_autostart_off() {
     }
 }
 
+/// The directory `uninstall` removes `Turbofig.app` from, on macOS. An
+/// unused empty path on every other OS: `run_uninstall`'s own
+/// `remove_app_bundle_best_effort` is a no-op there, so the value is never
+/// read.
+#[cfg(target_os = "macos")]
+fn applications_dir_for_uninstall() -> PathBuf {
+    turbofig::app_bundle::applications_dir_from_env()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn applications_dir_for_uninstall() -> PathBuf {
+    PathBuf::new()
+}
+
 async fn cmd_uninstall(purge: bool) {
     let home = turbofig::bridge_dir_from_env();
     let agents_dir = launch_agents_dir();
+    let applications_dir = applications_dir_for_uninstall();
     let mcp_port = turbofig::port_from_env();
     let client = build_http_client("turbofig uninstall");
 
@@ -225,7 +316,14 @@ async fn cmd_uninstall(purge: bool) {
         }
     };
 
-    match run_uninstall(&home, &agents_dir, &launchctl, &uid, purge) {
+    match run_uninstall(
+        &home,
+        &agents_dir,
+        &applications_dir,
+        &launchctl,
+        &uid,
+        purge,
+    ) {
         Ok(outcome) => {
             println!("turbofig: uninstalled the launchd service");
             if !outcome.purged {
@@ -694,6 +792,26 @@ async fn run_daemon() {
                 println!("Turbofig daemon: {verb} the on-disk Figma plugin files");
             }
             Err(e) => eprintln!("Turbofig daemon: failed to write the Figma plugin files: {e}"),
+        }
+    }
+
+    // Keep an existing app bundle current across a `brew upgrade`: never
+    // create one here (step 4 decides when a bundle is first created), only
+    // refresh one that is already there and out of date.
+    #[cfg(target_os = "macos")]
+    {
+        let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+        if turbofig::app_bundle::app_bundle_outdated(&applications_dir) {
+            let own_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
+            match turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe) {
+                Ok(path) => println!(
+                    "Turbofig daemon: reinstalled the outdated app bundle at {}",
+                    path.display()
+                ),
+                Err(e) => {
+                    eprintln!("Turbofig daemon: failed to reinstall the outdated app bundle: {e}")
+                }
+            }
         }
     }
 

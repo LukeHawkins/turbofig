@@ -58,6 +58,22 @@ pub enum Command {
     /// Run a stdio MCP server that forwards every tool call onto the
     /// daemon's `POST /job`, starting the daemon if it is not reachable.
     Mcp,
+    /// Assemble (or refresh) the macOS app bundle. Manual-testing surface
+    /// for the menu-bar app, built from inside the app bundle itself in a
+    /// later step; hidden from `--help`.
+    #[cfg(target_os = "macos")]
+    #[command(hide = true)]
+    App {
+        #[command(subcommand)]
+        action: AppAction,
+    },
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum AppAction {
+    /// Assemble `Turbofig.app` and print its path.
+    Install,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,19 +276,25 @@ pub fn autostart_plist_exists(launch_agents_dir: &Path) -> bool {
     launch_agents_dir.join(plist_file_name()).exists()
 }
 
-/// Turns autostart off (see `run_autostart_off`), then, with `purge`, also
-/// deletes the known turbofig entries inside `home` (see `purge_home`).
-/// Stopping the running daemon itself is the caller's job (`main.rs`'s
-/// `cmd_uninstall`): this function only ever touches the plist and the
-/// home directory, never the network.
+/// Turns autostart off (see `run_autostart_off`), removes the macOS app
+/// bundle at `applications_dir` if it is ours (see `app_bundle`'s
+/// `remove_turbofig_app_bundle`), then, with `purge`, also deletes the known
+/// turbofig entries inside `home` (see `purge_home`). The app bundle is
+/// always removed, with or without `--purge`: it lives outside `home`, so
+/// `purge` (which only ever touches `home`) does not gate it. Stopping the
+/// running daemon itself is the caller's job (`main.rs`'s `cmd_uninstall`):
+/// this function only ever touches the plist, the app bundle, and the home
+/// directory, never the network.
 pub fn run_uninstall(
     home: &Path,
     launch_agents_dir: &Path,
+    applications_dir: &Path,
     launchctl: &dyn Launchctl,
     uid: &str,
     purge: bool,
 ) -> io::Result<UninstallOutcome> {
     run_autostart_off(launch_agents_dir, launchctl, uid)?;
+    remove_app_bundle_best_effort(applications_dir);
 
     if purge {
         purge_home(home)?;
@@ -283,6 +305,19 @@ pub fn run_uninstall(
         purged: purge,
     })
 }
+
+/// Removes the macOS app bundle at `applications_dir` if it is ours,
+/// warning (never failing the whole uninstall) on an error. A no-op on any
+/// other OS, where there is no app bundle at all.
+#[cfg(target_os = "macos")]
+fn remove_app_bundle_best_effort(applications_dir: &Path) {
+    if let Err(e) = crate::app_bundle::remove_turbofig_app_bundle(applications_dir) {
+        eprintln!("turbofig uninstall: warning: could not remove the app bundle: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn remove_app_bundle_best_effort(_applications_dir: &Path) {}
 
 /// The exact entries `turbofig` writes directly under its home directory.
 /// `--purge` removes only these, never the whole directory, so a `home` that
@@ -839,10 +874,18 @@ mod tests {
             "placeholder",
         )
         .expect("write plist");
+        let applications_dir = unique_temp_dir("apps-uninstall");
         let launchctl = FakeLaunchctl::new();
 
-        let outcome =
-            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", false).expect("uninstall");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            false,
+        )
+        .expect("uninstall");
 
         assert!(!outcome.purged);
         assert!(home.exists(), "home must be kept without --purge");
@@ -860,10 +903,18 @@ mod tests {
         let launch_agents_dir = unique_temp_dir("agents-purge");
         std::fs::create_dir_all(&home).expect("mkdir home");
         std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        let applications_dir = unique_temp_dir("apps-purge");
         let launchctl = FakeLaunchctl::new();
 
-        let outcome =
-            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", true).expect("uninstall");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            true,
+        )
+        .expect("uninstall");
 
         assert!(outcome.purged);
         assert!(!home.exists());
@@ -885,10 +936,18 @@ mod tests {
         std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");
         std::fs::write(home.join("plugin-seen"), "1700000000\n").expect("write plugin-seen");
         std::fs::write(home.join("not-turbofigs.txt"), "keep me").expect("write unrelated file");
+        let applications_dir = unique_temp_dir("apps-purge-mixed");
         let launchctl = FakeLaunchctl::new();
 
-        let outcome =
-            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", true).expect("uninstall");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            true,
+        )
+        .expect("uninstall");
 
         assert!(outcome.purged);
         assert!(
@@ -930,10 +989,18 @@ mod tests {
         std::fs::create_dir_all(home.join("inbox")).expect("mkdir inbox");
         std::fs::create_dir_all(home.join("outbox")).expect("mkdir outbox");
         std::fs::write(home.join("plugin-seen"), "1700000000\n").expect("write plugin-seen");
+        let applications_dir = unique_temp_dir("apps-purge-everything");
         let launchctl = FakeLaunchctl::new();
 
-        let outcome =
-            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", true).expect("uninstall");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            true,
+        )
+        .expect("uninstall");
 
         assert!(outcome.purged);
         assert!(
@@ -948,11 +1015,59 @@ mod tests {
     fn run_uninstall_is_a_no_op_when_nothing_exists_yet() {
         let home = unique_temp_dir("home-missing");
         let launch_agents_dir = unique_temp_dir("agents-missing");
+        let applications_dir = unique_temp_dir("apps-missing");
         let launchctl = FakeLaunchctl::new();
 
-        let outcome =
-            run_uninstall(&home, &launch_agents_dir, &launchctl, "501", true).expect("uninstall");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            true,
+        )
+        .expect("uninstall");
         assert!(outcome.purged);
+    }
+
+    /// Full `run_uninstall`: with a real app bundle installed at
+    /// `applications_dir`, uninstall must remove it, regardless of `purge`.
+    /// A foreign `Turbofig.app` with a different bundle identifier must
+    /// survive untouched.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn run_uninstall_removes_the_app_bundle_but_not_a_foreign_one() {
+        let home = unique_temp_dir("home-app-bundle-uninstall");
+        let launch_agents_dir = unique_temp_dir("agents-app-bundle-uninstall");
+        let applications_dir = unique_temp_dir("apps-app-bundle-uninstall");
+        let own_exe = std::env::current_exe().expect("current_exe");
+        crate::app_bundle::install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &crate::app_bundle::NoopCodeSigner,
+        )
+        .expect("install a real bundle to uninstall");
+        let launchctl = FakeLaunchctl::new();
+
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            false,
+        )
+        .expect("uninstall");
+
+        assert!(!outcome.purged);
+        assert!(
+            !applications_dir.join("Turbofig.app").exists(),
+            "uninstall must remove our own app bundle even without --purge"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+        std::fs::remove_dir_all(&applications_dir).ok();
     }
 
     #[test]
