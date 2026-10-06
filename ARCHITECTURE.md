@@ -73,6 +73,8 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
 | `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `Turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort; `app_bundle_outdated`, `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
+| `agent_prompt.rs` | Not macOS-only: the agent-connect prompt's fill logic (`fill_agent_prompt`), shared byte-for-byte with the plugin's own copy via `prompts/agent-prompt.txt` (`include_str!` here, inlined by `plugin/build-ui.ts` there). A golden test on each side checks the same inputs give identical text |
+| `menu_bar/` | macOS-only: the menu-bar app (`mod.rs`'s `run_menu_bar_app`, the only thing in the crate that builds a real tray icon or event loop); `state.rs` (`MenuState`, the pure `/health`-to-menu translation); `icon.rs` (PNG decode for the 2 tray-icon states); `lock.rs` (the single-instance `flock` guard); `quit.rs` (the stop-then-confirm sequence, seamed off a real HTTP stopper via `DaemonStopper`). See "Menu-bar app" below |
 
 ## Plugin
 
@@ -241,6 +243,8 @@ come from `clap`.
 | `autostart on` / `autostart off` | Writes or removes the launchd plist (below). Optional: nothing else depends on it |
 | `uninstall [--purge]` | Stops autostart and removes the plist; `--purge` also deletes the known home-directory entries |
 | `mcp` | Runs the stdio MCP proxy (`proxy.rs`), starting the daemon via `spawn` if unreachable |
+| `app install` | macOS-only, hidden. Assembles (or refreshes) `Turbofig.app` and prints its path (`app_bundle.rs`) |
+| `app run` | macOS-only, hidden, dev-only. Starts the menu-bar app (`menu_bar::run_menu_bar_app`) with no bundle in place; a debug build refuses unless `TURBOFIG_DEV_REAL_DESKTOP=1`, since it shows real UI |
 
 - **The bare command's first-run walkthrough.** When `<home>/plugin-seen`
   does not exist yet (see "Daemon lifecycle" above), `cmd_run` best-effort
@@ -331,6 +335,79 @@ come from `clap`.
   `HTTP_PROXY`/`HTTPS_PROXY` can never intercept this always-local
   request. If the daemon is unreachable, it says so and suggests
   `turbofig start`.
+
+## Menu-bar app (`daemon/src/menu_bar/`)
+
+Step 2 of the macOS app bundle (step 1: `app_bundle.rs`, above; step 3: the
+setup window; step 4: first-run, login item, docs). Reached either by
+opening `Turbofig.app` (`main.rs`'s `cmd_run_or_app_mode` dispatches into it
+when `running_inside_app_bundle()` is true) or the hidden dev command
+`turbofig app run`. macOS-only, same target-gating as its 2 extra
+dependencies, `tray-icon` (with its `muda` menus) and `tao` (the main-thread
+event loop), both `[target.'cfg(target_os = "macos")'.dependencies]` so
+Linux CI never resolves either.
+
+- **Single instance.** Before doing anything else, `run_menu_bar_app` takes
+  an exclusive, non-blocking `flock` on `<home>/app.lock` (`lock::try_acquire`).
+  A second launch while one is already running gets `None` back and exits 0
+  at once: no second tray icon ever appears. The lock lives on the open file
+  description, so it releases automatically on process exit; nothing ever
+  deletes the lock file itself.
+- **Startup.** Ensures the daemon is running the same way the bare command
+  does (`spawn::fetch_health`, `spawn_detached_daemon`, `wait_for_health`),
+  then builds the tray icon and the menu once, starts the background health
+  poller, and runs the tao event loop forever on the main thread (required
+  on macOS). Every exit path goes through `std::process::exit`.
+- **Status polling.** A background `std::thread` with its own small
+  single-thread `tokio` runtime (not the outer one: the main thread is
+  committed to tao's blocking event loop) polls `GET /health` with the
+  pairing token every 2s (`spawn::fetch_health_with_token`, re-reading
+  `<home>/token` each time in case the daemon restarted with a new one), and
+  sends the parsed body (or `None`, unreachable) into the event loop as a
+  `UserEvent::Health` via `EventLoopProxy`.
+- **`state::MenuState`** is the pure translation from a `/health` body (or
+  `None`) into everything the menu shows: the disabled header
+  (`Turbofig <version>`), the disabled status line, which of the 2 tray-icon
+  states to show, and the filled agent-connect prompt
+  (`agent_prompt::fill_agent_prompt`, see above). Status line and icon:
+
+  | `/health` | Status line | Icon |
+  |---|---|---|
+  | unreachable | "Bridge not running" | dimmed |
+  | reachable, 0 files | "Waiting for the Figma plugin" | dimmed |
+  | reachable, 1 file | "Connected: `<name>`" | normal |
+  | reachable, >1 files | "Connected: `<n>` files" | normal |
+
+- **`icon::icon_for_state`** decodes 1 of 2 checked-in 44x44 PNGs
+  (`daemon/assets/tray-icon/`, see its README) to RGBA and builds a
+  `tray_icon::Icon`, loaded as an AppKit template image (`with_icon_templated`/
+  `set_icon_templated`) so macOS tints it for light and dark mode.
+- **Menu**, in order: a disabled header, a disabled status line, a
+  separator, "Copy Agent Prompt", "Copy Plugin Manifest Path", "Open Figma",
+  "Open Setup…" (`open_setup_window`, a step-3 stub that only logs for now),
+  a separator, "Start at Login" (a `CheckMenuItem`, shown unchecked; its
+  toggle is a step-4 stub that only logs), "Open Log" (`open -a Console
+  <home>/daemon.log`, through the `first_run::AppOpener` seam's
+  `open_app_with_path`), a separator, "Quit Turbofig". Clicks are read each
+  event-loop tick from `muda::MenuEvent::receiver()` and dispatched by
+  comparing `event.id` against each item's own id.
+- **Clipboard and opener.** "Copy Agent Prompt" and "Copy Plugin Manifest
+  Path" go through `first_run::Clipboard`; "Open Figma" and "Open Log" go
+  through `first_run::AppOpener` (`open_figma`/`open_app_with_path`). Both
+  seams carry the same debug-build guard as the bare command: a debug build
+  only touches the real clipboard/opener with `TURBOFIG_DEV_REAL_DESKTOP=1`,
+  otherwise a `Null`/fake stands in, so no test run or local `cargo run` can
+  ever touch the real desktop.
+- **`quit::quit_sequence`** is pure control flow over a `DaemonStopper` seam
+  (`stop`, `wait_unreachable`): "Quit Turbofig" issues `POST /control` with
+  the pairing token, waits up to 10s for `/health` to go unreachable, then
+  exits regardless (a user clicking Quit wants the app gone now). The real
+  `DaemonStopper` owns its own small `tokio` runtime for the same main-thread
+  reason as the health poller.
+- **`turbofig app run`** is a hidden dev command that starts app mode with
+  no bundle in place, for manual testing. A debug build refuses it unless
+  `TURBOFIG_DEV_REAL_DESKTOP=1` is set, since it shows a real tray icon and
+  menu; a release build (what `Turbofig.app` itself launches) always runs it.
 
 ## `/health`, `/job`, and `/mcp` auth
 

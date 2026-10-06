@@ -93,6 +93,10 @@ async fn main() {
         Some(Command::App {
             action: AppAction::Install,
         }) => cmd_app_install().await,
+        #[cfg(target_os = "macos")]
+        Some(Command::App {
+            action: AppAction::Run,
+        }) => cmd_app_run().await,
     }
 }
 
@@ -112,37 +116,30 @@ async fn cmd_run_or_app_mode() {
     cmd_run().await
 }
 
-/// Step 1 stub: the real menu-bar UI is step 2. For now, app mode only
-/// ensures the daemon is running (the same detached start the bare command
-/// uses) and exits. Never reached unless `running_inside_app_bundle` is
-/// true, so this never runs without a bundle already in place.
+/// Dispatches into the real menu-bar app (`turbofig::menu_bar`, step 2).
+/// Never reached unless `running_inside_app_bundle` is true, so this never
+/// runs without a bundle already in place.
 #[cfg(target_os = "macos")]
 async fn run_menu_bar_app() {
-    let mcp_port = turbofig::port_from_env();
-    let home = turbofig::bridge_dir_from_env();
-    let client = build_http_client("turbofig (app)");
+    turbofig::menu_bar::run_menu_bar_app().await;
+}
 
-    if turbofig::spawn::fetch_health(&client, mcp_port)
-        .await
-        .is_none()
-    {
-        let turbofig_binary = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("turbofig: failed to determine the running binary's path: {e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
-            eprintln!("turbofig: could not start the daemon: {e}");
-            std::process::exit(1);
-        }
-        if let Err(e) = turbofig::spawn::wait_for_health(&client, mcp_port).await {
-            eprintln!("turbofig: {e}");
-            std::process::exit(1);
-        }
+/// `turbofig app run`: a manual-testing surface for the menu-bar app with no
+/// app bundle in place. Hidden; a debug build refuses unless
+/// `TURBOFIG_DEV_REAL_DESKTOP=1` is set, since this shows a real tray icon
+/// and menu. A release build (what Homebrew installs, and what
+/// `Turbofig.app` actually launches) always runs it.
+#[cfg(target_os = "macos")]
+async fn cmd_app_run() {
+    #[cfg(debug_assertions)]
+    if !debug_real_desktop_allowed() {
+        eprintln!(
+            "turbofig app run: refusing in a debug build; this shows a real tray icon and menu. \
+             Set TURBOFIG_DEV_REAL_DESKTOP=1 to override (never in a test)."
+        );
+        std::process::exit(1);
     }
-    std::process::exit(0);
+    turbofig::menu_bar::run_menu_bar_app().await;
 }
 
 /// `turbofig app install`: a manual-testing surface for step 4. Assembles

@@ -25,6 +25,8 @@ pub mod app_bundle;
 pub mod cli;
 pub mod first_run;
 pub mod launchd;
+#[cfg(target_os = "macos")]
+pub mod menu_bar;
 pub mod proxy;
 pub mod spawn;
 pub mod supervisor;

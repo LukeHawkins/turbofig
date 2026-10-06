@@ -74,6 +74,11 @@ pub enum Command {
 pub enum AppAction {
     /// Assemble `Turbofig.app` and print its path.
     Install,
+    /// Dev-only: starts app mode (tray icon, menu) with no bundle. Hidden;
+    /// a debug build refuses unless `TURBOFIG_DEV_REAL_DESKTOP=1`, since
+    /// this shows real UI.
+    #[command(hide = true)]
+    Run,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]

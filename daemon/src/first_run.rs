@@ -72,11 +72,17 @@ impl Clipboard for NullClipboard {
     }
 }
 
-/// Opens Figma Desktop. `RealAppOpener` shells out to `open -a Figma`; a
-/// test uses `FakeOpener` instead.
+/// Opens Figma Desktop, or any other macOS app by name. `RealAppOpener`
+/// shells out to `open -a <app>`; a test uses `FakeOpener` instead. Shared
+/// by the bare `turbofig` command (`open_figma`) and the menu bar's "Open
+/// Log" item (`open_app_with_path`, e.g. `open -a Console <path>`), so both
+/// go through the same seam and the same debug-build guard.
 pub trait AppOpener {
     /// Attempts to open Figma Desktop. Returns whether it succeeded.
     fn open_figma(&self) -> bool;
+    /// Opens `path` with the named macOS app (`open -a <app> <path>`).
+    /// Returns whether it succeeded.
+    fn open_app_with_path(&self, app: &str, path: &Path) -> bool;
 }
 
 /// The real opener: `open -a Figma`, macOS-only (the whole daemon is).
@@ -86,6 +92,15 @@ impl AppOpener for RealAppOpener {
     fn open_figma(&self) -> bool {
         std::process::Command::new("open")
             .args(["-a", "Figma"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    fn open_app_with_path(&self, app: &str, path: &Path) -> bool {
+        std::process::Command::new("open")
+            .args(["-a", app])
+            .arg(path)
             .status()
             .map(|status| status.success())
             .unwrap_or(false)
@@ -105,6 +120,10 @@ impl FakeOpener {
 
 impl AppOpener for FakeOpener {
     fn open_figma(&self) -> bool {
+        self.succeeds
+    }
+
+    fn open_app_with_path(&self, _app: &str, _path: &Path) -> bool {
         self.succeeds
     }
 }
@@ -447,5 +466,11 @@ mod tests {
     fn fake_opener_reports_the_fixed_result() {
         assert!(FakeOpener::new(true).open_figma());
         assert!(!FakeOpener::new(false).open_figma());
+    }
+
+    #[test]
+    fn fake_opener_reports_the_fixed_result_for_open_app_with_path() {
+        assert!(FakeOpener::new(true).open_app_with_path("Console", Path::new("/tmp/daemon.log")));
+        assert!(!FakeOpener::new(false).open_app_with_path("Console", Path::new("/tmp/daemon.log")));
     }
 }
