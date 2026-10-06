@@ -62,9 +62,10 @@ build` before you test in Figma.
 
 The app (`daemon/src/app_bundle.rs`, `daemon/src/menu_bar/`) is macOS-only
 and assembles `Turbofig.app` on your own Mac. A debug build (`cargo build`,
-`cargo test`, `cargo run`) never touches your real `~/Applications` or
-`~/Library/LaunchAgents`, never runs `launchctl`, and never opens a real
-tray icon or window unless you explicitly opt in:
+`cargo test`, `cargo run`) never touches either of your real Applications
+folders (`/Applications` or `~/Applications`) or `~/Library/LaunchAgents`,
+never runs `launchctl` or `lsregister`, and never opens a real tray icon or
+window unless you explicitly opt in:
 
 - `cargo build && ./target/debug/turbofig app run` is the manual-testing
   surface for the menu-bar app with no bundle installed. It refuses to run

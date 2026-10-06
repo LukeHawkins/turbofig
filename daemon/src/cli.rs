@@ -236,7 +236,7 @@ fn run_autostart_on_with_sleep(
 /// Turns the **app** autostart service on (the default, no `--headless`):
 /// ensures `Turbofig.app` exists (installing it from `own_exe` if its
 /// executable is missing; `install_app_bundle` carries its own debug guard
-/// against writing the real `~/Applications`), writes
+/// against writing a real Applications folder), writes
 /// `eu.lukehawkins.turbofig.app`'s plist pointing at the bundle's own
 /// executable, bootouts+removes the headless plist if present (never run
 /// both at once), then bootout+bootstraps the app service.
@@ -260,14 +260,16 @@ pub fn run_autostart_on_app(
         own_exe,
         home,
         &crate::app_bundle::RealCodeSigner,
+        &crate::app_bundle::RealLaunchServicesRegistrar,
         &|d| std::thread::sleep(d),
     )
 }
 
 /// The testable half of `run_autostart_on_app`: takes an explicit `signer`
-/// (so a test never shells out to the real `codesign`, the same seam
-/// `app_bundle.rs`'s own tests use) and an explicit `sleep` (so a test can
-/// exercise `bootstrap`'s retry loop with no real wait).
+/// and `registrar` (so a test never shells out to the real `codesign` or
+/// `lsregister`, the same seams `app_bundle.rs`'s own tests use) and an
+/// explicit `sleep` (so a test can exercise `bootstrap`'s retry loop with no
+/// real wait).
 #[cfg(target_os = "macos")]
 #[allow(clippy::too_many_arguments)]
 fn run_autostart_on_app_with_sleep(
@@ -278,13 +280,19 @@ fn run_autostart_on_app_with_sleep(
     own_exe: &Path,
     home: &Path,
     signer: &dyn crate::app_bundle::CodeSigner,
+    registrar: &dyn crate::app_bundle::LaunchServicesRegistrar,
     sleep: &dyn Fn(Duration),
 ) -> io::Result<AutostartOnOutcome> {
     std::fs::create_dir_all(launch_agents_dir)?;
 
     let bundle_exe = crate::app_bundle::app_bundle_executable_path(applications_dir);
     if !bundle_exe.exists() {
-        crate::app_bundle::install_app_bundle_with_signer(applications_dir, own_exe, signer)?;
+        crate::app_bundle::install_app_bundle_with_signer(
+            applications_dir,
+            own_exe,
+            signer,
+            registrar,
+        )?;
     }
 
     let log_path = home.join("daemon.log");
@@ -1094,6 +1102,7 @@ mod tests {
             &fake_exe,
             &home,
             &crate::app_bundle::NoopCodeSigner,
+            &crate::app_bundle::NoopLaunchServicesRegistrar,
             &|_| {},
         )
         .expect("autostart on (app)");
@@ -1149,6 +1158,7 @@ mod tests {
             &fake_exe,
             &home,
             &crate::app_bundle::NoopCodeSigner,
+            &crate::app_bundle::NoopLaunchServicesRegistrar,
             &|_| {},
         )
         .expect("autostart on (app)");
@@ -1346,6 +1356,7 @@ mod tests {
             &applications_dir,
             &own_exe,
             &crate::app_bundle::NoopCodeSigner,
+            &crate::app_bundle::NoopLaunchServicesRegistrar,
         )
         .expect("install a real bundle to uninstall");
         let launchctl = FakeLaunchctl::new();

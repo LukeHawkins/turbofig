@@ -101,7 +101,7 @@ The first run of `turbofig` installs and opens `Turbofig.app`, starts the
 daemon in the background, and prints:
 
 ```
-Turbofig is now in your menu bar (look for the tf icon).
+Turbofig is in your Applications folder and your menu bar (look for the tf icon).
 Click it and choose About Turbofig… to get started. No icon? Run: turbofig status
 ```
 
@@ -109,7 +109,9 @@ A tf icon appears in your menu bar. The About window opens automatically
 the first time (it does not reopen on every later run; click the tf icon
 and choose "About Turbofig…" whenever you want it back). A later bare
 `turbofig` run prints the same 2 lines again: the app, not the terminal,
-is where onboarding and status live now.
+is where onboarding and status live now. On a managed Mac where your
+account cannot write `/Applications`, the first line instead says "in
+Applications in your home folder", naming `~/Applications`.
 
 <details>
 <summary>New to the terminal?</summary>

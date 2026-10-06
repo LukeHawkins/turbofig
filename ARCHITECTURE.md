@@ -72,7 +72,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
-| `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `Turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort; `app_bundle_outdated`, `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
+| `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `Turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort, then registered with Launch Services best-effort (`LaunchServicesRegistrar` seam, `RealLaunchServicesRegistrar`/`NoopLaunchServicesRegistrar`, so Spotlight/Launchpad find it); `app_bundle_outdated` (version, or a same-version rebuild via `TurbofigBuildId`, an FNV-1a fingerprint of the binary, `build_id_for_bytes`), `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). `applications_dir_from_env` is the one shared resolver for where the bundle lives: `/Applications` (Finder's sidebar) when writable, else `~/Applications` (a non-admin managed Mac), always preferring whichever already holds our own bundle (`has_our_bundle`) so there is never 2 copies; every consumer (the outdated check, autostart, uninstall, the app LaunchAgent's `ProgramArguments`) goes through it. The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
 | `agent_prompt.rs` | Not macOS-only: the agent-connect prompt's fill logic (`fill_agent_prompt`), shared byte-for-byte with the plugin's own copy via `prompts/agent-prompt.txt` (`include_str!` here, inlined by `plugin/build-ui.ts` there). A golden test on each side checks the same inputs give identical text |
 | `menu_bar/` | macOS-only: the menu-bar app (`mod.rs`'s `run_menu_bar_app`, and `about_window.rs`'s `create_about_window`/`settings_window.rs`'s `create_settings_window`, the only things in the crate that build a real tray icon, window, webview, or event loop); `state.rs` (`MenuState`, the pure `/health`-to-menu translation); `icon.rs` (PNG decode for the 2 tray-icon states); `lock.rs` (the single-instance `flock` guard); `quit.rs` (the stop-then-confirm sequence, seamed off a real HTTP stopper via `DaemonStopper`); `activate.rs` (`activate_app_and_focus`, shared by both windows); `about_state.rs`/`about_window.rs` (the About window's IPC parsing and `tao`/`wry` glue); `settings_state.rs`/`settings_window.rs` (the same split for the Settings window); `second_instance.rs` (the `<home>/app.sock` signal: a second launch asks the first to open the About window, `turbofig uninstall` asks it to quit); `self_update.rs` (the relaunch-once-per-daemon-version decision, and its `<home>/app-relaunched-for` state file). See "Menu-bar app" below |
 
@@ -368,7 +368,15 @@ resolves any of them.
   A second launch while one is already running gets `None` back and exits 0
   at once: no second tray icon ever appears. The lock lives on the open file
   description, so it releases automatically on process exit; nothing ever
-  deletes the lock file itself.
+  deletes the lock file itself. `quit_running_app_and_wait_for_exit`
+  (`mod.rs`) composes this same lock with `second_instance::send`'s
+  `Quit` message: the bare `turbofig` command calls it after it refreshes an
+  outdated `Turbofig.app` (`main.rs`'s `try_app_first_run`), so a rebuild
+  with the same version (see `app_bundle::app_bundle_outdated`'s
+  `TurbofigBuildId` comparison) asks the stale running instance to quit and
+  waits up to 5s for the lock to free before reopening the new bundle,
+  rather than just re-activating the old one; it prints "Updated
+  Turbofig.app and restarted it." only when an instance was actually found.
 - **Startup.** Ensures the daemon is running the same way the bare command
   does (`spawn::fetch_health`, `spawn_detached_daemon`, `wait_for_health`),
   then builds the tray icon and the menu once, starts the background health

@@ -11,8 +11,10 @@
 //! window, no tray icon, no webview, and no event loop ever created. This
 //! file and `about_window.rs` are the only places that build a real tray
 //! icon, window, webview, or event loop; nothing in the crate's test suite
-//! calls `run_menu_bar_app` or `create_about_window`, and neither carries a
-//! `#[cfg(test)]` block of its own.
+//! calls `run_menu_bar_app` or `create_about_window`. This file's own
+//! `#[cfg(test)]` block only ever exercises `quit_running_app_and_wait_for_exit`,
+//! which composes `lock`/`second_instance` with no tray/window/webview
+//! involved either; `about_window.rs` still carries none of its own.
 
 mod about_state;
 mod about_window;
@@ -39,6 +41,50 @@ pub use state::{build_menu_state, ConnectedFileInfo, IconState, MenuState};
 /// when the user never installed, or already quit, the menu-bar app).
 pub fn signal_quit_running_app(home: &Path) -> std::io::Result<bool> {
     second_instance::send(&home.join("app.sock"), second_instance::SignalMessage::Quit)
+}
+
+/// Asks a running app instance (if any) to quit, then waits until
+/// `<home>/app.lock` is free or `deadline` elapses. Used by the bare
+/// `turbofig` command after it refreshes an outdated `Turbofig.app`
+/// (`main.rs`'s `try_app_first_run`): the old instance is still running the
+/// stale binary, so it must exit before the freshly installed bundle is
+/// reopened, rather than the open just re-activating the stale one.
+///
+/// Returns `false` at once, with no signal sent, when no instance is
+/// running (`<home>/app.lock` was free): nothing to restart. Returns `true`
+/// once an instance is found and asked to quit, whether or not it actually
+/// released the lock before `deadline`: the caller proceeds to reopen the
+/// bundle either way, and `true` is what tells it to print its own
+/// "restarted" line.
+///
+/// `sleep` is an explicit seam (the same pattern `cli.rs`'s
+/// `bootstrap_with_retry` uses), so a test can exercise the poll loop with
+/// no real wait.
+pub fn quit_running_app_and_wait_for_exit(
+    home: &Path,
+    deadline: Duration,
+    poll_interval: Duration,
+    sleep: &dyn Fn(Duration),
+) -> bool {
+    let lock_path = home.join("app.lock");
+    match lock::try_acquire(&lock_path) {
+        Ok(Some(_lock)) => return false, // nothing was running; lock released on drop
+        Ok(None) => {}                   // an instance holds the lock; ask it to quit below
+        Err(_) => return false,          // can't tell; don't block the refresh on this
+    }
+
+    let _ = signal_quit_running_app(home);
+
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(Some(_lock)) = lock::try_acquire(&lock_path) {
+            return true;
+        }
+        if start.elapsed() >= deadline {
+            return true; // gave it our best shot; the caller reopens anyway
+        }
+        sleep(poll_interval);
+    }
 }
 
 use crate::first_run::{AppOpener, Clipboard};
@@ -603,4 +649,82 @@ fn maybe_relaunch_for_upgrade(
         );
     }
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returns_false_at_once_when_no_instance_is_running() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let restarted = quit_running_app_and_wait_for_exit(
+            dir.path(),
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+            &|_| panic!("must not sleep when nothing is running"),
+        );
+        assert!(!restarted);
+    }
+
+    #[test]
+    fn returns_true_and_stops_waiting_as_soon_as_the_other_instance_releases_the_lock() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().to_path_buf();
+        let lock_path = home.join("app.lock");
+
+        // Simulate a running instance: hold the lock, listen for the quit
+        // signal, and release the lock once it arrives.
+        let socket_path = home.join("app.sock");
+        let listener = second_instance::bind(&socket_path).expect("bind app.sock");
+        let held_lock = lock::try_acquire(&lock_path)
+            .expect("acquire")
+            .expect("lock must be free at the start of the test");
+        let other_instance = std::thread::spawn(move || {
+            let (stream, _addr) = listener.accept().expect("accept");
+            let message = second_instance::read(stream);
+            assert_eq!(message, Some(second_instance::SignalMessage::Quit));
+            drop(held_lock); // release the lock, as the real app would on quit
+        });
+
+        let restarted = quit_running_app_and_wait_for_exit(
+            &home,
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            &|d| std::thread::sleep(d),
+        );
+
+        other_instance
+            .join()
+            .expect("join the fake instance thread");
+        assert!(restarted);
+        // The lock must actually be free now, not just reported so.
+        assert!(lock::try_acquire(&lock_path).expect("acquire").is_some());
+    }
+
+    #[test]
+    fn returns_true_after_the_deadline_when_the_lock_is_never_released() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().to_path_buf();
+        let lock_path = home.join("app.lock");
+
+        // Nothing is listening on app.sock, and the lock is held forever:
+        // the function must still give up at the deadline and report true
+        // (an instance was found), rather than hang or report false.
+        let held_lock = lock::try_acquire(&lock_path)
+            .expect("acquire")
+            .expect("lock must be free at the start of the test");
+
+        let slept = std::cell::Cell::new(Duration::ZERO);
+        let restarted = quit_running_app_and_wait_for_exit(
+            &home,
+            Duration::from_millis(30),
+            Duration::from_millis(10),
+            &|d| slept.set(slept.get() + d),
+        );
+
+        assert!(restarted);
+        assert!(slept.get() >= Duration::from_millis(30));
+        drop(held_lock);
+    }
 }

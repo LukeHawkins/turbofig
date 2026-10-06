@@ -264,9 +264,23 @@ Plugin manifest: {manifest}\n",
 /// bundle has been opened: the app itself (its tray icon, and the About
 /// window behind "About Turbofig…") is now the onboarding surface, so the
 /// terminal only needs to point at it.
-pub fn app_first_run_text() -> &'static str {
-    "Turbofig is now in your menu bar (look for the tf icon).\n\
-     Click it and choose About Turbofig… to get started. No icon? Run: turbofig status\n"
+///
+/// `used_home_fallback` names the real install location: `false` (the
+/// common case, an admin account) names the Applications folder Finder's
+/// sidebar shows; `true` (a non-admin account on a managed Mac, see
+/// `app_bundle::applications_dir_from_env`) names the per-user fallback
+/// instead, so a user who goes looking in Finder's own Applications never
+/// wonders why it is not there.
+pub fn app_first_run_text(used_home_fallback: bool) -> String {
+    let location = if used_home_fallback {
+        "in Applications in your home folder"
+    } else {
+        "in your Applications folder"
+    };
+    format!(
+        "Turbofig is {location} and your menu bar (look for the tf icon).\n\
+         Click it and choose About Turbofig… to get started. No icon? Run: turbofig status\n"
+    )
 }
 
 /// Combines the macOS app-bundle path's 2 fallible steps (installing the
@@ -279,18 +293,20 @@ pub fn app_first_run_text() -> &'static str {
 /// failed (the caller never attempts to open a bundle that was not
 /// installed); `opened` is whether the `AppOpener` seam's `open_url` (on
 /// the bundle path) succeeded, only ever checked when the install
-/// succeeded.
+/// succeeded; `used_home_fallback` is passed straight through to
+/// `app_first_run_text`.
 pub fn app_first_run_outcome(
     bundle_install_err: Option<String>,
     opened: bool,
-) -> Result<&'static str, String> {
+    used_home_fallback: bool,
+) -> Result<String, String> {
     if let Some(reason) = bundle_install_err {
         return Err(format!("could not install Turbofig.app: {reason}"));
     }
     if !opened {
         return Err("could not open Turbofig.app".to_owned());
     }
-    Ok(app_first_run_text())
+    Ok(app_first_run_text(used_home_fallback))
 }
 
 #[cfg(test)]
@@ -583,7 +599,7 @@ mod tests {
 
     #[test]
     fn app_first_run_text_is_exactly_2_lines_naming_the_tray_icon_and_fallback_status() {
-        let text = app_first_run_text();
+        let text = app_first_run_text(false);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "must be exactly 2 lines: {text:?}");
         assert!(lines[0].contains("menu bar"));
@@ -593,14 +609,33 @@ mod tests {
     }
 
     #[test]
+    fn app_first_run_text_names_the_global_applications_folder_by_default() {
+        let text = app_first_run_text(false);
+        assert!(text.contains("in your Applications folder"));
+        assert!(!text.contains("home folder"));
+    }
+
+    #[test]
+    fn app_first_run_text_names_the_home_fallback_when_asked() {
+        let text = app_first_run_text(true);
+        assert!(text.contains("in Applications in your home folder"));
+    }
+
+    #[test]
     fn app_first_run_outcome_succeeds_when_installed_and_opened() {
-        let result = app_first_run_outcome(None, true);
-        assert_eq!(result, Ok(app_first_run_text()));
+        let result = app_first_run_outcome(None, true, false);
+        assert_eq!(result, Ok(app_first_run_text(false)));
+    }
+
+    #[test]
+    fn app_first_run_outcome_carries_the_home_fallback_into_the_text() {
+        let result = app_first_run_outcome(None, true, true);
+        assert_eq!(result, Ok(app_first_run_text(true)));
     }
 
     #[test]
     fn app_first_run_outcome_fails_with_the_install_reason_when_install_fails() {
-        let result = app_first_run_outcome(Some("disk full".to_owned()), true);
+        let result = app_first_run_outcome(Some("disk full".to_owned()), true, false);
         assert_eq!(
             result,
             Err("could not install Turbofig.app: disk full".to_owned())
@@ -609,7 +644,7 @@ mod tests {
 
     #[test]
     fn app_first_run_outcome_fails_when_open_fails_even_though_install_succeeded() {
-        let result = app_first_run_outcome(None, false);
+        let result = app_first_run_outcome(None, false, false);
         assert_eq!(result, Err("could not open Turbofig.app".to_owned()));
     }
 
@@ -617,7 +652,7 @@ mod tests {
     fn app_first_run_outcome_never_checks_open_when_install_already_failed() {
         // opened=true here would be misleading if install failed; the
         // install error must still win.
-        let result = app_first_run_outcome(Some("no space left".to_owned()), true);
+        let result = app_first_run_outcome(Some("no space left".to_owned()), true, false);
         assert_eq!(
             result,
             Err("could not install Turbofig.app: no space left".to_owned())

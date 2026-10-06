@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use turbofig::cli::{
@@ -525,14 +525,103 @@ async fn cmd_run() {
     );
 }
 
+/// Longest the bare `turbofig` command waits, after asking a running app
+/// instance to quit, for `<home>/app.lock` to be released before reopening
+/// a just-refreshed `Turbofig.app` anyway. See `try_app_first_run`.
+#[cfg(target_os = "macos")]
+const APP_REFRESH_RESTART_DEADLINE: Duration = Duration::from_secs(5);
+/// How often that wait re-checks the lock.
+#[cfg(target_os = "macos")]
+const APP_REFRESH_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Moves an existing `~/Applications/Turbofig.app` to `/Applications` when
+/// `/Applications` has become writable (the user gained admin rights, or
+/// this is simply the first run after an install that predates this
+/// migration) and nothing is already there. A no-op in every other case:
+/// nothing in `/Applications` already, `/Applications` not writable, or no
+/// bundle in `~/Applications` to move.
+///
+/// Called once per refresh (`run_daemon`'s outdated check, and the bare
+/// command's `try_app_first_run`), before either resolves
+/// `applications_dir_from_env`: a successful move changes what that
+/// resolves to from here on, since it checks for an existing bundle in
+/// `/Applications` first. Updates the app LaunchAgent's `ProgramArguments`
+/// to the new location too, if one is installed; a failure at any step is a
+/// warning, never fatal, so the ordinary refresh/open flow still proceeds
+/// against whatever `applications_dir_from_env` resolves to next.
+#[cfg(target_os = "macos")]
+fn migrate_app_bundle_to_global_if_possible(own_exe: &Path, agents_dir: &Path) {
+    if std::env::var("TURBOFIG_APPLICATIONS_DIR").is_ok() {
+        return; // the override always wins; never migrate under it
+    }
+    let global = turbofig::app_bundle::global_applications_dir();
+    let home = turbofig::app_bundle::home_applications_dir();
+    if turbofig::app_bundle::has_our_bundle(&global)
+        || !turbofig::app_bundle::has_our_bundle(&home)
+        || !turbofig::app_bundle::dir_is_writable(&global)
+    {
+        return;
+    }
+
+    let from = turbofig::app_bundle::app_bundle_path(&home);
+    let to = turbofig::app_bundle::app_bundle_path(&global);
+    if let Err(e) = std::fs::rename(&from, &to) {
+        eprintln!(
+            "turbofig: warning: could not move Turbofig.app to {}: {e}",
+            global.display()
+        );
+        return;
+    }
+    println!(
+        "turbofig: moved Turbofig.app to your Applications folder ({})",
+        global.display()
+    );
+
+    if agents_dir
+        .join(turbofig::launchd::app_plist_file_name())
+        .exists()
+    {
+        let uid = match current_uid() {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!(
+                    "turbofig: warning: could not update the app LaunchAgent after moving \
+                     Turbofig.app: failed to determine the current user id: {e}"
+                );
+                return;
+            }
+        };
+        let launchctl = RealLaunchctl;
+        if let Err(e) = turbofig::cli::run_autostart_on_app(
+            agents_dir,
+            &global,
+            &launchctl,
+            &uid,
+            own_exe,
+            &turbofig::bridge_dir_from_env(),
+        ) {
+            eprintln!(
+                "turbofig: warning: could not update the app LaunchAgent after moving \
+                 Turbofig.app: {e}"
+            );
+        }
+    }
+}
+
 /// Installs/refreshes `Turbofig.app` and opens it (through the `AppOpener`
 /// seam, `open <bundle path>`). `Some(text)`: both steps succeeded, print
 /// `app_first_run_text()` instead of the ordinary walkthrough. `None`: one
 /// of them failed; already printed a 1-line reason, the caller falls back
 /// to the ordinary walkthrough.
+///
+/// When the install actually replaced an outdated bundle (not a fresh
+/// install) and an app instance is currently running, asks it to quit and
+/// waits (`menu_bar::quit_running_app_and_wait_for_exit`) before reopening,
+/// so a rebuild with the same version (the owner's reported bug) actually
+/// reaches a running app instead of just re-activating the stale one; see
+/// `app_bundle::app_bundle_outdated`'s build-id comparison.
 #[cfg(target_os = "macos")]
-fn try_app_first_run() -> Option<&'static str> {
-    let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+fn try_app_first_run() -> Option<String> {
     let own_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -540,16 +629,38 @@ fn try_app_first_run() -> Option<&'static str> {
             return None;
         }
     };
+    migrate_app_bundle_to_global_if_possible(&own_exe, &launch_agents_dir());
+    let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+    let used_home_fallback = applications_dir == turbofig::app_bundle::home_applications_dir();
+    let home = turbofig::bridge_dir_from_env();
+
+    let bundle_dir = turbofig::app_bundle::app_bundle_path(&applications_dir);
+    let was_outdated = bundle_dir.exists()
+        && turbofig::app_bundle::app_bundle_outdated(&applications_dir, &own_exe);
+
     let bundle_install_err = turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe)
         .err()
         .map(|e| e.to_string());
+
+    if bundle_install_err.is_none() && was_outdated {
+        let restarted = turbofig::menu_bar::quit_running_app_and_wait_for_exit(
+            &home,
+            APP_REFRESH_RESTART_DEADLINE,
+            APP_REFRESH_RESTART_POLL_INTERVAL,
+            &|d| std::thread::sleep(d),
+        );
+        if restarted {
+            println!("Updated Turbofig.app and restarted it.");
+        }
+    }
+
     let opened = if bundle_install_err.is_none() {
-        let bundle_path = turbofig::app_bundle::app_bundle_path(&applications_dir);
-        opener_for_run().open_url(&bundle_path.display().to_string())
+        opener_for_run().open_url(&bundle_dir.display().to_string())
     } else {
         false
     };
-    match turbofig::first_run::app_first_run_outcome(bundle_install_err, opened) {
+    match turbofig::first_run::app_first_run_outcome(bundle_install_err, opened, used_home_fallback)
+    {
         Ok(text) => Some(text),
         Err(reason) => {
             eprintln!("turbofig: {reason}; falling back to the manual walkthrough");
@@ -877,9 +988,10 @@ async fn run_daemon() {
     // refresh one that is already there and out of date.
     #[cfg(target_os = "macos")]
     {
+        let own_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
+        migrate_app_bundle_to_global_if_possible(&own_exe, &launch_agents_dir());
         let applications_dir = turbofig::app_bundle::applications_dir_from_env();
-        if turbofig::app_bundle::app_bundle_outdated(&applications_dir) {
-            let own_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
+        if turbofig::app_bundle::app_bundle_outdated(&applications_dir, &own_exe) {
             match turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe) {
                 Ok(path) => println!(
                     "Turbofig daemon: reinstalled the outdated app bundle at {}",

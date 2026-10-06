@@ -62,23 +62,79 @@ impl CodeSigner for NoopCodeSigner {
     }
 }
 
-/// Resolves the directory `install_app_bundle` assembles `Turbofig.app`
-/// into: `TURBOFIG_APPLICATIONS_DIR` if set, else the real `~/Applications`.
-pub fn applications_dir_from_env() -> PathBuf {
-    if let Ok(dir) = std::env::var("TURBOFIG_APPLICATIONS_DIR") {
-        return PathBuf::from(dir);
-    }
+/// The global `/Applications`: what Finder's own sidebar shows. Writable
+/// only by an admin account (`access(W_OK)`); see `dir_is_writable`.
+pub fn global_applications_dir() -> PathBuf {
+    PathBuf::from("/Applications")
+}
+
+/// The per-user `~/Applications`: the fallback for a non-admin account on a
+/// managed Mac, where `global_applications_dir` is not writable.
+pub fn home_applications_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
     PathBuf::from(home).join("Applications")
 }
 
-/// The real `~/Applications`, with no `TURBOFIG_APPLICATIONS_DIR` override
-/// applied. Used only by the debug guard below.
-#[cfg(debug_assertions)]
-fn real_applications_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join("Applications"))
+/// True when `dir` already holds a `Turbofig.app` bundle that is ours (its
+/// `Info.plist` carries `BUNDLE_IDENTIFIER`): a foreign app that happens to
+/// share the name does not count. Used by the resolver below so an
+/// existing install is always found and reused, never duplicated.
+pub fn has_our_bundle(dir: &Path) -> bool {
+    bundle_identifier_at(dir).as_deref() == Some(BUNDLE_IDENTIFIER)
+}
+
+/// Reads `<dir>/Turbofig.app`'s own `CFBundleIdentifier`, or `None` if no
+/// bundle (or no readable `Info.plist`) is there. Shared by `has_our_bundle`
+/// and `remove_turbofig_app_bundle`'s ownership check.
+fn bundle_identifier_at(dir: &Path) -> Option<String> {
+    let plist = std::fs::read_to_string(dir.join("Turbofig.app/Contents/Info.plist")).ok()?;
+    extract_plist_string(&plist, "CFBundleIdentifier")
+}
+
+/// True when this process can write into `dir` (`access(W_OK)`): true for
+/// an admin account against `/Applications`, false for a standard account
+/// on a managed Mac. `false` (not an error) when `dir` does not exist yet
+/// either: `access` itself reports that as not writable, which is the
+/// right answer here (nothing to create it with elevated rights).
+pub fn dir_is_writable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(c_path.as_ptr(), libc::W_OK) == 0 }
+}
+
+/// Resolves the directory `Turbofig.app` lives (or should be installed)
+/// in: every caller that needs the bundle's location goes through this one
+/// function (the outdated check, autostart, uninstall, the app
+/// LaunchAgent's `ProgramArguments`, and `set_start_at_login`), so there is
+/// one shared answer, never two.
+///
+/// `TURBOFIG_APPLICATIONS_DIR` wins outright, for tests and for manual
+/// overrides. Otherwise: prefers whichever of `global_applications_dir`
+/// (`/Applications`, what Finder's sidebar shows) or `home_applications_dir`
+/// (`~/Applications`, the non-admin fallback) already holds our own bundle,
+/// checked in that order, so an existing install is always found and never
+/// duplicated; if neither does, picks `/Applications` when writable (the
+/// common case on an unmanaged Mac), else `~/Applications` (a managed Mac
+/// with a non-admin account).
+pub fn applications_dir_from_env() -> PathBuf {
+    if let Ok(dir) = std::env::var("TURBOFIG_APPLICATIONS_DIR") {
+        return PathBuf::from(dir);
+    }
+    let global = global_applications_dir();
+    let home = home_applications_dir();
+    if has_our_bundle(&global) {
+        return global;
+    }
+    if has_our_bundle(&home) {
+        return home;
+    }
+    if dir_is_writable(&global) {
+        global
+    } else {
+        home
+    }
 }
 
 /// True when a debug build may touch the real `~/Applications`. Mirrors
@@ -89,22 +145,33 @@ fn debug_real_desktop_allowed() -> bool {
     std::env::var("TURBOFIG_DEV_REAL_DESKTOP").as_deref() == Ok("1")
 }
 
-/// Refuses to proceed when `applications_dir` is the real, un-overridden
-/// `~/Applications` and this is a debug build without
+/// True when `dir` is one of the 2 real, un-overridden Applications
+/// folders (`global_applications_dir`/`home_applications_dir`), with no
+/// `TURBOFIG_APPLICATIONS_DIR` substitution applied. Used only by the
+/// debug guard below.
+#[cfg(debug_assertions)]
+fn is_a_real_applications_dir(dir: &Path) -> bool {
+    dir == global_applications_dir() || dir == home_applications_dir()
+}
+
+/// Refuses to proceed when `applications_dir` is one of the real,
+/// un-overridden Applications folders (`/Applications` or
+/// `~/Applications`) and this is a debug build without
 /// `TURBOFIG_DEV_REAL_DESKTOP=1`. A no-op in a release build (what Homebrew
 /// installs): only a `cargo build`/`cargo test` debug build ever hits this
-/// guard, so a test run can never write the owner's real Applications
-/// folder even if it forgets to set `TURBOFIG_APPLICATIONS_DIR` itself.
+/// guard, so a test run can never write either of the owner's real
+/// Applications folders even if it forgets to set
+/// `TURBOFIG_APPLICATIONS_DIR` itself.
 #[cfg(debug_assertions)]
 fn refuse_real_applications_dir(applications_dir: &Path) -> io::Result<()> {
     if debug_real_desktop_allowed() {
         return Ok(());
     }
-    if Some(applications_dir.to_path_buf()) == real_applications_dir() {
+    if is_a_real_applications_dir(applications_dir) {
         return Err(io::Error::other(
-            "refusing to write the real ~/Applications in a debug build; set \
-             TURBOFIG_APPLICATIONS_DIR to a test directory, or TURBOFIG_DEV_REAL_DESKTOP=1 \
-             to override (never in a test)",
+            "refusing to write a real Applications folder (/Applications or ~/Applications) in \
+             a debug build; set TURBOFIG_APPLICATIONS_DIR to a test directory, or \
+             TURBOFIG_DEV_REAL_DESKTOP=1 to override (never in a test)",
         ));
     }
     Ok(())
@@ -116,8 +183,14 @@ fn refuse_real_applications_dir(_applications_dir: &Path) -> io::Result<()> {
 }
 
 /// Builds `Contents/Info.plist`'s full contents, stamping this binary's own
-/// crate version into both version keys.
-fn info_plist_contents() -> String {
+/// crate version into both version keys, plus `build_id` (see
+/// `build_id_for_bytes`) into the custom `TurbofigBuildId` key:
+/// `app_bundle_outdated` reads it back to detect a rebuild that kept the
+/// same `CARGO_PKG_VERSION`. `CFBundleInfoDictionaryVersion` and
+/// `LSApplicationCategoryType` are both here because Spotlight/Launchpad
+/// indexing (via `lsregister`, see `install_app_bundle_with_signer`) wants
+/// them to treat the bundle as a real, categorized app.
+fn info_plist_contents(build_id: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -136,10 +209,16 @@ fn info_plist_contents() -> String {
 	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleShortVersionString</key>
 	<string>{version}</string>
 	<key>CFBundleVersion</key>
 	<string>{version}</string>
+	<key>TurbofigBuildId</key>
+	<string>{build_id}</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>
@@ -150,6 +229,29 @@ fn info_plist_contents() -> String {
 </plist>
 "#
     )
+}
+
+/// A fingerprint of a binary's exact bytes: FNV-1a (64-bit) over the whole
+/// file, combined with its length. Not cryptographic, and deliberately not
+/// `std::hash::DefaultHasher` (its algorithm carries no stability guarantee
+/// across Rust versions, so 2 builds of the identical binary on different
+/// toolchains could disagree); FNV-1a's definition never changes, so the
+/// same bytes always produce the same id. Good enough to answer "is this
+/// the same build", which is all `app_bundle_outdated` needs it for: this
+/// is not a security boundary.
+///
+/// Cheaper than a full byte-for-byte compare against the bundle's own
+/// installed copy: that would mean reading both the running binary and the
+/// installed one in full on every daemon start, where this only ever reads
+/// the running binary (the installed copy's id is already sitting in its
+/// `Info.plist`, no second read needed).
+fn build_id_for_bytes(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}-{}", bytes.len())
 }
 
 /// Writes `contents` to `path` atomically: a sibling `.tmp` file (mode
@@ -181,24 +283,74 @@ fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Seam over `lsregister`, so a test never shells out to it or touches the
+/// real Spotlight/Launch Services index. `install_app_bundle` registers
+/// best-effort: a failure is logged, never returned as an install failure.
+pub trait LaunchServicesRegistrar {
+    fn register(&self, bundle_path: &Path) -> io::Result<()>;
+}
+
+/// The real registrar: re-registers the bundle with Launch Services, so
+/// Spotlight and Launchpad find it without the user waiting for (or
+/// triggering) a background reindex.
+pub struct RealLaunchServicesRegistrar;
+
+/// The `lsregister` tool's fixed path, part of the `LaunchServices`
+/// framework shipped with every macOS since well before this crate's
+/// `LSMinimumSystemVersion` (12.0).
+const LSREGISTER_PATH: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/\
+LaunchServices.framework/Support/lsregister";
+
+impl LaunchServicesRegistrar for RealLaunchServicesRegistrar {
+    fn register(&self, bundle_path: &Path) -> io::Result<()> {
+        let status = std::process::Command::new(LSREGISTER_PATH)
+            .arg("-f")
+            .arg(bundle_path)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("lsregister exited with {status}")))
+        }
+    }
+}
+
+/// A registrar that does nothing. Used by every test and by nothing else.
+pub struct NoopLaunchServicesRegistrar;
+
+impl LaunchServicesRegistrar for NoopLaunchServicesRegistrar {
+    fn register(&self, _bundle_path: &Path) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Assembles `<applications_dir>/Turbofig.app`: `Contents/Info.plist`, the
 /// placeholder icon, and a byte copy of `own_exe` (symlinks resolved first)
 /// at `Contents/MacOS/turbofig`. Ad-hoc signs the finished bundle
-/// best-effort (a failure is logged, never returned).
+/// best-effort (a failure is logged, never returned), then registers it
+/// with Launch Services best-effort (same: a failure is only ever a
+/// warning), so Spotlight and Launchpad find it right away.
 ///
-/// Refuses to write the real `~/Applications` from a debug build unless
-/// `TURBOFIG_DEV_REAL_DESKTOP=1` (see `refuse_real_applications_dir`).
+/// Refuses to write a real Applications folder (`/Applications` or
+/// `~/Applications`) from a debug build unless `TURBOFIG_DEV_REAL_DESKTOP=1`
+/// (see `refuse_real_applications_dir`).
 pub fn install_app_bundle(applications_dir: &Path, own_exe: &Path) -> io::Result<PathBuf> {
-    install_app_bundle_with_signer(applications_dir, own_exe, &RealCodeSigner)
+    install_app_bundle_with_signer(
+        applications_dir,
+        own_exe,
+        &RealCodeSigner,
+        &RealLaunchServicesRegistrar,
+    )
 }
 
-/// The testable half of `install_app_bundle`: takes an explicit `signer` so
-/// a test exercises the whole assembly without ever shelling out to the
-/// real `codesign`.
+/// The testable half of `install_app_bundle`: takes an explicit `signer`
+/// and `registrar` so a test exercises the whole assembly without ever
+/// shelling out to the real `codesign` or `lsregister`.
 pub fn install_app_bundle_with_signer(
     applications_dir: &Path,
     own_exe: &Path,
     signer: &dyn CodeSigner,
+    registrar: &dyn LaunchServicesRegistrar,
 ) -> io::Result<PathBuf> {
     refuse_real_applications_dir(applications_dir)?;
 
@@ -209,25 +361,38 @@ pub fn install_app_bundle_with_signer(
     std::fs::create_dir_all(&macos_dir)?;
     std::fs::create_dir_all(&resources_dir)?;
 
+    // Resolve symlinks (a Homebrew Cellar binary is reached through the
+    // stable <prefix>/bin/turbofig symlink) and read the real bytes early,
+    // so the build id can be stamped into the plist below; the write to
+    // Contents/MacOS/turbofig itself still happens last (see below).
+    let resolved_exe = own_exe.canonicalize()?;
+    let exe_bytes = std::fs::read(&resolved_exe)?;
+    let build_id = build_id_for_bytes(&exe_bytes);
+
     write_atomic(
         &contents_dir.join("Info.plist"),
-        info_plist_contents().as_bytes(),
+        info_plist_contents(&build_id).as_bytes(),
         0o644,
     )?;
     write_atomic(&resources_dir.join("AppIcon.icns"), APP_ICON_BYTES, 0o644)?;
 
-    // Resolve symlinks (a Homebrew Cellar binary is reached through the
-    // stable <prefix>/bin/turbofig symlink) and copy the real bytes. This
-    // write happens last and atomically: a crash between the plist/icon
-    // write above and this one leaves a bundle with no executable at all,
-    // which macOS simply refuses to launch, never a half-written binary.
-    let resolved_exe = own_exe.canonicalize()?;
-    let exe_bytes = std::fs::read(&resolved_exe)?;
+    // This write happens last and atomically: a crash between the
+    // plist/icon write above and this one leaves a bundle with no
+    // executable at all, which macOS simply refuses to launch, never a
+    // half-written binary.
     write_atomic(&macos_dir.join("turbofig"), &exe_bytes, 0o755)?;
 
     if let Err(e) = signer.sign(&bundle_dir) {
         eprintln!(
             "turbofig: warning: could not ad-hoc sign {}: {e}",
+            bundle_dir.display()
+        );
+    }
+
+    if let Err(e) = registrar.register(&bundle_dir) {
+        eprintln!(
+            "turbofig: warning: could not register {} with Launch Services (Spotlight/Launchpad \
+             may not find it until the next reindex): {e}",
             bundle_dir.display()
         );
     }
@@ -246,21 +411,41 @@ fn extract_plist_string(xml: &str, key: &str) -> Option<String> {
     Some(after_key[value_start..value_start + value_end].to_owned())
 }
 
-/// True when `<applications_dir>/Turbofig.app` exists but its
-/// `CFBundleShortVersionString` differs from this binary's own version, or
-/// its executable is missing. False when the bundle does not exist at all:
-/// step 4 decides whether to create one, never the daemon's own startup
-/// check (see `main.rs`'s `run_daemon`).
-pub fn app_bundle_outdated(applications_dir: &Path) -> bool {
+/// True when `<applications_dir>/Turbofig.app` exists but is stale against
+/// `own_exe` (the binary that would be installed): its executable is
+/// missing, its `CFBundleShortVersionString` differs from this binary's own
+/// version, or (the same version, but a rebuild: see `build_id_for_bytes`)
+/// its stored `TurbofigBuildId` differs from `own_exe`'s own build id.
+/// False when the bundle does not exist at all: step 4 decides whether to
+/// create one, never the daemon's own startup check (see `main.rs`'s
+/// `run_daemon`).
+///
+/// The build-id comparison only ever reads `own_exe` (never the bundle's
+/// installed copy): cheaper than a byte-for-byte compare of both binaries,
+/// since the installed copy's id is already sitting in its `Info.plist`.
+pub fn app_bundle_outdated(applications_dir: &Path, own_exe: &Path) -> bool {
     let bundle_dir = applications_dir.join("Turbofig.app");
     let Ok(plist_contents) = std::fs::read_to_string(bundle_dir.join("Contents/Info.plist")) else {
         return false;
     };
-    let exe_missing = !bundle_dir.join("Contents/MacOS/turbofig").exists();
+    if !bundle_dir.join("Contents/MacOS/turbofig").exists() {
+        return true;
+    }
     let version_mismatch = extract_plist_string(&plist_contents, "CFBundleShortVersionString")
         .as_deref()
         != Some(env!("CARGO_PKG_VERSION"));
-    exe_missing || version_mismatch
+    if version_mismatch {
+        return true;
+    }
+    let Ok(resolved_own_exe) = own_exe.canonicalize() else {
+        return false;
+    };
+    let Ok(own_bytes) = std::fs::read(&resolved_own_exe) else {
+        return false;
+    };
+    let own_build_id = build_id_for_bytes(&own_bytes);
+    extract_plist_string(&plist_contents, "TurbofigBuildId").as_deref()
+        != Some(own_build_id.as_str())
 }
 
 /// The bundle directory itself: `<applications_dir>/Turbofig.app`.
@@ -351,9 +536,13 @@ mod tests {
         let applications_dir = unique_temp_dir("assemble");
         let own_exe = std::env::current_exe().expect("current_exe");
 
-        let bundle_dir =
-            install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-                .expect("install_app_bundle_with_signer");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install_app_bundle_with_signer");
 
         assert_eq!(bundle_dir, applications_dir.join("Turbofig.app"));
         let info_plist = bundle_dir.join("Contents/Info.plist");
@@ -368,9 +557,13 @@ mod tests {
         let applications_dir = unique_temp_dir("keys");
         let own_exe = std::env::current_exe().expect("current_exe");
 
-        let bundle_dir =
-            install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-                .expect("install");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
         let contents =
             std::fs::read_to_string(bundle_dir.join("Contents/Info.plist")).expect("read plist");
 
@@ -423,9 +616,13 @@ mod tests {
         let own_exe_bytes = std::fs::read(own_exe.canonicalize().expect("canonicalize"))
             .expect("read own exe bytes");
 
-        let bundle_dir =
-            install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-                .expect("install");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
         let copied_exe = bundle_dir.join("Contents/MacOS/turbofig");
         let copied_bytes = std::fs::read(&copied_exe).expect("read copied exe");
 
@@ -450,9 +647,13 @@ mod tests {
         let applications_dir = unique_temp_dir("icon");
         let own_exe = std::env::current_exe().expect("current_exe");
 
-        let bundle_dir =
-            install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-                .expect("install");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
 
         let icon_path = bundle_dir.join("Contents/Resources/AppIcon.icns");
         assert!(icon_path.exists());
@@ -467,17 +668,23 @@ mod tests {
     #[test]
     fn app_bundle_outdated_is_false_when_no_bundle_exists() {
         let applications_dir = unique_temp_dir("outdated-missing");
-        assert!(!app_bundle_outdated(&applications_dir));
+        let own_exe = std::env::current_exe().expect("current_exe");
+        assert!(!app_bundle_outdated(&applications_dir, &own_exe));
     }
 
     #[test]
     fn app_bundle_outdated_is_false_right_after_install() {
         let applications_dir = unique_temp_dir("outdated-fresh");
         let own_exe = std::env::current_exe().expect("current_exe");
-        install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-            .expect("install");
+        install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
 
-        assert!(!app_bundle_outdated(&applications_dir));
+        assert!(!app_bundle_outdated(&applications_dir, &own_exe));
 
         std::fs::remove_dir_all(&applications_dir).ok();
     }
@@ -486,16 +693,20 @@ mod tests {
     fn app_bundle_outdated_is_true_when_the_version_differs() {
         let applications_dir = unique_temp_dir("outdated-version");
         let own_exe = std::env::current_exe().expect("current_exe");
-        let bundle_dir =
-            install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-                .expect("install");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
 
         let plist_path = bundle_dir.join("Contents/Info.plist");
         let contents = std::fs::read_to_string(&plist_path).expect("read plist");
         let rewritten = contents.replace(env!("CARGO_PKG_VERSION"), "0.0.1-older");
         std::fs::write(&plist_path, rewritten).expect("rewrite plist with an old version");
 
-        assert!(app_bundle_outdated(&applications_dir));
+        assert!(app_bundle_outdated(&applications_dir, &own_exe));
 
         std::fs::remove_dir_all(&applications_dir).ok();
     }
@@ -504,24 +715,67 @@ mod tests {
     fn app_bundle_outdated_is_true_when_the_executable_is_missing() {
         let applications_dir = unique_temp_dir("outdated-exe-missing");
         let own_exe = std::env::current_exe().expect("current_exe");
-        let bundle_dir =
-            install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-                .expect("install");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
 
         std::fs::remove_file(bundle_dir.join("Contents/MacOS/turbofig"))
             .expect("remove copied exe");
 
-        assert!(app_bundle_outdated(&applications_dir));
+        assert!(app_bundle_outdated(&applications_dir, &own_exe));
 
         std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[test]
+    fn app_bundle_outdated_is_true_when_the_build_id_differs_but_the_version_does_not() {
+        // A rebuild with no version bump: the owner's exact reported bug.
+        // `app_bundle_outdated` must still notice via `TurbofigBuildId`,
+        // even though `CFBundleShortVersionString` matches.
+        let applications_dir = unique_temp_dir("outdated-build-id");
+        let own_exe = std::env::current_exe().expect("current_exe");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+
+        let plist_path = bundle_dir.join("Contents/Info.plist");
+        let contents = std::fs::read_to_string(&plist_path).expect("read plist");
+        let rewritten = contents.replace(
+            &extract_plist_string(&contents, "TurbofigBuildId").expect("stored build id"),
+            "stale-build-id-0000000000000000-0",
+        );
+        std::fs::write(&plist_path, rewritten).expect("rewrite plist with a stale build id");
+
+        assert!(app_bundle_outdated(&applications_dir, &own_exe));
+
+        std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[test]
+    fn build_id_for_bytes_differs_for_different_bytes_and_matches_for_identical_bytes() {
+        assert_ne!(build_id_for_bytes(b"one"), build_id_for_bytes(b"two"));
+        assert_eq!(build_id_for_bytes(b"same"), build_id_for_bytes(b"same"));
     }
 
     #[test]
     fn remove_turbofig_app_bundle_removes_our_own_bundle() {
         let applications_dir = unique_temp_dir("uninstall-own");
         let own_exe = std::env::current_exe().expect("current_exe");
-        install_app_bundle_with_signer(&applications_dir, &own_exe, &NoopCodeSigner)
-            .expect("install");
+        install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
 
         let removed =
             remove_turbofig_app_bundle(&applications_dir).expect("remove_turbofig_app_bundle");
@@ -562,11 +816,7 @@ mod tests {
     }
 
     #[cfg(debug_assertions)]
-    #[test]
-    fn install_app_bundle_refuses_the_real_applications_directory() {
-        let Some(real_dir) = real_applications_dir() else {
-            return; // HOME unset in this environment; nothing to guard
-        };
+    fn assert_install_refuses(real_dir: &Path, label: &str) {
         let own_exe = std::env::current_exe().expect("current_exe");
 
         // The developer may have a real Turbofig.app installed, so compare
@@ -580,16 +830,100 @@ mod tests {
         };
         let before = snapshot(&bundle);
 
-        let result = install_app_bundle_with_signer(&real_dir, &own_exe, &NoopCodeSigner);
+        let result = install_app_bundle_with_signer(
+            real_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        );
 
         assert!(
             result.is_err(),
-            "a debug build must refuse to install into the real ~/Applications"
+            "a debug build must refuse to install into the real {label}"
         );
         assert_eq!(
             snapshot(&bundle),
             before,
-            "the guard must refuse before writing anything under the real ~/Applications"
+            "the guard must refuse before writing anything under the real {label}"
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn install_app_bundle_refuses_the_real_home_applications_directory() {
+        let Ok(home) = std::env::var("HOME") else {
+            return; // HOME unset in this environment; nothing to guard
+        };
+        assert_install_refuses(&PathBuf::from(home).join("Applications"), "~/Applications");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn install_app_bundle_refuses_the_real_global_applications_directory() {
+        assert_install_refuses(Path::new("/Applications"), "/Applications");
+    }
+
+    #[test]
+    fn applications_dir_from_env_prefers_an_existing_global_bundle_over_home() {
+        let global = unique_temp_dir("resolver-global");
+        let home = unique_temp_dir("resolver-home");
+        let own_exe = std::env::current_exe().expect("current_exe");
+        install_app_bundle_with_signer(
+            &global,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install into global");
+        install_app_bundle_with_signer(
+            &home,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install into home");
+
+        assert!(has_our_bundle(&global));
+        assert!(has_our_bundle(&home));
+
+        std::fs::remove_dir_all(&global).ok();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn has_our_bundle_is_false_for_a_directory_with_no_bundle_at_all() {
+        let dir = unique_temp_dir("resolver-empty");
+        assert!(!has_our_bundle(&dir));
+    }
+
+    #[test]
+    fn has_our_bundle_is_false_for_a_foreign_bundle() {
+        let dir = unique_temp_dir("resolver-foreign");
+        let foreign_contents = dir.join("Turbofig.app/Contents");
+        std::fs::create_dir_all(&foreign_contents).expect("mkdir foreign bundle");
+        std::fs::write(
+            foreign_contents.join("Info.plist"),
+            "<plist><dict><key>CFBundleIdentifier</key><string>com.example.other</string></dict></plist>",
+        )
+        .expect("write foreign plist");
+
+        assert!(!has_our_bundle(&dir));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn applications_dir_from_env_honors_the_override_even_when_a_bundle_exists_elsewhere() {
+        let override_dir = unique_temp_dir("resolver-override");
+        // SAFETY: test-only, single-threaded env mutation, restored before
+        // the function returns.
+        unsafe {
+            std::env::set_var("TURBOFIG_APPLICATIONS_DIR", &override_dir);
+        }
+        let resolved = applications_dir_from_env();
+        unsafe {
+            std::env::remove_var("TURBOFIG_APPLICATIONS_DIR");
+        }
+        assert_eq!(resolved, override_dir);
     }
 }
