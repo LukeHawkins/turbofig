@@ -90,8 +90,9 @@ tray icon or window unless you explicitly opt in:
 
 ### Swap in the real brand icons
 
-Both the app icon and the tray icon ship as placeholders (a plain "tf"
-glyph) today. Drop the finished artwork into `docs/brand/` and regenerate:
+The brand sources live in `docs/brand/`: `app-icon-1024.png` (the app
+icon) and `menubar-glyph.png` (the menu-bar glyph, black on transparent).
+After you change either one, regenerate the embedded assets:
 
 - **App icon** (`Turbofig.app`'s `.icns`, shown in Finder and the Dock):
   `scripts/make-app-icon.sh docs/brand/app-icon-1024.png`. Needs a
@@ -99,16 +100,10 @@ glyph) today. Drop the finished artwork into `docs/brand/` and regenerate:
   `sips`/`iconutil`, no third-party tool.
 - **Tray (menu-bar) icon**, 2 states, normal and dimmed:
   `scripts/make-tray-icon.sh docs/brand/menubar-glyph.png`. Needs a 44x44
-  (`@2x`) PNG or a vector PDF with a transparent background, black on
-  transparent (a template image: AppKit tints it, so colour in the source
-  is ignored, only alpha matters); rebuilds
-  `daemon/assets/tray-icon/icon-tf-44.png` (the "connected" state) from
-  this one source. The dimmed ("waiting"/unreachable) state is a separate
-  source: pass it as a second argument
-  (`scripts/make-tray-icon.sh docs/brand/menubar-glyph.png
-  docs/brand/menubar-glyph-dimmed.png`) if you have a dedicated dimmed
-  asset, otherwise the script leaves the checked-in dimmed PNG alone. See
-  the script's own header comment for the exact rules.
+  (`@2x`) PNG, black on transparent (a template image: AppKit tints it, so
+  only alpha matters). It rebuilds `daemon/assets/tray-icon/icon-tf-44.png`
+  (the "connected" state) and makes `icon-tf-44-dimmed.png` (the "waiting"
+  or unreachable state) at 35% alpha from the same source.
 
 Commit the regenerated PNGs/`.icns` (and, for the app icon, the source
 PNG) alongside the `docs/brand/` artwork; neither script touches anything

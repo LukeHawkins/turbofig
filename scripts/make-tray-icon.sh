@@ -1,53 +1,35 @@
 #!/usr/bin/env bash
-# Regenerates the 2 tray-icon PNGs (normal + dimmed) from a 44x44 source PDF,
-# using only sips: macOS's own tool, no image library, no third-party
-# dependency. Mirrors make-app-icon.sh's approach, adapted to a menu-bar
-# template image (small, black glyph, transparent background) rather than a
-# 1024px app icon.
+# Regenerates the 2 tray-icon PNGs (normal + dimmed) from one brand glyph PNG.
 #
 # Usage:
-#   scripts/make-tray-icon.sh [path/to/normal.pdf] [path/to/dimmed.pdf]
+#   scripts/make-tray-icon.sh [path/to/menubar-glyph.png]
 #
-# With no arguments, regenerates both PNGs from the checked-in
-# daemon/assets/tray-icon/icon-tf-44.pdf and icon-tf-44-dimmed.pdf.
+# With no argument, it uses docs/brand/menubar-glyph.png. The source must be a
+# 44x44 PNG (the @2x size of a 22x22 menu-bar slot), black on a transparent
+# background. The menu bar loads both outputs as macOS template images, so
+# AppKit tints them for light and dark mode and only the alpha channel is
+# used. That is why the dimmed state lowers alpha (to 35%) instead of using a
+# lighter colour.
 #
-# To swap in the real glyph: replace one or both PDFs (any vector PDF with a
-# 44x44pt MediaBox and a transparent background works; `pdftoppm`/Illustrator/
-# Figma can all export one), or pass a 44x44 PNG directly as either argument
-# and the script copies it through sips unchanged. menu_bar.rs loads these 2
-# PNGs as `tray-icon::Icon`s and marks both as template images, so macOS
-# tints them for light and dark mode; only the alpha channel matters, the
-# dimmed variant must carry lower alpha (not a lighter RGB value) to actually
-# look dimmer once macOS applies its own template tint.
-
+# Needs `sips` (ships with macOS) and Bun (already a repo prerequisite), which
+# runs scripts/dim-png.ts to make the dimmed variant.
 set -euo pipefail
 
-if [[ "$(uname)" != "Darwin" ]]; then
-    echo "make-tray-icon.sh: this script needs sips, macOS-only" >&2
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+assets_dir="$repo_root/daemon/assets/tray-icon"
+source_png="${1:-$repo_root/docs/brand/menubar-glyph.png}"
+dimmed_alpha="0.35"
+
+if [[ ! -f "$source_png" ]]; then
+    echo "make-tray-icon.sh: source not found: $source_png" >&2
     exit 1
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-assets_dir="$script_dir/../daemon/assets/tray-icon"
+normal_png="$assets_dir/icon-tf-44.png"
+dimmed_png="$assets_dir/icon-tf-44-dimmed.png"
 
-normal_source="${1:-$assets_dir/icon-tf-44.pdf}"
-dimmed_source="${2:-$assets_dir/icon-tf-44-dimmed.pdf}"
+sips -s format png -z 44 44 "$source_png" --out "$normal_png" >/dev/null
 
-render() {
-    local source="$1"
-    local dest_png="$2"
-    local dest_source="$3"
-    if [[ ! -f "$source" ]]; then
-        echo "make-tray-icon.sh: source not found: $source" >&2
-        exit 1
-    fi
-    sips -s format png "$source" --out "$dest_png" >/dev/null
-    if [[ "$source" != "$dest_source" ]]; then
-        cp "$source" "$dest_source"
-    fi
-}
+bun "$repo_root/scripts/dim-png.ts" "$normal_png" "$dimmed_png" "$dimmed_alpha"
 
-render "$normal_source" "$assets_dir/icon-tf-44.png" "$assets_dir/icon-tf-44.pdf"
-render "$dimmed_source" "$assets_dir/icon-tf-44-dimmed.png" "$assets_dir/icon-tf-44-dimmed.pdf"
-
-echo "make-tray-icon.sh: wrote $assets_dir/icon-tf-44.png and icon-tf-44-dimmed.png"
+echo "make-tray-icon.sh: wrote $normal_png and $dimmed_png"

@@ -3,9 +3,9 @@
 `AppIcon.icns` is embedded into `Turbofig.app` at build time (`include_bytes!`
 in `daemon/src/app_bundle.rs`).
 
-`icon-1024.png` is the 1024x1024 source. It is a placeholder: a dark rounded
-square with the letters "tf" in white, built with macOS's own `sips` (no
-image library, no third-party tool). The real brand icon replaces it later.
+`icon-1024.png` is the 1024x1024 source, copied from the brand source
+`docs/brand/app-icon-1024.png` (the "tf" ghost-trail mark on a graphite
+rounded square).
 
 ## Regenerate the .icns from a new 1024px PNG
 
