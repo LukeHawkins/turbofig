@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   appendLog,
+  type ConnectedFile,
   connStateFromEvent,
   daemonMessageAction,
-  formatConnectPrompt,
+  fillAgentPrompt,
   formatLogEntry,
   formatSession,
   isDaemonStale,
@@ -15,6 +18,17 @@ import {
   staleWarning,
   wsUrlForPort,
 } from "./ui-logic";
+
+/**
+ * The real shared template (`prompts/agent-prompt.txt`), read straight from
+ * disk rather than duplicated here: `fillAgentPrompt`'s tests below exercise
+ * the exact same file `build-ui.ts` inlines into the plugin bundle and
+ * `daemon/src/agent_prompt.rs` embeds with `include_str!`.
+ */
+const AGENT_PROMPT_TEMPLATE = readFileSync(
+  join(import.meta.dir, "../../../prompts/agent-prompt.txt"),
+  "utf8",
+);
 
 describe("connStateFromEvent", () => {
   test("open event returns connected state", () => {
@@ -398,66 +412,111 @@ describe("portMessageAction", () => {
   });
 });
 
-describe("formatConnectPrompt", () => {
-  test("returns empty string when fileKey is empty", () => {
-    expect(formatConnectPrompt("", 18846)).toBe("");
+describe("fillAgentPrompt", () => {
+  const file = (fileKey: string, name: string): ConnectedFile => ({ fileKey, name });
+
+  test("0 files: fileKey placeholder, tells the agent to run status first", () => {
+    const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/custom-bridge", 18846);
+    expect(result).toContain('"fileKey":"<fileKey>"');
+    expect(result).toContain("Run the status op first to learn the fileKey.");
+    expect(result).not.toContain("Connected files:");
   });
 
-  test("output contains the fileKey", () => {
-    const result = formatConnectPrompt("ABC123fileKey", 18846);
-    expect(result).toContain("ABC123fileKey");
+  test("exactly 1 file: fills its fileKey, no extra hint", () => {
+    const result = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [file("ABC123fileKey", "Design A")],
+      "/tmp/custom-bridge",
+      18846,
+    );
+    expect(result).toContain('"fileKey":"ABC123fileKey"');
+    expect(result).not.toContain("Connected files:");
+    expect(result).not.toContain("Run the status op first");
+  });
+
+  test("more than 1 file: lists every name and fileKey, keeps the placeholder", () => {
+    const result = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [file("key1", "Design A"), file("key2", "Design B")],
+      "/tmp/custom-bridge",
+      18846,
+    );
+    expect(result).toContain("Connected files: Design A (key1), Design B (key2).");
+    expect(result).toContain('"fileKey":"<fileKey>"');
+    expect(result).toContain("Pick a fileKey from the list above.");
   });
 
   test("leads with the file-bridge inbox and outbox paths", () => {
-    const result = formatConnectPrompt("someKey", 18846);
-    expect(result).toContain("~/.turbofig/inbox/");
-    expect(result).toContain("~/.turbofig/outbox/");
-  });
-
-  test("gives a concrete execute example carrying the fileKey", () => {
-    const result = formatConnectPrompt("ABC123fileKey", 18846);
-    expect(result).toContain('"op":"execute"');
-    expect(result).toContain('"fileKey":"ABC123fileKey"');
+    const result = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [file("someKey", "Design A")],
+      "/tmp/custom-bridge",
+      18846,
+    );
+    expect(result).toContain("/tmp/custom-bridge/inbox/");
+    expect(result).toContain("/tmp/custom-bridge/outbox/");
   });
 
   test("mentions MCP only as a fallback, with the correct port and path", () => {
-    const result = formatConnectPrompt("someKey", 19999);
+    const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/custom-bridge", 19999);
     expect(result).toContain("http://127.0.0.1:19999/mcp");
-  });
-
-  test("does not contain the default port when a different port is passed", () => {
-    const result = formatConnectPrompt("someKey", 19999);
     expect(result).not.toContain("18846");
   });
 
   test("never instructs a bare GET or a web-fetch (which forces HTTPS and breaks)", () => {
-    const result = formatConnectPrompt("someKey", 18846);
+    const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/custom-bridge", 18846);
     expect(result).not.toContain("GET ");
     expect(result).toContain("curl");
     expect(result).toContain("web-fetch");
   });
 
   test("puts the file-bridge before the MCP fallback", () => {
-    const result = formatConnectPrompt("someKey", 18846);
+    const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/custom-bridge", 18846);
     expect(result.indexOf("inbox")).toBeLessThan(result.indexOf("/mcp"));
   });
 
-  test("uses a custom bridge home when given", () => {
-    const result = formatConnectPrompt("someKey", 18846, "/tmp/custom-bridge");
-    expect(result).toContain("/tmp/custom-bridge/inbox/");
-    expect(result).toContain("/tmp/custom-bridge/outbox/");
-    expect(result).not.toContain("~/.turbofig");
-  });
-
-  test("falls back to ~/.turbofig when bridgeHome is empty", () => {
-    const result = formatConnectPrompt("someKey", 18846, "");
+  test("falls back to ~/.turbofig when bridgeDir is empty", () => {
+    const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "", 18846);
     expect(result).toContain("~/.turbofig/inbox/");
     expect(result).toContain("~/.turbofig/outbox/");
   });
 
   test("tells the agent to run turbofig start and retry if no result appears", () => {
-    const result = formatConnectPrompt("someKey", 18846);
+    const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/custom-bridge", 18846);
     expect(result).toContain("turbofig start");
     expect(result).toContain("retry");
+  });
+
+  /**
+   * Golden test: a fixed set of inputs must always produce this exact text.
+   * `daemon/src/agent_prompt.rs` has a matching test with the same inputs
+   * and the same expected string, so both implementations are checked
+   * against one shared fixture rather than against each other directly.
+   */
+  test("golden: matches the fixed expected text for each file count", () => {
+    const zero = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/bridge", 18846);
+    expect(zero).toBe(
+      'turbofig file-bridge: write {"op":"execute","fileKey":"<fileKey>","code":"..."} to /tmp/bridge/inbox/<unique-id>.json (id unique per job) -> read /tmp/bridge/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. Run the status op first to learn the fileKey. If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n',
+    );
+
+    const one = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [file("ABC123", "Design A")],
+      "/tmp/bridge",
+      18846,
+    );
+    expect(one).toBe(
+      'turbofig file-bridge: write {"op":"execute","fileKey":"ABC123","code":"..."} to /tmp/bridge/inbox/<unique-id>.json (id unique per job) -> read /tmp/bridge/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n',
+    );
+
+    const many = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [file("key1", "Design A"), file("key2", "Design B")],
+      "/tmp/bridge",
+      18846,
+    );
+    expect(many).toBe(
+      'Connected files: Design A (key1), Design B (key2).\nturbofig file-bridge: write {"op":"execute","fileKey":"<fileKey>","code":"..."} to /tmp/bridge/inbox/<unique-id>.json (id unique per job) -> read /tmp/bridge/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. Pick a fileKey from the list above. If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n',
+    );
   });
 });

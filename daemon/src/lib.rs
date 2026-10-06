@@ -19,6 +19,7 @@
 //! it is not already running. `first_run` holds the text and the clipboard/
 //! Figma-launch seams for the bare `turbofig` command (no subcommand).
 
+pub mod agent_prompt;
 #[cfg(target_os = "macos")]
 pub mod app_bundle;
 pub mod cli;

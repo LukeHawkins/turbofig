@@ -10,7 +10,7 @@ import {
   appendLog,
   connStateFromEvent,
   daemonMessageAction,
-  formatConnectPrompt,
+  fillAgentPrompt,
   formatLogEntry,
   formatSession,
   isRequestType,
@@ -33,6 +33,13 @@ declare const __PLUGIN_VERSION__: string;
  * directly when the daemon has already created ~/.turbofig/token.
  */
 declare const __TURBOFIG_PAIRING_TOKEN__: string;
+/**
+ * Build-time constant injected by build-ui.ts: the shared agent-connect-
+ * prompt template (`prompts/agent-prompt.txt`), read from disk at build time
+ * so this bundle and the daemon's menu bar (`include_str!` on the same file)
+ * can never drift apart. See `fillAgentPrompt` in `ui-logic.ts`.
+ */
+declare const __AGENT_PROMPT_TEMPLATE__: string;
 
 /** Active daemon port. Updated when PORT arrives from the main thread. */
 let currentPort = 18847;
@@ -40,7 +47,7 @@ let currentPort = 18847;
 /** MCP HTTP port received from the daemon on WELCOME. Default matches TURBOFIG_MCP_PORT default. */
 let daemonMcpPort = 18846;
 
-/** File-bridge home directory received from the daemon on WELCOME. Empty until the first WELCOME arrives; formatConnectPrompt falls back to DEFAULT_BRIDGE_HOME. */
+/** File-bridge home directory received from the daemon on WELCOME. Empty until the first WELCOME arrives; fillAgentPrompt falls back to DEFAULT_BRIDGE_HOME. */
 let daemonBridgeHome = "";
 
 // Resolve panel elements once on load.
@@ -196,9 +203,13 @@ if (copyFilekeyBtn) {
 if (copyConnectBtn) {
   copyConnectBtn.addEventListener("click", () => {
     if (copyConnectBtn.classList.contains("copied")) return;
-    if (!latestFileInfo) return;
-    const prompt = formatConnectPrompt(latestFileInfo.fileKey, daemonMcpPort, daemonBridgeHome);
-    if (!prompt) return;
+    if (!latestFileInfo?.fileKey) return;
+    const prompt = fillAgentPrompt(
+      __AGENT_PROMPT_TEMPLATE__,
+      [{ fileKey: latestFileInfo.fileKey, name: latestFileInfo.name }],
+      daemonBridgeHome,
+      daemonMcpPort,
+    );
     if (clipboardCopy(prompt)) {
       setCopiedFeedback(copyConnectBtn);
     }

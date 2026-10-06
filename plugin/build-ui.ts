@@ -59,6 +59,14 @@ function readLocalToken(): string {
 const pairingToken = readLocalToken();
 
 /**
+ * The agent-connect prompt template, shared with the daemon's menu bar
+ * (`daemon/src/agent_prompt.rs`'s `include_str!` on the same file) so the 2
+ * copies of the prompt can never drift apart. Read from the repo root, 1
+ * directory up from `plugin/`.
+ */
+const agentPromptTemplate = readFileSync(join(scriptDir, "../prompts/agent-prompt.txt"), "utf8");
+
+/**
  * Stable comment markers wrapped around the token literal in the bundled
  * output. A local build (see `readLocalToken` above) can embed a real token
  * straight from `~/.turbofig/token`, and a stray `cargo build` run against
@@ -86,6 +94,7 @@ const result = await Bun.build({
   define: {
     __PLUGIN_VERSION__: JSON.stringify(pluginVersion),
     __TURBOFIG_PAIRING_TOKEN__: JSON.stringify(pairingToken),
+    __AGENT_PROMPT_TEMPLATE__: JSON.stringify(agentPromptTemplate),
   },
 });
 

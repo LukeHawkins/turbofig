@@ -163,23 +163,61 @@ export function wsUrlForPort(port: number, token: string): string {
 /** The file-bridge home shown in the connect prompt when the daemon has not yet reported one. */
 export const DEFAULT_BRIDGE_HOME = "~/.turbofig";
 
+/** One connected Figma file, as reported by the daemon's `/health`. */
+export interface ConnectedFile {
+  fileKey: string;
+  name: string;
+}
+
 /**
- * Returns a self-bootstrapping connect prompt for Claude Code.
- * The prompt names the MCP HTTP port, the file key, and the file-bridge home
- * directory so a user can paste it directly into Claude Code without any
- * manual configuration. `bridgeHome` should be the daemon's own reported
- * value (WELCOME's `bridgeHome`); falls back to `DEFAULT_BRIDGE_HOME` when
- * empty, e.g. before the first WELCOME arrives.
- * Returns an empty string when fileKey is empty (no active file).
+ * Fills the shared agent-connect-prompt template (`prompts/agent-prompt.txt`,
+ * inlined at build time by `build-ui.ts` into `__AGENT_PROMPT_TEMPLATE__`)
+ * for the given connected-file list, bridge directory and MCP port.
+ *
+ * The daemon's menu bar fills the identical template with the identical
+ * branch (`daemon/src/agent_prompt.rs`'s `fill_agent_prompt`), so the 2
+ * copies of the prompt can never drift apart; a golden test here and one
+ * there assert the same fixed inputs give the same fixed output text.
+ *
+ * - 0 connected files: the example job's fileKey is a `<fileKey>`
+ *   placeholder, with a trailing hint to run `status` first.
+ * - Exactly 1: its fileKey is filled directly into the example job.
+ * - More than 1: a `Connected files: ` line lists every name and fileKey,
+ *   the example job keeps the placeholder, and the hint points at the list.
+ *
+ * `bridgeDir` falls back to `DEFAULT_BRIDGE_HOME` when empty, e.g. before
+ * the first WELCOME (which carries the daemon's real `bridgeHome`) arrives.
  */
-export function formatConnectPrompt(
-  fileKey: string,
+export function fillAgentPrompt(
+  template: string,
+  connectedFiles: ConnectedFile[],
+  bridgeDir: string,
   mcpPort: number,
-  bridgeHome: string = DEFAULT_BRIDGE_HOME,
 ): string {
-  if (!fileKey) return "";
-  const home = bridgeHome || DEFAULT_BRIDGE_HOME;
-  return `turbofig file-bridge: write {"op":"execute","fileKey":"${fileKey}","code":"..."} to ${home}/inbox/<unique-id>.json (id unique per job) → read ${home}/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. If no result file appears within a few seconds, run \`turbofig start\` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:${mcpPort}/mcp`;
+  let filesLine = "";
+  let fileKey = "<fileKey>";
+  let fileKeyHint = "";
+  if (connectedFiles.length === 0) {
+    fileKeyHint = " Run the status op first to learn the fileKey.";
+  } else if (connectedFiles.length === 1) {
+    fileKey = connectedFiles[0].fileKey;
+  } else {
+    const list = connectedFiles.map((f) => `${f.name} (${f.fileKey})`).join(", ");
+    filesLine = `Connected files: ${list}.\n`;
+    fileKeyHint = " Pick a fileKey from the list above.";
+  }
+  const home = bridgeDir || DEFAULT_BRIDGE_HOME;
+  return template
+    .split("{{FILES_LINE}}")
+    .join(filesLine)
+    .split("{{FILE_KEY}}")
+    .join(fileKey)
+    .split("{{FILE_KEY_HINT}}")
+    .join(fileKeyHint)
+    .split("{{BRIDGE_DIR}}")
+    .join(home)
+    .split("{{MCP_PORT}}")
+    .join(String(mcpPort));
 }
 
 /**

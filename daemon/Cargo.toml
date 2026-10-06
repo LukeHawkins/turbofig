@@ -37,3 +37,12 @@ semver = "1"
 tokio-tungstenite = "0.24"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+# The menu-bar app (step 2 of the macOS app bundle). macOS-only: `tray-icon`
+# (with its `muda` menus) and `tao` (the main-thread event loop) both assume
+# a native window/tray system, so neither is even resolved on Linux, which
+# keeps `cargo build`/`cargo check` working there with no feature flag
+# needed (see `menu_bar` being `cfg(target_os = "macos")` in `lib.rs`).
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = "0.26"
+tao = "0.37"
