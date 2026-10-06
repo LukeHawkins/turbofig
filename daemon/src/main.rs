@@ -166,7 +166,9 @@ async fn cmd_autostart_on() {
         Ok((outcome, stop_warning)) => {
             if let Some(w) = stop_warning {
                 eprintln!(
-                    "turbofig autostart: warning: could not stop the already-running daemon first: {w}"
+                    "turbofig autostart: warning: could not stop the already-running daemon first: {w}. \
+                     launchd's own daemon will exit at once when it finds this one already healthy on \
+                     the port, and the old daemon stays in charge, unsupervised."
                 );
             }
             println!("{}", autostart_on_message(&outcome.plist_path));
