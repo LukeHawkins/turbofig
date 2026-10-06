@@ -88,6 +88,12 @@ pub trait AppOpener {
     /// Opens `url` in the default browser (`open <url>`). Returns whether
     /// it succeeded.
     fn open_url(&self, url: &str) -> bool;
+    /// Opens `path` (a `.app` bundle) as a new instance (`open -n <path>`),
+    /// even if one is already running. Used only by the app's own
+    /// self-relaunch (`self_update`): the running instance is already
+    /// mid-exit by the time this runs, so `-n` guarantees a fresh launch
+    /// rather than macOS just activating the (about to disappear) old one.
+    fn open_new_instance(&self, path: &Path) -> bool;
 }
 
 /// The real opener: `open -a Figma`, macOS-only (the whole daemon is).
@@ -118,6 +124,15 @@ impl AppOpener for RealAppOpener {
             .map(|status| status.success())
             .unwrap_or(false)
     }
+
+    fn open_new_instance(&self, path: &Path) -> bool {
+        std::process::Command::new("open")
+            .arg("-n")
+            .arg(path)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 /// A fake opener for tests: reports a fixed result, never spawns a process.
@@ -141,6 +156,10 @@ impl AppOpener for FakeOpener {
     }
 
     fn open_url(&self, _url: &str) -> bool {
+        self.succeeds
+    }
+
+    fn open_new_instance(&self, _path: &Path) -> bool {
         self.succeeds
     }
 }
@@ -220,6 +239,40 @@ Connected files: {connected_files}\n\
 Plugin manifest: {manifest}\n",
         manifest = manifest_path.display(),
     )
+}
+
+/// The 2-line text the bare `turbofig` command prints on macOS once
+/// `Turbofig.app` is installed/refreshed, the daemon is running, and the
+/// bundle has been opened: the app itself (its tray icon, and the About
+/// window behind "About Turbofig…") is now the onboarding surface, so the
+/// terminal only needs to point at it.
+pub fn app_first_run_text() -> &'static str {
+    "Turbofig is now in your menu bar (look for the tf icon).\n\
+     Click it and choose About Turbofig… to get started. No icon? Run: turbofig status\n"
+}
+
+/// Combines the macOS app-bundle path's 2 fallible steps (installing the
+/// bundle, then opening it) into either the short app-first-run text
+/// (`Ok`) or a 1-line failure reason (`Err`) for the caller to print before
+/// falling back to the ordinary text walkthrough (`first_run_text`/
+/// `status_text`).
+///
+/// `bundle_install_err` is `Some(reason)` when `install_app_bundle` itself
+/// failed (the caller never attempts to open a bundle that was not
+/// installed); `opened` is whether the `AppOpener` seam's `open_url` (on
+/// the bundle path) succeeded, only ever checked when the install
+/// succeeded.
+pub fn app_first_run_outcome(
+    bundle_install_err: Option<String>,
+    opened: bool,
+) -> Result<&'static str, String> {
+    if let Some(reason) = bundle_install_err {
+        return Err(format!("could not install Turbofig.app: {reason}"));
+    }
+    if !opened {
+        return Err("could not open Turbofig.app".to_owned());
+    }
+    Ok(app_first_run_text())
 }
 
 #[cfg(test)]
@@ -495,5 +548,54 @@ mod tests {
     fn fake_opener_reports_the_fixed_result_for_open_url() {
         assert!(FakeOpener::new(true).open_url("https://github.com/LukeHawkins/turbofig"));
         assert!(!FakeOpener::new(false).open_url("https://github.com/LukeHawkins/turbofig"));
+    }
+
+    #[test]
+    fn fake_opener_reports_the_fixed_result_for_open_new_instance() {
+        assert!(FakeOpener::new(true).open_new_instance(Path::new("/Applications/Turbofig.app")));
+        assert!(!FakeOpener::new(false).open_new_instance(Path::new("/Applications/Turbofig.app")));
+    }
+
+    #[test]
+    fn app_first_run_text_is_exactly_2_lines_naming_the_tray_icon_and_fallback_status() {
+        let text = app_first_run_text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "must be exactly 2 lines: {text:?}");
+        assert!(lines[0].contains("menu bar"));
+        assert!(lines[0].contains("tf icon"));
+        assert!(lines[1].contains("About Turbofig"));
+        assert!(lines[1].contains("turbofig status"));
+    }
+
+    #[test]
+    fn app_first_run_outcome_succeeds_when_installed_and_opened() {
+        let result = app_first_run_outcome(None, true);
+        assert_eq!(result, Ok(app_first_run_text()));
+    }
+
+    #[test]
+    fn app_first_run_outcome_fails_with_the_install_reason_when_install_fails() {
+        let result = app_first_run_outcome(Some("disk full".to_owned()), true);
+        assert_eq!(
+            result,
+            Err("could not install Turbofig.app: disk full".to_owned())
+        );
+    }
+
+    #[test]
+    fn app_first_run_outcome_fails_when_open_fails_even_though_install_succeeded() {
+        let result = app_first_run_outcome(None, false);
+        assert_eq!(result, Err("could not open Turbofig.app".to_owned()));
+    }
+
+    #[test]
+    fn app_first_run_outcome_never_checks_open_when_install_already_failed() {
+        // opened=true here would be misleading if install failed; the
+        // install error must still win.
+        let result = app_first_run_outcome(Some("no space left".to_owned()), true);
+        assert_eq!(
+            result,
+            Err("could not install Turbofig.app: no space left".to_owned())
+        );
     }
 }

@@ -1,17 +1,43 @@
 //! The second-instance signal: a Unix socket at `<home>/app.sock`, mode
-//! `0600`. A second menu-bar launch, once `lock::try_acquire` tells it
-//! another instance already holds `<home>/app.lock`, connects to this
-//! socket, sends `OPEN_ABOUT_MESSAGE`, and exits 0; the first instance's
-//! listener thread forwards that into the tao event loop as a request to
-//! open (or focus) the About window.
+//! `0600`, carrying exactly 1 of 2 fixed literal messages. A second
+//! menu-bar launch, once `lock::try_acquire` tells it another instance
+//! already holds `<home>/app.lock`, connects to this socket and sends
+//! `SignalMessage::OpenAbout`, then exits 0; the first instance's listener
+//! thread forwards that into the tao event loop as a request to open (or
+//! focus) the About window. `turbofig uninstall` sends
+//! `SignalMessage::Quit` the same way, to ask a running app to quit itself
+//! before uninstall's own steps proceed.
 
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
-/// The only message this socket ever carries.
-pub const OPEN_ABOUT_MESSAGE: &str = "open_about";
+/// The 2 messages this socket ever carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalMessage {
+    /// Open the About window, or focus it if it is already open.
+    OpenAbout,
+    /// Quit the app (same as its own "Quit Turbofig" menu item).
+    Quit,
+}
+
+impl SignalMessage {
+    fn as_str(self) -> &'static str {
+        match self {
+            SignalMessage::OpenAbout => "open_about",
+            SignalMessage::Quit => "quit_app",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "open_about" => Some(SignalMessage::OpenAbout),
+            "quit_app" => Some(SignalMessage::Quit),
+            _ => None,
+        }
+    }
+}
 
 /// Binds a fresh listening socket at `path`, mode `0600`. Removes a stale
 /// socket file left by a previous crashed instance first: `UnixListener::bind`
@@ -24,16 +50,18 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
     Ok(listener)
 }
 
-/// Sends the open-about signal to an already-running instance's socket at
-/// `path`. `Ok(true)`: a listener accepted it. `Ok(false)`: nothing is
-/// listening there (a stale or missing socket) — this should not normally
-/// happen, since the caller only reaches this after `lock::try_acquire`
-/// already found the lock held, but a missing listener must still be a
-/// quiet no-op, not a crash, for the second instance's exit to stay clean.
-pub fn signal_open_about(path: &Path) -> io::Result<bool> {
+/// Sends `message` to an already-running instance's socket at `path`.
+/// `Ok(true)`: a listener accepted it. `Ok(false)`: nothing is listening
+/// there (a stale or missing socket) — for the open-about path this should
+/// not normally happen, since the caller only reaches this after
+/// `lock::try_acquire` already found the lock held; for the quit path
+/// (`turbofig uninstall`) it is the ordinary case when the app was never
+/// running at all. Either way a missing listener is a quiet no-op, not a
+/// crash.
+pub fn send(path: &Path, message: SignalMessage) -> io::Result<bool> {
     match UnixStream::connect(path) {
         Ok(mut stream) => {
-            stream.write_all(OPEN_ABOUT_MESSAGE.as_bytes())?;
+            stream.write_all(message.as_str().as_bytes())?;
             Ok(true)
         }
         Err(e)
@@ -48,15 +76,13 @@ pub fn signal_open_about(path: &Path) -> io::Result<bool> {
     }
 }
 
-/// Reads one message off an accepted connection and reports whether it was
-/// exactly the open-about signal; any other content (or a read failure) is
-/// not, and is ignored by the caller.
-pub fn read_is_open_about(mut stream: UnixStream) -> bool {
+/// Reads one message off an accepted connection and parses it; `None` for
+/// anything else (a read failure, or content that is not one of the 2 known
+/// messages), which the caller ignores rather than acting on.
+pub fn read(mut stream: UnixStream) -> Option<SignalMessage> {
     let mut buf = [0u8; 64];
-    match stream.read(&mut buf) {
-        Ok(n) => &buf[..n] == OPEN_ABOUT_MESSAGE.as_bytes(),
-        Err(_) => false,
-    }
+    let n = stream.read(&mut buf).ok()?;
+    SignalMessage::parse(std::str::from_utf8(&buf[..n]).ok()?)
 }
 
 #[cfg(test)]
@@ -71,13 +97,35 @@ mod tests {
         let listener = bind(&socket_path).expect("bind");
         let accepted = std::thread::spawn(move || {
             let (stream, _addr) = listener.accept().expect("accept");
-            read_is_open_about(stream)
+            read(stream)
         });
 
-        let sent = signal_open_about(&socket_path).expect("signal_open_about");
+        let sent = send(&socket_path, SignalMessage::OpenAbout).expect("send");
         assert!(sent, "a listener was bound, so the signal must be accepted");
 
-        assert!(accepted.join().expect("join accept thread"));
+        assert_eq!(
+            accepted.join().expect("join accept thread"),
+            Some(SignalMessage::OpenAbout)
+        );
+    }
+
+    #[test]
+    fn a_quit_signal_is_received_distinctly_from_open_about() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("app.sock");
+
+        let listener = bind(&socket_path).expect("bind");
+        let accepted = std::thread::spawn(move || {
+            let (stream, _addr) = listener.accept().expect("accept");
+            read(stream)
+        });
+
+        send(&socket_path, SignalMessage::Quit).expect("send");
+
+        assert_eq!(
+            accepted.join().expect("join accept thread"),
+            Some(SignalMessage::Quit)
+        );
     }
 
     #[test]
@@ -85,7 +133,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket_path = dir.path().join("app.sock");
 
-        let sent = signal_open_about(&socket_path).expect("signal_open_about");
+        let sent = send(&socket_path, SignalMessage::OpenAbout).expect("send");
         assert!(!sent, "no listener was ever bound at this path");
     }
 
@@ -115,5 +163,23 @@ mod tests {
         assert!(socket_path.exists());
 
         let _second = bind(&socket_path).expect("second bind must replace the stale file");
+    }
+
+    #[test]
+    fn an_unrecognised_message_parses_to_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("app.sock");
+
+        let listener = bind(&socket_path).expect("bind");
+        let accepted = std::thread::spawn(move || {
+            let (stream, _addr) = listener.accept().expect("accept");
+            read(stream)
+        });
+
+        let mut stream = UnixStream::connect(&socket_path).expect("connect");
+        stream.write_all(b"garbage").expect("write garbage");
+        drop(stream);
+
+        assert_eq!(accepted.join().expect("join accept thread"), None);
     }
 }

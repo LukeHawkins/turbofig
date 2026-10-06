@@ -8,7 +8,7 @@
 //! suite calls any function here that builds a real window.
 
 use super::about_state::{chips_from_connected_files, parse_ipc_command, IpcCommand};
-use super::{clipboard_for_app, opener_for_app, quit_sequence, MenuState, RealDaemonStopper};
+use super::{clipboard_for_app, opener_for_app, MenuState};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tao::dpi::LogicalSize;
@@ -123,10 +123,13 @@ pub fn create_about_window<T: 'static>(
     let handle = AboutWindowHandle { window, webview };
 
     let version = env!("CARGO_PKG_VERSION");
+    let start_at_login_checked =
+        crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env());
     let script = format!(
-        "window.turbofigSetStatic && window.turbofigSetStatic({}, {});",
+        "window.turbofigSetStatic && window.turbofigSetStatic({}, {}, {});",
         serde_json::to_string(version).unwrap_or_else(|_| "\"\"".to_owned()),
         serde_json::to_string(&mcp_json()).unwrap_or_else(|_| "\"\"".to_owned()),
+        start_at_login_checked,
     );
     let _ = handle.webview.evaluate_script(&script);
 
@@ -164,9 +167,17 @@ fn handle_ipc_message(raw: &str, ctx: &AboutWindowContext) {
             opener_for_app().open_url(DOCS_URL);
         }
         IpcCommand::Quit => {
-            let stopper = RealDaemonStopper::new(ctx.home.clone(), ctx.mcp_port);
-            quit_sequence(&stopper);
-            std::process::exit(0);
+            super::perform_quit(&ctx.home, ctx.mcp_port);
+        }
+        IpcCommand::StartAtLoginOn => {
+            if let Err(e) = super::set_start_at_login(true, &ctx.home) {
+                eprintln!("turbofig: Start at Login -> true failed: {e}");
+            }
+        }
+        IpcCommand::StartAtLoginOff => {
+            if let Err(e) = super::set_start_at_login(false, &ctx.home) {
+                eprintln!("turbofig: Start at Login -> false failed: {e}");
+            }
         }
     }
 }

@@ -2,8 +2,6 @@ use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-#[cfg(target_os = "macos")]
-use turbofig::cli::AppAction;
 use turbofig::cli::{
     already_running_message, autostart_off_message, autostart_on_message, autostart_plist_exists,
     carried_over_env_message, format_health, non_cellar_binary_warning, run_autostart_off,
@@ -11,6 +9,8 @@ use turbofig::cli::{
     status_unreachable_message, stop_autostart_restart_hint, stop_nothing_running_message,
     stopped_message, uninstall_kept_home_message, AutostartState, Cli, Command,
 };
+#[cfg(target_os = "macos")]
+use turbofig::cli::{run_autostart_on_app_after_stopping_existing, AppAction};
 use turbofig::launchd::{current_uid, RealLaunchctl};
 use turbofig::supervisor::{
     installed_target, should_log_binary_gone, upgrade_detected, wait_for_drain,
@@ -86,7 +86,7 @@ async fn main() {
         Some(Command::Start) => cmd_start().await,
         Some(Command::Stop) => cmd_stop().await,
         Some(Command::Status) => cmd_status().await,
-        Some(Command::Autostart { state }) => cmd_autostart(state).await,
+        Some(Command::Autostart { state, headless }) => cmd_autostart(state, headless).await,
         Some(Command::Uninstall { purge }) => cmd_uninstall(purge).await,
         Some(Command::Mcp) => cmd_mcp().await,
         #[cfg(target_os = "macos")]
@@ -190,14 +190,19 @@ fn cmd_check_embedded() -> ! {
     std::process::exit(0);
 }
 
-async fn cmd_autostart(state: AutostartState) {
+async fn cmd_autostart(state: AutostartState, headless: bool) {
     match state {
-        AutostartState::On => cmd_autostart_on().await,
+        AutostartState::On => cmd_autostart_on(headless).await,
         AutostartState::Off => cmd_autostart_off(),
     }
 }
 
-async fn cmd_autostart_on() {
+/// `turbofig autostart on`: installs the app autostart service by default
+/// (the menu-bar app itself), or the headless, daemon-only one with
+/// `--headless`. Either way, a daemon already running ad hoc is stopped
+/// first (best-effort; see `run_autostart_on_after_stopping_existing`'s
+/// doc), so launchd's own supervised instance can take over cleanly.
+async fn cmd_autostart_on(headless: bool) {
     let home = turbofig::bridge_dir_from_env();
     let mcp_port = turbofig::port_from_env();
     let agents_dir = launch_agents_dir();
@@ -228,14 +233,37 @@ async fn cmd_autostart_on() {
     let client = build_http_client("turbofig autostart");
     let stop_result = stop_running_daemon(&client, mcp_port, &home).await;
 
-    match run_autostart_on_after_stopping_existing(
-        stop_result,
-        &agents_dir,
-        &launchctl,
-        &uid,
-        &current_exe,
-        &home,
-    ) {
+    let result = if headless {
+        run_autostart_on_after_stopping_existing(
+            stop_result,
+            &agents_dir,
+            &launchctl,
+            &uid,
+            &current_exe,
+            &home,
+        )
+    } else {
+        #[cfg(target_os = "macos")]
+        {
+            let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+            run_autostart_on_app_after_stopping_existing(
+                stop_result,
+                &agents_dir,
+                &applications_dir,
+                &launchctl,
+                &uid,
+                &current_exe,
+                &home,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            eprintln!("turbofig autostart: the app service needs macOS; use --headless on this OS");
+            std::process::exit(1);
+        }
+    };
+
+    match result {
         Ok((outcome, stop_warning)) => {
             if let Some(w) = stop_warning {
                 eprintln!(
@@ -270,7 +298,7 @@ fn cmd_autostart_off() {
     };
 
     match run_autostart_off(&agents_dir, &launchctl, &uid) {
-        Ok(plist_path) => println!("{}", autostart_off_message(&plist_path)),
+        Ok(removed) => println!("{}", autostart_off_message(&removed)),
         Err(e) => {
             eprintln!("turbofig autostart: {e}");
             std::process::exit(1);
@@ -298,6 +326,15 @@ async fn cmd_uninstall(purge: bool) {
     let applications_dir = applications_dir_for_uninstall();
     let mcp_port = turbofig::port_from_env();
     let client = build_http_client("turbofig uninstall");
+
+    // Quit a running menu-bar app first (best-effort: no app running at all
+    // is the ordinary case, not a failure), so it is never left behind,
+    // holding the daemon up, under a home directory uninstall is about to
+    // tear down.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = turbofig::menu_bar::signal_quit_running_app(&home) {
+        eprintln!("turbofig uninstall: warning: could not signal a running app to quit: {e}");
+    }
 
     // Best-effort: uninstall must still succeed when nothing was running, or
     // when the stop request itself fails for some other reason. The plist
@@ -422,6 +459,16 @@ async fn cmd_run() {
         }
     }
 
+    // On macOS, the app (its tray icon and About window) is now the
+    // onboarding surface: install/refresh Turbofig.app, open it, and point
+    // the terminal at it, falling back to the ordinary text walkthrough
+    // below only if either step fails.
+    #[cfg(target_os = "macos")]
+    if let Some(text) = try_app_first_run() {
+        print!("{text}");
+        return;
+    }
+
     // The connected-file names below need /health's full, authenticated
     // payload; the token is already on disk by now (the daemon writes it
     // before either listener binds).
@@ -476,6 +523,39 @@ async fn cmd_run() {
             clipboard_copied,
         )
     );
+}
+
+/// Installs/refreshes `Turbofig.app` and opens it (through the `AppOpener`
+/// seam, `open <bundle path>`). `Some(text)`: both steps succeeded, print
+/// `app_first_run_text()` instead of the ordinary walkthrough. `None`: one
+/// of them failed; already printed a 1-line reason, the caller falls back
+/// to the ordinary walkthrough.
+#[cfg(target_os = "macos")]
+fn try_app_first_run() -> Option<&'static str> {
+    let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+    let own_exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("turbofig: failed to determine the running binary's path: {e}; falling back");
+            return None;
+        }
+    };
+    let bundle_install_err = turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe)
+        .err()
+        .map(|e| e.to_string());
+    let opened = if bundle_install_err.is_none() {
+        let bundle_path = turbofig::app_bundle::app_bundle_path(&applications_dir);
+        opener_for_run().open_url(&bundle_path.display().to_string())
+    } else {
+        false
+    };
+    match turbofig::first_run::app_first_run_outcome(bundle_install_err, opened) {
+        Ok(text) => Some(text),
+        Err(reason) => {
+            eprintln!("turbofig: {reason}; falling back to the manual walkthrough");
+            None
+        }
+    }
 }
 
 /// Starts the daemon detached if it is not already running, waits for

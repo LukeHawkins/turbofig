@@ -20,11 +20,23 @@ mod icon;
 mod lock;
 mod quit;
 mod second_instance;
+mod self_update;
 mod state;
 
 pub use lock::{try_acquire, AppLock};
 pub use quit::{quit_sequence, DaemonStopper};
 pub use state::{build_menu_state, ConnectedFileInfo, IconState, MenuState};
+
+/// Signals a running app instance (if any) to quit, over `<home>/app.sock`,
+/// the same socket a second launch uses to ask for the About window.
+/// `turbofig uninstall` calls this before its own steps, so the app is
+/// never left running (and holding the daemon up) under a home directory
+/// `uninstall` is about to tear down. `Ok(true)`: an app was listening and
+/// was told to quit. `Ok(false)`: no app was running (the ordinary case
+/// when the user never installed, or already quit, the menu-bar app).
+pub fn signal_quit_running_app(home: &Path) -> std::io::Result<bool> {
+    second_instance::send(&home.join("app.sock"), second_instance::SignalMessage::Quit)
+}
 
 use crate::first_run::{AppOpener, Clipboard, FakeClipboard, FakeOpener, NullClipboard};
 use about_window::{create_about_window, AboutWindowContext, AboutWindowHandle};
@@ -146,6 +158,9 @@ enum UserEvent {
     /// (`second_instance`): open the About window, or focus it if it is
     /// already open.
     OpenAboutWindow,
+    /// `turbofig uninstall` signalled this one over `<home>/app.sock` to
+    /// quit, the same as its own "Quit Turbofig" menu item.
+    QuitRequested,
 }
 
 /// Builds the static part of the menu (every item, in the exact documented
@@ -164,7 +179,7 @@ struct MenuHandles {
     quit_item: MenuItem,
 }
 
-fn build_menu(header: &str, status_text: &str) -> MenuHandles {
+fn build_menu(header: &str, status_text: &str, start_at_login_checked: bool) -> MenuHandles {
     let menu = Menu::new();
     let header_item = MenuItem::new(header, false, None);
     let status_item = MenuItem::new(status_text, false, None);
@@ -172,7 +187,8 @@ fn build_menu(header: &str, status_text: &str) -> MenuHandles {
     let copy_manifest_item = MenuItem::new("Copy Plugin Manifest Path", true, None);
     let open_figma_item = MenuItem::new("Open Figma", true, None);
     let about_item = MenuItem::new("About Turbofig\u{2026}", true, None);
-    let start_at_login_item = CheckMenuItem::new("Start at Login", true, false, None);
+    let start_at_login_item =
+        CheckMenuItem::new("Start at Login", true, start_at_login_checked, None);
     let open_log_item = MenuItem::new("Open Log", true, None);
     let quit_item = MenuItem::new("Quit Turbofig", true, None);
 
@@ -231,11 +247,34 @@ fn open_or_focus_about_window(
     }
 }
 
-/// Step 4 implements persisting this as a real login item. For now this
-/// only logs; the checkbox itself still toggles in the menu so the item is
-/// already wired end to end.
-fn set_start_at_login_stub(checked: bool) {
-    eprintln!("turbofig: Start at Login -> {checked} is not implemented yet (step 4)");
+/// Turns the app autostart LaunchAgent on or off (`cli::run_autostart_on_app`/
+/// `run_autostart_off`), shared by the tray menu's "Start at Login" checkbox
+/// and the About window's footer checkbox. Both read their initial/current
+/// checked state from `cli::app_autostart_plist_exists`, never their own
+/// cached belief, so the 2 checkboxes (and a plain `turbofig autostart`
+/// CLI run) can never silently disagree with the real plist on disk.
+fn set_start_at_login(enabled: bool, home: &Path) -> Result<(), String> {
+    let agents_dir = crate::launchd::launch_agents_dir_from_env();
+    let launchctl = crate::launchd::RealLaunchctl;
+    let uid = crate::launchd::current_uid().map_err(|e| e.to_string())?;
+    if enabled {
+        let applications_dir = crate::app_bundle::applications_dir_from_env();
+        let own_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        crate::cli::run_autostart_on_app(
+            &agents_dir,
+            &applications_dir,
+            &launchctl,
+            &uid,
+            &own_exe,
+            home,
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    } else {
+        crate::cli::run_autostart_off(&agents_dir, &launchctl, &uid)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Runs the menu-bar app: acquires the single-instance lock, ensures the
@@ -251,16 +290,17 @@ pub async fn run_menu_bar_app() {
     let mcp_port = crate::port_from_env();
 
     let lock_path = home.join("app.lock");
+    let app_lock: Rc<RefCell<Option<AppLock>>> = Rc::new(RefCell::new(None));
     match try_acquire(&lock_path) {
         Ok(Some(lock)) => {
-            // Held for the rest of the process's life; dropping it (on
-            // exit) releases the flock. Leak it deliberately: this process
-            // never releases the lock early on purpose.
-            std::mem::forget(lock);
+            // Held for the rest of the process's life, unless
+            // `relaunch_for_upgrade` explicitly drops it first (see
+            // `self_update`): dropping it releases the flock.
+            *app_lock.borrow_mut() = Some(lock);
         }
         Ok(None) => {
             let socket_path = home.join("app.sock");
-            match second_instance::signal_open_about(&socket_path) {
+            match second_instance::send(&socket_path, second_instance::SignalMessage::OpenAbout) {
                 Ok(true) => eprintln!("turbofig: another instance is already running; told it to open the About window"),
                 Ok(false) => eprintln!("turbofig: another instance is already running (no listener found); exiting"),
                 Err(e) => eprintln!("turbofig: another instance is already running; could not signal it: {e}"),
@@ -327,7 +367,11 @@ pub async fn run_menu_bar_app() {
         start_at_login_item,
         open_log_item,
         quit_item,
-    } = build_menu(&initial_state.header, &initial_state.status_text);
+    } = build_menu(
+        &initial_state.header,
+        &initial_state.status_text,
+        crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env()),
+    );
 
     let current_state = Arc::new(Mutex::new(initial_state.clone()));
     let last_health = Rc::new(RefCell::new(initial_health.clone()));
@@ -376,20 +420,29 @@ pub async fn run_menu_bar_app() {
     });
 
     // The second-instance signal listener: binds <home>/app.sock and, for
-    // every connection that carries the open-about message, asks the event
-    // loop to open (or focus) the About window. A bind failure here is a
-    // warning, not fatal: the app still works, a second launch just will
-    // not be able to signal this one (it logs its own warning and exits).
+    // every connection, forwards its message (open-about or quit) into the
+    // event loop. A bind failure here is a warning, not fatal: the app
+    // still works, a second launch (or `turbofig uninstall`) just will not
+    // be able to signal this one (it logs its own warning and exits).
     let socket_path = home.join("app.sock");
     match second_instance::bind(&socket_path) {
         Ok(listener) => {
             let about_proxy = proxy.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
-                    if second_instance::read_is_open_about(stream)
-                        && about_proxy.send_event(UserEvent::OpenAboutWindow).is_err()
-                    {
-                        return; // the event loop is gone; stop listening.
+                    let event = match second_instance::read(stream) {
+                        Some(second_instance::SignalMessage::OpenAbout) => {
+                            Some(UserEvent::OpenAboutWindow)
+                        }
+                        Some(second_instance::SignalMessage::Quit) => {
+                            Some(UserEvent::QuitRequested)
+                        }
+                        None => None,
+                    };
+                    if let Some(event) = event {
+                        if about_proxy.send_event(event).is_err() {
+                            return; // the event loop is gone; stop listening.
+                        }
                     }
                 }
             });
@@ -437,13 +490,24 @@ pub async fn run_menu_bar_app() {
                 if let Some(handle) = about_window_handle.borrow().as_ref() {
                     handle.push_status(health.is_some(), &names);
                 }
+                let daemon_version = health
+                    .as_ref()
+                    .and_then(|h| h.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
                 *last_health.borrow_mut() = health;
                 if let Ok(mut guard) = current_state.lock() {
                     *guard = new_state;
                 }
+                if let Some(daemon_version) = daemon_version {
+                    maybe_relaunch_for_upgrade(&home, &app_lock, &daemon_version);
+                }
             }
             Event::UserEvent(UserEvent::OpenAboutWindow) => {
                 open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
+            }
+            Event::UserEvent(UserEvent::QuitRequested) => {
+                perform_quit(&home, mcp_port);
             }
             Event::NewEvents(StartCause::Init) => {
                 if should_auto_open_about {
@@ -471,15 +535,14 @@ pub async fn run_menu_bar_app() {
                 open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
             } else if event.id == start_at_login_id {
                 let checked = start_at_login_item.is_checked();
-                set_start_at_login_stub(checked);
+                if let Err(e) = set_start_at_login(checked, &home) {
+                    eprintln!("turbofig: Start at Login -> {checked} failed: {e}");
+                    start_at_login_item.set_checked(!checked);
+                }
             } else if event.id == open_log_id {
                 opener_for_app().open_app_with_path("Console", &log_path);
             } else if event.id == quit_id {
-                let stopper = RealDaemonStopper::new(home.clone(), mcp_port);
-                if !quit_sequence(&stopper) {
-                    eprintln!("turbofig: the daemon was still answering after Quit's stop request");
-                }
-                std::process::exit(0);
+                perform_quit(&home, mcp_port);
             }
         }
     });
@@ -490,4 +553,62 @@ pub async fn run_menu_bar_app() {
 /// same way.
 async fn read_token(home: &Path) -> Option<String> {
     crate::read_token_file(home).await
+}
+
+/// Stops the daemon and confirms it is gone, then exits. Shared by "Quit
+/// Turbofig" (the tray menu, and the About window's `quit` IPC command via
+/// `handle_ipc_message`) and `UserEvent::QuitRequested` (a
+/// `turbofig uninstall` signal over `<home>/app.sock`), so all 3 paths quit
+/// identically. Never returns.
+fn perform_quit(home: &Path, mcp_port: u16) -> ! {
+    let stopper = RealDaemonStopper::new(home.to_path_buf(), mcp_port);
+    if !quit_sequence(&stopper) {
+        eprintln!("turbofig: the daemon was still answering after Quit's stop request");
+    }
+    std::process::exit(0);
+}
+
+/// Checks whether the daemon (`daemon_version`, from `/health`) is newer
+/// than this app binary's own version, and relaunches the bundle once per
+/// daemon version if so (`self_update::should_relaunch_for_upgrade`).
+/// Releases `app_lock` first (so the new instance's own `lock::try_acquire`
+/// can succeed), records the daemon version it relaunched for, reopens the
+/// bundle as a new instance (`open -n`, through the `AppOpener` seam), then
+/// exits. A version string that fails to parse, an unwritable state file,
+/// or a failed reopen are all handled by logging and simply not relaunching
+/// (or, having already released the lock, exiting anyway so the user is not
+/// left with a locked-out tray icon): see the inline comments.
+fn maybe_relaunch_for_upgrade(
+    home: &Path,
+    app_lock: &Rc<RefCell<Option<AppLock>>>,
+    daemon_version: &str,
+) {
+    let app_version = env!("CARGO_PKG_VERSION");
+    let last_relaunched_for = self_update::read_last_relaunched_version(home);
+    if !self_update::should_relaunch_for_upgrade(
+        app_version,
+        daemon_version,
+        last_relaunched_for.as_deref(),
+    ) {
+        return;
+    }
+
+    if let Err(e) = self_update::write_last_relaunched_version(home, daemon_version) {
+        eprintln!("turbofig: could not record the self-update state file, relaunching anyway: {e}");
+    }
+
+    // Release the flock before reopening: the new instance's own
+    // `lock::try_acquire` must succeed, not find this (about to exit) one
+    // still holding it.
+    app_lock.borrow_mut().take();
+
+    let applications_dir = crate::app_bundle::applications_dir_from_env();
+    let bundle_path = crate::app_bundle::app_bundle_path(&applications_dir);
+    if !opener_for_app().open_new_instance(&bundle_path) {
+        eprintln!(
+            "turbofig: could not reopen {} after an upgrade",
+            bundle_path.display()
+        );
+    }
+    std::process::exit(0);
 }

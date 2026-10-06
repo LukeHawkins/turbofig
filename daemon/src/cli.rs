@@ -5,8 +5,9 @@
 //! arguments) instead.
 
 use crate::launchd::{
-    carry_over_turbofig_env, domain_target, is_in_homebrew_cellar, plist_contents, plist_file_name,
-    service_target, stable_binary_path, Launchctl,
+    app_plist_contents, app_plist_file_name, app_service_target, carry_over_turbofig_env,
+    domain_target, is_in_homebrew_cellar, plist_contents, plist_file_name, service_target,
+    stable_binary_path, Launchctl,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io;
@@ -18,7 +19,7 @@ use std::time::Duration;
     name = "turbofig",
     version,
     about = "Bridge any AI to Figma.",
-    long_about = "turbofig: the always-on bridge from Figma to any AI agent.\n\nWith no subcommand, starts the daemon detached if it is not already running, then prints a first-run walkthrough (or a short status on a later run). Use `turbofig serve` to run the daemon in the foreground instead."
+    long_about = "turbofig: the always-on bridge from Figma to any AI agent.\n\nWith no subcommand, starts the daemon detached if it is not already running. On macOS, also installs/refreshes Turbofig.app and opens it: look for the tf icon in your menu bar, and choose About Turbofig... to get started. On any other OS, or if the app could not be opened, prints a first-run walkthrough (or a short status on a later run) instead. Use `turbofig serve` to run the daemon in the foreground."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -41,12 +42,20 @@ pub enum Command {
     Stop,
     /// Query the running daemon's `/health` endpoint.
     Status,
-    /// Turn the launchd autostart service on or off.
+    /// Turn the launchd autostart service on or off. `on` installs the app
+    /// (menu-bar) service by default; `--headless` installs the daemon-only
+    /// service instead. `off` removes whichever of the 2 is present.
     Autostart {
         #[arg(value_enum)]
         state: AutostartState,
+        /// With `on`: install the daemon-only LaunchAgent (no menu-bar app)
+        /// instead of the app LaunchAgent. Ignored with `off`, which always
+        /// removes both.
+        #[arg(long)]
+        headless: bool,
     },
-    /// Stop the daemon, turn autostart off, and remove its plist.
+    /// Quit the menu-bar app (if running), stop the daemon, turn autostart
+    /// off, and remove its plist(s) and the app bundle.
     Uninstall {
         /// Also delete the turbofig entries in the home directory (token,
         /// plugin files, bridge inbox/outbox, log), then the directory
@@ -159,6 +168,33 @@ pub fn run_autostart_on_after_stopping_existing(
     Ok((outcome, stop_warning))
 }
 
+/// Turns the **app** autostart service on exactly like
+/// `run_autostart_on_app`, after first warning (never failing the whole
+/// command) about `stop_result`, the same pre-stop step
+/// `run_autostart_on_after_stopping_existing` performs for the headless
+/// service. See that function's doc for why the pre-stop matters.
+#[cfg(target_os = "macos")]
+pub fn run_autostart_on_app_after_stopping_existing(
+    stop_result: Result<bool, String>,
+    launch_agents_dir: &Path,
+    applications_dir: &Path,
+    launchctl: &dyn Launchctl,
+    uid: &str,
+    own_exe: &Path,
+    home: &Path,
+) -> io::Result<(AutostartOnOutcome, Option<String>)> {
+    let stop_warning = stop_result.err();
+    let outcome = run_autostart_on_app(
+        launch_agents_dir,
+        applications_dir,
+        launchctl,
+        uid,
+        own_exe,
+        home,
+    )?;
+    Ok((outcome, stop_warning))
+}
+
 /// The testable half of `run_autostart_on`: takes an explicit `sleep` so a
 /// test can pass a no-op and exercise `bootstrap`'s retry loop without a
 /// real wait.
@@ -180,6 +216,13 @@ fn run_autostart_on_with_sleep(
     let extra_env = carry_over_turbofig_env();
     std::fs::write(&plist_path, plist_contents(&program, &log_path, &extra_env))?;
 
+    // Never run both services at once: bootout and remove the app plist
+    // before bootstrapping the headless one.
+    launchctl.bootout(&app_service_target(uid));
+    ignore_not_found(std::fs::remove_file(
+        launch_agents_dir.join(app_plist_file_name()),
+    ))?;
+
     launchctl.bootout(&service_target(uid));
     bootstrap_with_retry(launchctl, &domain_target(uid), &plist_path, sleep)?;
 
@@ -187,6 +230,85 @@ fn run_autostart_on_with_sleep(
         plist_path,
         carried_over_env: extra_env.into_iter().map(|(key, _)| key).collect(),
         binary_outside_homebrew_cellar: !is_in_homebrew_cellar(&canonical_exe),
+    })
+}
+
+/// Turns the **app** autostart service on (the default, no `--headless`):
+/// ensures `Turbofig.app` exists (installing it from `own_exe` if its
+/// executable is missing; `install_app_bundle` carries its own debug guard
+/// against writing the real `~/Applications`), writes
+/// `eu.lukehawkins.turbofig.app`'s plist pointing at the bundle's own
+/// executable, bootouts+removes the headless plist if present (never run
+/// both at once), then bootout+bootstraps the app service.
+///
+/// macOS-only: there is no app bundle, and so no app autostart service, on
+/// any other OS.
+#[cfg(target_os = "macos")]
+pub fn run_autostart_on_app(
+    launch_agents_dir: &Path,
+    applications_dir: &Path,
+    launchctl: &dyn Launchctl,
+    uid: &str,
+    own_exe: &Path,
+    home: &Path,
+) -> io::Result<AutostartOnOutcome> {
+    run_autostart_on_app_with_sleep(
+        launch_agents_dir,
+        applications_dir,
+        launchctl,
+        uid,
+        own_exe,
+        home,
+        &crate::app_bundle::RealCodeSigner,
+        &|d| std::thread::sleep(d),
+    )
+}
+
+/// The testable half of `run_autostart_on_app`: takes an explicit `signer`
+/// (so a test never shells out to the real `codesign`, the same seam
+/// `app_bundle.rs`'s own tests use) and an explicit `sleep` (so a test can
+/// exercise `bootstrap`'s retry loop with no real wait).
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn run_autostart_on_app_with_sleep(
+    launch_agents_dir: &Path,
+    applications_dir: &Path,
+    launchctl: &dyn Launchctl,
+    uid: &str,
+    own_exe: &Path,
+    home: &Path,
+    signer: &dyn crate::app_bundle::CodeSigner,
+    sleep: &dyn Fn(Duration),
+) -> io::Result<AutostartOnOutcome> {
+    std::fs::create_dir_all(launch_agents_dir)?;
+
+    let bundle_exe = crate::app_bundle::app_bundle_executable_path(applications_dir);
+    if !bundle_exe.exists() {
+        crate::app_bundle::install_app_bundle_with_signer(applications_dir, own_exe, signer)?;
+    }
+
+    let log_path = home.join("daemon.log");
+    let plist_path = launch_agents_dir.join(app_plist_file_name());
+    let extra_env = carry_over_turbofig_env();
+    std::fs::write(
+        &plist_path,
+        app_plist_contents(&bundle_exe, &log_path, &extra_env),
+    )?;
+
+    // Never run both services at once: bootout and remove the headless
+    // plist before bootstrapping the app one.
+    launchctl.bootout(&service_target(uid));
+    ignore_not_found(std::fs::remove_file(
+        launch_agents_dir.join(plist_file_name()),
+    ))?;
+
+    launchctl.bootout(&app_service_target(uid));
+    bootstrap_with_retry(launchctl, &domain_target(uid), &plist_path, sleep)?;
+
+    Ok(AutostartOnOutcome {
+        plist_path,
+        carried_over_env: extra_env.into_iter().map(|(key, _)| key).collect(),
+        binary_outside_homebrew_cellar: false,
     })
 }
 
@@ -247,10 +369,22 @@ pub fn autostart_on_message(plist_path: &Path) -> String {
     format!("turbofig: autostart on (plist: {})", plist_path.display())
 }
 
-/// Message printed when `autostart off` unloads the service and removes the
-/// plist.
-pub fn autostart_off_message(plist_path: &Path) -> String {
-    format!("turbofig: autostart off (removed {})", plist_path.display())
+/// Message printed when `autostart off` unloads whichever service (app,
+/// headless, or in principle both at once, e.g. after switching) was
+/// present. `removed` lists only the plists that actually existed before
+/// removal (see `run_autostart_off`'s `AutostartOffOutcome`).
+pub fn autostart_off_message(removed: &[PathBuf]) -> String {
+    if removed.is_empty() {
+        return "turbofig: autostart off (nothing was on)".to_owned();
+    }
+    format!(
+        "turbofig: autostart off (removed {})",
+        removed
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Result of a successful `run_uninstall` call.
@@ -260,25 +394,48 @@ pub struct UninstallOutcome {
     pub purged: bool,
 }
 
-/// Turns autostart off: unloads the launchd service and removes its plist.
-/// A missing plist is not an error: this is idempotent too. Returns the
-/// plist path removed (or that would have been removed).
+/// Turns autostart off: unloads both the app and the headless launchd
+/// services and removes whichever plist(s) are present. A missing plist is
+/// not an error: this is idempotent too. Returns the plist paths that
+/// actually existed before removal (empty when neither was on).
 pub fn run_autostart_off(
     launch_agents_dir: &Path,
     launchctl: &dyn Launchctl,
     uid: &str,
-) -> io::Result<PathBuf> {
+) -> io::Result<Vec<PathBuf>> {
     launchctl.bootout(&service_target(uid));
-    let plist_path = launch_agents_dir.join(plist_file_name());
-    ignore_not_found(std::fs::remove_file(&plist_path))?;
-    Ok(plist_path)
+    launchctl.bootout(&app_service_target(uid));
+
+    let mut removed = Vec::new();
+    for plist_path in [
+        launch_agents_dir.join(plist_file_name()),
+        launch_agents_dir.join(app_plist_file_name()),
+    ] {
+        if plist_path.exists() {
+            removed.push(plist_path.clone());
+        }
+        ignore_not_found(std::fs::remove_file(&plist_path))?;
+    }
+    Ok(removed)
 }
 
-/// Returns true when the autostart plist exists, i.e. `autostart on` has
-/// been run (whether or not launchd currently has it loaded). Used only to
-/// decide whether `turbofig stop` prints a hint about autostart being on.
+/// Returns true when either autostart plist (app or headless) exists, i.e.
+/// `autostart on` has been run (whether or not launchd currently has it
+/// loaded). Used to decide whether `turbofig stop` prints a hint about
+/// autostart being on, and by the menu bar / About window to show "Start at
+/// Login" as checked (the app plist specifically; see
+/// `app_autostart_plist_exists`).
 pub fn autostart_plist_exists(launch_agents_dir: &Path) -> bool {
     launch_agents_dir.join(plist_file_name()).exists()
+        || launch_agents_dir.join(app_plist_file_name()).exists()
+}
+
+/// Returns true when the app autostart plist specifically exists. The menu
+/// bar's "Start at Login" checkbox (both the tray menu and the About
+/// window) reads this, not `autostart_plist_exists`: the headless service
+/// has no UI to reflect its own checkbox against.
+pub fn app_autostart_plist_exists(launch_agents_dir: &Path) -> bool {
+    launch_agents_dir.join(app_plist_file_name()).exists()
 }
 
 /// Turns autostart off (see `run_autostart_off`), removes the macOS app
@@ -573,6 +730,7 @@ mod tests {
         assert_eq!(
             *launchctl.calls.borrow(),
             vec![
+                "bootout gui/501/eu.lukehawkins.turbofig.app".to_owned(),
                 "bootout gui/501/eu.lukehawkins.turbofig".to_owned(),
                 format!(
                     "bootstrap gui/501 {}",
@@ -580,6 +738,7 @@ mod tests {
                         .join("eu.lukehawkins.turbofig.plist")
                         .display()
                 ),
+                "bootout gui/501/eu.lukehawkins.turbofig.app".to_owned(),
                 "bootout gui/501/eu.lukehawkins.turbofig".to_owned(),
                 format!(
                     "bootstrap gui/501 {}",
@@ -820,26 +979,48 @@ mod tests {
     }
 
     #[test]
-    fn run_autostart_off_removes_the_plist() {
+    fn run_autostart_off_removes_the_headless_plist() {
         let launch_agents_dir = unique_temp_dir("agents-autostart-off");
         std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
-        std::fs::write(
-            launch_agents_dir.join("eu.lukehawkins.turbofig.plist"),
-            "placeholder",
-        )
-        .expect("write plist");
+        let headless_plist = launch_agents_dir.join("eu.lukehawkins.turbofig.plist");
+        std::fs::write(&headless_plist, "placeholder").expect("write plist");
         let launchctl = FakeLaunchctl::new();
 
-        let plist_path =
+        let removed =
             run_autostart_off(&launch_agents_dir, &launchctl, "501").expect("autostart off");
 
-        assert!(!plist_path.exists());
+        assert!(!headless_plist.exists());
+        assert_eq!(removed, vec![headless_plist]);
         assert_eq!(
             *launchctl.calls.borrow(),
-            vec!["bootout gui/501/eu.lukehawkins.turbofig".to_owned()]
+            vec![
+                "bootout gui/501/eu.lukehawkins.turbofig".to_owned(),
+                "bootout gui/501/eu.lukehawkins.turbofig.app".to_owned(),
+            ]
         );
 
         std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_autostart_off_removes_the_app_plist_too_when_both_are_present() {
+        let launch_agents_dir = unique_temp_dir("agents-autostart-off-both");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        let headless_plist = launch_agents_dir.join("eu.lukehawkins.turbofig.plist");
+        let app_plist = launch_agents_dir.join("eu.lukehawkins.turbofig.app.plist");
+        std::fs::write(&headless_plist, "placeholder").expect("write plist");
+        std::fs::write(&app_plist, "placeholder").expect("write plist");
+        let launchctl = FakeLaunchctl::new();
+
+        let mut removed =
+            run_autostart_off(&launch_agents_dir, &launchctl, "501").expect("autostart off");
+        removed.sort();
+
+        assert!(!headless_plist.exists());
+        assert!(!app_plist.exists());
+        let mut expected = vec![headless_plist, app_plist];
+        expected.sort();
+        assert_eq!(removed, expected);
     }
 
     #[test]
@@ -865,6 +1046,121 @@ mod tests {
         assert!(autostart_plist_exists(&launch_agents_dir));
 
         std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn autostart_plist_exists_is_also_true_for_just_the_app_plist() {
+        let launch_agents_dir = unique_temp_dir("agents-app-plist-exists");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        std::fs::write(
+            launch_agents_dir.join("eu.lukehawkins.turbofig.app.plist"),
+            "placeholder",
+        )
+        .expect("write plist");
+        assert!(autostart_plist_exists(&launch_agents_dir));
+        assert!(app_autostart_plist_exists(&launch_agents_dir));
+
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn app_autostart_plist_exists_is_false_when_only_the_headless_one_is() {
+        let launch_agents_dir = unique_temp_dir("agents-headless-only");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        std::fs::write(
+            launch_agents_dir.join("eu.lukehawkins.turbofig.plist"),
+            "placeholder",
+        )
+        .expect("write plist");
+        assert!(!app_autostart_plist_exists(&launch_agents_dir));
+
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn run_autostart_on_app_installs_the_bundle_when_missing_and_writes_its_plist() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-app-autostart");
+        let launch_agents_dir = unique_temp_dir("agents-app-autostart");
+        let applications_dir = unique_temp_dir("apps-app-autostart");
+        let launchctl = FakeLaunchctl::new();
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        let outcome = run_autostart_on_app_with_sleep(
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &home,
+            &crate::app_bundle::NoopCodeSigner,
+            &|_| {},
+        )
+        .expect("autostart on (app)");
+
+        assert!(applications_dir
+            .join("Turbofig.app/Contents/MacOS/turbofig")
+            .exists());
+        assert!(outcome.plist_path.exists());
+        let plist_text = std::fs::read_to_string(&outcome.plist_path).expect("read plist");
+        assert!(plist_text.contains("eu.lukehawkins.turbofig.app"));
+        assert!(plist_text.contains(
+            applications_dir
+                .join("Turbofig.app/Contents/MacOS/turbofig")
+                .to_string_lossy()
+                .as_ref()
+        ));
+        assert!(
+            *launchctl.calls.borrow()
+                == vec![
+                    "bootout gui/501/eu.lukehawkins.turbofig".to_owned(),
+                    "bootout gui/501/eu.lukehawkins.turbofig.app".to_owned(),
+                    format!(
+                        "bootstrap gui/501 {}",
+                        launch_agents_dir
+                            .join("eu.lukehawkins.turbofig.app.plist")
+                            .display()
+                    ),
+                ]
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+        std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[test]
+    fn run_autostart_on_app_removes_a_preexisting_headless_plist() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-app-switch");
+        let launch_agents_dir = unique_temp_dir("agents-app-switch");
+        let applications_dir = unique_temp_dir("apps-app-switch");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        let headless_plist = launch_agents_dir.join("eu.lukehawkins.turbofig.plist");
+        std::fs::write(&headless_plist, "placeholder").expect("write headless plist");
+        let launchctl = FakeLaunchctl::new();
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        run_autostart_on_app_with_sleep(
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &home,
+            &crate::app_bundle::NoopCodeSigner,
+            &|_| {},
+        )
+        .expect("autostart on (app)");
+
+        assert!(
+            !headless_plist.exists(),
+            "switching to the app service must remove the headless plist"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+        std::fs::remove_dir_all(&applications_dir).ok();
     }
 
     #[test]

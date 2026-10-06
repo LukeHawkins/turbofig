@@ -356,7 +356,7 @@
     <div class="footer">
       <div class="footer-left">
         <label>
-          <input id="start-at-login" type="checkbox" disabled />
+          <input id="start-at-login" type="checkbox" />
           Start at login
         </label>
       </div>
@@ -376,6 +376,11 @@
           if (el.tagName === "A") event.preventDefault();
           ipc(el.getAttribute("data-ipc"));
         });
+      });
+
+      var startAtLoginEl = document.getElementById("start-at-login");
+      startAtLoginEl.addEventListener("change", function () {
+        ipc(startAtLoginEl.checked ? "start_at_login_on" : "start_at_login_off");
       });
 
       document.querySelectorAll(".tab-btn").forEach(function (btn) {
@@ -410,10 +415,14 @@
         check.style.display = figmaConnected ? "inline" : "none";
       };
 
-      /* Called once from Rust at window creation. */
-      window.turbofigSetStatic = function (version, mcpJson) {
+      /* Called once from Rust at window creation. startAtLoginChecked
+         reflects cli::app_autostart_plist_exists at open time; the
+         checkbox itself is the one source of truth after that until the
+         window is reopened. */
+      window.turbofigSetStatic = function (version, mcpJson, startAtLoginChecked) {
         document.getElementById("version-text").textContent = version;
         document.getElementById("mcp-json").textContent = mcpJson;
+        startAtLoginEl.checked = startAtLoginChecked;
       };
     </script>
   </body>

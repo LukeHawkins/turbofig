@@ -7,12 +7,32 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// The launchd service label, shared by the plist filename, `Label`, and
-/// every `launchctl bootout`/`bootstrap` target.
+/// every `launchctl bootout`/`bootstrap` target. Used by the headless
+/// (daemon-only, `autostart on --headless`) service.
 pub const SERVICE_LABEL: &str = "eu.lukehawkins.turbofig";
 
-/// Returns the plist filename for the service.
+/// The launchd service label for the app autostart service (`autostart on`,
+/// no `--headless`): the menu-bar app itself, not only the daemon.
+pub const APP_SERVICE_LABEL: &str = "eu.lukehawkins.turbofig.app";
+
+/// Returns the plist filename for the headless service.
 pub fn plist_file_name() -> String {
     format!("{SERVICE_LABEL}.plist")
+}
+
+/// Returns the plist filename for the app service.
+pub fn app_plist_file_name() -> String {
+    format!("{APP_SERVICE_LABEL}.plist")
+}
+
+/// The real `~/Library/LaunchAgents`, unless `TURBOFIG_LAUNCH_AGENTS_DIR` is
+/// set (a test seam: a test always sets this to a temp dir instead).
+pub fn launch_agents_dir_from_env() -> PathBuf {
+    if let Ok(dir) = std::env::var("TURBOFIG_LAUNCH_AGENTS_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(home).join("Library/LaunchAgents")
 }
 
 /// Applies the stable-binary-path rule: a path under a Homebrew Cellar
@@ -115,6 +135,65 @@ pub fn plist_contents(program: &Path, log_path: &Path, extra_env: &[(String, Str
 		<string>1</string>
 {extra_env_xml}	</dict>
 	<key>StandardOutPath</key>
+	<string>{log_path}</string>
+	<key>StandardErrorPath</key>
+	<string>{log_path}</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+/// Builds the full `eu.lukehawkins.turbofig.app.plist` contents: the app
+/// autostart service (`autostart on`, the default, no `--headless`).
+///
+/// `bundle_exe` is `Turbofig.app`'s own executable
+/// (`app_bundle::app_bundle_executable_path`); `ProgramArguments` is just
+/// `[bundle_exe]`, no extra argument, so launchd invokes the bare command,
+/// which (`main.rs`'s `cmd_run_or_app_mode`) dispatches into the menu-bar
+/// app because the path resolves inside a `.app/Contents/MacOS/`. `KeepAlive`
+/// is plain `false`, unlike the headless service's `{SuccessfulExit: false}`:
+/// a user who quits the app (its own "Quit Turbofig") keeps it quit until the
+/// next login, rather than launchd relaunching it right away. `extra_env`
+/// carries the same `TURBOFIG_*` overrides the headless plist does, but never
+/// `TURBOFIG_SUPERVISED`: the app is not `serve`, so the supervised-restart
+/// loop in `main.rs` never applies to it.
+pub fn app_plist_contents(
+    bundle_exe: &Path,
+    log_path: &Path,
+    extra_env: &[(String, String)],
+) -> String {
+    let program = xml_escape(&bundle_exe.to_string_lossy());
+    let log_path = xml_escape(&log_path.to_string_lossy());
+    let mut extra_env_xml = String::new();
+    for (key, value) in extra_env {
+        extra_env_xml.push_str(&format!(
+            "		<key>{}</key>\n		<string>{}</string>\n",
+            xml_escape(key),
+            xml_escape(value)
+        ));
+    }
+    let env_dict = if extra_env_xml.is_empty() {
+        String::new()
+    } else {
+        format!("	<key>EnvironmentVariables</key>\n	<dict>\n{extra_env_xml}	</dict>\n")
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{APP_SERVICE_LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{program}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<false/>
+{env_dict}	<key>StandardOutPath</key>
 	<string>{log_path}</string>
 	<key>StandardErrorPath</key>
 	<string>{log_path}</string>
@@ -247,9 +326,16 @@ impl Launchctl for RealLaunchctl {
     }
 }
 
-/// Returns `gui/<uid>/eu.lukehawkins.turbofig`, the bootout target.
+/// Returns `gui/<uid>/eu.lukehawkins.turbofig`, the headless service's
+/// bootout target.
 pub fn service_target(uid: &str) -> String {
     format!("gui/{uid}/{SERVICE_LABEL}")
+}
+
+/// Returns `gui/<uid>/eu.lukehawkins.turbofig.app`, the app service's
+/// bootout target.
+pub fn app_service_target(uid: &str) -> String {
+    format!("gui/{uid}/{APP_SERVICE_LABEL}")
 }
 
 /// Returns `gui/<uid>`, the bootstrap domain target.
@@ -479,6 +565,62 @@ mod tests {
     fn service_target_and_domain_target_are_formatted_correctly() {
         assert_eq!(service_target("501"), "gui/501/eu.lukehawkins.turbofig");
         assert_eq!(domain_target("501"), "gui/501");
+    }
+
+    #[test]
+    fn app_service_target_is_formatted_correctly() {
+        assert_eq!(
+            app_service_target("501"),
+            "gui/501/eu.lukehawkins.turbofig.app"
+        );
+    }
+
+    #[test]
+    fn app_plist_file_name_is_the_app_label_plus_plist() {
+        assert_eq!(app_plist_file_name(), "eu.lukehawkins.turbofig.app.plist");
+    }
+
+    #[test]
+    fn app_plist_contents_carries_the_bundle_exe_run_at_load_and_plain_keep_alive_false() {
+        let xml = app_plist_contents(
+            Path::new("/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/Users/dev/.turbofig/daemon.log"),
+            &[],
+        );
+        assert!(xml.contains("<string>eu.lukehawkins.turbofig.app</string>"));
+        assert!(xml.contains(
+            "<string>/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig</string>"
+        ));
+        // Exactly 1 ProgramArguments entry: no "serve" argument, unlike the
+        // headless plist.
+        assert!(!xml.contains("<string>serve</string>"));
+        assert!(xml.contains("<key>RunAtLoad</key>\n\t<true/>"));
+        assert!(xml.contains("<key>KeepAlive</key>\n\t<false/>"));
+        assert!(
+            !xml.contains("TURBOFIG_SUPERVISED"),
+            "the app plist must never set TURBOFIG_SUPERVISED"
+        );
+    }
+
+    #[test]
+    fn app_plist_contents_carries_extra_env_vars() {
+        let xml = app_plist_contents(
+            Path::new("/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/tmp/log"),
+            &[("TURBOFIG_MCP_PORT".to_owned(), "18999".to_owned())],
+        );
+        assert!(xml.contains("<key>TURBOFIG_MCP_PORT</key>"));
+        assert!(xml.contains("<string>18999</string>"));
+    }
+
+    #[test]
+    fn app_plist_contents_omits_the_environment_variables_dict_with_no_extra_env() {
+        let xml = app_plist_contents(
+            Path::new("/Applications/Turbofig.app/Contents/MacOS/turbofig"),
+            Path::new("/tmp/log"),
+            &[],
+        );
+        assert!(!xml.contains("<key>EnvironmentVariables</key>"));
     }
 
     /// Records calls instead of touching a real launchd session.

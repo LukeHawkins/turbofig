@@ -261,6 +261,18 @@ pub fn app_bundle_outdated(applications_dir: &Path) -> bool {
     exe_missing || version_mismatch
 }
 
+/// The bundle directory itself: `<applications_dir>/Turbofig.app`.
+pub fn app_bundle_path(applications_dir: &Path) -> PathBuf {
+    applications_dir.join("Turbofig.app")
+}
+
+/// The bundle's own executable: `<applications_dir>/Turbofig.app/Contents/MacOS/turbofig`.
+/// Used by the app LaunchAgent (`cli::run_autostart_on_app`) to pin its
+/// `ProgramArguments` at the bundle itself, not the Homebrew binary.
+pub fn app_bundle_executable_path(applications_dir: &Path) -> PathBuf {
+    app_bundle_path(applications_dir).join("Contents/MacOS/turbofig")
+}
+
 /// True when the running binary's own canonical path is inside a `.app`
 /// bundle's `Contents/MacOS/`: i.e. this process was launched by opening
 /// `Turbofig.app`, not by a CLI invocation. Step 2 uses this to switch into
@@ -298,6 +310,22 @@ pub fn remove_turbofig_app_bundle(applications_dir: &Path) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_bundle_path_joins_turbofig_app() {
+        assert_eq!(
+            app_bundle_path(Path::new("/Users/dev/Applications")),
+            PathBuf::from("/Users/dev/Applications/Turbofig.app")
+        );
+    }
+
+    #[test]
+    fn app_bundle_executable_path_points_at_contents_macos() {
+        assert_eq!(
+            app_bundle_executable_path(Path::new("/Users/dev/Applications")),
+            PathBuf::from("/Users/dev/Applications/Turbofig.app/Contents/MacOS/turbofig")
+        );
+    }
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
