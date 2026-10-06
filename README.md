@@ -129,19 +129,21 @@ This is the main path: it works on a locked-down machine, with no
 permission dialog and no MCP setup.
 
 1. **Add the turbofig plugin to Figma (once).** Click the tf icon, open
-   the About window, and in "How to use" click **Show in Finder** (it
-   reveals `manifest.json` inside the hidden `~/.turbofig/figma-plugin/`
-   folder, which Figma's own file picker cannot browse into). In Figma
-   Desktop, choose **Plugins > Development > Import plugin from
-   manifest…**, then drag `manifest.json` from the Finder window onto the
-   dialog. Or press Cmd+Shift+G in the dialog and paste the path instead
-   (**Copy manifest path** copies it). This menu item exists only in
-   Figma Desktop, not the web app.
+   the About window, and in "How to use" click **Show plugin in Finder**
+   (it reveals `manifest.json` inside the hidden
+   `~/.turbofig/figma-plugin/` folder, which Figma's own file picker
+   cannot browse into). In Figma Desktop, choose **Plugins > Development
+   > Import plugin from manifest…**, then drag `manifest.json` from the
+   Finder window onto the dialog. Or press Cmd+Shift+G in the dialog and
+   paste the path instead (the small **Copy path** link under the button
+   copies it; the Settings window also has a full **Copy plugin manifest
+   path** button). This menu item exists only in Figma Desktop, not the
+   web app.
 2. **Run the plugin in your Figma file.** Open a file, run turbofig from
    the Plugins menu once, and leave the panel open. The About window's
-   step 2 gets a checkmark once a file connects.
-3. **Ask your agent.** Click **Copy Agent Prompt**, either from the tf
-   icon's menu or from the plugin panel itself, and paste it into Claude
+   step 2 turns into a green check once a file connects.
+3. **Ask your agent.** Click **Copy agent prompt**, either from the About
+   window or from the plugin panel itself, and paste it into Claude
    Code, Cursor, Copilot, or any other agent with local file access. The
    agent then drives turbofig by writing a JSON job to `~/.turbofig/inbox`
    and reading the result from `~/.turbofig/outbox`. No curl, no MCP
@@ -294,14 +296,14 @@ connects. Its menu:
 
 | Item | Does |
 |---|---|
-| Copy Agent Prompt | Copies the same agent-connect prompt as the plugin panel's button |
-| Copy Plugin Manifest Path | Copies the path to `manifest.json`, for Cmd+Shift+G in Figma's file picker |
-| Show Plugin in Finder | Opens a Finder window with `manifest.json` selected, for dragging it onto Figma's import dialog |
-| Open Figma | Opens Figma Desktop |
 | About Turbofig… | Opens the About window: live status, the "How to use" steps, and the Claude Code/MCP block |
-| Start at Login | Installs or removes a launchd LaunchAgent for the app itself |
-| Open Log | Opens `~/.turbofig/daemon.log` in Console |
+| Settings… | Opens the Settings window: Start at login, Copy plugin manifest path, Open plugin folder, and a version/Open log line |
 | Quit Turbofig | Stops the daemon and quits the app |
+
+The menu is kept small on purpose: copying the agent prompt and the MCP
+commands lives in the About window; copying the manifest path, revealing
+the plugin in Finder, Start at login and Open log live in the Settings
+window.
 
 **Start at Login:** `turbofig autostart on` (the default) installs a
 LaunchAgent that launches `Turbofig.app` itself at login; `turbofig
@@ -309,8 +311,8 @@ autostart on --headless` installs a daemon-only LaunchAgent instead, with
 no app, no tray icon, no window, for a machine where you only want the
 background service. `turbofig autostart off` removes whichever one is
 installed. Turning one on always replaces the other, so the 2 never run
-at once. The tray menu's and the About window's "Start at Login"
-checkboxes are 2 views onto the same setting.
+at once. The Settings window's "Start at login" switch is the one view
+onto this setting now.
 
 **Updating:**
 

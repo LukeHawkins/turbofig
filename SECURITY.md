@@ -141,20 +141,24 @@ bypassed, or a file-bridge directory with loose permissions). A report that
 only restates "the execute tool runs arbitrary code" is not a vulnerability;
 that is the documented design.
 
-## Menu-bar app: the About window's webview
+## Menu-bar app: the About and Settings windows' webviews
 
-The macOS menu-bar app (`daemon/src/menu_bar/`) opens a native window hosting
-a `wry` webview (About Turbofig…, or automatically on first use). It is
-deliberately narrow:
+The macOS menu-bar app (`daemon/src/menu_bar/`) opens 2 native windows, each
+hosting its own `wry` webview: About (About Turbofig…, or automatically on
+first use) and Settings (Settings…). Both are deliberately narrow, and both
+follow the same rules below unless noted otherwise.
 
-- **It loads exactly 1 embedded page, never a URL.** `about_window.rs` calls
-  `WebViewBuilder::with_html` on a string `include_str!`'d from
-  `daemon/assets/about/about.html` at compile time. No `with_url`, no
-  network fetch, no remote resource of any kind: the page's own CSS and JS
-  are inline, and `about_state`'s `the_about_page_has_no_remote_urls_except_the_docs_link`
-  test asserts no `src="http`/`href="http` appears anywhere in that file
+- **Each loads exactly 1 embedded page, never a URL.** `about_window.rs`/
+  `settings_window.rs` call `WebViewBuilder::with_html` on a string
+  `include_str!`'d from `daemon/assets/about/about.html` /
+  `daemon/assets/settings/settings.html` at compile time. No `with_url`, no
+  network fetch, no remote resource of any kind: each page's own CSS and
+  JS are inline. `about_state`'s `the_about_page_has_no_remote_urls_except_the_docs_link`
+  test asserts no `src="http`/`href="http` appears anywhere in `about.html`
   except the one deliberate exception, the "Docs" link's own `href` to the
-  GitHub repo.
+  GitHub repo; `settings_state`'s `the_settings_page_has_no_remote_urls`
+  test asserts the same with no exception at all for `settings.html` (it
+  has no "Docs" link).
 - **A navigation handler blocks every navigation away from that page.**
   `about_window::navigation_is_allowed` allows only the initial `about:`
   load `with_html` itself performs; the "Docs" link's `onclick` intercepts
@@ -162,29 +166,42 @@ deliberately narrow:
   over IPC instead), and the navigation handler is a backstop that opens
   that one URL externally (through the `AppOpener` seam, i.e. `open <url>`,
   never inside the webview) and cancels the in-webview navigation either
-  way. Nothing else ever reaches an `Allow` decision.
-- **The webview can only ever send 1 of 10 fixed IPC commands.** The
-  page's JS calls `window.ipc.postMessage("<command>")`;
+  way. The Settings window's navigation handler is the same backstop with
+  no exception at all (no link in that page ever needs one). Nothing else
+  ever reaches an `Allow` decision in either window.
+- **Each webview can only ever send 1 of 6 fixed IPC commands.** The
+  About page's JS calls `window.ipc.postMessage("<command>")`;
   `about_state::parse_ipc_command` accepts exactly `copy_manifest_path`,
-  `reveal_manifest`, `open_figma`, `copy_agent_prompt`, `copy_mcp_command`,
-  `copy_mcp_json`, `open_docs`, `quit`, `start_at_login_on`, and
-  `start_at_login_off`, and rejects anything else (including a
-  reasonable-looking payload like `{"op":"quit"}` or an unknown command)
-  with no action taken. The handler never evaluates or interprets the raw
-  message as code; it is a plain string compared against the 10 literals.
-  `reveal_manifest` runs `open -R <manifest path>` (reveal in Finder, a
-  fixed path under `<home>/figma-plugin/`, never a path taken from the
-  page), never an arbitrary path.
+  `reveal_manifest`, `copy_agent_prompt`, `copy_mcp_command`,
+  `copy_mcp_json`, `open_docs`, and `page_ready`, rejecting anything else
+  (including a reasonable-looking payload like `{"op":"quit"}` or an
+  unknown command) with no action taken. The Settings page sends 1 of its
+  own 6: `start_at_login_on`, `start_at_login_off`, `copy_manifest_path`,
+  `open_plugin_folder`, `open_log`, `page_ready`
+  (`settings_state::parse_ipc_command`, the same reject-anything-else
+  rule). Neither handler ever evaluates or interprets the raw message as
+  code; each is a plain string compared against its own fixed literal set.
+  `reveal_manifest`/`open_plugin_folder` both run `open -R <manifest
+  path>` (reveal in Finder, a fixed path under `<home>/figma-plugin/`,
+  never a path taken from the page), never an arbitrary path. Neither page
+  can send `quit`: Quit Turbofig lives only in the tray menu now.
 - **Every command that touches the clipboard or opens something goes
   through the existing `Clipboard`/`AppOpener` seams**, the same ones the
   bare `turbofig` command and the tray menu use, including their debug-build
   guard (a debug build never touches the real clipboard, Figma, Finder, or
   the browser unless `TURBOFIG_DEV_REAL_DESKTOP=1` is set).
-- **`start_at_login_on`/`start_at_login_off` only ever toggle the app
-  LaunchAgent** (`cli::run_autostart_on_app`/`run_autostart_off`, see
-  "The app LaunchAgent" below), the same 2 functions the tray menu's
-  checkbox calls; the page cannot pass any other launchd target or plist
-  content.
+- **`start_at_login_on`/`start_at_login_off` (Settings window only now)
+  only ever toggle the app LaunchAgent**
+  (`cli::run_autostart_on_app`/`run_autostart_off`, see "The app
+  LaunchAgent" below); the page cannot pass any other launchd target or
+  plist content.
+- **`page_ready` only ever triggers a re-push of status Rust already
+  holds.** It carries no data and cannot be used to request anything new;
+  see `ARCHITECTURE.md`'s "Live status, and the page-ready race" for why it
+  exists.
+- **Devtools are debug-build-only.** `WebViewBuilder::with_devtools(cfg!(debug_assertions))`
+  on both windows: a release build (what `Turbofig.app` itself launches)
+  never ships the Web Inspector.
 - **The second-instance signal (`<home>/app.sock`) is a local Unix socket,
   mode `0600`, carrying 1 of exactly 2 fixed literal messages**
   (`second_instance::SignalMessage`): `open_about` tells the first instance
