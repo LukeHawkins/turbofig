@@ -1,5 +1,5 @@
 /**
- * Watch script for the Turbofig plugin.
+ * Watch script for the turbofig plugin.
  * Watches src/ recursively and rebuilds on changes using `bun run build`.
  * Debounces rapid changes with a 100ms delay.
  * Run with: bun watch.ts

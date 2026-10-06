@@ -1,5 +1,5 @@
 /**
- * Pure UI logic for the Turbofig plugin panel.
+ * Pure UI logic for the turbofig plugin panel.
  * No DOM, no WebSocket. All functions are testable in isolation.
  */
 

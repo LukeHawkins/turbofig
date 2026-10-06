@@ -1,5 +1,5 @@
 /**
- * Build script for the Turbofig plugin main thread.
+ * Build script for the turbofig plugin main thread.
  * Bundles src/code.ts as an IIFE and writes dist/code.js.
  * Run with: bun build-code.ts
  */

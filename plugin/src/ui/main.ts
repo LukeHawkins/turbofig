@@ -1,5 +1,5 @@
 /**
- * UI runtime for the Turbofig plugin panel.
+ * UI runtime for the turbofig plugin panel.
  * Runs in the browser iframe. Manages the WebSocket connection and panel state.
  * Imports backoffDelayMs from protocol.ts to avoid duplicating the implementation.
  */

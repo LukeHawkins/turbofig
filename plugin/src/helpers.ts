@@ -1,5 +1,5 @@
 /**
- * Compact craft helper library for the Turbofig eval context.
+ * Compact craft helper library for the turbofig eval context.
  *
  * Pure functions are exported standalone for unit testing.
  * Figma-touching functions live inside createTf, bound to a live PluginAPI.

@@ -1,5 +1,5 @@
 /**
- * Typed message shapes for the Turbofig daemon <-> plugin protocol.
+ * Typed message shapes for the turbofig daemon <-> plugin protocol.
  * All messages carry a `type` discriminant.
  */
 
@@ -513,7 +513,7 @@ export function capResultMessage(msg: ResultMessage): ResultMessage {
  * Keep this table current. Phase 12 owns the monthly upkeep note.
  */
 export const DEPRECATION_PREAMBLE = `"use strict";
-/* Turbofig eval runs under documentAccess: dynamic-page. Use the async APIs.
+/* turbofig eval runs under documentAccess: dynamic-page. Use the async APIs.
    Do not use the deprecated synchronous calls on the left.
      figma.getNodeById(id)              -> await figma.getNodeByIdAsync(id)
      figma.getStyleById(id)             -> await figma.getStyleByIdAsync(id)

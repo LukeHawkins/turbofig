@@ -1,5 +1,5 @@
 /**
- * Build script for the Turbofig plugin UI.
+ * Build script for the turbofig plugin UI.
  * Bundles src/ui/main.ts as an IIFE, injects it into src/ui/template.html,
  * and writes dist/ui.html. Run with: bun build-ui.ts
  */
