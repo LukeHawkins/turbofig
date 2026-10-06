@@ -1,6 +1,6 @@
 # App icon
 
-`AppIcon.icns` is embedded into `Turbofig.app` at build time (`include_bytes!`
+`AppIcon.icns` is embedded into `turbofig.app` at build time (`include_bytes!`
 in `daemon/src/app_bundle.rs`).
 
 `icon-1024.png` is the 1024x1024 source, copied from the brand source

@@ -72,7 +72,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
-| `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `Turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort, then registered with Launch Services best-effort (`LaunchServicesRegistrar` seam, `RealLaunchServicesRegistrar`/`NoopLaunchServicesRegistrar`, so Spotlight/Launchpad find it); `app_bundle_outdated` (version, or a same-version rebuild via `TurbofigBuildId`, an FNV-1a fingerprint of the binary, `build_id_for_bytes`), `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). `applications_dir_from_env` is the one shared resolver for where the bundle lives: `/Applications` (Finder's sidebar) when writable, else `~/Applications` (a non-admin managed Mac), always preferring whichever already holds our own bundle (`has_our_bundle`) so there is never 2 copies; every consumer (the outdated check, autostart, uninstall, the app LaunchAgent's `ProgramArguments`) goes through it. The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
+| `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort, then registered with Launch Services best-effort (`LaunchServicesRegistrar` seam, `RealLaunchServicesRegistrar`/`NoopLaunchServicesRegistrar`, so Spotlight/Launchpad find it); `app_bundle_outdated` (version, or a same-version rebuild via `TurbofigBuildId`, an FNV-1a fingerprint of the binary, `build_id_for_bytes`), `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). `applications_dir_from_env` is the one shared resolver for where the bundle lives: `/Applications` (Finder's sidebar) when writable, else `~/Applications` (a non-admin managed Mac), always preferring whichever already holds our own bundle (`has_our_bundle`) so there is never 2 copies; every consumer (the outdated check, autostart, uninstall, the app LaunchAgent's `ProgramArguments`) goes through it. The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
 | `agent_prompt.rs` | Not macOS-only: the agent-connect prompt's fill logic (`fill_agent_prompt`), shared byte-for-byte with the plugin's own copy via `prompts/agent-prompt.txt` (`include_str!` here, inlined by `plugin/build-ui.ts` there). A golden test on each side checks the same inputs give identical text |
 | `menu_bar/` | macOS-only: the menu-bar app (`mod.rs`'s `run_menu_bar_app`, and `about_window.rs`'s `create_about_window`/`settings_window.rs`'s `create_settings_window`, the only things in the crate that build a real tray icon, window, webview, or event loop); `state.rs` (`MenuState`, the pure `/health`-to-menu translation); `icon.rs` (PNG decode for the 2 tray-icon states); `lock.rs` (the single-instance `flock` guard); `quit.rs` (the stop-then-confirm sequence, seamed off a real HTTP stopper via `DaemonStopper`); `activate.rs` (`activate_app_and_focus`, shared by both windows); `about_state.rs`/`about_window.rs` (the About window's IPC parsing and `tao`/`wry` glue); `settings_state.rs`/`settings_window.rs` (the same split for the Settings window); `second_instance.rs` (the `<home>/app.sock` signal: a second launch asks the first to open the About window, `turbofig uninstall` asks it to quit); `self_update.rs` (the relaunch-once-per-daemon-version decision, and its `<home>/app-relaunched-for` state file). See "Menu-bar app" below |
 
@@ -235,7 +235,7 @@ come from `clap`.
 
 | Command | Does |
 |---|---|
-| *(none)* | `cmd_run`: starts the daemon detached if not already running. On macOS, then installs/refreshes `Turbofig.app`, opens it, and prints a 2-line pointer at the tray icon (`try_app_first_run`); on any other OS, or if either step fails, prints the first-run walkthrough or a short status instead; see below |
+| *(none)* | `cmd_run`: starts the daemon detached if not already running. On macOS, then installs/refreshes `turbofig.app`, opens it, and prints a 2-line pointer at the tray icon (`try_app_first_run`); on any other OS, or if either step fails, prints the first-run walkthrough or a short status instead; see below |
 | `serve` | Runs the daemon in the foreground (`run_daemon`): binds both ports, ensures the token, writes/refreshes the plugin files, serves until a subsystem dies |
 | `start` | Starts the daemon detached if not already running, waits for `/health`, prints the version and both ports. Idempotent |
 | `stop` | Stops the running daemon via authenticated `POST /control`, waits for it to go away. A no-op (not an error) if nothing was running. If `/health` answers but the token file is missing or no longer matches, `/control` cannot authenticate, so `stop` exits 1 and tells the user how to end the process by hand |
@@ -243,17 +243,17 @@ come from `clap`.
 | `autostart on [--headless]` / `autostart off` | `on` (default) installs the app LaunchAgent (`eu.lukehawkins.turbofig.app`, `cli::run_autostart_on_app`): the bundle's own executable, `RunAtLoad` true, `KeepAlive` false. `--headless` installs the daemon-only LaunchAgent instead (`eu.lukehawkins.turbofig`, unchanged from before). Either `on` bootouts and removes the other plist first: the 2 are never active together. `off` bootouts and removes whichever is present (in principle both) |
 | `uninstall [--purge]` | Quits a running menu-bar app first (`menu_bar::signal_quit_running_app`, over `<home>/app.sock`), then stops autostart (both plists) and removes the app bundle; `--purge` also deletes the known home-directory entries |
 | `mcp` | Runs the stdio MCP proxy (`proxy.rs`), starting the daemon via `spawn` if unreachable |
-| `app install` | macOS-only, hidden. Assembles (or refreshes) `Turbofig.app` and prints its path (`app_bundle.rs`) |
+| `app install` | macOS-only, hidden. Assembles (or refreshes) `turbofig.app` and prints its path (`app_bundle.rs`) |
 | `app run` | macOS-only, hidden, dev-only. Starts the menu-bar app (`menu_bar::run_menu_bar_app`) with no bundle in place; a debug build refuses unless `TURBOFIG_DEV_REAL_DESKTOP=1`, since it shows real UI |
 
 - **The bare command's macOS app-first-run path** (`try_app_first_run`,
-  `first_run::app_first_run_outcome`): installs/refreshes `Turbofig.app`
+  `first_run::app_first_run_outcome`): installs/refreshes `turbofig.app`
   (`app_bundle::install_app_bundle`, same debug guard as `app install`),
   opens it (`AppOpener::open_url` on the bundle path), and on success prints
   exactly:
   ```
-  Turbofig is now in your menu bar (look for the tf icon).
-  Click it and choose About Turbofig… to get started. No icon? Run: turbofig status
+  turbofig is now in your menu bar (look for the tf icon).
+  Click it and choose About turbofig… to get started. No icon? Run: turbofig status
   ```
   A failure at either step prints a 1-line reason first, then falls through
   to the ordinary text walkthrough below unchanged.
@@ -355,7 +355,7 @@ Steps 2 (tray icon, menu, status polling, Quit), 3 (the About window), and
 self-update, `uninstall` quits the app) of the macOS app bundle, all here
 (step 1: `app_bundle.rs`, above; step 4b: docs, still to come). Reached
 either by opening
-`Turbofig.app` (`main.rs`'s `cmd_run_or_app_mode` dispatches into it when
+`turbofig.app` (`main.rs`'s `cmd_run_or_app_mode` dispatches into it when
 `running_inside_app_bundle()` is true) or the hidden dev command `turbofig
 app run`. macOS-only, same target-gating as its 3 extra dependencies,
 `tray-icon` (with its `muda` menus), `tao` (the main-thread event loop), and
@@ -371,12 +371,12 @@ resolves any of them.
   deletes the lock file itself. `quit_running_app_and_wait_for_exit`
   (`mod.rs`) composes this same lock with `second_instance::send`'s
   `Quit` message: the bare `turbofig` command calls it after it refreshes an
-  outdated `Turbofig.app` (`main.rs`'s `try_app_first_run`), so a rebuild
+  outdated `turbofig.app` (`main.rs`'s `try_app_first_run`), so a rebuild
   with the same version (see `app_bundle::app_bundle_outdated`'s
   `TurbofigBuildId` comparison) asks the stale running instance to quit and
   waits up to 5s for the lock to free before reopening the new bundle,
   rather than just re-activating the old one; it prints "Updated
-  Turbofig.app and restarted it." only when an instance was actually found.
+  turbofig.app and restarted it." only when an instance was actually found.
 - **Startup.** Ensures the daemon is running the same way the bare command
   does (`spawn::fetch_health`, `spawn_detached_daemon`, `wait_for_health`),
   then builds the tray icon and the menu once, starts the background health
@@ -408,9 +408,9 @@ resolves any of them.
   `tray_icon::Icon`, loaded as an AppKit template image (`with_icon_templated`/
   `set_icon_templated`) so macOS tints it for light and dark mode.
 - **Menu**, in order: the disabled status line, a separator, "About
-  Turbofig…" (opens, or focuses, the About window below), "Settings…"
+  turbofig…" (opens, or focuses, the About window below), "Settings…"
   (opens, or focuses, the Settings window below), a separator, "Quit
-  Turbofig". Every other action that used to sit in the menu (copying the
+  turbofig". Every other action that used to sit in the menu (copying the
   agent prompt or the manifest path, revealing the plugin in Finder,
   opening Figma, Start at Login, Open Log) now lives in the About or
   Settings window instead, and "Open Figma" was removed outright: the menu
@@ -446,7 +446,7 @@ resolves any of them.
   and `create_about_window`/`create_settings_window` call it once on
   build, so the very first click (a tab, a button) always lands.
 - **`quit::quit_sequence`** is pure control flow over a `DaemonStopper` seam
-  (`stop`, `wait_unreachable`): "Quit Turbofig" issues `POST /control` with
+  (`stop`, `wait_unreachable`): "Quit turbofig" issues `POST /control` with
   the pairing token, waits up to 10s for `/health` to go unreachable, then
   exits regardless (a user clicking Quit wants the app gone now). The real
   `DaemonStopper` owns its own small `tokio` runtime for the same main-thread
@@ -454,10 +454,10 @@ resolves any of them.
 - **`turbofig app run`** is a hidden dev command that starts app mode with
   no bundle in place, for manual testing. A debug build refuses it unless
   `TURBOFIG_DEV_REAL_DESKTOP=1` is set, since it shows a real tray icon and
-  menu; a release build (what `Turbofig.app` itself launches) always runs it.
+  menu; a release build (what `turbofig.app` itself launches) always runs it.
 - **Self-update (`self_update.rs`).** Every health poll also compares the
   daemon's reported `version` against this app binary's own
-  `CARGO_PKG_VERSION` (semver). A `brew upgrade` refreshes `Turbofig.app`
+  `CARGO_PKG_VERSION` (semver). A `brew upgrade` refreshes `turbofig.app`
   from the newly installed daemon's next start (`app_bundle::app_bundle_outdated`),
   but the already-running app process is still the old binary until it
   relaunches itself: once the daemon is strictly newer,
@@ -473,18 +473,18 @@ resolves any of them.
   `cmd_uninstall` calls `menu_bar::signal_quit_running_app`, which sends
   `second_instance::SignalMessage::Quit` over `<home>/app.sock`; a listening
   app's `UserEvent::QuitRequested` runs the same `perform_quit` as its own
-  "Quit Turbofig" menu item and the About window's `quit` IPC command, so
+  "Quit turbofig" menu item and the About window's `quit` IPC command, so
   all 3 quit identically. Best-effort: no app running at all (the ordinary
   case for a headless install) is not an error.
 
 ### About window (step 3: `about_window.rs`, `about_state.rs`, `second_instance.rs`)
 
-A real `tao` window (420x520, not resizable, titled "Turbofig") hosting 1
+A real `tao` window (420x520, not resizable, titled "turbofig") hosting 1
 `wry` webview over exactly 1 embedded page
 (`daemon/assets/about/about.html`, `include_str!`'d, never a URL; see
 `SECURITY.md`'s "Menu-bar app: the About window's webview"). Opens
 automatically on first use (`about_state::should_auto_open_about_window`:
-`<home>/plugin-seen` does not exist yet), from "About Turbofig…", or from a
+`<home>/plugin-seen` does not exist yet), from "About turbofig…", or from a
 second instance's signal; already open, any of those 3 just calls
 `AboutWindowHandle::focus` instead of building a second window.
 
@@ -509,7 +509,7 @@ second instance's signal; already open, any of those 3 just calls
   `first_run::first_run_text` already shows in the bare command's
   first-run walkthrough, kept in sync by hand today, not a shared
   constant). Footer: only "Docs" (the GitHub repo) and the version; "Start
-  at login" moved to the Settings window below, and "Quit Turbofig" is not
+  at login" moved to the Settings window below, and "Quit turbofig" is not
   repeated here (it is already 1 click away in the tray menu).
 - **IPC**: the page only ever calls `window.ipc.postMessage("<command>")`
   with 1 of 6 fixed strings; `about_state::parse_ipc_command` parses them
@@ -552,13 +552,13 @@ second instance's signal; already open, any of those 3 just calls
   `<home>/app.lock` already held, connects and sends `OpenAbout`, then
   exits 0; the first instance's listener thread (bound before the tray is
   built) forwards that as `UserEvent::OpenAboutWindow` into the event loop,
-  which opens or focuses the window exactly like "About Turbofig…" does.
+  which opens or focuses the window exactly like "About turbofig…" does.
   `turbofig uninstall` sends `Quit` the same way (`menu_bar::signal_quit_running_app`),
   forwarded as `UserEvent::QuitRequested` into `perform_quit`.
 
 ### Settings window (`settings_window.rs`, `settings_state.rs`)
 
-A real `tao` window (360x260, not resizable, titled "Turbofig Settings"),
+A real `tao` window (360x260, not resizable, titled "turbofig settings"),
 same approach as the About window: 1 `wry` webview over exactly 1 embedded
 page (`daemon/assets/settings/settings.html`), the same
 `PENDING_STATE_SHIM`/`page_ready` pattern, the same debug-build devtools,

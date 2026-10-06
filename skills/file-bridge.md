@@ -1,6 +1,6 @@
-# Turbofig file-bridge
+# turbofig file-bridge
 
-Drive the Turbofig daemon with local file writes and reads only. Use this path when a policy blocks curl or native MCP. The Write and Read tools need no network access, so no confirmation dialog fires.
+Drive the turbofig daemon with local file writes and reads only. Use this path when a policy blocks curl or native MCP. The Write and Read tools need no network access, so no confirmation dialog fires.
 
 ## When to use
 

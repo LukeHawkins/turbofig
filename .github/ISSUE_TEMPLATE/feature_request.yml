@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Turbofig keeps a locked, four-tool surface by design (`turbofig_execute`,
+        turbofig keeps a locked, four-tool surface by design (`turbofig_execute`,
         `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`). See
         `DECISIONS.md` #1. A request to add a fifth tool is unlikely to be
         accepted; a request to extend `execute` or the helper library usually

@@ -30,7 +30,7 @@ body:
   - type: input
     id: turbofig-version
     attributes:
-      label: Turbofig version
+      label: turbofig version
       description: The daemon version shown in the plugin panel, or `turbofig --version`
       placeholder: "0.1.0"
     validations:

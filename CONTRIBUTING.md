@@ -6,7 +6,7 @@ and `DECISIONS.md` for the reasoning behind the design choices.
 
 ## Prerequisites
 
-- macOS. Turbofig installs and runs on macOS only.
+- macOS. turbofig installs and runs on macOS only.
 - Figma Desktop (not the web app).
 - Rust. The pinned toolchain is in `rust-toolchain.toml` (1.94.1, with
   `rustfmt` and `clippy`). `rustup` installs it automatically when you build.
@@ -61,7 +61,7 @@ build` before you test in Figma.
 ## Work on the menu-bar app
 
 The app (`daemon/src/app_bundle.rs`, `daemon/src/menu_bar/`) is macOS-only
-and assembles `Turbofig.app` on your own Mac. A debug build (`cargo build`,
+and assembles `turbofig.app` on your own Mac. A debug build (`cargo build`,
 `cargo test`, `cargo run`) never touches either of your real Applications
 folders (`/Applications` or `~/Applications`) or `~/Library/LaunchAgents`,
 never runs `launchctl` or `lsregister`, and never opens a real tray icon or
@@ -80,7 +80,7 @@ window unless you explicitly opt in:
   or a URL, `launchctl`) is faked; `cargo test` never needs it and never
   sets it.
 - `./target/release/turbofig app install` assembles (or refreshes)
-  `Turbofig.app` into `TURBOFIG_APPLICATIONS_DIR` (defaults to
+  `turbofig.app` into `TURBOFIG_APPLICATIONS_DIR` (defaults to
   `~/Applications`) and prints its path; this one is safe to run in a
   release build without the env var, since a release binary is what
   Homebrew actually installs.
@@ -95,7 +95,7 @@ The brand sources live in `docs/brand/`: `app-icon-1024.png` (the app
 icon) and `menubar-glyph.png` (the menu-bar glyph, black on transparent).
 After you change either one, regenerate the embedded assets:
 
-- **App icon** (`Turbofig.app`'s `.icns`, shown in Finder and the Dock):
+- **App icon** (`turbofig.app`'s `.icns`, shown in Finder and the Dock):
   `scripts/make-app-icon.sh docs/brand/app-icon-1024.png`. Needs a
   1024x1024 PNG; rebuilds `daemon/assets/app-icon/AppIcon.icns` with
   `sips`/`iconutil`, no third-party tool.

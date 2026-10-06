@@ -15,7 +15,7 @@
 
 ---
 
-Turbofig is a menu-bar app and a local, always-on daemon that let any AI
+turbofig is a menu-bar app and a local, always-on daemon that let any AI
 agent read and edit the Figma file open in Figma Desktop. Run `turbofig`
 once and a tf icon appears in your menu bar; click it for status, the
 plugin manifest, and an About window that walks you through the rest.
@@ -45,7 +45,7 @@ ends.
 *The daemon bridges your AI agent to the Figma plugin over a local
 WebSocket.*
 
-- **A menu-bar app, assembled on your own Mac.** `Turbofig.app` is built
+- **A menu-bar app, assembled on your own Mac.** `turbofig.app` is built
   locally from the binary already on your disk, not downloaded as a
   `.app`, so it carries no quarantine flag and opens with no "unidentified
   developer" prompt, even though the binary itself is not notarized.
@@ -53,7 +53,7 @@ WebSocket.*
   `turbofig_execute`. The tool surface is locked at 4 and never grows.
 - **A single binary with no Node runtime.** The daemon is one Rust binary.
   It embeds the Figma plugin and writes it to disk on every start.
-- **No Figma access token.** Turbofig drives the file through the Figma
+- **No Figma access token.** turbofig drives the file through the Figma
   Plugin API, not the Figma web API, so it never needs a personal access
   token.
 - **The daemon keeps running when an agent session ends.** `turbofig mcp`
@@ -77,7 +77,7 @@ package, version 1.22.1.
 | Figma access token needed | No | Only for its REST tools |
 | Runtime | Single Rust binary, no Node | Node.js, run through `npx` |
 | Figma Desktop must be open | Yes | Yes, for its Desktop Bridge plugin features |
-| REST-only features (comments, reading a file without Figma open) | No. Turbofig has no REST access | Comments are supported through the Figma REST API |
+| REST-only features (comments, reading a file without Figma open) | No. turbofig has no REST access | Comments are supported through the Figma REST API |
 
 **When to use something else.** If you need comments, or file access
 without Figma open, use a REST-based server such as figma-console-mcp or
@@ -97,17 +97,17 @@ brew install LukeHawkins/tap/turbofig
 turbofig
 ```
 
-The first run of `turbofig` installs and opens `Turbofig.app`, starts the
+The first run of `turbofig` installs and opens `turbofig.app`, starts the
 daemon in the background, and prints:
 
 ```
-Turbofig is in your Applications folder and your menu bar (look for the tf icon).
-Click it and choose About Turbofig… to get started. No icon? Run: turbofig status
+turbofig is in your Applications folder and your menu bar (look for the tf icon).
+Click it and choose About turbofig… to get started. No icon? Run: turbofig status
 ```
 
 A tf icon appears in your menu bar. The About window opens automatically
 the first time (it does not reopen on every later run; click the tf icon
-and choose "About Turbofig…" whenever you want it back). A later bare
+and choose "About turbofig…" whenever you want it back). A later bare
 `turbofig` run prints the same 2 lines again: the app, not the terminal,
 is where onboarding and status live now. On a managed Mac where your
 account cannot write `/Applications`, the first line instead says "in
@@ -289,7 +289,7 @@ return list.id;
 
 ## Menu bar
 
-`Turbofig.app` is assembled on your own Mac (not downloaded as a `.app`),
+`turbofig.app` is assembled on your own Mac (not downloaded as a `.app`),
 so it carries no quarantine flag and opens with no "unidentified
 developer" prompt, even though the `turbofig` binary itself is not
 notarized. It shows as a tf icon in your menu bar, dimmed when no Figma
@@ -298,9 +298,9 @@ connects. Its menu:
 
 | Item | Does |
 |---|---|
-| About Turbofig… | Opens the About window: live status, the "How to use" steps, and the Claude Code/MCP block |
+| About turbofig… | Opens the About window: live status, the "How to use" steps, and the Claude Code/MCP block |
 | Settings… | Opens the Settings window: Start at login, Copy plugin manifest path, Open plugin folder, and a version/Open log line |
-| Quit Turbofig | Stops the daemon and quits the app |
+| Quit turbofig | Stops the daemon and quits the app |
 
 The menu is kept small on purpose: copying the agent prompt and the MCP
 commands lives in the About window; copying the manifest path, revealing
@@ -308,7 +308,7 @@ the plugin in Finder, Start at login and Open log live in the Settings
 window.
 
 **Start at Login:** `turbofig autostart on` (the default) installs a
-LaunchAgent that launches `Turbofig.app` itself at login; `turbofig
+LaunchAgent that launches `turbofig.app` itself at login; `turbofig
 autostart on --headless` installs a daemon-only LaunchAgent instead, with
 no app, no tray icon, no window, for a machine where you only want the
 background service. `turbofig autostart off` removes whichever one is
@@ -325,7 +325,7 @@ brew upgrade turbofig
 The next `turbofig mcp` start (or the next time you open the app) sees an
 older daemon, lets its in-flight jobs finish, then restarts it on the new
 version. An older proxy never restarts a newer daemon. The daemon
-rewrites the plugin files and refreshes `Turbofig.app` on every start, so
+rewrites the plugin files and refreshes `turbofig.app` on every start, so
 the Figma import only happens once: reopen the plugin in Figma after an
 upgrade to pick up the refreshed files. If the app was already open when
 you upgraded, it notices the daemon is now newer and relaunches itself
@@ -340,7 +340,7 @@ daemon, turns off autostart, and removes the app bundle.
 
 | Command | Does |
 |---|---|
-| `turbofig` | Installs/refreshes `Turbofig.app`, starts the daemon, opens the app, and prints a 2-line pointer at the tray icon. On any other OS, or if the app could not be opened, prints the 3 connect steps on first run, or a 3-line status on a later run, instead |
+| `turbofig` | Installs/refreshes `turbofig.app`, starts the daemon, opens the app, and prints a 2-line pointer at the tray icon. On any other OS, or if the app could not be opened, prints the 3 connect steps on first run, or a 3-line status on a later run, instead |
 | `turbofig mcp` | Runs a stdio MCP server for an agent's MCP client. Starts the daemon first if it is not already running |
 | `turbofig start` | Starts the daemon detached in the background, if it is not already running |
 | `turbofig stop` | Stops the running daemon |

@@ -101,14 +101,14 @@ recorded under Unreleased.
   builder subagents to a QA critic subagent to refine, with checkpoint and
   resume for long jobs.
 - Benchmark harness (`bench/`) measuring token and wall-time cost.
-- macOS menu-bar app: `Turbofig.app` is assembled on the user's own Mac
+- macOS menu-bar app: `turbofig.app` is assembled on the user's own Mac
   (ad-hoc signed, no quarantine flag, so no "unidentified developer"
   prompt), installed/refreshed and opened automatically by the bare
   `turbofig` command. A tray icon (template image, 2 states: a plugin
   connected, or waiting/unreachable) shows a menu: Copy Agent Prompt, Copy
   Plugin Manifest Path, Show Plugin in Finder (`open -R`, for a Figma file
   picker that cannot browse into the hidden `~/.turbofig/figma-plugin/`),
-  Open Figma, About Turbofig…, Start at Login, Open Log, Quit Turbofig. A
+  Open Figma, About turbofig…, Start at Login, Open Log, Quit turbofig. A
   background poller refreshes the tray and the About window every 2s from
   `/health`.
 - About window: a native window hosting 1 embedded webview page (no remote

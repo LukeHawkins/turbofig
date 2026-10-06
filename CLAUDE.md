@@ -1,4 +1,4 @@
-# Turbofig
+# turbofig
 
 The always-on Figma design agent: blazing fast, token-light, never re-pair a plugin. One Rust daemon + a thin eval-first Figma plugin. An AI acts as a senior designer that builds real Figma work from a brief or a moodboard.
 

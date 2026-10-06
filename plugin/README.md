@@ -1,6 +1,6 @@
-# Turbofig plugin
+# turbofig plugin
 
-The Figma-side half of Turbofig. Thin by design: the UI iframe holds the
+The Figma-side half of turbofig. Thin by design: the UI iframe holds the
 WebSocket to the daemon, the main thread runs the Figma Plugin API. See
 `../ARCHITECTURE.md` for the full picture and `../CLAUDE.md` for the project hub.
 
@@ -55,7 +55,7 @@ the Community listing. None of them is accidental:
   Community id. Figma assigns a real id only once a plugin is actually
   submitted. Until then, a development import needs a placeholder, and
   `-dev` keeps it from being mistaken for a real one.
-- **`enablePrivatePluginApi: true`.** Turbofig reads `figma.fileKey` to show
+- **`enablePrivatePluginApi: true`.** turbofig reads `figma.fileKey` to show
   the file key in the panel and to target a specific open file from the
   daemon. `figma.fileKey` is empty without this flag. The flag is also why
   the plugin cannot go through a normal Community review unchanged: a

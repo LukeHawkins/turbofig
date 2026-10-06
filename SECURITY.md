@@ -12,13 +12,13 @@ Do not open a public issue for a security problem.
 
 ## Threat model
 
-Turbofig runs one local daemon that bridges an AI client to a Figma plugin.
+turbofig runs one local daemon that bridges an AI client to a Figma plugin.
 Read this before you report a finding, so you know what is a design choice
 and what is a bug.
 
 - **`turbofig_execute` runs arbitrary Figma Plugin API JS by design.** This
   is the product. Any client that can call this tool has full script access
-  to the open Figma file. Turbofig does not sandbox or restrict the JS it
+  to the open Figma file. turbofig does not sandbox or restrict the JS it
   runs.
 - **Both ports bind to `127.0.0.1` only.** The HTTP MCP endpoint and the
   WebSocket server never listen on a network-reachable interface.
@@ -91,7 +91,7 @@ could otherwise open the socket and receive the AI's jobs.
 
 ## Data handling
 
-- **Turbofig makes no outbound network calls of its own.** The daemon only
+- **turbofig makes no outbound network calls of its own.** The daemon only
   serves `127.0.0.1`; it never calls out to any remote service.
 - **Design data moves only between the plugin, the daemon on `127.0.0.1`,
   and the local agent (AI client).** Nothing in that path leaves the
@@ -144,7 +144,7 @@ that is the documented design.
 ## Menu-bar app: the About and Settings windows' webviews
 
 The macOS menu-bar app (`daemon/src/menu_bar/`) opens 2 native windows, each
-hosting its own `wry` webview: About (About Turbofig…, or automatically on
+hosting its own `wry` webview: About (About turbofig…, or automatically on
 first use) and Settings (Settings…). Both are deliberately narrow, and both
 follow the same rules below unless noted otherwise.
 
@@ -184,7 +184,7 @@ follow the same rules below unless noted otherwise.
   `reveal_manifest`/`open_plugin_folder` both run `open -R <manifest
   path>` (reveal in Finder, a fixed path under `<home>/figma-plugin/`,
   never a path taken from the page), never an arbitrary path. Neither page
-  can send `quit`: Quit Turbofig lives only in the tray menu now.
+  can send `quit`: Quit turbofig lives only in the tray menu now.
 - **Every command that touches the clipboard or opens something goes
   through the existing `Clipboard`/`AppOpener` seams**, the same ones the
   bare `turbofig` command and the tray menu use, including their debug-build
@@ -200,14 +200,14 @@ follow the same rules below unless noted otherwise.
   see `ARCHITECTURE.md`'s "Live status, and the page-ready race" for why it
   exists.
 - **Devtools are debug-build-only.** `WebViewBuilder::with_devtools(cfg!(debug_assertions))`
-  on both windows: a release build (what `Turbofig.app` itself launches)
+  on both windows: a release build (what `turbofig.app` itself launches)
   never ships the Web Inspector.
 - **The second-instance signal (`<home>/app.sock`) is a local Unix socket,
   mode `0600`, carrying 1 of exactly 2 fixed literal messages**
   (`second_instance::SignalMessage`): `open_about` tells the first instance
   to open or focus the About window; `quit_app` (sent only by `turbofig
   uninstall`) tells it to quit, through the same `perform_quit` path as its
-  own "Quit Turbofig" menu item. Neither message can run a job, read a
+  own "Quit turbofig" menu item. Neither message can run a job, read a
   file, or carry arbitrary data, and (like every other `<home>` path) only
   the owning user's account can read or connect to the socket.
 
@@ -216,7 +216,7 @@ follow the same rules below unless noted otherwise.
 `turbofig autostart on` (the default, no `--headless`) writes
 `~/Library/LaunchAgents/eu.lukehawkins.turbofig.app.plist`
 (`launchd::app_plist_contents`): `ProgramArguments` is exactly
-`[<applications_dir>/Turbofig.app/Contents/MacOS/turbofig]`, the bundle's
+`[<applications_dir>/turbofig.app/Contents/MacOS/turbofig]`, the bundle's
 own executable, with no extra argument; `RunAtLoad` true; `KeepAlive` plain
 `false` (a user who quits the app keeps it quit until the next login,
 unlike the headless service's crash-only restart). It carries the same

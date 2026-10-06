@@ -1,4 +1,4 @@
-# Turbofig Benchmark
+# turbofig Benchmark
 
 An exact reproduction guide for comparing turbofig against `figma-console-mcp`.
 Every number this harness reports is either an exact wire byte count or a real

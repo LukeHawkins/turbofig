@@ -66,7 +66,7 @@ Do this once, before the first release.
 
 ## Unsigned binaries
 
-Turbofig ships unsigned, unnotarized macOS binaries. This is unverified
+turbofig ships unsigned, unnotarized macOS binaries. This is unverified
 against current Homebrew and dist documentation, so treat it as a working
 assumption, not a confirmed fact: Homebrew-installed command-line binaries
 do not usually trigger the Gatekeeper quarantine prompt that a downloaded

@@ -1,4 +1,4 @@
-# Turbofig discoverability artifacts
+# turbofig discoverability artifacts
 
 `mcp-config.json` is for an MCP client with an allowlisted native MCP config that starts its own server process. Merge its `mcpServers` block into your config; it runs `turbofig mcp` over stdio, with the absolute path to the `turbofig` binary (a GUI app does not have `/opt/homebrew/bin` on its `PATH`).
 
