@@ -102,7 +102,8 @@ could otherwise open the socket and receive the AI's jobs.
   that window is deleted, not kept.
 - **`daemon.log` carries operational messages only:** startup, port binds,
   the bridge directory path, and errors from the MCP, WebSocket, and bridge
-  tasks. It never logs job eval code or file content.
+  tasks. It never logs job eval code or file content. Above 5 MiB it rotates
+  to `daemon.log.1` at the next daemon start.
 - **Release binaries are not code-signed or notarized today.** Each GitHub
   release ships through `cargo-dist` with a Homebrew installer; the
   generated formula pins a SHA256 checksum for each artifact, and

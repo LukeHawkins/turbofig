@@ -66,7 +66,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `plugin_files.rs` | `write_plugin_files`, `plugin_files_outdated`, `mark_plugin_seen` (the `<home>/plugin-seen` marker) |
 | `token.rs` | `ensure_token`, `random_token_hex`, `constant_time_eq` |
 | `spawn.rs` | `spawn_detached_daemon` (setsid, own session, log redirected to `<home>/daemon.log`), `fetch_health`/`wait_for_health`/`wait_for_unreachable`: shared by `turbofig` (bare), `turbofig start`, and `turbofig mcp` |
-| `proxy.rs` | `turbofig mcp`: a stdio MCP server forwarding every tool call onto `POST /job`, starting the daemon via `spawn` when unreachable, and the version-handoff restart (compares its own build version to the daemon's `/health` version) |
+| `proxy.rs` | `turbofig mcp`: a stdio MCP server forwarding every tool call onto `POST /job`. It answers `initialize` and `tools/list` at once; the health check, the detached daemon start and the version-handoff restart (compares its own build version to the daemon's `/health` version) run in a background task that only tool calls wait on. Each proxy sends its own `X-Turbofig-Session` id, so `fileKey` pairing works as on an HTTP MCP session |
 | `control.rs` | The authenticated local `POST /control` path (`stop`/`restart`) used to drain and restart the daemon; backs `turbofig stop` and the version handoff |
 | `first_run.rs` | `first_run_text`, `status_text` (the two texts `turbofig`, the bare command, prints), the `Clipboard`/`AppOpener` seams (`RealClipboard`/`FakeClipboard`, `RealAppOpener`/`FakeOpener`) |
 | `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
@@ -180,8 +180,11 @@ above and `DECISIONS.md` #39 for the full design.
 and writes its own files on every start.
 
 - **On-demand detached start.** `spawn::spawn_detached_daemon` runs
-  `<turbofig binary> serve` in its own session (`setsid`), stdin from
-  `/dev/null`, stdout/stderr appended to `<home>/daemon.log`. Both `turbofig`
+  `<turbofig binary> serve` in its own session (`setsid`), with `<home>` as its
+  working directory, stdin from `/dev/null`, and stdout/stderr appended to
+  `<home>/daemon.log`. A background thread reaps the child, so a stopped
+  daemon never stays a zombie. At startup the daemon rotates a `daemon.log`
+  over 5 MiB to `daemon.log.1` (one rotated file is kept). Both `turbofig`
   (bare, no subcommand) and `turbofig mcp` call this the same way: check
   `/health` first, start detached only if nothing answers, then poll
   `/health` until it does (`spawn::wait_for_health`) or give up with a clear
@@ -202,11 +205,13 @@ and writes its own files on every start.
   `ws_handler` in `ws.rs`); a no-op on every later valid connection. This is
   how the bare `turbofig` command tells a genuine first run (no plugin has
   ever connected) from a later one (see "CLI" below).
-- **Version handoff.** `turbofig mcp` compares its own build version to the
-  running daemon's `/health` version on every call; an older daemon is
-  told to drain and restart via the authenticated `POST /control` path
-  (`control.rs`), so a `brew upgrade` reaches a long-running daemon without
-  the user restarting it by hand. See `DECISIONS.md` and the
+- **Version handoff.** Once per proxy start, in the background task,
+  `turbofig mcp` compares its own build version to the running daemon's
+  `/health` version. An older daemon is told to drain and restart via the
+  authenticated `POST /control` path (`control.rs`), so a `brew upgrade`
+  reaches a long-running daemon without the user restarting it by hand. An
+  older proxy never restarts a newer daemon, so sessions started before the
+  upgrade cannot downgrade it. See `DECISIONS.md` and the
   "Supervised restart" section below for the launchd side of the same idea.
 - **Launchd autostart is optional.** `turbofig autostart on`/`off` write or
   remove the `eu.lukehawkins.turbofig.plist`, so the daemon also starts at
@@ -308,7 +313,7 @@ come from `clap`.
   bridge inbox/outbox) is left in place and the command says so. With
   `--purge`, `cli::purge_home` deletes only the known entries turbofig
   itself writes (`token`, `figma-plugin/`, `inbox/`, `outbox/`,
-  `daemon.log`), then removes `<home>` itself only if that leaves it
+  `daemon.log`, `daemon.log.1`, `plugin-seen`), then removes `<home>` itself only if that leaves it
   empty: `<home>` is `TURBOFIG_BRIDGE_DIR`-controlled and can be a shared
   folder or `$HOME`, so `--purge` must never `remove_dir_all` the whole
   thing. A missing plist or a missing `<home>` is not an error: uninstall
