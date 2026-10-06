@@ -131,19 +131,17 @@ This is the main path: it works on a locked-down machine, with no
 permission dialog and no MCP setup.
 
 1. **Add the turbofig plugin to Figma (once).** Click the tf icon, open
-   the About window, and in "How to use" click **Show plugin in Finder**
-   (it reveals `manifest.json` inside the hidden
-   `~/.turbofig/figma-plugin/` folder, which Figma's own file picker
-   cannot browse into). In Figma Desktop, choose **Plugins > Development
-   > Import plugin from manifest…**, then drag `manifest.json` from the
-   Finder window onto the dialog. Or press Cmd+Shift+G in the dialog and
-   paste the path instead (the small **Copy path** link under the button
-   copies it; the Settings window also has a full **Copy plugin manifest
-   path** button). This menu item exists only in Figma Desktop, not the
-   web app.
+   the About window, and click **Show plugin folder** (it reveals
+   `manifest.json` inside the hidden `~/.turbofig/figma-plugin/` folder,
+   which Figma's own file picker cannot browse into). In Figma Desktop,
+   choose **Plugins > Development > Import plugin from manifest…**, then
+   drag `manifest.json` from the Finder window onto the dialog. Or press
+   Cmd+Shift+G in the dialog and paste the path instead (the **Copy path**
+   link next to it copies it; the Settings window also has a full **Copy
+   plugin manifest path** link). This menu item exists only in Figma
+   Desktop, not the web app.
 2. **Run the plugin in your Figma file.** Open a file, run turbofig from
-   the Plugins menu once, and leave the panel open. The About window's
-   step 2 turns into a green check once a file connects.
+   the Plugins menu once, and leave the panel open.
 3. **Ask your agent.** Click **Copy agent prompt**, either from the About
    window or from the plugin panel itself, and paste it into Claude
    Code, Cursor, Copilot, or any other agent with local file access. The
@@ -298,14 +296,16 @@ connects. Its menu:
 
 | Item | Does |
 |---|---|
-| About turbofig… | Opens the About window: live status, the "How to use" steps, and the Claude Code/MCP block |
-| Settings… | Opens the Settings window: Start at login, Copy plugin manifest path, Open plugin folder, and a version/Open log line |
+| About turbofig… | Opens the About window: the "How to use" steps and Copy agent prompt |
+| Settings… | Opens the Settings window: Start at login, Copy plugin manifest path, Open plugin folder |
 | Quit turbofig | Stops the daemon and quits the app |
 
-The menu is kept small on purpose: copying the agent prompt and the MCP
-commands lives in the About window; copying the manifest path, revealing
-the plugin in Finder, Start at login and Open log live in the Settings
-window.
+The menu is kept small on purpose: copying the agent prompt lives in the
+About window; copying the manifest path, revealing the plugin in Finder,
+and Start at login live in the Settings window. Both windows are plain
+pages with no script: every button is a link Rust intercepts and runs, so
+there is no live status display to go stale; close either window with its
+title bar button or Cmd+W.
 
 **Start at Login:** `turbofig autostart on` (the default) installs a
 LaunchAgent that launches `turbofig.app` itself at login; `turbofig
@@ -313,8 +313,9 @@ autostart on --headless` installs a daemon-only LaunchAgent instead, with
 no app, no tray icon, no window, for a machine where you only want the
 background service. `turbofig autostart off` removes whichever one is
 installed. Turning one on always replaces the other, so the 2 never run
-at once. The Settings window's "Start at login" switch is the one view
-onto this setting now.
+at once. The Settings window's "Start at login" link is the one view onto
+this setting now; it shows the current state as plain text and reopen the
+window to see the setting change take effect.
 
 **Updating:**
 
