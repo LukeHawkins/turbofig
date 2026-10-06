@@ -255,8 +255,7 @@ pub fn run_autostart_off(
 
 /// Returns true when the autostart plist exists, i.e. `autostart on` has
 /// been run (whether or not launchd currently has it loaded). Used only to
-/// decide whether `turbofig stop` prints a hint that launchd will restart
-/// the daemon it just stopped.
+/// decide whether `turbofig stop` prints a hint about autostart being on.
 pub fn autostart_plist_exists(launch_agents_dir: &Path) -> bool {
     launch_agents_dir.join(plist_file_name()).exists()
 }
@@ -424,10 +423,12 @@ pub fn stop_nothing_running_message() -> &'static str {
     "turbofig: no daemon appears to be running"
 }
 
-/// Hint `turbofig stop` appends when the autostart plist is present:
-/// launchd's `KeepAlive` will restart the daemon this command just stopped.
+/// Hint `turbofig stop` appends when the autostart plist is present: a clean
+/// stop exits 0, so launchd's `KeepAlive: {SuccessfulExit: false}` leaves the
+/// daemon stopped, not restarted. It stays stopped until the next login, or
+/// until `turbofig start` is run.
 pub fn stop_autostart_restart_hint() -> &'static str {
-    "turbofig: autostart is on, so launchd will restart it. Run `turbofig autostart off` to stop that."
+    "turbofig: autostart is on, but the daemon stays stopped until the next login, or until you run `turbofig start`. Run `turbofig autostart off` to disable autostart entirely."
 }
 
 /// Message `turbofig stop` prints when `/health` answers (a daemon is

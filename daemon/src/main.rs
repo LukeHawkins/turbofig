@@ -425,9 +425,9 @@ async fn cmd_start() {
 
 /// Stops the running daemon via the authenticated `/control` path, then
 /// waits for it to actually go away. Idempotent: stopping an already-
-/// stopped daemon is success, not an error. Warns when the autostart plist
-/// is present, since launchd's `KeepAlive` will otherwise restart the
-/// daemon this command just stopped.
+/// stopped daemon is success, not an error. Prints a hint when the autostart
+/// plist is present: the daemon stays stopped until the next login, or until
+/// `turbofig start` is run.
 async fn cmd_stop() {
     let mcp_port = turbofig::port_from_env();
     let home = turbofig::bridge_dir_from_env();

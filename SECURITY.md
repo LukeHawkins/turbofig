@@ -84,10 +84,10 @@ could otherwise open the socket and receive the AI's jobs.
   timing from a near-miss of the same length.
 - **To rotate it:** run `turbofig stop`, delete `~/.turbofig/token`, then run
   `turbofig start`. The daemon creates a new token and rewrites the plugin
-  files at start. Then reopen the plugin in Figma. If you have autostart on
-  (`turbofig autostart on`), launchd's `KeepAlive` restarts the daemon after
-  `turbofig stop` by itself, so the `turbofig start` step is not needed in
-  that case.
+  files at start. Then reopen the plugin in Figma. A clean `turbofig stop`
+  leaves the daemon stopped even with autostart on (`turbofig autostart
+  on`), so the `turbofig start` step is always required to finish the
+  rotation.
 
 ## Data handling
 
