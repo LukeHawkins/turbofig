@@ -506,7 +506,7 @@ async fn test_execute_large_result_has_warning() {
 async fn test_execute_small_result_has_no_warning() {
     let state = Arc::new(turbofig::AppState::new());
     let ws_addr = spawn_ws(state.clone()).await;
-    // spawn_design_plugin returns {"id": "1:5", "type": "FRAME"} — well under budget.
+    // spawn_design_plugin returns {"id": "1:5", "type": "FRAME"}, well under budget.
     spawn_design_plugin(ws_addr, &state).await;
 
     let result = turbofig::run_execute(&state, None, None, "return figma.createFrame().id;").await;
