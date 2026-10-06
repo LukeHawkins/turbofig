@@ -12,7 +12,10 @@
          values are the same fallbacks the plugin uses, dark values are
          set explicitly below via prefers-color-scheme. One spacing scale
          (--sp-1..--sp-5), at most 2 text sizes plus the wordmark
-         (--fs-sm body, --fs-xs muted/small; --fs-lg is the wordmark only). */
+         (--fs-sm body, --fs-xs muted/small; --fs-lg is the wordmark only).
+         No script tag anywhere on this page: every action is a plain
+         `turbofig-action://` link, intercepted by
+         `about_window::navigation_is_allowed` (see `about_state.rs`). */
       :root {
         --bg: #ffffff;
         --bg-secondary: #f5f5f5;
@@ -22,8 +25,6 @@
         --text-onbrand: #ffffff;
         --border: #e6e6e6;
         --icon: #333333;
-        --c-connected: #1e6b3a;
-        --c-offline: #b91c1c;
 
         --sp-1: 4px;
         --sp-2: 8px;
@@ -37,7 +38,6 @@
 
         --ff-display: "Inter", "Space Grotesk", Arial, sans-serif;
         --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
-        --ff-mono: "SF Mono", "Fira Code", Consolas, monospace;
       }
 
       @media (prefers-color-scheme: dark) {
@@ -48,8 +48,6 @@
           --text-secondary: #a3a3a3;
           --border: #3a3a3a;
           --icon: #d4d4d4;
-          --c-connected: #4ade80;
-          --c-offline: #f87171;
         }
       }
 
@@ -78,20 +76,19 @@
         text-align: left;
       }
 
-      /* === HEADER (reuses .wordmark's ghost-trail trick, contained to its
-         own line so the trail never overlaps anything else). ============ */
+      /* === HEADER: the wordmark's ghost trail is contained inside this
+         box (overflow: hidden, with enough reserved right padding for the
+         trail's full width), so it never bleeds past the header into the
+         content below. ===================================================== */
       .header {
         display: flex;
         flex-direction: column;
         gap: var(--sp-1);
+        overflow: hidden;
       }
 
       .wordmark-row {
-        /* Reserves room for the ghost trail (its text-shadow extends about
-           40px past the glyph edges) so it never clips or overlaps the row
-           below it. */
-        padding-right: var(--sp-5);
-        overflow: visible;
+        padding-right: 44px;
       }
 
       .wordmark {
@@ -114,72 +111,7 @@
         color: var(--text-secondary);
       }
 
-      /* === STATUS: 1 quiet line, 2 small dots ============================ */
-      .status-line {
-        display: flex;
-        align-items: center;
-        gap: var(--sp-4);
-        font-size: var(--fs-xs);
-        color: var(--text-secondary);
-      }
-
-      .status-item {
-        display: flex;
-        align-items: center;
-        gap: var(--sp-1);
-      }
-
-      .dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--text-secondary);
-        flex-shrink: 0;
-      }
-
-      .dot.dot-ok {
-        background: var(--c-connected);
-      }
-
-      .dot.dot-off {
-        background: var(--c-offline);
-      }
-
-      /* === TABS =========================================================== */
-      .tab-bar {
-        display: flex;
-        gap: var(--sp-4);
-        border-bottom: 1px solid var(--border);
-      }
-
-      .tab-btn {
-        background: none;
-        border: none;
-        border-bottom: 2px solid transparent;
-        color: var(--text-secondary);
-        font-family: var(--ff-body);
-        font-size: var(--fs-sm);
-        cursor: pointer;
-        padding: var(--sp-2) 0;
-      }
-
-      .tab-btn.active {
-        color: var(--text);
-        border-bottom-color: var(--bg-brand);
-      }
-
-      .tab-panel {
-        display: none;
-        flex-direction: column;
-        gap: var(--sp-4);
-        flex: 1;
-      }
-
-      .tab-panel.active {
-        display: flex;
-      }
-
-      /* === STEPS (tab 1: "How to use") =================================== */
+      /* === STEPS ========================================================== */
       .step {
         display: flex;
         flex-direction: column;
@@ -198,85 +130,81 @@
         color: var(--text-secondary);
       }
 
-      .step-actions {
+      .action-row {
         display: flex;
         align-items: center;
         gap: var(--sp-3);
         margin-top: var(--sp-1);
       }
 
-      .step2-state {
-        font-size: var(--fs-xs);
-        color: var(--text-secondary);
-        display: flex;
-        align-items: center;
-        gap: var(--sp-1);
-      }
-
-      .step2-state.connected {
-        color: var(--c-connected);
-      }
-
-      /* === BUTTONS: quiet secondary by default, 1 primary per task ======== */
-      .btn {
-        font-family: var(--ff-body);
-        font-size: var(--fs-xs);
-        padding: var(--sp-1) var(--sp-3);
-        border-radius: 6px;
-        cursor: pointer;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--icon);
-      }
-
-      .btn-primary {
-        background: var(--bg-brand);
-        border: none;
-        color: var(--text-onbrand);
-      }
-
+      /* === LINKS: plain action links, no buttons with JS behind them ===== */
       .text-link {
-        background: none;
-        border: none;
-        padding: 0;
-        font-family: var(--ff-body);
         font-size: var(--fs-xs);
         color: var(--text-secondary);
         text-decoration: underline;
         text-underline-offset: 2px;
-        cursor: pointer;
       }
 
       .text-link:hover {
         color: var(--text);
       }
 
-      /* === CODE BLOCKS (tab 2: "Claude Code / MCP") ======================= */
-      .code-row {
-        display: flex;
-        align-items: center;
-        gap: var(--sp-2);
-      }
-
-      .code {
-        flex: 1;
-        min-width: 0;
-        font-family: var(--ff-mono);
-        font-size: var(--fs-xs);
-        background: var(--bg-secondary);
-        border-radius: 4px;
-        padding: var(--sp-2);
-        overflow-x: auto;
-        white-space: pre;
-      }
-
-      .fallback-note {
+      .muted-line {
         margin: 0;
         font-size: var(--fs-xs);
         color: var(--text-secondary);
       }
 
-      /* === FOOTER: only Docs and the version ============================= */
+      /* === ICON BUTTON: the "Copy agent prompt" action, styled identically
+         to the Figma plugin panel's own copy-prompt button
+         (plugin/src/ui/template.html's #copy-connect, .icon-btn.brand-btn),
+         same shape, size, icon, colours and hover/tooltip style. ========== */
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: opacity 0.15s;
+        flex-shrink: 0;
+        padding: 0;
+        position: relative;
+      }
+      .icon-btn:hover {
+        opacity: 0.85;
+      }
+
+      .icon-btn[data-tooltip]::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: calc(100% + 6px);
+        right: 0;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+        font-size: 12px;
+        white-space: nowrap;
+        padding: 3px 7px;
+        border-radius: 10px;
+        pointer-events: none;
+        z-index: 10;
+        opacity: 0;
+        transition: opacity 0.1s;
+      }
+      .icon-btn[data-tooltip]:hover::after {
+        opacity: 1;
+      }
+
+      .brand-btn {
+        background: var(--bg-brand);
+        border: none;
+        color: var(--text-onbrand);
+      }
+
+      /* === FOOTER: lukehawkins.eu and the version ======================== */
       .footer {
         margin-top: auto;
         display: flex;
@@ -307,141 +235,50 @@
       <p class="tagline">Bridge any AI to Figma</p>
     </header>
 
-    <div class="status-line">
-      <span class="status-item"><span id="dot-bridge" class="dot"></span><span id="text-bridge">Bridge not running</span></span>
-      <span class="status-item"><span id="dot-figma" class="dot"></span><span id="text-figma">waiting</span></span>
+    <div class="step">
+      <p class="step-title">1. Add the plugin to Figma</p>
+      <p class="step-hint">Figma &gt; Plugins &gt; Development &gt; Import plugin from manifest.</p>
+      <div class="action-row">
+        <a class="text-link" href="turbofig-action://copy-path">Copy path</a>
+        <a class="text-link" href="turbofig-action://show-plugin-folder">Show plugin folder</a>
+      </div>
+      <p class="muted-line">In the file picker, press Cmd+Shift+G and paste the path.</p>
     </div>
 
-    <div class="tab-bar" role="tablist">
-      <button id="tab-btn-howto" class="tab-btn active" type="button" data-tab="tab-howto">How to use</button>
-      <button id="tab-btn-mcp" class="tab-btn" type="button" data-tab="tab-mcp">Claude Code / MCP</button>
+    <div class="step">
+      <p class="step-title">2. Run it in your file</p>
+      <p class="step-hint">Plugins &gt; Development &gt; turbofig.</p>
     </div>
 
-    <section id="tab-howto" class="tab-panel active">
-      <div class="step">
-        <p class="step-title">1. Add the plugin to Figma</p>
-        <p class="step-hint">Figma &gt; Plugins &gt; Development &gt; Import plugin from manifest, then drag manifest.json in.</p>
-        <div class="step-actions">
-          <button class="btn" type="button" data-ipc="reveal_manifest">Show plugin in Finder</button>
-        </div>
-        <button class="text-link" type="button" data-ipc="copy_manifest_path">Copy path</button>
+    <div class="step">
+      <p class="step-title">3. Connect your agent</p>
+      <div class="action-row">
+        <span class="step-hint">Copy agent prompt</span>
+        <a
+          id="copy-agent-prompt"
+          class="icon-btn brand-btn"
+          href="turbofig-action://copy-agent-prompt"
+          aria-label="Copy agent prompt"
+          data-tooltip="Copy agent prompt"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M5.5 8.5a3 3 0 0 0 4 0l1.5-1.5A3 3 0 0 0 6.757 2.757L5.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M8.5 5.5a3 3 0 0 0-4 0L3 7a3 3 0 0 0 4.243 4.243L8.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </a>
       </div>
+      <p class="step-hint">Paste it into Claude Code, Cursor or any agent.</p>
+    </div>
 
-      <div class="step">
-        <p class="step-title">2. Run it in your file</p>
-        <p class="step-hint">Plugins &gt; Development &gt; turbofig.</p>
-        <p id="step2-state" class="step2-state">Waiting&hellip;</p>
-      </div>
-
-      <div class="step">
-        <p class="step-title">3. Connect your agent</p>
-        <div class="step-actions">
-          <button class="btn btn-primary" type="button" data-ipc="copy_agent_prompt">Copy agent prompt</button>
-        </div>
-        <p class="step-hint">Paste it into Claude Code, Cursor or any agent.</p>
-      </div>
-    </section>
-
-    <section id="tab-mcp" class="tab-panel">
-      <div class="step">
-        <p class="step-title">Claude Code</p>
-        <div class="code-row">
-          <code class="code">claude mcp add turbofig -- turbofig mcp</code>
-          <button class="btn" type="button" data-ipc="copy_mcp_command">Copy</button>
-        </div>
-      </div>
-
-      <div class="step">
-        <p class="step-title">Other MCP clients</p>
-        <div class="code-row">
-          <code id="mcp-json" class="code">{"command": "turbofig", "args": ["mcp"]}</code>
-          <button class="btn" type="button" data-ipc="copy_mcp_json">Copy</button>
-        </div>
-      </div>
-
-      <p class="fallback-note">Blocked by your company? Use How to use, it works everywhere.</p>
-    </section>
+    <p class="muted-line">
+      Prefer MCP (Claude Code, Cursor)?
+      <a class="text-link" href="https://github.com/LukeHawkins/turbofig#readme">See the README on GitHub</a>.
+      This app is the native way.
+    </p>
 
     <div class="footer">
-      <a id="docs-link" class="link" href="https://github.com/LukeHawkins/turbofig" data-ipc="open_docs">Docs</a>
-      <span id="version-text"></span>
+      <a class="link" href="https://lukehawkins.eu">lukehawkins.eu</a>
+      <span id="version-text">v__VERSION__</span>
     </div>
-
-    <script>
-      /* A tiny pending-state shim, defined before this page's own script
-         below runs. If Rust's initial `evaluate_script` call races the
-         page load (fires before this <script> block has defined the real
-         `turbofigSetStatus`/`turbofigSetStatic` below), the stub installed
-         by `with_initialization_script` (see `about_window.rs`) records the
-         call instead of failing silently; the real functions below drain it
-         once on first run. Rust also re-pushes the latest status itself
-         once this page signals `page_ready` (belt and braces: see
-         `about_window::handle_ipc_message`'s `PageReady` arm). */
-      window.__tfPending = window.__tfPending || { status: null, static: null };
-
-      function ipc(cmd) {
-        window.ipc.postMessage(cmd);
-      }
-
-      document.querySelectorAll("[data-ipc]").forEach(function (el) {
-        el.addEventListener("click", function (event) {
-          if (el.tagName === "A") event.preventDefault();
-          ipc(el.getAttribute("data-ipc"));
-        });
-      });
-
-      document.querySelectorAll(".tab-btn").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          document.querySelectorAll(".tab-btn").forEach(function (b) {
-            b.classList.remove("active");
-          });
-          document.querySelectorAll(".tab-panel").forEach(function (p) {
-            p.classList.remove("active");
-          });
-          btn.classList.add("active");
-          document.getElementById(btn.getAttribute("data-tab")).classList.add("active");
-        });
-      });
-
-      /* Called from Rust (WebView::evaluate_script) after every health poll,
-         once at window creation, and again on `page_ready`. figmaConnected
-         drives step 2's state; bridgeRunning and figmaChipText are
-         already-formatted text (see
-         menu_bar::about_state::chips_from_connected_files). */
-      window.turbofigSetStatus = function (bridgeRunning, figmaChipText, figmaConnected) {
-        var dotBridge = document.getElementById("dot-bridge");
-        document.getElementById("text-bridge").textContent = bridgeRunning
-          ? "Bridge running"
-          : "Bridge not running";
-        dotBridge.classList.toggle("dot-ok", bridgeRunning);
-        dotBridge.classList.toggle("dot-off", !bridgeRunning);
-
-        var dotFigma = document.getElementById("dot-figma");
-        document.getElementById("text-figma").textContent = figmaChipText;
-        dotFigma.classList.toggle("dot-ok", figmaConnected);
-        dotFigma.classList.toggle("dot-off", !figmaConnected);
-
-        var step2 = document.getElementById("step2-state");
-        step2.textContent = figmaConnected
-          ? "✓ " + figmaChipText.replace("Figma plugin connected: ", "Connected to ")
-          : "Waiting…";
-        step2.classList.toggle("connected", figmaConnected);
-      };
-
-      /* Called once from Rust at window creation, and again on
-         `page_ready`. */
-      window.turbofigSetStatic = function (version, mcpJson) {
-        document.getElementById("version-text").textContent = "v" + version;
-        document.getElementById("mcp-json").textContent = mcpJson;
-      };
-
-      if (window.__tfPending.static) {
-        window.turbofigSetStatic.apply(null, window.__tfPending.static);
-      }
-      if (window.__tfPending.status) {
-        window.turbofigSetStatus.apply(null, window.__tfPending.status);
-      }
-      ipc("page_ready");
-    </script>
   </body>
 </html>

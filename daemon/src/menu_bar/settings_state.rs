@@ -1,44 +1,42 @@
-//! Pure logic for the Settings window: the fixed IPC command set the
-//! `daemon/assets/settings/settings.html` webview is allowed to send. No
-//! `wry`/`tao` dependency, the same split `about_state.rs` uses for the
-//! About window: `settings_window.rs` is the only caller, and the only place
-//! any of this touches a real window or webview.
+//! Pure logic for the Settings window: the fixed action set the
+//! `daemon/assets/settings/settings.html` page's `turbofig-action://` links
+//! may name. No `wry`/`tao` dependency, the same split `about_state.rs`
+//! uses for the About window: `settings_window.rs` is the only caller, and
+//! the only place any of this touches a real window or webview.
+//!
+//! The page has no `<script>` at all, the same rule `about_state.rs`
+//! follows: every control is a plain action link, intercepted by
+//! `settings_window::navigation_is_allowed`.
 
-/// The 5 commands the Settings window's webview may send over IPC
-/// (`window.ipc.postMessage("<command>")`). Anything else is rejected by
-/// `parse_ipc_command`, never dispatched.
+/// The 4 actions the Settings window's action links may name. Anything else
+/// in a `turbofig-action://` URL is rejected by `parse_action_link`, never
+/// dispatched. "Start at login" is 2 actions (on/off), not a live checkbox,
+/// since there is no JS to read a checkbox's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IpcCommand {
-    /// The "Start at login" switch was turned on.
+pub enum SettingsAction {
+    /// The "Turn on" link: turns Start at Login on.
     StartAtLoginOn,
-    /// The "Start at login" switch was turned off.
+    /// The "Turn off" link: turns Start at Login off.
     StartAtLoginOff,
-    CopyManifestPath,
+    CopyPath,
     /// "Open plugin folder": reveals the plugin manifest (`open -R`), the
-    /// same action the About window's "Show in Finder" button runs.
-    OpenPluginFolder,
-    /// "Open log": opens `daemon.log` in Console.
-    OpenLog,
-    /// The page's own script has finished running and defined the real
-    /// `window.turbofigSetStatic`: re-push whatever static state Rust
-    /// currently holds, in case an earlier push raced the page load and was
-    /// lost (see `settings_window::handle_ipc_message`).
-    PageReady,
+    /// same action the About window's "Show plugin folder" link runs.
+    ShowPluginFolder,
 }
 
-/// Parses a raw IPC message into one of the 6 known commands. Returns
-/// `None` for anything else at all: an unknown command, extra whitespace, a
-/// different case, or a non-command payload. The Settings window's IPC
-/// handler silently drops a `None`, so a stray or malformed message can
-/// never trigger an action.
-pub fn parse_ipc_command(raw: &str) -> Option<IpcCommand> {
-    match raw {
-        "start_at_login_on" => Some(IpcCommand::StartAtLoginOn),
-        "start_at_login_off" => Some(IpcCommand::StartAtLoginOff),
-        "copy_manifest_path" => Some(IpcCommand::CopyManifestPath),
-        "open_plugin_folder" => Some(IpcCommand::OpenPluginFolder),
-        "open_log" => Some(IpcCommand::OpenLog),
-        "page_ready" => Some(IpcCommand::PageReady),
+/// The scheme every action link uses, e.g.
+/// `turbofig-action://start-at-login-on`.
+pub const ACTION_SCHEME: &str = "turbofig-action://";
+
+/// Parses a navigated-to URL into one of the 4 known Settings-window
+/// actions. Returns `None` for anything else at all: a different scheme, an
+/// unknown name, trailing text, or a different case.
+pub fn parse_action_link(url: &str) -> Option<SettingsAction> {
+    match url.strip_prefix(ACTION_SCHEME)? {
+        "start-at-login-on" => Some(SettingsAction::StartAtLoginOn),
+        "start-at-login-off" => Some(SettingsAction::StartAtLoginOff),
+        "copy-path" => Some(SettingsAction::CopyPath),
+        "show-plugin-folder" => Some(SettingsAction::ShowPluginFolder),
         _ => None,
     }
 }
@@ -48,44 +46,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ipc_command_accepts_all_6_commands() {
+    fn parse_action_link_accepts_all_4_actions() {
         assert_eq!(
-            parse_ipc_command("start_at_login_on"),
-            Some(IpcCommand::StartAtLoginOn)
+            parse_action_link("turbofig-action://start-at-login-on"),
+            Some(SettingsAction::StartAtLoginOn)
         );
         assert_eq!(
-            parse_ipc_command("start_at_login_off"),
-            Some(IpcCommand::StartAtLoginOff)
+            parse_action_link("turbofig-action://start-at-login-off"),
+            Some(SettingsAction::StartAtLoginOff)
         );
         assert_eq!(
-            parse_ipc_command("copy_manifest_path"),
-            Some(IpcCommand::CopyManifestPath)
+            parse_action_link("turbofig-action://copy-path"),
+            Some(SettingsAction::CopyPath)
         );
         assert_eq!(
-            parse_ipc_command("open_plugin_folder"),
-            Some(IpcCommand::OpenPluginFolder)
+            parse_action_link("turbofig-action://show-plugin-folder"),
+            Some(SettingsAction::ShowPluginFolder)
         );
-        assert_eq!(parse_ipc_command("open_log"), Some(IpcCommand::OpenLog));
-        assert_eq!(parse_ipc_command("page_ready"), Some(IpcCommand::PageReady));
     }
 
     #[test]
-    fn parse_ipc_command_rejects_anything_else() {
-        assert_eq!(parse_ipc_command(""), None);
-        assert_eq!(parse_ipc_command("quit"), None);
-        assert_eq!(parse_ipc_command("Start_At_Login_On"), None);
-        assert_eq!(parse_ipc_command("open_log "), None);
-        assert_eq!(parse_ipc_command("{\"op\":\"open_log\"}"), None);
+    fn parse_action_link_rejects_actions_removed_or_moved_elsewhere() {
+        assert_eq!(parse_action_link("turbofig-action://open-log"), None);
+        assert_eq!(parse_action_link("turbofig-action://page-ready"), None);
+        assert_eq!(parse_action_link("turbofig-action://quit"), None);
+    }
+
+    #[test]
+    fn parse_action_link_rejects_anything_else() {
+        assert_eq!(parse_action_link(""), None);
+        assert_eq!(parse_action_link("turbofig-action://"), None);
+        assert_eq!(parse_action_link("turbofig-action://Start-At-Login-On"), None);
+        assert_eq!(parse_action_link("turbofig-action://copy-path "), None);
+        assert_eq!(parse_action_link("https://example.com"), None);
     }
 
     /// The embedded settings page (`settings_window.rs`'s own `include_str!`
     /// copy), scanned the same way `about_state`'s html-scan test checks
-    /// `about.html`: no remote URL anywhere, since this page has no "Docs"
-    /// link or other deliberate exception at all.
+    /// `about.html`: no `<script>` anywhere, and no remote URL at all, since
+    /// this page has no external link of its own.
     const SETTINGS_HTML: &str = include_str!("../../assets/settings/settings.html");
 
     #[test]
-    fn the_settings_page_has_no_remote_urls() {
+    fn the_settings_page_has_no_script_and_no_remote_urls() {
+        assert!(!SETTINGS_HTML.to_lowercase().contains("<script"));
         assert!(!SETTINGS_HTML.contains("src=\"http"));
         assert!(!SETTINGS_HTML.contains("href=\"http"));
     }

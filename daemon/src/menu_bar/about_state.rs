@@ -1,82 +1,42 @@
-//! Pure logic for the About window: the fixed IPC command set the webview
-//! is allowed to send, the `/health`-to-chip mapping shown in its header,
-//! and the first-use rule that decides whether to open it automatically on
-//! app start. No `wry`/`tao` dependency: `about_window.rs` is the only
-//! caller, and the only place any of this touches a real window or webview.
+//! Pure logic for the About window: the fixed action set the webview's
+//! plain `turbofig-action://` links may name, and the first-use rule that
+//! decides whether to open it automatically on app start. No `wry`/`tao`
+//! dependency: `about_window.rs` is the only caller, and the only place any
+//! of this touches a real window or webview.
+//!
+//! The page has no `<script>` at all (see `about_window.rs`'s own doc
+//! comment): every action is a plain `<a href="turbofig-action://...">`,
+//! and `about_window::navigation_is_allowed` intercepts the click, runs the
+//! action below, and cancels the navigation.
 
 use std::path::Path;
 
-/// The 6 commands the About window's webview may send over IPC
-/// (`window.ipc.postMessage("<command>")`). Anything else is rejected by
-/// `parse_ipc_command`, never dispatched. "Start at login" and "Quit" moved
-/// to the tray menu / Settings window (`settings_state::IpcCommand`);
-/// "Open Figma" was removed entirely (see `ARCHITECTURE.md`'s About-window
-/// entry).
+/// The 3 actions the About window's action links may name. Anything else
+/// in a `turbofig-action://` URL is rejected by `parse_action_link`, never
+/// dispatched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IpcCommand {
-    CopyManifestPath,
+pub enum AboutAction {
+    /// "Copy path": copies the plugin manifest's absolute path.
+    CopyPath,
+    /// "Show plugin folder": reveals the plugin manifest in Finder.
+    ShowPluginFolder,
+    /// "Copy agent prompt": copies the current agent connect prompt.
     CopyAgentPrompt,
-    CopyMcpCommand,
-    CopyMcpJson,
-    OpenDocs,
-    /// "Show in Finder": reveals the plugin manifest (`open -R`).
-    RevealManifest,
-    /// The page's own script has finished running and defined the real
-    /// `window.turbofigSetStatus`/`turbofigSetStatic`: re-push whatever
-    /// status Rust currently holds, in case an earlier push raced the page
-    /// load and was lost (see `about_window::handle_ipc_message`).
-    PageReady,
 }
 
-/// Parses a raw IPC message into one of the 6 known commands. Returns
-/// `None` for anything else at all: an unknown command, extra whitespace, a
-/// different case, or a non-command payload. The About window's IPC handler
-/// silently drops a `None`, so a stray or malformed message can never
-/// trigger an action.
-pub fn parse_ipc_command(raw: &str) -> Option<IpcCommand> {
-    match raw {
-        "copy_manifest_path" => Some(IpcCommand::CopyManifestPath),
-        "copy_agent_prompt" => Some(IpcCommand::CopyAgentPrompt),
-        "copy_mcp_command" => Some(IpcCommand::CopyMcpCommand),
-        "copy_mcp_json" => Some(IpcCommand::CopyMcpJson),
-        "open_docs" => Some(IpcCommand::OpenDocs),
-        "reveal_manifest" => Some(IpcCommand::RevealManifest),
-        "page_ready" => Some(IpcCommand::PageReady),
+/// The scheme every action link uses, e.g. `turbofig-action://copy-path`.
+pub const ACTION_SCHEME: &str = "turbofig-action://";
+
+/// Parses a navigated-to URL into one of the 3 known About-window actions.
+/// Returns `None` for anything else at all: a different scheme, an unknown
+/// name, trailing text, or a different case. The caller treats `None` as
+/// "not an action": it is never dispatched.
+pub fn parse_action_link(url: &str) -> Option<AboutAction> {
+    match url.strip_prefix(ACTION_SCHEME)? {
+        "copy-path" => Some(AboutAction::CopyPath),
+        "show-plugin-folder" => Some(AboutAction::ShowPluginFolder),
+        "copy-agent-prompt" => Some(AboutAction::CopyAgentPrompt),
         _ => None,
-    }
-}
-
-/// The 2 live status chips shown in the About window's header.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChipState {
-    /// "Bridge running" or "Bridge not running".
-    pub bridge_chip: String,
-    /// "waiting" (0 files), "Figma plugin connected: `<name>`" (1 file), or
-    /// "Figma plugin connected: `<n>` files" (more than 1).
-    pub figma_chip: String,
-}
-
-/// Builds the chip pair from the same connected-file list `menu_bar::state`
-/// builds `MenuState` from (`/health`'s `connectedFiles`, already parsed by
-/// the caller): `None` is "the daemon did not answer at all", `Some(&[])` is
-/// "reachable, 0 files connected".
-pub fn chips_from_connected_files(
-    bridge_reachable: bool,
-    connected_file_names: &[String],
-) -> ChipState {
-    let bridge_chip = if bridge_reachable {
-        "Bridge running".to_owned()
-    } else {
-        "Bridge not running".to_owned()
-    };
-    let figma_chip = match connected_file_names {
-        [] => "waiting".to_owned(),
-        [only] => format!("Figma plugin connected: {only}"),
-        many => format!("Figma plugin connected: {} files", many.len()),
-    };
-    ChipState {
-        bridge_chip,
-        figma_chip,
     }
 }
 
@@ -92,82 +52,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ipc_command_accepts_all_6_commands() {
+    fn parse_action_link_accepts_all_3_actions() {
         assert_eq!(
-            parse_ipc_command("copy_manifest_path"),
-            Some(IpcCommand::CopyManifestPath)
+            parse_action_link("turbofig-action://copy-path"),
+            Some(AboutAction::CopyPath)
         );
         assert_eq!(
-            parse_ipc_command("copy_agent_prompt"),
-            Some(IpcCommand::CopyAgentPrompt)
+            parse_action_link("turbofig-action://show-plugin-folder"),
+            Some(AboutAction::ShowPluginFolder)
         );
         assert_eq!(
-            parse_ipc_command("copy_mcp_command"),
-            Some(IpcCommand::CopyMcpCommand)
+            parse_action_link("turbofig-action://copy-agent-prompt"),
+            Some(AboutAction::CopyAgentPrompt)
         );
-        assert_eq!(
-            parse_ipc_command("copy_mcp_json"),
-            Some(IpcCommand::CopyMcpJson)
-        );
-        assert_eq!(parse_ipc_command("open_docs"), Some(IpcCommand::OpenDocs));
-        assert_eq!(
-            parse_ipc_command("reveal_manifest"),
-            Some(IpcCommand::RevealManifest)
-        );
-        assert_eq!(parse_ipc_command("page_ready"), Some(IpcCommand::PageReady));
     }
 
     #[test]
-    fn parse_ipc_command_rejects_commands_moved_elsewhere_or_removed() {
-        assert_eq!(parse_ipc_command("open_figma"), None);
-        assert_eq!(parse_ipc_command("start_at_login_on"), None);
-        assert_eq!(parse_ipc_command("start_at_login_off"), None);
-        assert_eq!(parse_ipc_command("quit"), None);
+    fn parse_action_link_rejects_actions_moved_elsewhere_or_removed() {
+        assert_eq!(parse_action_link("turbofig-action://open-docs"), None);
+        assert_eq!(parse_action_link("turbofig-action://copy-mcp-command"), None);
+        assert_eq!(parse_action_link("turbofig-action://copy-mcp-json"), None);
+        assert_eq!(parse_action_link("turbofig-action://quit"), None);
+        assert_eq!(parse_action_link("turbofig-action://page-ready"), None);
     }
 
     #[test]
-    fn parse_ipc_command_rejects_anything_else() {
-        assert_eq!(parse_ipc_command(""), None);
-        assert_eq!(parse_ipc_command("Quit"), None);
-        assert_eq!(parse_ipc_command("quit "), None);
-        assert_eq!(parse_ipc_command(" quit"), None);
-        assert_eq!(parse_ipc_command("copy_manifest_path extra"), None);
-        assert_eq!(parse_ipc_command("eval(1+1)"), None);
-        assert_eq!(parse_ipc_command("{\"op\":\"quit\"}"), None);
-        assert_eq!(parse_ipc_command("open_url"), None);
-        assert_eq!(parse_ipc_command("reveal-manifest"), None);
-        assert_eq!(parse_ipc_command("Reveal_Manifest"), None);
-    }
-
-    #[test]
-    fn chips_bridge_not_running_when_unreachable() {
-        let chips = chips_from_connected_files(false, &[]);
-        assert_eq!(chips.bridge_chip, "Bridge not running");
-    }
-
-    #[test]
-    fn chips_bridge_running_when_reachable() {
-        let chips = chips_from_connected_files(true, &[]);
-        assert_eq!(chips.bridge_chip, "Bridge running");
-    }
-
-    #[test]
-    fn chips_figma_waiting_when_no_files() {
-        let chips = chips_from_connected_files(true, &[]);
-        assert_eq!(chips.figma_chip, "waiting");
-    }
-
-    #[test]
-    fn chips_figma_connected_with_name_for_one_file() {
-        let chips = chips_from_connected_files(true, &["Design A".to_owned()]);
-        assert_eq!(chips.figma_chip, "Figma plugin connected: Design A");
-    }
-
-    #[test]
-    fn chips_figma_connected_with_count_for_many_files() {
-        let chips =
-            chips_from_connected_files(true, &["Design A".to_owned(), "Design B".to_owned()]);
-        assert_eq!(chips.figma_chip, "Figma plugin connected: 2 files");
+    fn parse_action_link_rejects_anything_else() {
+        assert_eq!(parse_action_link(""), None);
+        assert_eq!(parse_action_link("turbofig-action://"), None);
+        assert_eq!(parse_action_link("turbofig-action://Copy-Path"), None);
+        assert_eq!(parse_action_link("turbofig-action://copy-path extra"), None);
+        assert_eq!(parse_action_link("https://example.com"), None);
+        assert_eq!(parse_action_link("javascript:alert(1)"), None);
+        assert_eq!(parse_action_link("TURBOFIG-ACTION://copy-path"), None);
     }
 
     #[test]
@@ -183,29 +100,31 @@ mod tests {
         assert!(!should_auto_open_about_window(dir.path()));
     }
 
-    /// The same embedded page `about_window.rs` loads with `include_str!`,
-    /// read again here (a second compile-time literal, not a shared
-    /// `pub(crate)` constant) so this pure-logic test needs no `wry`/`tao`
-    /// import at all. Asserts no `src="http`/`href="http` anywhere except
-    /// the "Docs" link's own `href`, the sole, deliberate exception
-    /// `navigation_is_allowed` and the page's own `onclick` both account for.
+    /// The same embedded template `about_window.rs` loads with
+    /// `include_str!`, read again here so this pure-logic test needs no
+    /// `wry`/`tao` import at all. Asserts there is no `<script>` anywhere,
+    /// and no remote `src`/`href` except the 2 allowed external links
+    /// (the README on GitHub, and the owner's website).
     const ABOUT_HTML: &str = include_str!("../../assets/about/about.html");
-    const DOCS_HREF: &str = "href=\"https://github.com/LukeHawkins/turbofig\"";
+    const README_HREF: &str = "href=\"https://github.com/LukeHawkins/turbofig#readme\"";
+    const WEBSITE_HREF: &str = "href=\"https://lukehawkins.eu\"";
 
     #[test]
-    fn the_about_page_has_no_remote_urls_except_the_docs_link() {
+    fn the_about_page_has_no_script_and_only_the_2_allowed_remote_links() {
         assert!(
-            ABOUT_HTML.contains(DOCS_HREF),
-            "expected the one allowed docs href to be present"
+            !ABOUT_HTML.to_lowercase().contains("<script"),
+            "the page must have no <script> at all"
         );
-        let without_docs_href = ABOUT_HTML.replacen(DOCS_HREF, "", 1);
+        assert!(ABOUT_HTML.contains(README_HREF), "expected the README link");
+        assert!(ABOUT_HTML.contains(WEBSITE_HREF), "expected the website link");
+        let without_allowed = ABOUT_HTML.replacen(README_HREF, "", 1).replacen(WEBSITE_HREF, "", 1);
         assert!(
-            !without_docs_href.contains("src=\"http"),
+            !without_allowed.contains("src=\"http"),
             "no src attribute may point at a remote URL"
         );
         assert!(
-            !without_docs_href.contains("href=\"http"),
-            "no href attribute other than the docs link may point at a remote URL"
+            !without_allowed.contains("href=\"http"),
+            "no other href may point at a remote URL"
         );
     }
 }

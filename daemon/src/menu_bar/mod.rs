@@ -92,13 +92,14 @@ use crate::first_run::{AppOpener, Clipboard};
 use crate::first_run::{FakeClipboard, FakeOpener, NullClipboard};
 use about_window::{create_about_window, AboutWindowContext, AboutWindowHandle};
 use settings_window::{create_settings_window, SettingsWindowContext, SettingsWindowHandle};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tao::event::{Event, StartCause};
+use tao::event::{ElementState, Event, KeyEvent, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
+use tao::keyboard::{KeyCode, ModifiersState};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
@@ -266,7 +267,6 @@ fn open_or_focus_about_window(
     target: &EventLoopWindowTarget<UserEvent>,
     handle_cell: &Rc<RefCell<Option<AboutWindowHandle>>>,
     ctx: &AboutWindowContext,
-    last_health: &Rc<RefCell<Option<serde_json::Value>>>,
 ) {
     let mut guard = handle_cell.borrow_mut();
     if let Some(handle) = guard.as_ref() {
@@ -275,9 +275,6 @@ fn open_or_focus_about_window(
     }
     match create_about_window(target, ctx.clone()) {
         Ok(handle) => {
-            let health = last_health.borrow();
-            let names = state::connected_file_names_from_health(health.as_ref());
-            handle.push_status(health.is_some(), &names);
             *guard = Some(handle);
         }
         Err(e) => {
@@ -423,7 +420,6 @@ pub async fn run_menu_bar_app() {
     } = build_menu(&initial_state.status_text);
 
     let current_state = Arc::new(Mutex::new(initial_state.clone()));
-    let last_health = Rc::new(RefCell::new(initial_health.clone()));
     let about_window_handle: Rc<RefCell<Option<AboutWindowHandle>>> = Rc::new(RefCell::new(None));
     let settings_window_handle: Rc<RefCell<Option<SettingsWindowHandle>>> =
         Rc::new(RefCell::new(None));
@@ -431,13 +427,11 @@ pub async fn run_menu_bar_app() {
     let about_ctx = AboutWindowContext {
         home: home.clone(),
         current_state: current_state.clone(),
-        last_health: last_health.clone(),
-        handle: about_window_handle.clone(),
     };
-    let settings_ctx = SettingsWindowContext {
-        home: home.clone(),
-        handle: settings_window_handle.clone(),
-    };
+    let settings_ctx = SettingsWindowContext { home: home.clone() };
+    // Tracks the last-seen keyboard modifiers, so the Cmd+W handler below
+    // can tell a plain "w" from Cmd+W without its own event-loop state.
+    let current_modifiers: Rc<Cell<ModifiersState>> = Rc::new(Cell::new(ModifiersState::empty()));
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
@@ -538,16 +532,11 @@ pub async fn run_menu_bar_app() {
                 if let Some(icon) = icon::icon_for_state(new_state.icon_state) {
                     let _ = tray.set_icon_templated(Some(icon));
                 }
-                let names = state::connected_file_names_from_health(health.as_ref());
-                if let Some(handle) = about_window_handle.borrow().as_ref() {
-                    handle.push_status(health.is_some(), &names);
-                }
                 let daemon_version = health
                     .as_ref()
                     .and_then(|h| h.get("version"))
                     .and_then(|v| v.as_str())
                     .map(str::to_owned);
-                *last_health.borrow_mut() = health;
                 if let Ok(mut guard) = current_state.lock() {
                     *guard = new_state;
                 }
@@ -556,27 +545,33 @@ pub async fn run_menu_bar_app() {
                 }
             }
             Event::UserEvent(UserEvent::OpenAboutWindow) => {
-                open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
+                open_or_focus_about_window(target, &about_window_handle, &about_ctx);
             }
             Event::UserEvent(UserEvent::QuitRequested) => {
                 perform_quit(&home, mcp_port);
             }
             Event::NewEvents(StartCause::Init) => {
                 if should_auto_open_about {
-                    open_or_focus_about_window(
-                        target,
-                        &about_window_handle,
-                        &about_ctx,
-                        &last_health,
-                    );
+                    open_or_focus_about_window(target, &about_window_handle, &about_ctx);
                 }
+            }
+            Event::WindowEvent {
+                window_id, event, ..
+            } => {
+                handle_window_event(
+                    window_id,
+                    &event,
+                    &about_window_handle,
+                    &settings_window_handle,
+                    &current_modifiers,
+                );
             }
             _ => {}
         }
 
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             if event.id == about_id {
-                open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
+                open_or_focus_about_window(target, &about_window_handle, &about_ctx);
             } else if event.id == settings_id {
                 open_or_focus_settings_window(target, &settings_window_handle, &settings_ctx);
             } else if event.id == quit_id {
@@ -584,6 +579,60 @@ pub async fn run_menu_bar_app() {
             }
         }
     });
+}
+
+/// Handles one `WindowEvent` against either the About or the Settings
+/// window: `CloseRequested` drops the window and webview and clears the
+/// handle, so the next menu click opens a fresh one (fixes the Settings
+/// window not being closable); a Cmd+W keypress while a window is focused
+/// does the same, since neither window installs a native menu bar with a
+/// "Close Window" key equivalent (`ActivationPolicy::Accessory` apps have
+/// none by default).
+fn handle_window_event(
+    window_id: tao::window::WindowId,
+    event: &WindowEvent,
+    about_window_handle: &Rc<RefCell<Option<AboutWindowHandle>>>,
+    settings_window_handle: &Rc<RefCell<Option<SettingsWindowHandle>>>,
+    current_modifiers: &Rc<Cell<ModifiersState>>,
+) {
+    match event {
+        WindowEvent::ModifiersChanged(modifiers) => {
+            current_modifiers.set(*modifiers);
+        }
+        WindowEvent::KeyboardInput {
+            event: KeyEvent {
+                physical_key: KeyCode::KeyW,
+                state: ElementState::Pressed,
+                ..
+            },
+            ..
+        } if current_modifiers.get().contains(ModifiersState::SUPER) => {
+            close_window_if_match(window_id, about_window_handle, settings_window_handle);
+        }
+        WindowEvent::CloseRequested => {
+            close_window_if_match(window_id, about_window_handle, settings_window_handle);
+        }
+        _ => {}
+    }
+}
+
+/// Drops whichever of the About/Settings window handles matches
+/// `window_id`, closing that window and its webview.
+fn close_window_if_match(
+    window_id: tao::window::WindowId,
+    about_window_handle: &Rc<RefCell<Option<AboutWindowHandle>>>,
+    settings_window_handle: &Rc<RefCell<Option<SettingsWindowHandle>>>,
+) {
+    let mut about = about_window_handle.borrow_mut();
+    if about.as_ref().is_some_and(|h| h.id() == window_id) {
+        *about = None;
+        return;
+    }
+    drop(about);
+    let mut settings = settings_window_handle.borrow_mut();
+    if settings.as_ref().is_some_and(|h| h.id() == window_id) {
+        *settings = None;
+    }
 }
 
 /// Reads the pairing token from `<home>/token`, if present. A thin wrapper

@@ -1,180 +1,148 @@
 // A real DOM test for the 2 menu-bar webview pages (`about/about.html`,
-// `settings/settings.html`), run with `happy-dom` (chosen over `linkedom`:
-// linkedom does not execute <script> tags at all, and both pages' tab
-// switching and IPC wiring live in an inline <script>, not a separate
-// module this test could import on its own). This must fail on a broken
-// tab or status script: `window.ipc` is stubbed, the page's own real
-// `<script>` runs inside a real (if headless) DOM, and every assertion
-// below exercises that same script, not a reimplementation of it.
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+// `settings/settings.html`), run with `happy-dom`. Both pages are now pure
+// markup: no `<script>` anywhere, no inline `on*` handler, and every action
+// is a plain `<a href="turbofig-action://...">` that Rust's navigation
+// handler intercepts (see `about_window.rs`/`settings_window.rs`). This
+// test exercises the static HTML only, with the template placeholders
+// (`__VERSION__` etc.) substituted the same way Rust does before
+// `with_html`, since there is no script left to load or run.
+import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Window } from "happy-dom";
 
-const ABOUT_HTML = readFileSync(join(import.meta.dir, "about/about.html"), "utf-8");
-const SETTINGS_HTML = readFileSync(join(import.meta.dir, "settings/settings.html"), "utf-8");
+const ABOUT_HTML_TEMPLATE = readFileSync(join(import.meta.dir, "about/about.html"), "utf-8");
+const SETTINGS_HTML_TEMPLATE = readFileSync(
+  join(import.meta.dir, "settings/settings.html"),
+  "utf-8",
+);
 
-/** Loads `html` into a fresh headless window, stubs `window.ipc`, and
- * waits a tick for the page's own inline `<script>` (which runs
- * asynchronously relative to `document.write`) to finish. Returns the
- * window, its document, and the list of IPC commands posted so far. */
-async function loadPage(html: string) {
+/** The action names the plugin's own copy-prompt button uses, read straight
+ * from its template, so this test fails if that markup ever changes without
+ * the About page's "Copy agent prompt" control being updated to match. */
+const PLUGIN_TEMPLATE = readFileSync(
+  join(import.meta.dir, "..", "..", "plugin", "src", "ui", "template.html"),
+  "utf-8",
+);
+
+const ALLOWED_ABOUT_ACTIONS = ["copy-path", "show-plugin-folder", "copy-agent-prompt"];
+const ALLOWED_SETTINGS_ACTIONS = [
+  "start-at-login-on",
+  "start-at-login-off",
+  "copy-path",
+  "show-plugin-folder",
+];
+const README_URL = "https://github.com/LukeHawkins/turbofig#readme";
+const WEBSITE_URL = "https://lukehawkins.eu";
+
+/** Loads `html` into a fresh headless window: no `window.ipc` stub needed
+ * any more, since there is no script to call it. */
+function loadPage(html: string) {
   const window = new Window({
     settings: {
       enableJavaScriptEvaluation: true,
       suppressInsecureJavaScriptEnvironmentWarning: true,
     },
   });
-  const posted: string[] = [];
-  // @ts-expect-error - `ipc` is Tauri/wry's own injected object, not part
-  // of happy-dom's `Window` type.
-  window.ipc = { postMessage: (cmd: string) => posted.push(cmd) };
   window.document.write(html);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  return { window, document: window.document, posted };
+  return { window, document: window.document };
+}
+
+/** Every `turbofig-action://<name>` link on the page, as just the `<name>`
+ * part. */
+function actionLinkNames(document: ReturnType<typeof loadPage>["document"]) {
+  return Array.from(document.querySelectorAll("a[href^='turbofig-action://']")).map((el) =>
+    (el as unknown as HTMLAnchorElement).getAttribute("href")!.replace("turbofig-action://", ""),
+  );
+}
+
+/** Every external (`http`/`https`) link on the page. */
+function externalHrefs(document: ReturnType<typeof loadPage>["document"]) {
+  return Array.from(document.querySelectorAll("a[href^='http']")).map((el) =>
+    (el as unknown as HTMLAnchorElement).getAttribute("href"),
+  );
 }
 
 describe("about.html", () => {
-  let ctx: Awaited<ReturnType<typeof loadPage>>;
+  const rendered = ABOUT_HTML_TEMPLATE.replace("__VERSION__", "1.2.3");
+  const { document } = loadPage(rendered);
 
-  beforeEach(async () => {
-    ctx = await loadPage(ABOUT_HTML);
+  it("has no script tag and no inline on* handler", () => {
+    expect(rendered.toLowerCase()).not.toContain("<script");
+    expect(rendered).not.toMatch(/\son[a-z]+\s*=/i);
   });
 
-  afterEach(() => {
-    ctx.window.happyDOM.close();
+  it("uses only allow-listed turbofig-action:// links", () => {
+    const names = actionLinkNames(document);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(ALLOWED_ABOUT_ACTIONS).toContain(name);
+    }
   });
 
-  it("sends page_ready once the page's own script has run", () => {
-    expect(ctx.posted).toContain("page_ready");
+  it("has exactly the 2 allowed external links", () => {
+    const hrefs = externalHrefs(document).sort();
+    expect(hrefs).toEqual([README_URL, WEBSITE_URL].sort());
   });
 
-  it("shows How to use by default and hides it when the MCP tab is clicked", () => {
-    const { document } = ctx;
-    const howto = document.getElementById("tab-howto") as unknown as HTMLElement;
-    const mcp = document.getElementById("tab-mcp") as unknown as HTMLElement;
-    expect(howto.classList.contains("active")).toBe(true);
-    expect(mcp.classList.contains("active")).toBe(false);
-
-    (document.getElementById("tab-btn-mcp") as unknown as HTMLElement).click();
-
-    expect(mcp.classList.contains("active")).toBe(true);
-    expect(howto.classList.contains("active")).toBe(false);
-  });
-
-  it("updates the status text and step 2 when turbofigSetStatus is called", () => {
-    const { window, document } = ctx;
-    (window as unknown as { turbofigSetStatus: (a: boolean, b: string, c: boolean) => void })
-      .turbofigSetStatus(true, "Figma plugin connected: Design A", true);
-
-    expect(document.getElementById("text-bridge")?.textContent).toBe("Bridge running");
-    expect(document.getElementById("text-figma")?.textContent).toBe(
-      "Figma plugin connected: Design A",
-    );
-    expect(document.getElementById("step2-state")?.textContent).toBe(
-      "✓ Connected to Design A",
-    );
-    expect(document.getElementById("dot-bridge")?.classList.contains("dot-ok")).toBe(true);
-  });
-
-  it("updates the version and MCP json when turbofigSetStatic is called", () => {
-    const { window, document } = ctx;
-    (window as unknown as { turbofigSetStatic: (a: string, b: string) => void }).turbofigSetStatic(
-      "1.2.3",
-      '{"command": "turbofig", "args": ["mcp"]}',
-    );
-
+  it("renders the version into the footer", () => {
     expect(document.getElementById("version-text")?.textContent).toBe("v1.2.3");
-    expect(document.getElementById("mcp-json")?.textContent).toBe(
-      '{"command": "turbofig", "args": ["mcp"]}',
-    );
   });
 
-  it.each([
-    ["reveal_manifest", "[data-ipc=\"reveal_manifest\"]"],
-    ["copy_manifest_path", "[data-ipc=\"copy_manifest_path\"]"],
-    ["copy_agent_prompt", "[data-ipc=\"copy_agent_prompt\"]"],
-    ["copy_mcp_command", "[data-ipc=\"copy_mcp_command\"]"],
-    ["copy_mcp_json", "[data-ipc=\"copy_mcp_json\"]"],
-  ])("posts %s when its button is clicked", (command, selector) => {
-    ctx.posted.length = 0;
-    const el = ctx.document.querySelector(selector) as unknown as HTMLElement;
-    expect(el).not.toBeNull();
-    el.click();
-    expect(ctx.posted).toContain(command);
-  });
+  it("the copy-agent-prompt control matches the plugin's own copy-prompt button", () => {
+    const control = document.querySelector(
+      "a[href='turbofig-action://copy-agent-prompt']",
+    ) as unknown as HTMLElement;
+    expect(control).not.toBeNull();
+    expect(control.getAttribute("class")).toContain("icon-btn");
+    expect(control.getAttribute("class")).toContain("brand-btn");
 
-  it("posts open_docs, and prevents the default navigation, for the Docs link", () => {
-    ctx.posted.length = 0;
-    const link = ctx.document.getElementById("docs-link") as unknown as HTMLElement;
-    link.click();
-    expect(ctx.posted).toContain("open_docs");
+    // The plugin's own button carries the same 2 classes.
+    expect(PLUGIN_TEMPLATE).toContain('class="icon-btn brand-btn"');
   });
 });
 
 describe("settings.html", () => {
-  let ctx: Awaited<ReturnType<typeof loadPage>>;
+  const rendered = SETTINGS_HTML_TEMPLATE.replace("__VERSION__", "1.2.3")
+    .replace("__START_AT_LOGIN_STATE__", "On")
+    .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
+    .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off");
+  const { document } = loadPage(rendered);
 
-  beforeEach(async () => {
-    ctx = await loadPage(SETTINGS_HTML);
+  it("has no script tag and no inline on* handler", () => {
+    expect(rendered.toLowerCase()).not.toContain("<script");
+    expect(rendered).not.toMatch(/\son[a-z]+\s*=/i);
   });
 
-  afterEach(() => {
-    ctx.window.happyDOM.close();
+  it("uses only allow-listed turbofig-action:// links", () => {
+    const names = actionLinkNames(document);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(ALLOWED_SETTINGS_ACTIONS).toContain(name);
+    }
   });
 
-  it("sends page_ready once the page's own script has run", () => {
-    expect(ctx.posted).toContain("page_ready");
+  it("has no external link at all", () => {
+    expect(externalHrefs(document)).toEqual([]);
   });
 
-  it("updates the version and the Start at login switch when turbofigSetStatic is called", () => {
-    const { window, document } = ctx;
-    (
-      window as unknown as { turbofigSetStatic: (a: string, b: boolean) => void }
-    ).turbofigSetStatic("1.2.3", true);
-
+  it("renders the version and the current Start at Login state", () => {
     expect(document.getElementById("version-text")?.textContent).toBe("v1.2.3");
-    expect(
-      (document.getElementById("start-at-login") as unknown as HTMLInputElement).checked,
-    ).toBe(true);
-  });
-
-  it("posts start_at_login_on / start_at_login_off when the switch is toggled", () => {
-    const { document } = ctx;
-    const toggle = document.getElementById("start-at-login") as unknown as HTMLInputElement;
-
-    ctx.posted.length = 0;
-    toggle.checked = true;
-    toggle.dispatchEvent(new (ctx.window as unknown as { Event: typeof Event }).Event("change"));
-    expect(ctx.posted).toContain("start_at_login_on");
-
-    ctx.posted.length = 0;
-    toggle.checked = false;
-    toggle.dispatchEvent(new (ctx.window as unknown as { Event: typeof Event }).Event("change"));
-    expect(ctx.posted).toContain("start_at_login_off");
-  });
-
-  it.each([
-    ["copy_manifest_path", "[data-ipc=\"copy_manifest_path\"]"],
-    ["open_plugin_folder", "[data-ipc=\"open_plugin_folder\"]"],
-    ["open_log", "[data-ipc=\"open_log\"]"],
-  ])("posts %s when its button is clicked", (command, selector) => {
-    ctx.posted.length = 0;
-    const el = ctx.document.querySelector(selector) as unknown as HTMLElement;
-    expect(el).not.toBeNull();
-    el.click();
-    expect(ctx.posted).toContain(command);
+    expect(document.body.textContent).toContain("Start at login: On");
+    expect(document.querySelector("a[href='turbofig-action://start-at-login-off']")).not.toBeNull();
   });
 });
 
 describe("both pages", () => {
-  it("contain no remote URLs except about.html's one Docs link", () => {
-    const docsHref = 'href="https://github.com/LukeHawkins/turbofig"';
-    expect(ABOUT_HTML).toContain(docsHref);
-    const aboutWithoutDocs = ABOUT_HTML.replace(docsHref, "");
-    expect(aboutWithoutDocs).not.toContain('src="http');
-    expect(aboutWithoutDocs).not.toContain('href="http');
-    expect(SETTINGS_HTML).not.toContain('src="http');
-    expect(SETTINGS_HTML).not.toContain('href="http');
+  it("every template placeholder was substituted, none left in the DOM test fixtures", () => {
+    const aboutRendered = ABOUT_HTML_TEMPLATE.replace("__VERSION__", "1.2.3");
+    expect(aboutRendered).not.toContain("__VERSION__");
+
+    const settingsRendered = SETTINGS_HTML_TEMPLATE.replace("__VERSION__", "1.2.3")
+      .replace("__START_AT_LOGIN_STATE__", "On")
+      .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
+      .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off");
+    expect(settingsRendered).not.toContain("__START_AT_LOGIN");
+    expect(settingsRendered).not.toContain("__VERSION__");
   });
 });

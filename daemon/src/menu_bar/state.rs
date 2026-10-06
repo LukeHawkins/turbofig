@@ -59,10 +59,13 @@ fn connected_files_from_health(health: Option<&serde_json::Value>) -> Vec<Connec
         .unwrap_or_default()
 }
 
-/// The connected files' names only, for the About window's chips
-/// (`about_state::chips_from_connected_files`) and its step-2 checkmark.
-/// Thin wrapper over `connected_files_from_health` so both callers share
-/// the one parsing rule.
+/// The connected files' names only. No longer called: the About window
+/// dropped its live status display when its page lost all JS (see
+/// `about_window.rs`). Kept, not deleted, since `state.rs` is outside the
+/// scope of that change; `#[allow(dead_code)]` silences the resulting
+/// warning rather than removing a function this change did not otherwise
+/// touch.
+#[allow(dead_code)]
 pub(crate) fn connected_file_names_from_health(health: Option<&serde_json::Value>) -> Vec<String> {
     connected_files_from_health(health)
         .into_iter()
