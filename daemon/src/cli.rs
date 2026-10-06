@@ -439,7 +439,9 @@ pub fn stop_autostart_restart_hint() -> &'static str {
 /// this one is a real failure (the daemon stays up) and exits 1.
 pub fn token_trouble_stop_message() -> &'static str {
     "turbofig is running but its token file is missing or changed, so it cannot be stopped \
-     cleanly. Restore the token, or end it with: pkill -f 'turbofig serve'"
+     cleanly. Restore the token, or end it with: pkill -f 'turbofig serve'. If autostart is \
+     on, run `turbofig autostart off` first: pkill counts as a crash for launchd, which \
+     restarts the daemon."
 }
 
 #[cfg(test)]
@@ -1018,5 +1020,6 @@ mod tests {
         let msg = token_trouble_stop_message();
         assert!(msg.contains("token file is missing or changed"));
         assert!(msg.contains("pkill -f 'turbofig serve'"));
+        assert!(msg.contains("turbofig autostart off"));
     }
 }
