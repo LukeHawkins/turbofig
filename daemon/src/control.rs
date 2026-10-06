@@ -57,6 +57,21 @@ const CONTROL_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// dies. Mirrors `main.rs`'s `SUPERVISOR_EXIT_GRACE`.
 const CONTROL_EXIT_GRACE: Duration = Duration::from_millis(250);
 
+/// The exit grace in effect. A debug build honours
+/// `TURBOFIG_TEST_CONTROL_EXIT_GRACE_MS`, so a test can hold the window open
+/// long enough for a slow CI runner. Release builds always use
+/// `CONTROL_EXIT_GRACE`.
+fn control_exit_grace() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("TURBOFIG_TEST_CONTROL_EXIT_GRACE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    CONTROL_EXIT_GRACE
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ControlRequest {
     action: ControlAction,
@@ -145,7 +160,7 @@ pub(crate) async fn control_handler(
             // See `exit_code_for` for which code each action uses and why,
             // and `AppState::stop_requested` for why a stop that arrived
             // after this task started still forces exit 0.
-            tokio::time::sleep(CONTROL_EXIT_GRACE).await;
+            tokio::time::sleep(control_exit_grace()).await;
             let code = if state.stop_requested() {
                 0
             } else {

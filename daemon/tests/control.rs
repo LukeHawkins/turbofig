@@ -166,7 +166,10 @@ async fn control_stop_during_a_supervised_restart_drain_overrides_the_exit_code(
         home.path(),
         mcp_port,
         ws_port,
-        &[("TURBOFIG_SUPERVISED", "1")],
+        &[
+            ("TURBOFIG_SUPERVISED", "1"),
+            ("TURBOFIG_TEST_CONTROL_EXIT_GRACE_MS", "3000"),
+        ],
     )
     .await;
 
@@ -193,8 +196,9 @@ async fn control_stop_during_a_supervised_restart_drain_overrides_the_exit_code(
 
     // Sent right after the restart response: the restart's drain (no jobs
     // in flight) completes almost at once, but the background task still
-    // sleeps a fixed exit grace before it actually exits, so this stop has
-    // time to land and record itself before the process is gone.
+    // sleeps its exit grace before it exits. The test raises that grace to
+    // 3 s (debug-only override), so this stop lands in time even on a slow
+    // CI runner.
     let stop_resp = client
         .post(format!("http://127.0.0.1:{mcp_port}/control"))
         .bearer_auth(&token)
