@@ -163,21 +163,52 @@ deliberately narrow:
   that one URL externally (through the `AppOpener` seam, i.e. `open <url>`,
   never inside the webview) and cancels the in-webview navigation either
   way. Nothing else ever reaches an `Allow` decision.
-- **The webview can only ever send 1 of 7 fixed IPC commands.** The page's
-  JS calls `window.ipc.postMessage("<command>")`; `about_state::parse_ipc_command`
-  accepts exactly `copy_manifest_path`, `open_figma`, `copy_agent_prompt`,
-  `copy_mcp_command`, `copy_mcp_json`, `open_docs`, and `quit`, and rejects
-  anything else (including a reasonable-looking payload like
-  `{"op":"quit"}` or an unknown command) with no action taken. The handler
-  never evaluates or interprets the raw message as code; it is a plain
-  string compared against the 7 literals.
+- **The webview can only ever send 1 of 10 fixed IPC commands.** The
+  page's JS calls `window.ipc.postMessage("<command>")`;
+  `about_state::parse_ipc_command` accepts exactly `copy_manifest_path`,
+  `reveal_manifest`, `open_figma`, `copy_agent_prompt`, `copy_mcp_command`,
+  `copy_mcp_json`, `open_docs`, `quit`, `start_at_login_on`, and
+  `start_at_login_off`, and rejects anything else (including a
+  reasonable-looking payload like `{"op":"quit"}` or an unknown command)
+  with no action taken. The handler never evaluates or interprets the raw
+  message as code; it is a plain string compared against the 10 literals.
+  `reveal_manifest` runs `open -R <manifest path>` (reveal in Finder, a
+  fixed path under `<home>/figma-plugin/`, never a path taken from the
+  page), never an arbitrary path.
 - **Every command that touches the clipboard or opens something goes
   through the existing `Clipboard`/`AppOpener` seams**, the same ones the
   bare `turbofig` command and the tray menu use, including their debug-build
-  guard (a debug build never touches the real clipboard, Figma, or the
-  browser unless `TURBOFIG_DEV_REAL_DESKTOP=1` is set).
+  guard (a debug build never touches the real clipboard, Figma, Finder, or
+  the browser unless `TURBOFIG_DEV_REAL_DESKTOP=1` is set).
+- **`start_at_login_on`/`start_at_login_off` only ever toggle the app
+  LaunchAgent** (`cli::run_autostart_on_app`/`run_autostart_off`, see
+  "The app LaunchAgent" below), the same 2 functions the tray menu's
+  checkbox calls; the page cannot pass any other launchd target or plist
+  content.
 - **The second-instance signal (`<home>/app.sock`) is a local Unix socket,
-  mode `0600`, carrying 1 fixed literal string.** It only ever tells the
-  first instance to open or focus the About window; it cannot run a job,
-  read a file, or carry arbitrary data, and (like every other `<home>` path)
-  only the owning user's account can read or connect to it.
+  mode `0600`, carrying 1 of exactly 2 fixed literal messages**
+  (`second_instance::SignalMessage`): `open_about` tells the first instance
+  to open or focus the About window; `quit_app` (sent only by `turbofig
+  uninstall`) tells it to quit, through the same `perform_quit` path as its
+  own "Quit Turbofig" menu item. Neither message can run a job, read a
+  file, or carry arbitrary data, and (like every other `<home>` path) only
+  the owning user's account can read or connect to the socket.
+
+### The app LaunchAgent
+
+`turbofig autostart on` (the default, no `--headless`) writes
+`~/Library/LaunchAgents/eu.lukehawkins.turbofig.app.plist`
+(`launchd::app_plist_contents`): `ProgramArguments` is exactly
+`[<applications_dir>/Turbofig.app/Contents/MacOS/turbofig]`, the bundle's
+own executable, with no extra argument; `RunAtLoad` true; `KeepAlive` plain
+`false` (a user who quits the app keeps it quit until the next login,
+unlike the headless service's crash-only restart). It carries the same
+`TURBOFIG_*` environment carry-over as the headless plist, but never
+`TURBOFIG_SUPERVISED`: the app is not `serve`, so the daemon's
+supervised-restart loop never applies to it. `autostart on` and `autostart
+on --headless` are mutually exclusive: turning either one on bootouts and
+removes the other's plist first, so the 2 are never active together, and a
+service plist can never point at an arbitrary attacker-supplied binary:
+the only 2 possible `ProgramArguments` values are the bundle's fixed path
+and the daemon's own stable binary path (see `ARCHITECTURE.md`'s "Stable
+binary path rule").

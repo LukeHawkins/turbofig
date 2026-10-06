@@ -172,6 +172,7 @@ struct MenuHandles {
     status_item: MenuItem,
     copy_prompt_item: MenuItem,
     copy_manifest_item: MenuItem,
+    reveal_manifest_item: MenuItem,
     open_figma_item: MenuItem,
     about_item: MenuItem,
     start_at_login_item: CheckMenuItem,
@@ -185,6 +186,7 @@ fn build_menu(header: &str, status_text: &str, start_at_login_checked: bool) -> 
     let status_item = MenuItem::new(status_text, false, None);
     let copy_prompt_item = MenuItem::new("Copy Agent Prompt", true, None);
     let copy_manifest_item = MenuItem::new("Copy Plugin Manifest Path", true, None);
+    let reveal_manifest_item = MenuItem::new("Show Plugin in Finder", true, None);
     let open_figma_item = MenuItem::new("Open Figma", true, None);
     let about_item = MenuItem::new("About Turbofig\u{2026}", true, None);
     let start_at_login_item =
@@ -198,6 +200,7 @@ fn build_menu(header: &str, status_text: &str, start_at_login_checked: bool) -> 
         &PredefinedMenuItem::separator(),
         &copy_prompt_item,
         &copy_manifest_item,
+        &reveal_manifest_item,
         &open_figma_item,
         &about_item,
         &PredefinedMenuItem::separator(),
@@ -212,6 +215,7 @@ fn build_menu(header: &str, status_text: &str, start_at_login_checked: bool) -> 
         status_item,
         copy_prompt_item,
         copy_manifest_item,
+        reveal_manifest_item,
         open_figma_item,
         about_item,
         start_at_login_item,
@@ -362,6 +366,7 @@ pub async fn run_menu_bar_app() {
         status_item,
         copy_prompt_item,
         copy_manifest_item,
+        reveal_manifest_item,
         open_figma_item,
         about_item,
         start_at_login_item,
@@ -470,6 +475,7 @@ pub async fn run_menu_bar_app() {
 
     let copy_prompt_id = copy_prompt_item.id().clone();
     let copy_manifest_id = copy_manifest_item.id().clone();
+    let reveal_manifest_id = reveal_manifest_item.id().clone();
     let open_figma_id = open_figma_item.id().clone();
     let about_id = about_item.id().clone();
     let start_at_login_id = start_at_login_item.id().clone();
@@ -529,6 +535,8 @@ pub async fn run_menu_bar_app() {
                 }
             } else if event.id == copy_manifest_id {
                 clipboard_for_app().copy(&manifest_path.display().to_string());
+            } else if event.id == reveal_manifest_id {
+                opener_for_app().reveal_in_finder(&manifest_path);
             } else if event.id == open_figma_id {
                 opener_for_app().open_figma();
             } else if event.id == about_id {

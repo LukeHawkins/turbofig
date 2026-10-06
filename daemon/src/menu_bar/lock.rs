@@ -1,8 +1,9 @@
 //! Single-instance guard: an exclusive, non-blocking `flock` on
 //! `<home>/app.lock`. A second menu-bar launch while one is already running
 //! must never create a second tray icon; `try_acquire` returning `None` is
-//! that second launch's signal to exit at once (step 3 makes it bring up the
-//! setup window in the first instance instead; for now it only exits).
+//! that second launch's signal to exit at once, after signalling the first
+//! instance over `<home>/app.sock` (`second_instance`) to open the About
+//! window instead.
 //!
 //! `flock` state lives on the open file description, not the directory
 //! entry or its contents, so this never needs to read, write, or delete the

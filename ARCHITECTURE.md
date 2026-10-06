@@ -399,8 +399,12 @@ resolves any of them.
   `tray_icon::Icon`, loaded as an AppKit template image (`with_icon_templated`/
   `set_icon_templated`) so macOS tints it for light and dark mode.
 - **Menu**, in order: a disabled header, a disabled status line, a
-  separator, "Copy Agent Prompt", "Copy Plugin Manifest Path", "Open Figma",
-  "About Turbofig…" (opens, or focuses, the About window below), a
+  separator, "Copy Agent Prompt", "Copy Plugin Manifest Path", "Show Plugin
+  in Finder" (`open -R` on the manifest path, through the `AppOpener`
+  seam's `reveal_in_finder`: the manifest lives under the hidden
+  `~/.turbofig/figma-plugin/`, which Figma's own file picker cannot browse
+  into), "Open Figma", "About Turbofig…" (opens, or focuses, the About
+  window below), a
   separator, "Start at Login" (a `CheckMenuItem`; shown checked when
   `cli::app_autostart_plist_exists` is true at build time, toggled through
   `set_start_at_login`, below), "Open Log" (`open -a Console
@@ -473,26 +477,27 @@ second instance's signal; already open, any of those 3 just calls
   values (no Figma host to inject them here) switched by
   `prefers-color-scheme`. Header: wordmark, version, the tagline "Bridge any
   AI to Figma". Two live status chips. Two tabs: "How to use" (default: add
-  the plugin, run it in a file, ask the agent, with a checkmark on step 2
-  once a file connects) and "Claude Code / MCP" (the `claude mcp add`
-  command and the other-clients JSON, both with Copy; the same 2 strings
-  `first_run::first_run_text` already shows in the bare command's
-  first-run walkthrough, kept in sync by hand today, not a shared
-  constant). Footer: a "Start at login" checkbox (wired to
-  `set_start_at_login` via its own 2 IPC commands, below; its initial
-  checked state is pushed in `create_about_window`'s own
+  the plugin with Copy manifest path, Show in Finder (`reveal_manifest`,
+  for a Figma file picker that cannot browse into the hidden
+  `~/.turbofig/figma-plugin/`), or Open Figma; run it in a file, with a
+  checkmark on step 2 once a file connects; ask the agent) and "Claude
+  Code / MCP" (the `claude mcp add` command and the other-clients JSON,
+  both with Copy; the same 2 strings `first_run::first_run_text` already
+  shows in the bare command's first-run walkthrough, kept in sync by hand
+  today, not a shared constant). Footer: a "Start at login" checkbox
+  (wired to `set_start_at_login` via its own 2 IPC commands, below; its
+  initial checked state is pushed in `create_about_window`'s own
   `window.turbofigSetStatic` call, from `cli::app_autostart_plist_exists`),
   "Docs" (the GitHub repo), "Quit Turbofig".
 - **IPC**: the page only ever calls `window.ipc.postMessage("<command>")`
-  with 1 of 9 fixed strings (the original 7, plus `start_at_login_on`/
-  `start_at_login_off`); `about_state::parse_ipc_command` parses them into
-  an `IpcCommand`, rejecting anything else. `about_window::handle_ipc_message`
-  dispatches each to the same `Clipboard`/`AppOpener` seams, the same
-  `perform_quit` the tray menu's "Quit Turbofig" and the second-instance
-  `Quit` signal use, and the same `set_start_at_login` the tray's checkbox
-  uses (`copy_mcp_command`/`copy_mcp_json` build their own text directly,
-  from the stable binary path, rather than reading anything back from the
-  DOM).
+  with 1 of 10 fixed strings; `about_state::parse_ipc_command` parses them
+  into an `IpcCommand`, rejecting anything else.
+  `about_window::handle_ipc_message` dispatches each to the same
+  `Clipboard`/`AppOpener` seams, the same `perform_quit` the tray menu's
+  "Quit Turbofig" and the second-instance `Quit` signal use, and the same
+  `set_start_at_login` the tray's checkbox uses (`copy_mcp_command`/
+  `copy_mcp_json` build their own text directly, from the stable binary
+  path, rather than reading anything back from the DOM).
 - **Navigation** is blocked everywhere except the initial load; see
   `about_window::navigation_is_allowed` and `SECURITY.md`.
 - **Live status**: the same background health poller that updates the tray

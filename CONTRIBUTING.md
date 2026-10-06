@@ -58,6 +58,62 @@ succeeds, but prints a warning and embeds a placeholder that cannot connect.
 After any change under `plugin/src/`, rebuild with `cd plugin && bun run
 build` before you test in Figma.
 
+## Work on the menu-bar app
+
+The app (`daemon/src/app_bundle.rs`, `daemon/src/menu_bar/`) is macOS-only
+and assembles `Turbofig.app` on your own Mac. A debug build (`cargo build`,
+`cargo test`, `cargo run`) never touches your real `~/Applications` or
+`~/Library/LaunchAgents`, never runs `launchctl`, and never opens a real
+tray icon or window unless you explicitly opt in:
+
+- `cargo build && ./target/debug/turbofig app run` is the manual-testing
+  surface for the menu-bar app with no bundle installed. It refuses to run
+  at all in a debug build unless `TURBOFIG_DEV_REAL_DESKTOP=1` is set,
+  because **it shows real UI**: a real tray icon, a real menu, and (on
+  first use, or from the menu) a real About window. Set the env var only
+  when you actually want to see it:
+  ```bash
+  TURBOFIG_DEV_REAL_DESKTOP=1 ./target/debug/turbofig app run
+  ```
+  Without that env var, every seam behind it (the clipboard, opening Figma
+  or a URL, `launchctl`) is faked; `cargo test` never needs it and never
+  sets it.
+- `./target/release/turbofig app install` assembles (or refreshes)
+  `Turbofig.app` into `TURBOFIG_APPLICATIONS_DIR` (defaults to
+  `~/Applications`) and prints its path; this one is safe to run in a
+  release build without the env var, since a release binary is what
+  Homebrew actually installs.
+- Edit `daemon/assets/about/about.html` for the About window's content; it
+  is a single static page, `include_str!`'d at compile time, no build step.
+  After any change, just `cargo build` again; there is no separate bundle
+  step to rerun.
+
+### Swap in the real brand icons
+
+Both the app icon and the tray icon ship as placeholders (a plain "tf"
+glyph) today. Drop the finished artwork into `docs/brand/` and regenerate:
+
+- **App icon** (`Turbofig.app`'s `.icns`, shown in Finder and the Dock):
+  `scripts/make-app-icon.sh docs/brand/app-icon-1024.png`. Needs a
+  1024x1024 PNG; rebuilds `daemon/assets/app-icon/AppIcon.icns` with
+  `sips`/`iconutil`, no third-party tool.
+- **Tray (menu-bar) icon**, 2 states, normal and dimmed:
+  `scripts/make-tray-icon.sh docs/brand/menubar-glyph.png`. Needs a 44x44
+  (`@2x`) PNG or a vector PDF with a transparent background, black on
+  transparent (a template image: AppKit tints it, so colour in the source
+  is ignored, only alpha matters); rebuilds
+  `daemon/assets/tray-icon/icon-tf-44.png` (the "connected" state) from
+  this one source. The dimmed ("waiting"/unreachable) state is a separate
+  source: pass it as a second argument
+  (`scripts/make-tray-icon.sh docs/brand/menubar-glyph.png
+  docs/brand/menubar-glyph-dimmed.png`) if you have a dedicated dimmed
+  asset, otherwise the script leaves the checked-in dimmed PNG alone. See
+  the script's own header comment for the exact rules.
+
+Commit the regenerated PNGs/`.icns` (and, for the app icon, the source
+PNG) alongside the `docs/brand/` artwork; neither script touches anything
+outside `daemon/assets/`.
+
 ## Versioning
 
 The version lives in one place, the `[workspace.package]` version in the
@@ -116,8 +172,8 @@ commit time. If you did not run the config step above, enable it now.
 - Linux build support.
 - Error codes in `turbofig_execute` results, instead of a plain message.
 - More examples in `helpers/tf-api.md`.
-- An auto-update nudge on daemon startup.
 - An optional job audit log for the file bridge.
+- The real brand icons (see "Swap in the real brand icons" above).
 
 The maintainer reviews PRs on a best-effort basis.
 

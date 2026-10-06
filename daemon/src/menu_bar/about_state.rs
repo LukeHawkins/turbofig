@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-/// The 9 commands the About window's webview may send over IPC
+/// The 10 commands the About window's webview may send over IPC
 /// (`window.ipc.postMessage("<command>")`). Anything else is rejected by
 /// `parse_ipc_command`, never dispatched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,9 +22,11 @@ pub enum IpcCommand {
     StartAtLoginOn,
     /// The footer "Start at login" checkbox was unchecked.
     StartAtLoginOff,
+    /// "Show in Finder": reveals the plugin manifest (`open -R`).
+    RevealManifest,
 }
 
-/// Parses a raw IPC message into one of the 9 known commands. Returns
+/// Parses a raw IPC message into one of the 10 known commands. Returns
 /// `None` for anything else at all: an unknown command, extra whitespace, a
 /// different case, or a non-command payload. The About window's IPC handler
 /// silently drops a `None`, so a stray or malformed message can never
@@ -40,6 +42,7 @@ pub fn parse_ipc_command(raw: &str) -> Option<IpcCommand> {
         "quit" => Some(IpcCommand::Quit),
         "start_at_login_on" => Some(IpcCommand::StartAtLoginOn),
         "start_at_login_off" => Some(IpcCommand::StartAtLoginOff),
+        "reveal_manifest" => Some(IpcCommand::RevealManifest),
         _ => None,
     }
 }
@@ -90,7 +93,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ipc_command_accepts_all_9_commands() {
+    fn parse_ipc_command_accepts_all_10_commands() {
         assert_eq!(
             parse_ipc_command("copy_manifest_path"),
             Some(IpcCommand::CopyManifestPath)
@@ -118,6 +121,10 @@ mod tests {
             parse_ipc_command("start_at_login_off"),
             Some(IpcCommand::StartAtLoginOff)
         );
+        assert_eq!(
+            parse_ipc_command("reveal_manifest"),
+            Some(IpcCommand::RevealManifest)
+        );
     }
 
     #[test]
@@ -130,6 +137,8 @@ mod tests {
         assert_eq!(parse_ipc_command("eval(1+1)"), None);
         assert_eq!(parse_ipc_command("{\"op\":\"quit\"}"), None);
         assert_eq!(parse_ipc_command("open_url"), None);
+        assert_eq!(parse_ipc_command("reveal-manifest"), None);
+        assert_eq!(parse_ipc_command("Reveal_Manifest"), None);
     }
 
     #[test]

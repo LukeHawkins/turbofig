@@ -94,6 +94,11 @@ pub trait AppOpener {
     /// mid-exit by the time this runs, so `-n` guarantees a fresh launch
     /// rather than macOS just activating the (about to disappear) old one.
     fn open_new_instance(&self, path: &Path) -> bool;
+    /// Reveals `path` in a new Finder window, selected (`open -R <path>`).
+    /// Used by the About window's "Show in Finder" button, so a user who
+    /// cannot find the hidden `~/.turbofig/figma-plugin/` folder in Figma's
+    /// own file picker can drag `manifest.json` in from Finder instead.
+    fn reveal_in_finder(&self, path: &Path) -> bool;
 }
 
 /// The real opener: `open -a Figma`, macOS-only (the whole daemon is).
@@ -133,6 +138,15 @@ impl AppOpener for RealAppOpener {
             .map(|status| status.success())
             .unwrap_or(false)
     }
+
+    fn reveal_in_finder(&self, path: &Path) -> bool {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(path)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
 }
 
 /// A fake opener for tests: reports a fixed result, never spawns a process.
@@ -160,6 +174,10 @@ impl AppOpener for FakeOpener {
     }
 
     fn open_new_instance(&self, _path: &Path) -> bool {
+        self.succeeds
+    }
+
+    fn reveal_in_finder(&self, _path: &Path) -> bool {
         self.succeeds
     }
 }
@@ -554,6 +572,13 @@ mod tests {
     fn fake_opener_reports_the_fixed_result_for_open_new_instance() {
         assert!(FakeOpener::new(true).open_new_instance(Path::new("/Applications/Turbofig.app")));
         assert!(!FakeOpener::new(false).open_new_instance(Path::new("/Applications/Turbofig.app")));
+    }
+
+    #[test]
+    fn fake_opener_reports_the_fixed_result_for_reveal_in_finder() {
+        let manifest = Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json");
+        assert!(FakeOpener::new(true).reveal_in_finder(manifest));
+        assert!(!FakeOpener::new(false).reveal_in_finder(manifest));
     }
 
     #[test]

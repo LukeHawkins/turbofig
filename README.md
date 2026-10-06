@@ -15,13 +15,18 @@
 
 ---
 
-Turbofig is a local, always-on daemon that lets any AI agent read and edit
-the Figma file open in Figma Desktop. It talks to a thin Figma plugin over
-a WebSocket and exposes 4 tools to the agent, including one tool that runs
-Figma Plugin API JavaScript directly. `turbofig mcp`, a stdio MCP server,
-starts the daemon when your agent's MCP client launches it, the same way
-`npx` starts a Node MCP server. The daemon then keeps running after your
-agent session ends.
+Turbofig is a menu-bar app and a local, always-on daemon that let any AI
+agent read and edit the Figma file open in Figma Desktop. Run `turbofig`
+once and a tf icon appears in your menu bar; click it for status, the
+plugin manifest, and an About window that walks you through the rest.
+Underneath, the daemon talks to a thin Figma plugin over a WebSocket and
+exposes 4 tools to the agent, including one tool that runs Figma Plugin
+API JavaScript directly. `turbofig mcp`, a stdio MCP server, starts the
+daemon when your agent's MCP client launches it, the same way `npx` starts
+a Node MCP server. The daemon then keeps running after your agent session
+ends.
+
+<!-- SCREENSHOT: menu-bar menu (tray icon open) and the About window, side by side -->
 
 **Works with:**
 
@@ -40,6 +45,10 @@ agent session ends.
 *The daemon bridges your AI agent to the Figma plugin over a local
 WebSocket.*
 
+- **A menu-bar app, assembled on your own Mac.** `Turbofig.app` is built
+  locally from the binary already on your disk, not downloaded as a
+  `.app`, so it carries no quarantine flag and opens with no "unidentified
+  developer" prompt, even though the binary itself is not notarized.
 - **4 tools, so a small schema.** All capability flows through
   `turbofig_execute`. The tool surface is locked at 4 and never grows.
 - **A single binary with no Node runtime.** The daemon is one Rust binary.
@@ -88,24 +97,19 @@ brew install LukeHawkins/tap/turbofig
 turbofig
 ```
 
-The first run of `turbofig` starts the daemon in the background, writes the
-Figma plugin to `~/.turbofig/figma-plugin/`, copies the manifest path to
-your clipboard, opens Figma Desktop, and prints 3 steps:
+The first run of `turbofig` installs and opens `Turbofig.app`, starts the
+daemon in the background, and prints:
 
-1. **Add the Figma plugin (once).** In Figma Desktop: **Plugins >
-   Development > Import plugin from manifest**. This menu item exists only
-   in Figma Desktop, not the web app. Figma's file picker hides
-   `~/.turbofig` by default, so press Cmd+Shift+G in the picker, paste the
-   path (it is already on your clipboard), then press Return.
-2. **Connect your agent (once).** Claude Code:
-   `claude mcp add turbofig -- turbofig mcp`. Other MCP clients: add
-   `{"command": "<absolute path, for example /opt/homebrew/bin/turbofig>", "args": ["mcp"]}`.
-   A GUI app needs the absolute path: it does not have `/opt/homebrew/bin`
-   on its `PATH`.
-3. **MCP blocked on your machine?** Run the plugin in Figma and click
-   "Copy prompt".
+```
+Turbofig is now in your menu bar (look for the tf icon).
+Click it and choose About Turbofig… to get started. No icon? Run: turbofig status
+```
 
-A later run of `turbofig` prints a 3-line status instead.
+A tf icon appears in your menu bar. The About window opens automatically
+the first time (it does not reopen on every later run; click the tf icon
+and choose "About Turbofig…" whenever you want it back). A later bare
+`turbofig` run prints the same 2 lines again: the app, not the terminal,
+is where onboarding and status live now.
 
 <details>
 <summary>New to the terminal?</summary>
@@ -115,12 +119,41 @@ A later run of `turbofig` prints a 3-line status instead.
    command shown on that page. On a managed Mac, installing Homebrew can
    need admin rights, so ask IT first.
 3. Run the 2 turbofig commands above.
-4. In Figma's file picker, press Cmd+Shift+G, then paste the manifest
-   path. `turbofig` already copied it to your clipboard.
+4. Click the tf icon that appears in your menu bar.
 
 </details>
 
-## Connect your agent
+## How to use
+
+This is the main path: it works on a locked-down machine, with no
+permission dialog and no MCP setup.
+
+1. **Add the turbofig plugin to Figma (once).** Click the tf icon, open
+   the About window, and in "How to use" click **Show in Finder** (it
+   reveals `manifest.json` inside the hidden `~/.turbofig/figma-plugin/`
+   folder, which Figma's own file picker cannot browse into). In Figma
+   Desktop, choose **Plugins > Development > Import plugin from
+   manifest…**, then drag `manifest.json` from the Finder window onto the
+   dialog. Or press Cmd+Shift+G in the dialog and paste the path instead
+   (**Copy manifest path** copies it). This menu item exists only in
+   Figma Desktop, not the web app.
+2. **Run the plugin in your Figma file.** Open a file, run turbofig from
+   the Plugins menu once, and leave the panel open. The About window's
+   step 2 gets a checkmark once a file connects.
+3. **Ask your agent.** Click **Copy Agent Prompt**, either from the tf
+   icon's menu or from the plugin panel itself, and paste it into Claude
+   Code, Cursor, Copilot, or any other agent with local file access. The
+   agent then drives turbofig by writing a JSON job to `~/.turbofig/inbox`
+   and reading the result from `~/.turbofig/outbox`. No curl, no MCP
+   connection, no permission dialog. See `skills/file-bridge.md`.
+
+**Any agent, not just Claude.** [`docs/agents.md`](docs/agents.md) is an
+agent-neutral onboarding prompt with the same file-bridge instructions.
+
+## Claude Code and other MCP clients
+
+On a machine where MCP is not blocked, this is a lighter-weight connection
+than the file bridge, with no clipboard step.
 
 **Claude Code:**
 
@@ -151,17 +184,6 @@ have `/opt/homebrew/bin` on its `PATH`):
 See `docs/discoverability/mcp-config.json` for this block, and
 `docs/discoverability/CLAUDE-snippet.md` for a snippet to paste into a
 global `CLAUDE.md`.
-
-**MCP blocked on your machine (the file bridge).** Click the copy-prompt
-button in the plugin panel and paste the prompt into your agent. The agent
-then drives turbofig by writing a JSON job to `~/.turbofig/inbox` and
-reading the result from `~/.turbofig/outbox`. No curl, no MCP connection,
-no permission dialog. See `skills/file-bridge.md`.
-
-**Any agent, not just Claude.** [`docs/agents.md`](docs/agents.md) is an
-agent-neutral onboarding prompt. Paste it into Cursor, Codex, Copilot,
-Claude, or any other agent that can read and write local files or call an
-MCP server.
 
 **Advanced: MCP over HTTP.** The daemon also serves streamable HTTP MCP
 directly at `http://127.0.0.1:18846/mcp`. Point any MCP client that
@@ -261,18 +283,34 @@ return list.id;
   (`~/.turbofig/token`), so a malicious web page cannot open the socket
   even though it shares the plugin iframe's null Origin.
 
-## Commands
+## Menu bar
 
-| Command | Does |
+`Turbofig.app` is assembled on your own Mac (not downloaded as a `.app`),
+so it carries no quarantine flag and opens with no "unidentified
+developer" prompt, even though the `turbofig` binary itself is not
+notarized. It shows as a tf icon in your menu bar, dimmed when no Figma
+file is connected or the daemon is unreachable, and solid once a file
+connects. Its menu:
+
+| Item | Does |
 |---|---|
-| `turbofig` | First run: installs the pairing token, writes the plugin files, starts the daemon, and prints the 3 connect steps. A later run: prints a 3-line status |
-| `turbofig mcp` | Runs a stdio MCP server for an agent's MCP client. Starts the daemon first if it is not already running |
-| `turbofig start` | Starts the daemon detached in the background, if it is not already running |
-| `turbofig stop` | Stops the running daemon |
-| `turbofig status` | Queries the running daemon's `/health` endpoint and prints a readable report |
-| `turbofig serve` | Runs the daemon in the foreground. For development, or for an autostart launchd service |
-| `turbofig autostart on\|off` | Turns on or off an optional launchd service that starts the daemon at login |
-| `turbofig uninstall [--purge]` | Stops the running daemon, turns off autostart, and removes its plist. With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
+| Copy Agent Prompt | Copies the same agent-connect prompt as the plugin panel's button |
+| Copy Plugin Manifest Path | Copies the path to `manifest.json`, for Cmd+Shift+G in Figma's file picker |
+| Show Plugin in Finder | Opens a Finder window with `manifest.json` selected, for dragging it onto Figma's import dialog |
+| Open Figma | Opens Figma Desktop |
+| About Turbofig… | Opens the About window: live status, the "How to use" steps, and the Claude Code/MCP block |
+| Start at Login | Installs or removes a launchd LaunchAgent for the app itself |
+| Open Log | Opens `~/.turbofig/daemon.log` in Console |
+| Quit Turbofig | Stops the daemon and quits the app |
+
+**Start at Login:** `turbofig autostart on` (the default) installs a
+LaunchAgent that launches `Turbofig.app` itself at login; `turbofig
+autostart on --headless` installs a daemon-only LaunchAgent instead, with
+no app, no tray icon, no window, for a machine where you only want the
+background service. `turbofig autostart off` removes whichever one is
+installed. Turning one on always replaces the other, so the 2 never run
+at once. The tray menu's and the About window's "Start at Login"
+checkboxes are 2 views onto the same setting.
 
 **Updating:**
 
@@ -280,15 +318,32 @@ return list.id;
 brew upgrade turbofig
 ```
 
-The next `turbofig mcp` start sees an older daemon, lets its in-flight jobs
-finish, then restarts it on the new version. An older proxy never restarts
-a newer daemon. The daemon rewrites the plugin files on every start, so the
-Figma import only happens once: reopen the plugin in Figma after an
-upgrade to pick up the refreshed files.
+The next `turbofig mcp` start (or the next time you open the app) sees an
+older daemon, lets its in-flight jobs finish, then restarts it on the new
+version. An older proxy never restarts a newer daemon. The daemon
+rewrites the plugin files and refreshes `Turbofig.app` on every start, so
+the Figma import only happens once: reopen the plugin in Figma after an
+upgrade to pick up the refreshed files. If the app was already open when
+you upgraded, it notices the daemon is now newer and relaunches itself
+once, automatically, to pick up the refreshed bundle; it never relaunches
+twice for the same upgrade.
 
 **Uninstalling:** run `turbofig uninstall` before `brew uninstall
-turbofig`. It stops the running daemon first, so a launchd autostart
-service (if you turned one on) is unloaded cleanly.
+turbofig`. It quits a running app first (if any), stops the running
+daemon, turns off autostart, and removes the app bundle.
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `turbofig` | Installs/refreshes `Turbofig.app`, starts the daemon, opens the app, and prints a 2-line pointer at the tray icon. On any other OS, or if the app could not be opened, prints the 3 connect steps on first run, or a 3-line status on a later run, instead |
+| `turbofig mcp` | Runs a stdio MCP server for an agent's MCP client. Starts the daemon first if it is not already running |
+| `turbofig start` | Starts the daemon detached in the background, if it is not already running |
+| `turbofig stop` | Stops the running daemon |
+| `turbofig status` | Queries the running daemon's `/health` endpoint and prints a readable report |
+| `turbofig serve` | Runs the daemon in the foreground. For development, or for an autostart launchd service |
+| `turbofig autostart on [--headless]\|off` | Turns on or off the launchd service that starts the app (or, with `--headless`, just the daemon) at login |
+| `turbofig uninstall [--purge]` | Quits a running app, stops the daemon, turns off autostart, and removes the app bundle and its plist(s). With `--purge`, also removes the turbofig home folder's own files (the token, the plugin files, the inbox, the outbox, the log), and removes the folder itself only if it is then empty |
 
 ## Configuration
 
@@ -344,6 +399,8 @@ vulnerability.
 
 ## Troubleshooting
 
+- **No tf icon in the menu bar?** Run `turbofig status`, then `turbofig`
+  again.
 - **The plugin panel shows disconnected, or says it is waiting.** Run
   `turbofig start`. Run `turbofig status` first to check the daemon is
   actually down.
@@ -369,7 +426,6 @@ vulnerability.
 - A screencast of a brief becoming a full Figma page.
 - Wider platform support: Linux and Windows builds, `cargo install`, and a
   `curl | sh` installer.
-- An auto-update nudge on daemon startup.
 - A community-safe command vocabulary alongside the eval-first tool.
 - Error codes in tool results, and an optional job audit log.
 - Notarized binaries, for a company that needs them.

@@ -138,7 +138,7 @@ pub fn create_about_window<T: 'static>(
 
 /// Dispatches one parsed IPC command. An unparseable message is dropped
 /// silently (see `about_state::parse_ipc_command`): the embedded page only
-/// ever sends the 7 known commands, so anything else getting through would
+/// ever sends the 10 known commands, so anything else getting through would
 /// mean the page itself was tampered with, not a case worth acting on.
 fn handle_ipc_message(raw: &str, ctx: &AboutWindowContext) {
     let Some(command) = parse_ipc_command(raw) else {
@@ -148,6 +148,10 @@ fn handle_ipc_message(raw: &str, ctx: &AboutWindowContext) {
         IpcCommand::CopyManifestPath => {
             let manifest_path = ctx.home.join("figma-plugin").join("manifest.json");
             clipboard_for_app().copy(&manifest_path.display().to_string());
+        }
+        IpcCommand::RevealManifest => {
+            let manifest_path = ctx.home.join("figma-plugin").join("manifest.json");
+            opener_for_app().reveal_in_finder(&manifest_path);
         }
         IpcCommand::OpenFigma => {
             opener_for_app().open_figma();

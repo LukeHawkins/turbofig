@@ -101,6 +101,30 @@ recorded under Unreleased.
   builder subagents to a QA critic subagent to refine, with checkpoint and
   resume for long jobs.
 - Benchmark harness (`bench/`) measuring token and wall-time cost.
+- macOS menu-bar app: `Turbofig.app` is assembled on the user's own Mac
+  (ad-hoc signed, no quarantine flag, so no "unidentified developer"
+  prompt), installed/refreshed and opened automatically by the bare
+  `turbofig` command. A tray icon (template image, 2 states: a plugin
+  connected, or waiting/unreachable) shows a menu: Copy Agent Prompt, Copy
+  Plugin Manifest Path, Show Plugin in Finder (`open -R`, for a Figma file
+  picker that cannot browse into the hidden `~/.turbofig/figma-plugin/`),
+  Open Figma, About Turbofig…, Start at Login, Open Log, Quit Turbofig. A
+  background poller refreshes the tray and the About window every 2s from
+  `/health`.
+- About window: a native window hosting 1 embedded webview page (no remote
+  URLs, no navigation away from it), reusing the plugin panel's visual
+  style and following light/dark mode. Shows live status chips, a "How to
+  use" tab (import the plugin, including the new Show in Finder button;
+  run it; copy the agent prompt) and a "Claude Code / MCP" tab. Opens
+  automatically on first use, from the menu, or from a second launch
+  signalling the first over a local Unix socket.
+- Start at Login: `turbofig autostart on` now installs a LaunchAgent for
+  the app itself by default (`--headless` keeps the daemon-only one); the
+  tray menu and the About window both carry a checkbox for it.
+- App self-update: after `brew upgrade` refreshes the bundle, the
+  already-running app detects the daemon is now on a newer version and
+  relaunches itself once, so an open app picks up the new bundle without
+  the user having to quit and reopen it by hand.
 
 ### Removed
 

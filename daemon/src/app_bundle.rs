@@ -6,8 +6,9 @@
 //! item here only exists under `cfg(target_os = "macos")` (see `lib.rs`).
 //!
 //! Step 1 of the menu-bar app: this module only builds and maintains the
-//! bundle. The menu-bar UI (step 2), the setup window (step 3), and the
-//! first-run switch, login item and docs (step 4) come later.
+//! bundle. The menu-bar UI (step 2), the About window (step 3), and the
+//! app lifecycle: first run opens the app, Start at Login, self-update
+//! (step 4a), and docs (step 4b), all live in `menu_bar/`.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
