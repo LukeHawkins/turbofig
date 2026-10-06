@@ -13,7 +13,8 @@ mod common;
 
 use common::{
     fetch_health_with_token, free_port, handshake, read_response_for_id, send_json, spawn_daemon,
-    spawn_proxy, stdio_call_tool, stdio_tools_list, tool_call_status, wait_for_health, DaemonGuard,
+    spawn_proxy, stdio_call_tool, stdio_tools_list, stop_daemon, tool_call_status, wait_for_health,
+    DaemonGuard,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -415,6 +416,68 @@ async fn a_mid_session_daemon_death_is_retried_once_and_the_call_succeeds() {
     );
 
     daemon_guard.refresh_pid().await;
+}
+
+// ── (e2) a token rotation mid-session is retried once with the fresh token ──
+
+/// A token rotation (`turbofig stop`, delete the token, `turbofig start`,
+/// per SECURITY.md) while a proxy's agent session stays open must not fail
+/// every `/job` call for the rest of that session: the first call after the
+/// rotation gets a 401 against the proxy's cached token, so `post_job` must
+/// re-read `<home>/token` and retry once.
+#[tokio::test]
+async fn a_token_rotation_mid_session_is_retried_once_and_the_call_succeeds() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+    let old_token = tokio::fs::read_to_string(home.path().join("token"))
+        .await
+        .expect("read the original token");
+
+    let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
+    let (mut writer, mut reader) = handshake(&mut proxy).await;
+
+    let resp = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
+    assert_eq!(
+        tool_call_status(&resp)["ok"],
+        json!(true),
+        "the first call must succeed and cache the original token: {resp}"
+    );
+
+    // Rotate the token exactly as SECURITY.md describes: stop, delete the
+    // token file, start a new daemon, which writes a fresh one.
+    stop_daemon(&client, mcp_port, home.path()).await;
+    let _ = old_daemon.wait().await;
+    tokio::fs::remove_file(home.path().join("token"))
+        .await
+        .expect("delete the token to force rotation");
+    let mut new_daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+    let new_token = tokio::fs::read_to_string(home.path().join("token"))
+        .await
+        .expect("read the rotated token");
+    assert_ne!(
+        old_token, new_token,
+        "the rotation must actually produce a new token"
+    );
+
+    // The proxy still only knows the old token; this call must 401 once
+    // internally, re-read the token file, and retry rather than surfacing
+    // the 401 to the caller.
+    let resp2 = stdio_call_tool(&mut writer, &mut reader, 3, "turbofig_status", json!({})).await;
+    assert_eq!(
+        tool_call_status(&resp2)["ok"],
+        json!(true),
+        "the proxy must retry once with the rotated token: {resp2}"
+    );
+
+    let _ = new_daemon.kill().await;
+    let _ = new_daemon.wait().await;
 }
 
 /// Polls the daemon's `/health` `connectedFiles` until `file_key` appears.

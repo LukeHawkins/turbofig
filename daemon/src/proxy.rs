@@ -116,8 +116,12 @@ struct Bootstrapped {
     /// The pairing token read from `<home>/token`. Sent as `Authorization:
     /// Bearer <token>` on every `/job` call: the daemon requires it since
     /// another local macOS account can also reach 127.0.0.1 (see
-    /// `mcp::require_bearer_token`).
-    token: String,
+    /// `mcp::require_bearer_token`). Behind a lock, not a plain `String`: a
+    /// token rotation (`turbofig stop`, delete the token, `turbofig start`)
+    /// while this proxy's session stays open means the token read at
+    /// bootstrap can go stale, so `post_job` re-reads and updates this on a
+    /// 401 instead of failing every call for the rest of the session.
+    token: tokio::sync::RwLock<String>,
 }
 
 /// Ensures a daemon is reachable on `mcp_port` (starting one via
@@ -179,7 +183,7 @@ async fn do_bootstrap(
     Ok(Bootstrapped {
         health_client,
         job_client,
-        token,
+        token: tokio::sync::RwLock::new(token),
     })
 }
 
@@ -315,23 +319,58 @@ impl ProxyHandler {
         }
     }
 
-    /// One `POST /job` call, with no retry. Returns the raw `reqwest::Error`
-    /// so `run_job` can tell a connect failure from any other kind.
+    /// One `POST /job` call, retried once on a 401. Returns the raw
+    /// `reqwest::Error` so `run_job` can tell a connect failure from any
+    /// other kind (a 401 never surfaces as an `Err` here: it is either
+    /// resolved by the retry or passed through as the daemon's own
+    /// `{"ok":false,...}` body, exactly like any other job failure).
+    ///
+    /// The token read at bootstrap can go stale (a rotation: `turbofig
+    /// stop`, delete the token, `turbofig start`, while this proxy's agent
+    /// session stays open), which would otherwise fail every `/job` call for
+    /// the rest of the session. On a 401, re-read `<home>/token` and retry
+    /// once with whatever it now holds; a second 401 (a real auth problem,
+    /// not a stale cache) is returned to the caller as-is.
     async fn post_job(
         &self,
         bootstrapped: &Bootstrapped,
         job: &Job,
     ) -> Result<serde_json::Value, reqwest::Error> {
+        let token = bootstrapped.token.read().await.clone();
+        let (status, value) = self.send_job(bootstrapped, &token, job).await?;
+        if status != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(value);
+        }
+        let Some(fresh_token) = crate::token::read_token_file(&self.home).await else {
+            return Ok(value);
+        };
+        *bootstrapped.token.write().await = fresh_token.clone();
+        let (_status, value) = self.send_job(bootstrapped, &fresh_token, job).await?;
+        Ok(value)
+    }
+
+    /// One raw `POST /job` call with the given `token`, no retry. Returns
+    /// the response status alongside the parsed body so `post_job` can
+    /// decide whether to retry on a 401 without a second round trip just to
+    /// re-check the status.
+    async fn send_job(
+        &self,
+        bootstrapped: &Bootstrapped,
+        token: &str,
+        job: &Job,
+    ) -> Result<(reqwest::StatusCode, serde_json::Value), reqwest::Error> {
         let url = format!("http://127.0.0.1:{}/job", self.mcp_port);
         let resp = bootstrapped
             .job_client
             .post(url)
-            .bearer_auth(&bootstrapped.token)
+            .bearer_auth(token)
             .header("X-Turbofig-Session", &self.session_id)
             .json(job)
             .send()
             .await?;
-        resp.json::<serde_json::Value>().await
+        let status = resp.status();
+        let value = resp.json::<serde_json::Value>().await?;
+        Ok((status, value))
     }
 
     /// Starts the daemon again and waits for it to become healthy.
