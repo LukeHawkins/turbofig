@@ -503,29 +503,58 @@ pub struct DaemonGuard {
 }
 
 impl DaemonGuard {
+    /// Builds an inert guard for `home`/`mcp_port` with no known pid yet.
+    /// Synchronous and infallible, so it can be constructed the moment a
+    /// test knows a daemon will exist on this port and home (right after
+    /// the spawn call that starts or will start it), before any `await`
+    /// that could panic (`wait_for_health`, a `handshake`). The drop still
+    /// works with no pid known: it falls back to `/control stop` alone.
+    /// Call `refresh_pid` once the daemon is known healthy, to also get the
+    /// pid-kill fallback.
+    pub fn new(home: &Path, mcp_port: u16) -> Self {
+        Self {
+            mcp_port,
+            home: home.to_path_buf(),
+            pid: None,
+        }
+    }
+
     /// Builds a guard for the daemon on `mcp_port`, reading its pid from the
     /// authenticated `/health` payload if `<home>/token` is readable and the
     /// daemon answers. Never fails: a daemon that already went away, or
     /// whose pid could not be read for any other reason, still gets a (now
     /// inert) guard, so a caller never has to handle a `Result` just to stay
     /// safe.
+    ///
+    /// Prefer `new` followed by `refresh_pid` when the daemon might not be
+    /// healthy yet at the point a guard is needed: this constructor's own
+    /// `/health` lookup is itself an `await` that could panic (or simply
+    /// take a while) before any guard exists at all.
     pub async fn for_daemon_on(home: &Path, mcp_port: u16) -> Self {
+        let mut guard = Self::new(home, mcp_port);
+        guard.refresh_pid().await;
+        guard
+    }
+
+    /// Re-reads the pid from the authenticated `/health` payload and
+    /// records it, if the token file is readable and the daemon answers.
+    /// Leaves the existing pid in place on any failure (already gone, token
+    /// unreadable, request failed), so a later successful call cannot
+    /// regress a pid already known.
+    pub async fn refresh_pid(&mut self) {
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(2))
             .build()
             .expect("build http client");
-        let pid = match tokio::fs::read_to_string(home.join("token")).await {
-            Ok(token) => fetch_health_with_token(&client, mcp_port, token.trim())
+        if let Ok(token) = tokio::fs::read_to_string(self.home.join("token")).await {
+            if let Some(pid) = fetch_health_with_token(&client, self.mcp_port, token.trim())
                 .await
                 .and_then(|h| h.get("pid").and_then(Value::as_u64))
-                .map(|p| p as u32),
-            Err(_) => None,
-        };
-        Self {
-            mcp_port,
-            home: home.to_path_buf(),
-            pid,
+                .map(|p| p as u32)
+            {
+                self.pid = Some(pid);
+            }
         }
     }
 }

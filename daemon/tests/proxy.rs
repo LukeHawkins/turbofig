@@ -137,16 +137,19 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
     let ws_port = free_port();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
+    // Built right after the spawn, before any `await` that could panic
+    // (`handshake`, `wait_for_health`): the proxy's background bootstrap
+    // starts a detached daemon this test never ran itself, so a guard built
+    // only after those awaits would leak it on a panic in either one.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
     // `initialize` and `tools/list` both answer at once, with no daemon
     // needed (see `proxy::run`'s doc comment), so the proxy's background
-    // bootstrap (which starts the daemon this test never ran itself) may
-    // still be in flight here. Wait for it before building the guard below,
-    // or a detached daemon it starts just after could outlive this test
-    // unguarded.
+    // bootstrap may still be in flight here. Wait for it, then fill in the
+    // guard's pid for the kill fallback.
     wait_for_health(&client, mcp_port).await;
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
     let stdio_tools = stdio_tools_list(&mut writer, &mut reader).await;
 
     let http_tools = http_tools_list().await;
@@ -169,6 +172,9 @@ async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
     let ws_port = free_port();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
+    // Built right after the spawn, before any `await` that could panic: see
+    // `proxy_tools_list_matches_the_http_mcp_tools_list`'s guard comment.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let mut writer = proxy.0.stdin.take().expect("proxy stdin");
     let mut reader = tokio::io::BufReader::new(proxy.0.stdout.take().expect("proxy stdout"));
@@ -196,11 +202,9 @@ async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
 
     // `initialize` answers at once, with no daemon needed (see `proxy::run`'s
     // doc comment), so the proxy's background bootstrap may still be
-    // starting the daemon this test never ran itself. Wait for it before
-    // this function returns, or the detached daemon it starts could outlive
-    // this test with nothing left to guard it.
+    // starting the daemon this test never ran itself.
     wait_for_health(&client, mcp_port).await;
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
 }
 
 // ── (b) `turbofig mcp` with no daemon running starts one ───────────────────
@@ -220,6 +224,9 @@ async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() 
         "no daemon has run yet, so there must be no token file"
     );
 
+    // Built right after the spawn, before any `await` that could panic: see
+    // `proxy_tools_list_matches_the_http_mcp_tools_list`'s guard comment.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
 
@@ -228,7 +235,7 @@ async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() 
 
     // The daemon the proxy started is reachable directly too.
     wait_for_health(&client, mcp_port).await;
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
 }
 
 // ── (c) killing the proxy, or its whole process group, never touches the daemon ─
@@ -241,11 +248,14 @@ async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
     let ws_port = free_port();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
+    // Built right after the spawn, before any `await` that could panic: see
+    // `proxy_tools_list_matches_the_http_mcp_tools_list`'s guard comment.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
     let _ = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
     wait_for_health(&client, mcp_port).await;
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
 
     let pid = proxy.0.id().expect("proxy has a pid") as i32;
     drop(writer);
@@ -269,11 +279,14 @@ async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
     let ws_port = free_port();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
+    // Built right after the spawn, before any `await` that could panic: see
+    // `proxy_tools_list_matches_the_http_mcp_tools_list`'s guard comment.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, true, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
     let _ = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
     wait_for_health(&client, mcp_port).await;
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
 
     // `process_group(0)` made the proxy the leader of its own group
     // (pgid == pid), so signalling -pid reaches only the proxy, never the
@@ -303,12 +316,15 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
     // Spawned back to back, with no daemon running yet for either to find:
     // both race to start one, and the TCP bind on mcp_port/ws_port is the
     // only thing that decides which one actually serves.
+    // Built right after the spawns, before any `await` that could panic: see
+    // `proxy_tools_list_matches_the_http_mcp_tools_list`'s guard comment.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy_a = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let mut proxy_b = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
 
     let (mut writer_a, mut reader_a) = handshake(&mut proxy_a).await;
     let (mut writer_b, mut reader_b) = handshake(&mut proxy_b).await;
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
 
     let resp_a = stdio_call_tool(
         &mut writer_a,
@@ -368,6 +384,12 @@ async fn a_mid_session_daemon_death_is_retried_once_and_the_call_succeeds() {
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
     wait_for_health(&client, mcp_port).await;
 
+    // Built right after the spawn, before any `await` that could panic: the
+    // proxy restarts the daemon on this same port further down, so a guard
+    // built only at the end would leak that restarted daemon on an earlier
+    // panic. See `proxy_tools_list_matches_the_http_mcp_tools_list`'s guard
+    // comment.
+    let mut daemon_guard = DaemonGuard::new(home.path(), mcp_port);
     let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
     let (mut writer, mut reader) = handshake(&mut proxy).await;
 
@@ -392,7 +414,7 @@ async fn a_mid_session_daemon_death_is_retried_once_and_the_call_succeeds() {
         "the proxy must restart the daemon once and the retried call must succeed: {resp2}"
     );
 
-    let _daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
+    daemon_guard.refresh_pid().await;
 }
 
 /// Polls the daemon's `/health` `connectedFiles` until `file_key` appears.
