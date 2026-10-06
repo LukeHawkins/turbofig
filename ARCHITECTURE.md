@@ -72,6 +72,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
+| `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `Turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort; `app_bundle_outdated`, `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
 
 ## Plugin
 
