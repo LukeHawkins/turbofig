@@ -15,6 +15,12 @@
 //! to decide whether to start a new binary itself, as `turbofig mcp`'s
 //! `restart_for_upgrade` does.
 //!
+//! A `stop` always overrides a restart already draining. If a restart's
+//! drain is under way and a `stop` call arrives before the process exits,
+//! the exit code changes to 0, so launchd leaves the daemon stopped instead
+//! of restarting it, matching the `202` reply `turbofig stop` already got.
+//! See `AppState::request_stop`/`stop_requested`.
+//!
 //! The handler itself never blocks on the drain: it replies `202` at once
 //! with `{"ok":true,"action":...,"draining":true}`, then drains and exits in
 //! a background task. A drain can take up to `CONTROL_DRAIN_MAX_WAIT` (60s);
@@ -93,6 +99,12 @@ pub(crate) async fn control_handler(
     }
 
     let action = req.action;
+    if action == ControlAction::Stop {
+        // Record the stop even if a restart is already draining (the branch
+        // below then returns false for this caller): a stop must always win
+        // over a restart's exit code. See `AppState::request_stop`.
+        state.request_stop();
+    }
     if state.try_begin_draining() {
         // Drain and exit in the background: the caller never waits on this,
         // only on /health going unreachable (see this module's doc comment).
@@ -113,9 +125,16 @@ pub(crate) async fn control_handler(
             }
             // Give a just-sent response (this one, or a concurrent repeat
             // caller's) a moment to flush before the process actually exits.
-            // See `exit_code_for` for which code each action uses and why.
+            // See `exit_code_for` for which code each action uses and why,
+            // and `AppState::stop_requested` for why a stop that arrived
+            // after this task started still forces exit 0.
             tokio::time::sleep(CONTROL_EXIT_GRACE).await;
-            std::process::exit(exit_code_for(action));
+            let code = if state.stop_requested() {
+                0
+            } else {
+                exit_code_for(action)
+            };
+            std::process::exit(code);
         });
     }
 

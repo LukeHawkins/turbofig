@@ -117,6 +117,17 @@ pub struct AppState {
     /// accepts no more work while it waits for in-flight jobs to finish
     /// before exiting for launchd to start the new binary.
     draining: std::sync::atomic::AtomicBool,
+    /// Set once a `stop` has been requested, by `/control`'s `stop` action
+    /// (`control.rs`). A `stop` always overrides a restart already in
+    /// progress: both the `/control` background exit task and the
+    /// supervised-restart loop (`main.rs`) read this right before they call
+    /// `std::process::exit`, and exit 0 whenever it is set, even if a
+    /// restart (not a stop) is the one that is actually draining. Without
+    /// this, a `stop` that lands while a restart's drain is already under
+    /// way would still exit with the restart's non-zero code, so launchd
+    /// would restart the daemon straight back up even though `turbofig
+    /// stop` reported success.
+    stop_requested: std::sync::atomic::AtomicBool,
     /// Count of whole tool calls (MCP and bridge) currently in progress, from
     /// entry to the final response (MCP) or result write (bridge). See
     /// `begin_job`/`JobGuard`. This is intentionally not the `pending` map's
@@ -166,6 +177,7 @@ impl AppState {
             token,
             started_at: Instant::now(),
             draining: std::sync::atomic::AtomicBool::new(false),
+            stop_requested: std::sync::atomic::AtomicBool::new(false),
             job_counter: Arc::new(AtomicUsize::new(0)),
             plugin_seen_path,
         }
@@ -274,6 +286,22 @@ impl AppState {
         self.draining
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
+    }
+
+    /// Records that a `stop` has been requested. Idempotent and independent
+    /// of `try_begin_draining`: a `stop` that arrives while a restart is
+    /// already draining still calls this, so the pending exit (whoever
+    /// scheduled it) picks up the override. See the `stop_requested` field
+    /// doc for why this must win over a restart's exit code.
+    pub fn request_stop(&self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+    }
+
+    /// True once `request_stop` has been called. Checked right before every
+    /// exit point that would otherwise use a restart's exit code
+    /// (`/control`'s background task and the supervised-restart loop).
+    pub fn stop_requested(&self) -> bool {
+        self.stop_requested.load(Ordering::SeqCst)
     }
 
     /// Number of whole tool calls (MCP and bridge) currently in progress.
@@ -878,6 +906,18 @@ mod tests {
             !state.try_begin_draining(),
             "repeated calls after the first must keep returning false"
         );
+    }
+
+    #[test]
+    fn stop_requested_is_set_independently_of_try_begin_draining() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        assert!(!state.stop_requested());
+        // A restart already began draining; a later stop must still record
+        // itself even though it loses the try_begin_draining race.
+        assert!(state.try_begin_draining());
+        assert!(!state.try_begin_draining());
+        state.request_stop();
+        assert!(state.stop_requested());
     }
 
     #[test]

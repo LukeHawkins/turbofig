@@ -756,8 +756,9 @@ async fn run_daemon() {
 /// a change, stop accepting new jobs, wait up to `SUPERVISOR_DRAIN_MAX_WAIT`
 /// for in-flight jobs to finish, then exits
 /// `supervisor::SUPERVISED_RESTART_EXIT_CODE` (non-zero) so launchd's
-/// `KeepAlive: {SuccessfulExit: false}` restarts the new binary. Never
-/// returns.
+/// `KeepAlive: {SuccessfulExit: false}` restarts the new binary. Exits 0
+/// instead if a `/control` stop landed during the drain (`state.
+/// stop_requested`), so a stop always overrides a restart. Never returns.
 async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
     // The stable path (for example /opt/homebrew/bin/turbofig) never changes
     // across an upgrade. Its resolved target (the versioned Cellar binary) does.
@@ -817,7 +818,17 @@ async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
             // `KeepAlive: {SuccessfulExit: false}` (`launchd.rs`) restarts
             // the daemon only on a non-zero exit, picking up the upgraded
             // binary. See `supervisor::SUPERVISED_RESTART_EXIT_CODE`.
-            std::process::exit(turbofig::supervisor::SUPERVISED_RESTART_EXIT_CODE);
+            //
+            // Unless a `/control` stop landed while this drain was under
+            // way (`state.request_stop`, `control.rs`): a stop always
+            // overrides a restart, so exit 0 instead and leave the daemon
+            // stopped.
+            let code = if state.stop_requested() {
+                0
+            } else {
+                turbofig::supervisor::SUPERVISED_RESTART_EXIT_CODE
+            };
+            std::process::exit(code);
         }
     }
 }
