@@ -1388,4 +1388,27 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(body["ok"], json!(false));
     }
+
+    /// A malformed body must never leak past the token check: without a
+    /// valid token, a caller gets 401, never a 400/422 that would reveal the
+    /// body was even looked at. See `control::control_handler`'s body doc
+    /// comment.
+    #[tokio::test]
+    async fn control_endpoint_with_a_malformed_body_and_no_token_is_401_not_400() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/control")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("this is not json"))
+            .expect("build request");
+        let resp = router.oneshot(req).await.expect("router must respond");
+
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
 }

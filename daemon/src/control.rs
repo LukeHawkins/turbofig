@@ -73,7 +73,9 @@ pub(crate) enum ControlAction {
 ///
 /// Requires `Authorization: Bearer <pairing token>`, checked with
 /// `constant_time_eq`; a missing or wrong token gives 401 before anything
-/// else happens. On success, replies `202` with `{"ok":true,"action":...,
+/// else happens, including before the body is parsed (a malformed body from
+/// an unauthenticated caller must never leak a 400/422 instead of 401). On
+/// success, replies `202` with `{"ok":true,"action":...,
 /// "draining":true}` at once, then drains in-flight jobs (the same
 /// `wait_for_drain` logic the supervised-restart loop uses) and exits in a
 /// background task. Never logs the token, win or lose.
@@ -89,7 +91,7 @@ pub(crate) enum ControlAction {
 pub(crate) async fn control_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(req): Json<ControlRequest>,
+    body: axum::body::Bytes,
 ) -> (StatusCode, Json<Value>) {
     if !bearer_token_matches(&headers, state.token()) {
         return (
@@ -97,6 +99,21 @@ pub(crate) async fn control_handler(
             Json(json!({"ok": false, "error": "missing or invalid bearer token"})),
         );
     }
+
+    // The body is parsed only after the token check: an unauthenticated
+    // caller must never learn whether its body was well-formed (400/422
+    // instead of 401 would do that), so the request is taken as raw bytes
+    // here instead of through axum's `Json` extractor, which runs before any
+    // handler code and would parse (and reject) the body first.
+    let req: ControlRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": format!("invalid control request: {e}")})),
+            );
+        }
+    };
 
     let action = req.action;
     if action == ControlAction::Stop {
@@ -235,9 +252,7 @@ mod tests {
         let (status, Json(body)) = control_handler(
             State(state),
             headers,
-            Json(ControlRequest {
-                action: ControlAction::Restart,
-            }),
+            axum::body::Bytes::from(json!({"action": "restart"}).to_string()),
         )
         .await;
 
@@ -257,6 +272,27 @@ mod tests {
     // `assert_control_drains_and_exits`, which spawns the real compiled
     // daemon as a child process instead, precisely so that exit only ever
     // ends the child; it also asserts the 202-at-once reply added here.
+
+    #[tokio::test]
+    async fn an_authenticated_malformed_body_is_400_not_401() {
+        let state = std::sync::Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", state.token()).parse().unwrap(),
+        );
+        let (status, Json(body)) = control_handler(
+            State(state),
+            headers,
+            axum::body::Bytes::from("this is not json"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], json!(false));
+    }
 
     #[test]
     fn control_action_serializes_to_snake_case_strings() {
