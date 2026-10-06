@@ -38,7 +38,9 @@ pub fn signal_quit_running_app(home: &Path) -> std::io::Result<bool> {
     second_instance::send(&home.join("app.sock"), second_instance::SignalMessage::Quit)
 }
 
-use crate::first_run::{AppOpener, Clipboard, FakeClipboard, FakeOpener, NullClipboard};
+use crate::first_run::{AppOpener, Clipboard};
+#[cfg(debug_assertions)]
+use crate::first_run::{FakeClipboard, FakeOpener, NullClipboard};
 use about_window::{create_about_window, AboutWindowContext, AboutWindowHandle};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};

@@ -74,6 +74,7 @@ pub fn applications_dir_from_env() -> PathBuf {
 
 /// The real `~/Applications`, with no `TURBOFIG_APPLICATIONS_DIR` override
 /// applied. Used only by the debug guard below.
+#[cfg(debug_assertions)]
 fn real_applications_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
@@ -560,6 +561,7 @@ mod tests {
         std::fs::remove_dir_all(&applications_dir).ok();
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     fn install_app_bundle_refuses_the_real_applications_directory() {
         let Some(real_dir) = real_applications_dir() else {
