@@ -330,8 +330,10 @@ pub async fn wait_for_unreachable(
 }
 
 /// The testable half of `wait_for_health`: takes an explicit deadline so a
-/// test can use a short one instead of the real 5 s.
-async fn wait_for_health_with_deadline(
+/// test can use a short one instead of the real 5 s. Also used directly by
+/// `proxy::restart_for_upgrade`, which needs a much longer deadline while it
+/// waits for launchd's own relaunch of a supervised daemon.
+pub(crate) async fn wait_for_health_with_deadline(
     client: &reqwest::Client,
     mcp_port: u16,
     deadline: Duration,

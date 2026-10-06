@@ -56,6 +56,12 @@ const UNREACHABLE_DEADLINE: Duration = Duration::from_secs(65);
 /// deadlines, so a tool call still fails cleanly instead of hanging forever.
 const TOOL_CALL_BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(90);
 
+/// Longest `restart_for_upgrade` waits for launchd's own relaunch of a
+/// supervised daemon to answer `/health`, before giving up on it and
+/// spawning a new daemon itself. See `must_spawn_after_restart`'s doc
+/// comment for why this wait exists at all.
+const SUPERVISED_RELAUNCH_WAIT: Duration = Duration::from_secs(30);
+
 /// Starts the stdio MCP proxy: serves the four tools over stdio at once, so
 /// `initialize` and `tools/list` (both answered from static data, needing
 /// neither the daemon nor the token) never wait on anything. Ensuring a
@@ -171,12 +177,24 @@ async fn do_bootstrap(
     })?;
 
     let daemon_version = health["version"].as_str().unwrap_or_default();
+    // `supervised` is only on the authenticated payload (see
+    // `mcp::health_handler`'s doc comment), and the `health` fetched above
+    // is unauthenticated (the token is not read yet at that point): fetch it
+    // again, now that the token is available. A failure here (the daemon
+    // went away in between) just means "assume unsupervised", the same
+    // conservative default `restart_for_upgrade` already falls back to.
+    let daemon_supervised =
+        crate::spawn::fetch_health_with_token(&health_client, mcp_port, Some(&token))
+            .await
+            .and_then(|h| h.get("supervised").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false);
     handle_version_handoff(
         &health_client,
         mcp_port,
         &home,
         &turbofig_binary,
         daemon_version,
+        daemon_supervised,
     )
     .await?;
 
@@ -392,6 +410,7 @@ async fn handle_version_handoff(
     home: &Path,
     turbofig_binary: &Path,
     daemon_version: &str,
+    daemon_supervised: bool,
 ) -> Result<(), String> {
     let mine = own_version();
     match compare_versions(daemon_version, &mine) {
@@ -399,7 +418,14 @@ async fn handle_version_handoff(
             eprintln!(
                 "turbofig mcp: the daemon ({daemon_version}) is older than this proxy ({mine}); restarting it"
             );
-            restart_for_upgrade(health_client, mcp_port, home, turbofig_binary).await
+            restart_for_upgrade(
+                health_client,
+                mcp_port,
+                home,
+                turbofig_binary,
+                daemon_supervised,
+            )
+            .await
         }
         Some(Ordering::Greater) => {
             eprintln!(
@@ -424,16 +450,18 @@ async fn handle_version_handoff(
 ///   it, or drained past `UNREACHABLE_DEADLINE`): this logs a warning and
 ///   falls through to use whatever is still running, rather than blindly
 ///   spawning a second daemon to fight the first over the port.
-/// - This proxy's own spawn attempt may lose the port-bind race to another
-///   proxy's spawn, or (under `TURBOFIG_SUPERVISED=1`) to launchd
-///   relaunching the stable path on its own: a lost race here is silent and
-///   never surfaces as an error, since `wait_for_health` below only cares
-///   that *some* daemon answers, not which process it is.
+/// - When the old daemon was supervised (`daemon_was_supervised`, from its
+///   own `/health`), this does not race launchd's relaunch with its own
+///   spawn: it waits up to `SUPERVISED_RELAUNCH_WAIT` for `/health` to
+///   answer again on its own first, and only spawns a daemon itself as a
+///   fallback if nothing does. See `must_spawn_after_restart`'s doc comment
+///   for why racing that relaunch was a problem worth avoiding.
 async fn restart_for_upgrade(
     health_client: &reqwest::Client,
     mcp_port: u16,
     home: &Path,
     turbofig_binary: &Path,
+    daemon_was_supervised: bool,
 ) -> Result<(), String> {
     let Some(token) = crate::token::read_token_file(home).await else {
         eprintln!(
@@ -473,15 +501,51 @@ async fn restart_for_upgrade(
         return Ok(());
     }
 
-    // The old daemon is gone. Start a new one; losing this race to another
-    // proxy or to launchd is fine, see this function's doc.
-    if let Err(e) = crate::spawn::spawn_detached_daemon(turbofig_binary, home) {
-        eprintln!(
-            "turbofig mcp: could not start a new daemon after the restart ({e}); hoping another starter wins"
-        );
+    // The old daemon is gone. If it was supervised, give launchd a chance to
+    // relaunch it on its own first, rather than racing it with our own spawn
+    // (see `must_spawn_after_restart`'s doc comment for why that race was a
+    // problem).
+    let launchd_relaunch_answered = daemon_was_supervised
+        && crate::spawn::wait_for_health_with_deadline(
+            health_client,
+            mcp_port,
+            SUPERVISED_RELAUNCH_WAIT,
+        )
+        .await
+        .is_ok();
+
+    if must_spawn_after_restart(daemon_was_supervised, launchd_relaunch_answered) {
+        if daemon_was_supervised {
+            eprintln!(
+                "turbofig mcp: launchd did not relaunch the daemon within {SUPERVISED_RELAUNCH_WAIT:?}; starting one ourselves"
+            );
+        }
+        if let Err(e) = crate::spawn::spawn_detached_daemon(turbofig_binary, home) {
+            eprintln!(
+                "turbofig mcp: could not start a new daemon after the restart ({e}); hoping another starter wins"
+            );
+        }
     }
 
     crate::spawn::wait_for_health(health_client, mcp_port).await
+}
+
+/// True when `restart_for_upgrade` must spawn a new daemon itself, after the
+/// old one has gone away.
+///
+/// Before this existed, the proxy always spawned its own daemon the moment
+/// the old one went away, racing launchd's own relaunch under
+/// `TURBOFIG_SUPERVISED=1`. If this proxy's spawn won that race, `serve`'s
+/// own "already running" pre-check (`already_running_health`, `main.rs`)
+/// makes launchd's own `serve` invocation exit 0 at once, so launchd leaves
+/// the daemon stopped (`KeepAlive: {SuccessfulExit: false}`) rather than
+/// supervising it, and there is no longer any upgrade watcher
+/// (`run_supervisor_loop`) running at all. Waiting for the relaunch first
+/// avoids that outright, and only falls back to spawning when nothing
+/// answers within `SUPERVISED_RELAUNCH_WAIT`: an unsupervised daemon still
+/// needs this caller to spawn it, the same as always.
+fn must_spawn_after_restart(daemon_was_supervised: bool, launchd_relaunch_answered: bool) -> bool {
+    !daemon_was_supervised || !launchd_relaunch_answered
 }
 
 #[tool_router]
@@ -559,5 +623,30 @@ mod tests {
         assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
         assert_ne!(info.name, "rmcp");
         assert_ne!(info.version, "3.1.0");
+    }
+
+    #[test]
+    fn must_spawn_after_restart_spawns_for_an_unsupervised_daemon_regardless_of_relaunch() {
+        assert!(
+            must_spawn_after_restart(false, false),
+            "unsupervised and nothing answered: must spawn"
+        );
+        assert!(
+            must_spawn_after_restart(false, true),
+            "unsupervised, even if something happened to answer: this caller always spawns, \
+             nothing else is watching to"
+        );
+    }
+
+    #[test]
+    fn must_spawn_after_restart_waits_for_a_supervised_relaunch_before_spawning() {
+        assert!(
+            !must_spawn_after_restart(true, true),
+            "supervised and launchd already relaunched it: must not race it with our own spawn"
+        );
+        assert!(
+            must_spawn_after_restart(true, false),
+            "supervised but nothing answered within the wait: must fall back to spawning"
+        );
     }
 }

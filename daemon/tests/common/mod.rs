@@ -261,6 +261,17 @@ pub fn spawn_daemon(
 /// stderr also does. Used to test `spawn::rotate_daemon_log_and_reopen_std_streams`'s
 /// startup rotation against a pre-seeded oversize log.
 pub fn spawn_supervised_daemon(home: &Path, mcp_port: u16, ws_port: u16) -> Child {
+    spawn_supervised_daemon_with_version(home, mcp_port, ws_port, None)
+}
+
+/// Same as `spawn_supervised_daemon`, with an optional
+/// `TURBOFIG_TEST_VERSION_OVERRIDE` (see `spawn_daemon`'s doc comment).
+pub fn spawn_supervised_daemon_with_version(
+    home: &Path,
+    mcp_port: u16,
+    ws_port: u16,
+    version_override: Option<&str>,
+) -> Child {
     std::fs::create_dir_all(home).expect("create home dir");
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -269,8 +280,8 @@ pub fn spawn_supervised_daemon(home: &Path, mcp_port: u16, ws_port: u16) -> Chil
         .expect("open daemon.log");
     let log_err = log.try_clone().expect("clone log handle");
 
-    Command::new(BIN)
-        .arg("serve")
+    let mut cmd = Command::new(BIN);
+    cmd.arg("serve")
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
         .env("TURBOFIG_WS_PORT", ws_port.to_string())
         .env("TURBOFIG_BRIDGE_DIR", home)
@@ -278,9 +289,11 @@ pub fn spawn_supervised_daemon(home: &Path, mcp_port: u16, ws_port: u16) -> Chil
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_err))
-        .kill_on_drop(true)
-        .spawn()
-        .expect("spawn turbofig serve")
+        .kill_on_drop(true);
+    if let Some(v) = version_override {
+        cmd.env("TURBOFIG_TEST_VERSION_OVERRIDE", v);
+    }
+    cmd.spawn().expect("spawn turbofig serve")
 }
 
 /// Runs the `turbofig` binary with `args` to completion, pointed at

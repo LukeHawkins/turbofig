@@ -351,9 +351,11 @@ alive, without naming the open file to an unauthenticated local caller.
 With a valid token it also returns `connectedFiles` (one entry per
 connected file: `fileKey`, `name`, `pluginVersion`, and, if the plugin's
 reported version differs from the daemon's, a `warning` of `"reopen the
-turbofig plugin in Figma"`) and `pid` (`std::process::id()`). Never
-includes the pairing token itself: `connectedFiles` reuses
-`AppState::named_connections_json`, the same JSON `turbofig_status`
+turbofig plugin in Figma"`), `pid` (`std::process::id()`), and `supervised`
+(`supervisor::is_supervised()`), which `proxy::restart_for_upgrade` reads to
+decide whether to wait for launchd's own relaunch instead of racing it with
+its own spawn. Never includes the pairing token itself: `connectedFiles`
+reuses `AppState::named_connections_json`, the same JSON `turbofig_status`
 returns, so the two surfaces can never drift. `turbofig_status` gained the
 same `pluginVersion`/`warning` fields on each entry in its `plugins` list.
 

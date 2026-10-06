@@ -400,7 +400,11 @@ async fn reject_bad_host(
 /// `GET /health` response shape. Never includes the pairing token: only
 /// `version`, `uptimeSeconds`, and, when the caller is authenticated, the
 /// connected-files list (itself built by `AppState::named_connections_json`,
-/// which never reads the token either) and this process's `pid`.
+/// which never reads the token either), this process's `pid`, and
+/// `supervised` (`supervisor::is_supervised`). `restart_for_upgrade`
+/// (`proxy.rs`) reads `supervised` to decide whether to wait for launchd's
+/// own relaunch instead of racing it with its own `spawn_detached_daemon`
+/// call.
 ///
 /// A caller with no bearer token, or the wrong one, gets the reduced payload
 /// (`version` and `uptimeSeconds` only): another local account on the same
@@ -424,6 +428,7 @@ async fn health_handler(
         "uptimeSeconds": state.uptime_seconds(),
         "connectedFiles": state.named_connections_json(),
         "pid": std::process::id(),
+        "supervised": crate::supervisor::is_supervised(),
     }))
 }
 
@@ -807,6 +812,10 @@ mod tests {
         assert!(body["uptimeSeconds"].is_number());
         assert_eq!(body["connectedFiles"], serde_json::json!([]));
         assert_eq!(body["pid"], serde_json::json!(std::process::id()));
+        assert_eq!(
+            body["supervised"],
+            serde_json::json!(crate::supervisor::is_supervised())
+        );
         assert!(!bytes_contains(&bytes, token.as_bytes()));
     }
 

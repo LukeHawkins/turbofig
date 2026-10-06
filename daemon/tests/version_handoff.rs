@@ -16,7 +16,8 @@ mod common;
 
 use common::{
     fetch_health, fetch_health_with_token, free_port, handshake, spawn_daemon, spawn_proxy,
-    stdio_call_tool, stop_daemon, tool_call_status, wait_for_health, DaemonGuard,
+    spawn_supervised_daemon_with_version, stdio_call_tool, stop_daemon, tool_call_status,
+    wait_for_health, DaemonGuard,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -434,4 +435,84 @@ async fn initialize_answers_well_before_a_slow_version_handoff_drain_finishes() 
     wait_for_health(&client, mcp_port).await;
     let _new_daemon_guard = DaemonGuard::for_daemon_on(home.path(), mcp_port).await;
     plugin_task.abort();
+}
+
+// ── (e) a supervised restart waits for launchd's relaunch, not its own spawn ─
+
+/// When the old daemon was supervised, `restart_for_upgrade` must not race
+/// launchd's own relaunch with its own `spawn_detached_daemon`: it waits for
+/// `/health` to answer again on its own first. This simulates launchd's
+/// relaunch with a deliberately delayed stand-in daemon (also supervised):
+/// if the proxy raced ahead with its own (unsupervised) spawn instead of
+/// waiting, that unsupervised daemon would almost certainly win the port
+/// bind (it starts in milliseconds; the stand-in is deliberately late), and
+/// the final `/health` would report `supervised: false`.
+#[tokio::test]
+async fn a_supervised_restart_waits_for_the_relaunch_instead_of_spawning_its_own() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut old_daemon =
+        spawn_supervised_daemon_with_version(home.path(), mcp_port, ws_port, Some(OLD_VERSION));
+    wait_for_health(&client, mcp_port).await;
+    let token = tokio::fs::read_to_string(home.path().join("token"))
+        .await
+        .expect("read token");
+    let before = fetch_health_with_token(&client, mcp_port, token.trim())
+        .await
+        .expect("authenticated health");
+    assert_eq!(before["supervised"], json!(true));
+
+    // Stand in for launchd's own relaunch: wait for the old daemon to
+    // actually go away, then start a fresh supervised daemon after a short
+    // delay, deliberately slower than an immediate ad-hoc spawn would be.
+    let relaunch_home = home.path().to_path_buf();
+    let relaunch_client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let relaunch_task: tokio::task::JoinHandle<tokio::process::Child> = tokio::spawn(async move {
+        turbofig::spawn::wait_for_unreachable(
+            &relaunch_client,
+            mcp_port,
+            std::time::Duration::from_secs(65),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        spawn_supervised_daemon_with_version(&relaunch_home, mcp_port, ws_port, None)
+    });
+
+    let mut proxy = spawn_proxy(home.path(), mcp_port, ws_port, false, None);
+    let (mut writer, mut reader) = handshake(&mut proxy).await;
+    let resp = stdio_call_tool(&mut writer, &mut reader, 2, "turbofig_status", json!({})).await;
+    assert_eq!(
+        tool_call_status(&resp)["ok"],
+        json!(true),
+        "the proxy must still serve a status call once the relaunch answers: {resp}"
+    );
+
+    let status = old_daemon
+        .wait()
+        .await
+        .expect("wait for the old daemon to exit");
+    assert_eq!(
+        status.code(),
+        Some(turbofig::supervisor::SUPERVISED_RESTART_EXIT_CODE),
+        "a supervised restart must exit with the supervised restart code: {status:?}"
+    );
+
+    let mut new_daemon = relaunch_task.await.expect("relaunch task");
+
+    let after = fetch_health_with_token(&client, mcp_port, token.trim())
+        .await
+        .expect("authenticated health after the handoff");
+    assert_eq!(
+        after["supervised"],
+        json!(true),
+        "the daemon serving after the restart must be the (slower) supervised relaunch, not an \
+         unsupervised daemon the proxy spawned itself: {after}"
+    );
+
+    stop_daemon(&client, mcp_port, home.path()).await;
+    let _ = new_daemon.wait().await;
 }
