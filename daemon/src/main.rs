@@ -253,7 +253,9 @@ fn debug_real_desktop_allowed() -> bool {
 
 /// Returns the real clipboard. In a debug build, `TURBOFIG_TEST_FAKE_CLIPBOARD`
 /// names a file where a fake records the copied text instead, and without
-/// `TURBOFIG_DEV_REAL_DESKTOP=1` the copy goes nowhere. Neither escape hatch
+/// `TURBOFIG_DEV_REAL_DESKTOP=1` the copy goes nowhere and reports failure
+/// (`NullClipboard`), so the caller prints "copy the path" rather than
+/// falsely claiming the text is on the clipboard. Neither escape hatch
 /// exists in a release binary.
 fn clipboard_for_run() -> Box<dyn turbofig::first_run::Clipboard> {
     #[cfg(debug_assertions)]
@@ -262,9 +264,7 @@ fn clipboard_for_run() -> Box<dyn turbofig::first_run::Clipboard> {
             return Box::new(turbofig::first_run::FakeClipboard::new(PathBuf::from(path)));
         }
         if !debug_real_desktop_allowed() {
-            return Box::new(turbofig::first_run::FakeClipboard::new(PathBuf::from(
-                "/dev/null",
-            )));
+            return Box::new(turbofig::first_run::NullClipboard);
         }
     }
     Box::new(turbofig::first_run::RealClipboard)

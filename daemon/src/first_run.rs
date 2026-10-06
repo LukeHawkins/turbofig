@@ -58,6 +58,20 @@ impl Clipboard for FakeClipboard {
     }
 }
 
+/// A clipboard that touches nothing and always reports failure. Used in a
+/// debug build when `TURBOFIG_DEV_REAL_DESKTOP` is not set and no
+/// `TURBOFIG_TEST_FAKE_CLIPBOARD` fake is requested: the copy must go
+/// nowhere, so the caller must also be told it did not happen, and print the
+/// manifest path to copy by hand instead of claiming "it is on your
+/// clipboard".
+pub struct NullClipboard;
+
+impl Clipboard for NullClipboard {
+    fn copy(&self, _text: &str) -> bool {
+        false
+    }
+}
+
 /// Opens Figma Desktop. `RealAppOpener` shells out to `open -a Figma`; a
 /// test uses `FakeOpener` instead.
 pub trait AppOpener {
@@ -422,6 +436,11 @@ mod tests {
             std::fs::read_to_string(&record_path).expect("read record"),
             "/tmp/manifest.json"
         );
+    }
+
+    #[test]
+    fn null_clipboard_always_reports_failure() {
+        assert!(!NullClipboard.copy("/tmp/manifest.json"));
     }
 
     #[test]
