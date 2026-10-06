@@ -10,7 +10,9 @@
          (plugin/src/ui/template.html). This window is native, not hosted
          inside Figma, so there is no --figma-color-* injection: light
          values are the same fallbacks the plugin uses, dark values are
-         set explicitly below via prefers-color-scheme. */
+         set explicitly below via prefers-color-scheme. One spacing scale
+         (--sp-1..--sp-5), at most 2 text sizes plus the wordmark
+         (--fs-sm body, --fs-xs muted/small; --fs-lg is the wordmark only). */
       :root {
         --bg: #ffffff;
         --bg-secondary: #f5f5f5;
@@ -31,8 +33,7 @@
 
         --fs-xs: 12px;
         --fs-sm: 14px;
-        --fs-md: 16px;
-        --fs-lg: 20px;
+        --fs-lg: 22px;
 
         --ff-display: "Inter", "Space Grotesk", Arial, sans-serif;
         --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
@@ -73,16 +74,24 @@
         padding: var(--sp-4);
         display: flex;
         flex-direction: column;
-        gap: var(--sp-3);
+        gap: var(--sp-4);
+        text-align: left;
       }
 
-      /* === HEADER (reuses .wordmark's ghost-trail trick) ================ */
+      /* === HEADER (reuses .wordmark's ghost-trail trick, contained to its
+         own line so the trail never overlaps anything else). ============ */
       .header {
         display: flex;
-        align-items: baseline;
-        gap: var(--sp-2);
-        padding-bottom: var(--sp-2);
-        border-bottom: 1px solid var(--border);
+        flex-direction: column;
+        gap: var(--sp-1);
+      }
+
+      .wordmark-row {
+        /* Reserves room for the ghost trail (its text-shadow extends about
+           40px past the glyph edges) so it never clips or overlaps the row
+           below it. */
+        padding-right: var(--sp-5);
+        overflow: visible;
       }
 
       .wordmark {
@@ -99,46 +108,47 @@
           32px 0 0 color-mix(in srgb, var(--text) 4%, transparent);
       }
 
-      .header-version {
-        font-size: var(--fs-xs);
-        color: var(--text-secondary);
-        opacity: 0.7;
-      }
-
       .tagline {
         margin: 0;
         font-size: var(--fs-xs);
         color: var(--text-secondary);
       }
 
-      /* === STATUS CHIPS =================================================== */
-      .chips {
+      /* === STATUS: 1 quiet line, 2 small dots ============================ */
+      .status-line {
         display: flex;
-        gap: var(--sp-2);
-      }
-
-      .chip {
+        align-items: center;
+        gap: var(--sp-4);
         font-size: var(--fs-xs);
-        padding: var(--sp-1) var(--sp-2);
-        border-radius: 999px;
-        border: 1px solid var(--border);
         color: var(--text-secondary);
       }
 
-      .chip.chip-ok {
-        color: var(--c-connected);
-        border-color: var(--c-connected);
+      .status-item {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-1);
       }
 
-      .chip.chip-off {
-        color: var(--c-offline);
-        border-color: var(--c-offline);
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--text-secondary);
+        flex-shrink: 0;
+      }
+
+      .dot.dot-ok {
+        background: var(--c-connected);
+      }
+
+      .dot.dot-off {
+        background: var(--c-offline);
       }
 
       /* === TABS =========================================================== */
       .tab-bar {
         display: flex;
-        gap: var(--sp-3);
+        gap: var(--sp-4);
         border-bottom: 1px solid var(--border);
       }
 
@@ -169,24 +179,17 @@
         display: flex;
       }
 
-      /* === STEPS ========================================================= */
+      /* === STEPS (tab 1: "How to use") =================================== */
       .step {
         display: flex;
         flex-direction: column;
-        gap: var(--sp-2);
+        gap: var(--sp-1);
       }
 
       .step-title {
-        display: flex;
-        align-items: center;
-        gap: var(--sp-2);
+        margin: 0;
         font-size: var(--fs-sm);
         font-weight: 600;
-      }
-
-      .step-check {
-        display: none;
-        color: var(--c-connected);
       }
 
       .step-hint {
@@ -197,10 +200,24 @@
 
       .step-actions {
         display: flex;
-        gap: var(--sp-2);
+        align-items: center;
+        gap: var(--sp-3);
+        margin-top: var(--sp-1);
       }
 
-      /* === BUTTONS ======================================================= */
+      .step2-state {
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+        display: flex;
+        align-items: center;
+        gap: var(--sp-1);
+      }
+
+      .step2-state.connected {
+        color: var(--c-connected);
+      }
+
+      /* === BUTTONS: quiet secondary by default, 1 primary per task ======== */
       .btn {
         font-family: var(--ff-body);
         font-size: var(--fs-xs);
@@ -212,13 +229,29 @@
         color: var(--icon);
       }
 
-      .btn-brand {
+      .btn-primary {
         background: var(--bg-brand);
         border: none;
         color: var(--text-onbrand);
       }
 
-      /* === CODE BLOCKS =================================================== */
+      .text-link {
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: var(--ff-body);
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
+
+      .text-link:hover {
+        color: var(--text);
+      }
+
+      /* === CODE BLOCKS (tab 2: "Claude Code / MCP") ======================= */
       .code-row {
         display: flex;
         align-items: center;
@@ -243,7 +276,7 @@
         color: var(--text-secondary);
       }
 
-      /* === FOOTER ========================================================= */
+      /* === FOOTER: only Docs and the version ============================= */
       .footer {
         margin-top: auto;
         display: flex;
@@ -252,19 +285,7 @@
         padding-top: var(--sp-2);
         border-top: 1px solid var(--border);
         font-size: var(--fs-xs);
-      }
-
-      .footer-left {
-        display: flex;
-        align-items: center;
-        gap: var(--sp-2);
         color: var(--text-secondary);
-      }
-
-      .footer-right {
-        display: flex;
-        align-items: center;
-        gap: var(--sp-4);
       }
 
       .link {
@@ -276,30 +297,19 @@
       .link:hover {
         color: var(--text);
       }
-
-      .danger-link {
-        background: none;
-        border: none;
-        color: var(--c-offline);
-        font-family: var(--ff-body);
-        font-size: var(--fs-xs);
-        cursor: pointer;
-        padding: 0;
-        text-decoration: underline;
-        text-underline-offset: 2px;
-      }
     </style>
   </head>
   <body>
     <header class="header">
-      <span class="wordmark">turbofig</span>
-      <span class="header-version">v<span id="version-text"></span></span>
+      <div class="wordmark-row">
+        <span class="wordmark">turbofig</span>
+      </div>
+      <p class="tagline">Bridge any AI to Figma</p>
     </header>
-    <p class="tagline">Bridge any AI to Figma</p>
 
-    <div class="chips">
-      <span id="chip-bridge" class="chip">Bridge not running</span>
-      <span id="chip-figma" class="chip">waiting</span>
+    <div class="status-line">
+      <span class="status-item"><span id="dot-bridge" class="dot"></span><span id="text-bridge">Bridge not running</span></span>
+      <span class="status-item"><span id="dot-figma" class="dot"></span><span id="text-figma">waiting</span></span>
     </div>
 
     <div class="tab-bar" role="tablist">
@@ -309,28 +319,26 @@
 
     <section id="tab-howto" class="tab-panel active">
       <div class="step">
-        <p class="step-title">1. Add the turbofig plugin to Figma (once)</p>
+        <p class="step-title">1. Add the plugin to Figma</p>
+        <p class="step-hint">Figma &gt; Plugins &gt; Development &gt; Import plugin from manifest, then drag manifest.json in.</p>
         <div class="step-actions">
-          <button class="btn" type="button" data-ipc="copy_manifest_path">Copy manifest path</button>
-          <button class="btn" type="button" data-ipc="reveal_manifest">Show in Finder</button>
-          <button class="btn" type="button" data-ipc="open_figma">Open Figma</button>
+          <button class="btn" type="button" data-ipc="reveal_manifest">Show plugin in Finder</button>
         </div>
-        <p class="step-hint">In Figma choose Plugins &gt; Development &gt; Import plugin from manifest&hellip;, then drag manifest.json from the Finder window onto the dialog (or press Cmd+Shift+G and paste the path).</p>
+        <button class="text-link" type="button" data-ipc="copy_manifest_path">Copy path</button>
       </div>
 
       <div class="step">
-        <p class="step-title">
-          2. Run turbofig in your Figma file
-          <span id="step2-check" class="step-check" aria-hidden="true">&check;</span>
-        </p>
+        <p class="step-title">2. Run it in your file</p>
+        <p class="step-hint">Plugins &gt; Development &gt; turbofig.</p>
+        <p id="step2-state" class="step2-state">Waiting&hellip;</p>
       </div>
 
       <div class="step">
-        <p class="step-title">3. Ask your agent</p>
+        <p class="step-title">3. Connect your agent</p>
         <div class="step-actions">
-          <button class="btn btn-brand" type="button" data-ipc="copy_agent_prompt">Copy agent prompt</button>
+          <button class="btn btn-primary" type="button" data-ipc="copy_agent_prompt">Copy agent prompt</button>
         </div>
-        <p class="step-hint">Paste it into Claude Code, Cursor, Copilot or any agent.</p>
+        <p class="step-hint">Paste it into Claude Code, Cursor or any agent.</p>
       </div>
     </section>
 
@@ -351,23 +359,26 @@
         </div>
       </div>
 
-      <p class="fallback-note">Blocked by your company? Use the How to use tab, it works everywhere.</p>
+      <p class="fallback-note">Blocked by your company? Use How to use, it works everywhere.</p>
     </section>
 
     <div class="footer">
-      <div class="footer-left">
-        <label>
-          <input id="start-at-login" type="checkbox" />
-          Start at login
-        </label>
-      </div>
-      <div class="footer-right">
-        <a id="docs-link" class="link" href="https://github.com/LukeHawkins/turbofig" data-ipc="open_docs">Docs</a>
-        <button class="danger-link" type="button" data-ipc="quit">Quit Turbofig</button>
-      </div>
+      <a id="docs-link" class="link" href="https://github.com/LukeHawkins/turbofig" data-ipc="open_docs">Docs</a>
+      <span id="version-text"></span>
     </div>
 
     <script>
+      /* A tiny pending-state shim, defined before this page's own script
+         below runs. If Rust's initial `evaluate_script` call races the
+         page load (fires before this <script> block has defined the real
+         `turbofigSetStatus`/`turbofigSetStatic` below), the stub installed
+         by `with_initialization_script` (see `about_window.rs`) records the
+         call instead of failing silently; the real functions below drain it
+         once on first run. Rust also re-pushes the latest status itself
+         once this page signals `page_ready` (belt and braces: see
+         `about_window::handle_ipc_message`'s `PageReady` arm). */
+      window.__tfPending = window.__tfPending || { status: null, static: null };
+
       function ipc(cmd) {
         window.ipc.postMessage(cmd);
       }
@@ -377,11 +388,6 @@
           if (el.tagName === "A") event.preventDefault();
           ipc(el.getAttribute("data-ipc"));
         });
-      });
-
-      var startAtLoginEl = document.getElementById("start-at-login");
-      startAtLoginEl.addEventListener("change", function () {
-        ipc(startAtLoginEl.checked ? "start_at_login_on" : "start_at_login_off");
       });
 
       document.querySelectorAll(".tab-btn").forEach(function (btn) {
@@ -397,34 +403,45 @@
         });
       });
 
-      /* Called from Rust (WebView::evaluate_script) after every health poll
-         and once at window creation. figmaConnected drives the step-2
-         checkmark; bridgeRunning and figmaChipText are already-formatted
-         text (see menu_bar::about_state::chips_from_connected_files). */
+      /* Called from Rust (WebView::evaluate_script) after every health poll,
+         once at window creation, and again on `page_ready`. figmaConnected
+         drives step 2's state; bridgeRunning and figmaChipText are
+         already-formatted text (see
+         menu_bar::about_state::chips_from_connected_files). */
       window.turbofigSetStatus = function (bridgeRunning, figmaChipText, figmaConnected) {
-        var bridgeEl = document.getElementById("chip-bridge");
-        bridgeEl.textContent = bridgeRunning ? "Bridge running" : "Bridge not running";
-        bridgeEl.classList.toggle("chip-ok", bridgeRunning);
-        bridgeEl.classList.toggle("chip-off", !bridgeRunning);
+        var dotBridge = document.getElementById("dot-bridge");
+        document.getElementById("text-bridge").textContent = bridgeRunning
+          ? "Bridge running"
+          : "Bridge not running";
+        dotBridge.classList.toggle("dot-ok", bridgeRunning);
+        dotBridge.classList.toggle("dot-off", !bridgeRunning);
 
-        var figmaEl = document.getElementById("chip-figma");
-        figmaEl.textContent = figmaChipText;
-        figmaEl.classList.toggle("chip-ok", figmaConnected);
-        figmaEl.classList.toggle("chip-off", !figmaConnected);
+        var dotFigma = document.getElementById("dot-figma");
+        document.getElementById("text-figma").textContent = figmaChipText;
+        dotFigma.classList.toggle("dot-ok", figmaConnected);
+        dotFigma.classList.toggle("dot-off", !figmaConnected);
 
-        var check = document.getElementById("step2-check");
-        check.style.display = figmaConnected ? "inline" : "none";
+        var step2 = document.getElementById("step2-state");
+        step2.textContent = figmaConnected
+          ? "✓ " + figmaChipText.replace("Figma plugin connected: ", "Connected to ")
+          : "Waiting…";
+        step2.classList.toggle("connected", figmaConnected);
       };
 
-      /* Called once from Rust at window creation. startAtLoginChecked
-         reflects cli::app_autostart_plist_exists at open time; the
-         checkbox itself is the one source of truth after that until the
-         window is reopened. */
-      window.turbofigSetStatic = function (version, mcpJson, startAtLoginChecked) {
-        document.getElementById("version-text").textContent = version;
+      /* Called once from Rust at window creation, and again on
+         `page_ready`. */
+      window.turbofigSetStatic = function (version, mcpJson) {
+        document.getElementById("version-text").textContent = "v" + version;
         document.getElementById("mcp-json").textContent = mcpJson;
-        startAtLoginEl.checked = startAtLoginChecked;
       };
+
+      if (window.__tfPending.static) {
+        window.turbofigSetStatic.apply(null, window.__tfPending.static);
+      }
+      if (window.__tfPending.status) {
+        window.turbofigSetStatus.apply(null, window.__tfPending.status);
+      }
+      ipc("page_ready");
     </script>
   </body>
 </html>

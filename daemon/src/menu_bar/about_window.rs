@@ -8,8 +8,11 @@
 //! suite calls any function here that builds a real window.
 
 use super::about_state::{chips_from_connected_files, parse_ipc_command, IpcCommand};
+use super::activate::activate_app_and_focus;
 use super::{clipboard_for_app, opener_for_app, MenuState};
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
@@ -21,18 +24,49 @@ use wry::{WebView, WebViewBuilder};
 /// exactly that).
 const ABOUT_HTML: &str = include_str!("../../assets/about/about.html");
 
+/// Installed with `with_initialization_script`, so it runs before the
+/// page's own `<script>` tag: a tiny pending-state shim. If Rust calls
+/// `evaluate_script("window.turbofigSetStatus(...)")` before the page's own
+/// script has replaced these stubs with the real DOM-touching versions (a
+/// real race: the page is a same-process `include_str!`, not a network
+/// load, but WebKit still parses/runs it asynchronously relative to
+/// `WebView::evaluate_script`), the call is recorded in `__tfPending`
+/// instead of throwing on an undefined function and being lost. The page's
+/// own script drains `__tfPending` once, the first time it runs (see
+/// `about.html`); `handle_ipc_message`'s `PageReady` arm also re-pushes
+/// Rust's own latest status as a second, independent safety net.
+const PENDING_STATE_SHIM: &str = r#"
+window.__tfPending = { status: null, static: null };
+window.turbofigSetStatus = function () {
+  window.__tfPending.status = Array.prototype.slice.call(arguments);
+};
+window.turbofigSetStatic = function () {
+  window.__tfPending.static = Array.prototype.slice.call(arguments);
+};
+"#;
+
 /// The GitHub repo, also the docs destination for "Docs" and the IPC
 /// `open_docs` command.
 const DOCS_URL: &str = "https://github.com/LukeHawkins/turbofig";
 
 /// Everything the IPC handler and the navigation handler need, owned by the
-/// closures `create_about_window` builds. Cloned (cheaply: an `Arc`/`PathBuf`
-/// each) into both.
+/// closures `create_about_window` builds. Cloned (cheaply: an `Arc`/`Rc`/
+/// `PathBuf` each) into both.
 #[derive(Clone)]
 pub struct AboutWindowContext {
     pub home: PathBuf,
-    pub mcp_port: u16,
     pub current_state: Arc<Mutex<MenuState>>,
+    /// The latest `/health` body the background poller saw (`None` if the
+    /// daemon has never answered), kept by `mod.rs`. Read by the
+    /// `PageReady` IPC arm to re-push the real status after a possible lost
+    /// race (see `PENDING_STATE_SHIM`).
+    pub last_health: Rc<RefCell<Option<serde_json::Value>>>,
+    /// The open About window, if any, set by `mod.rs` right after
+    /// `create_about_window` returns. The `PageReady` IPC arm reads through
+    /// this (rather than closing over a `webview` directly) since the
+    /// window does not exist yet at the moment this context's closures are
+    /// first built.
+    pub handle: Rc<RefCell<Option<AboutWindowHandle>>>,
 }
 
 /// Holds the window and webview alive for as long as the About window
@@ -48,14 +82,17 @@ pub struct AboutWindowHandle {
 
 impl AboutWindowHandle {
     /// Brings the window to the front, e.g. when "About Turbofig…" is
-    /// clicked again, or a second instance signals this one.
+    /// clicked again, or a second instance signals this one. Activates the
+    /// app first: under `ActivationPolicy::Accessory` a plain
+    /// `set_focus()` alone can leave the window non-key, so the Figma-side
+    /// symptom this fixes is a tab (or any other) click silently doing
+    /// nothing the first time the window is shown (see `activate.rs`).
     pub fn focus(&self) {
-        self.window.set_visible(true);
-        self.window.set_focus();
+        activate_app_and_focus(&self.window);
     }
 
     /// Pushes a fresh status update into the page (`window.turbofigSetStatus`):
-    /// the 2 chips and whether the step-2 checkmark should show.
+    /// the 2 status texts and whether the step-2 checkmark should show.
     pub fn push_status(&self, bridge_reachable: bool, connected_file_names: &[String]) {
         let chips = chips_from_connected_files(bridge_reachable, connected_file_names);
         let figma_connected = !connected_file_names.is_empty();
@@ -64,6 +101,18 @@ impl AboutWindowHandle {
             bridge_reachable,
             serde_json::to_string(&chips.figma_chip).unwrap_or_else(|_| "\"waiting\"".to_owned()),
             figma_connected,
+        );
+        let _ = self.webview.evaluate_script(&script);
+    }
+
+    /// Pushes the static (version + MCP json) fields. Split out of window
+    /// creation so the `PageReady` IPC arm can re-push it under the same
+    /// rule `push_status` already follows.
+    fn push_static(&self, version: &str, mcp_json: &str) {
+        let script = format!(
+            "window.turbofigSetStatic && window.turbofigSetStatic({}, {});",
+            serde_json::to_string(version).unwrap_or_else(|_| "\"\"".to_owned()),
+            serde_json::to_string(mcp_json).unwrap_or_else(|_| "\"\"".to_owned()),
         );
         let _ = self.webview.evaluate_script(&script);
     }
@@ -96,7 +145,9 @@ fn mcp_json() -> String {
 /// Builds the About window: a 420x520, non-resizable, titled "Turbofig"
 /// window hosting a webview over `ABOUT_HTML`, wired to the given IPC
 /// command set and a navigation handler that blocks every navigation away
-/// from the embedded page.
+/// from the embedded page. Activates the app and focuses the window once
+/// built (see `AboutWindowHandle::focus`), and enables the Web Inspector in
+/// debug builds so the owner can debug the embedded page directly.
 pub fn create_about_window<T: 'static>(
     target: &EventLoopWindowTarget<T>,
     ctx: AboutWindowContext,
@@ -113,6 +164,8 @@ pub fn create_about_window<T: 'static>(
 
     let webview = WebViewBuilder::new()
         .with_html(ABOUT_HTML)
+        .with_initialization_script(PENDING_STATE_SHIM)
+        .with_devtools(cfg!(debug_assertions))
         .with_ipc_handler(move |req: wry::http::Request<String>| {
             handle_ipc_message(req.body(), &ipc_ctx);
         })
@@ -121,24 +174,15 @@ pub fn create_about_window<T: 'static>(
         .map_err(|e| format!("could not create the webview: {e}"))?;
 
     let handle = AboutWindowHandle { window, webview };
-
-    let version = env!("CARGO_PKG_VERSION");
-    let start_at_login_checked =
-        crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env());
-    let script = format!(
-        "window.turbofigSetStatic && window.turbofigSetStatic({}, {}, {});",
-        serde_json::to_string(version).unwrap_or_else(|_| "\"\"".to_owned()),
-        serde_json::to_string(&mcp_json()).unwrap_or_else(|_| "\"\"".to_owned()),
-        start_at_login_checked,
-    );
-    let _ = handle.webview.evaluate_script(&script);
+    handle.push_static(env!("CARGO_PKG_VERSION"), &mcp_json());
+    handle.focus();
 
     Ok(handle)
 }
 
 /// Dispatches one parsed IPC command. An unparseable message is dropped
 /// silently (see `about_state::parse_ipc_command`): the embedded page only
-/// ever sends the 10 known commands, so anything else getting through would
+/// ever sends the 6 known commands, so anything else getting through would
 /// mean the page itself was tampered with, not a case worth acting on.
 fn handle_ipc_message(raw: &str, ctx: &AboutWindowContext) {
     let Some(command) = parse_ipc_command(raw) else {
@@ -152,9 +196,6 @@ fn handle_ipc_message(raw: &str, ctx: &AboutWindowContext) {
         IpcCommand::RevealManifest => {
             let manifest_path = ctx.home.join("figma-plugin").join("manifest.json");
             opener_for_app().reveal_in_finder(&manifest_path);
-        }
-        IpcCommand::OpenFigma => {
-            opener_for_app().open_figma();
         }
         IpcCommand::CopyAgentPrompt => {
             if let Ok(guard) = ctx.current_state.lock() {
@@ -170,17 +211,18 @@ fn handle_ipc_message(raw: &str, ctx: &AboutWindowContext) {
         IpcCommand::OpenDocs => {
             opener_for_app().open_url(DOCS_URL);
         }
-        IpcCommand::Quit => {
-            super::perform_quit(&ctx.home, ctx.mcp_port);
-        }
-        IpcCommand::StartAtLoginOn => {
-            if let Err(e) = super::set_start_at_login(true, &ctx.home) {
-                eprintln!("turbofig: Start at Login -> true failed: {e}");
-            }
-        }
-        IpcCommand::StartAtLoginOff => {
-            if let Err(e) = super::set_start_at_login(false, &ctx.home) {
-                eprintln!("turbofig: Start at Login -> false failed: {e}");
+        IpcCommand::PageReady => {
+            // Belt and braces alongside `PENDING_STATE_SHIM`: re-push
+            // whatever Rust currently holds, in case the very first push
+            // (at window creation, or an in-flight health poll) raced the
+            // page load badly enough that even the JS-side shim missed it
+            // (e.g. `evaluate_script` ran before the webview had any
+            // document at all to run it against).
+            if let Some(handle) = ctx.handle.borrow().as_ref() {
+                let health = ctx.last_health.borrow();
+                let names = super::state::connected_file_names_from_health(health.as_ref());
+                handle.push_status(health.is_some(), &names);
+                handle.push_static(env!("CARGO_PKG_VERSION"), &mcp_json());
             }
         }
     }

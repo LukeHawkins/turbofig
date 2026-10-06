@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Turbofig Settings</title>
+    <style>
+      /* Same token scheme as about.html (daemon/assets/about/about.html):
+         kept as 2 separate literals on purpose, not a shared include, since
+         each page is `include_str!`'d standalone (see `settings_window.rs`,
+         `about_window.rs`). */
+      :root {
+        --bg: #ffffff;
+        --bg-secondary: #f5f5f5;
+        --bg-brand: #0d99ff;
+        --text: #1a1a1a;
+        --text-secondary: #6b6b6b;
+        --text-onbrand: #ffffff;
+        --border: #e6e6e6;
+        --icon: #333333;
+
+        --sp-1: 4px;
+        --sp-2: 8px;
+        --sp-3: 12px;
+        --sp-4: 16px;
+
+        --fs-xs: 12px;
+        --fs-sm: 14px;
+
+        --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e1e1e;
+          --bg-secondary: #2a2a2a;
+          --text: #f2f2f2;
+          --text-secondary: #a3a3a3;
+          --border: #3a3a3a;
+          --icon: #d4d4d4;
+        }
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        font-family: var(--ff-body);
+        font-size: var(--fs-sm);
+        line-height: 1.5;
+        color: var(--text);
+        background: var(--bg);
+        margin: 0;
+        padding: var(--sp-4);
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-4);
+        text-align: left;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+
+      .row-label {
+        font-size: var(--fs-sm);
+      }
+
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 34px;
+        height: 20px;
+        flex-shrink: 0;
+      }
+
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .switch-track {
+        position: absolute;
+        inset: 0;
+        background: var(--border);
+        border-radius: 999px;
+        transition: background 0.15s;
+      }
+
+      .switch-track::before {
+        content: "";
+        position: absolute;
+        width: 16px;
+        height: 16px;
+        left: 2px;
+        top: 2px;
+        background: #ffffff;
+        border-radius: 50%;
+        transition: transform 0.15s;
+      }
+
+      .switch input:checked + .switch-track {
+        background: var(--bg-brand);
+      }
+
+      .switch input:checked + .switch-track::before {
+        transform: translateX(14px);
+      }
+
+      .btn {
+        font-family: var(--ff-body);
+        font-size: var(--fs-xs);
+        padding: var(--sp-1) var(--sp-3);
+        border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--icon);
+        text-align: left;
+      }
+
+      .text-link {
+        background: none;
+        border: none;
+        padding: 0;
+        font-family: var(--ff-body);
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
+
+      .text-link:hover {
+        color: var(--text);
+      }
+
+      .footer-line {
+        margin-top: auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-top: var(--sp-2);
+        border-top: 1px solid var(--border);
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <span class="row-label">Start at login</span>
+      <label class="switch">
+        <input id="start-at-login" type="checkbox" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+
+    <button class="btn" type="button" data-ipc="copy_manifest_path">Copy plugin manifest path</button>
+    <button class="btn" type="button" data-ipc="open_plugin_folder">Open plugin folder</button>
+
+    <div class="footer-line">
+      <span id="version-text"></span>
+      <button class="text-link" type="button" data-ipc="open_log">Open log</button>
+    </div>
+
+    <script>
+      /* The same pending-state shim as about.html (see that file's own
+         script for the full explanation); `with_initialization_script`
+         (`settings_window.rs`) installs the stub before this runs. */
+      window.__tfPending = window.__tfPending || { status: null, static: null };
+
+      function ipc(cmd) {
+        window.ipc.postMessage(cmd);
+      }
+
+      document.querySelectorAll("[data-ipc]").forEach(function (el) {
+        el.addEventListener("click", function () {
+          ipc(el.getAttribute("data-ipc"));
+        });
+      });
+
+      var startAtLoginEl = document.getElementById("start-at-login");
+      startAtLoginEl.addEventListener("change", function () {
+        ipc(startAtLoginEl.checked ? "start_at_login_on" : "start_at_login_off");
+      });
+
+      /* Called once from Rust at window creation, and again on
+         `page_ready` (see `settings_window::handle_ipc_message`'s
+         `PageReady` arm). */
+      window.turbofigSetStatic = function (version, startAtLoginChecked) {
+        document.getElementById("version-text").textContent = "v" + version;
+        startAtLoginEl.checked = startAtLoginChecked;
+      };
+
+      if (window.__tfPending.static) {
+        window.turbofigSetStatic.apply(null, window.__tfPending.static);
+      }
+      ipc("page_ready");
+    </script>
+  </body>
+</html>

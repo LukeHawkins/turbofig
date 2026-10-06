@@ -47,3 +47,9 @@ tower = { version = "0.5", features = ["util"] }
 tray-icon = "0.26"
 tao = "0.37"
 wry = "0.57"
+# Only for `menu_bar::activate`'s `activateIgnoringOtherApps` call (tao
+# exposes no public API for it): pinned to the exact versions already in
+# the lockfile as transitive deps of `tao`/`wry`, so this adds no new
+# version to resolve.
+objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSApplication", "NSResponder"] }

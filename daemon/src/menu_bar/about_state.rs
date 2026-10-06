@@ -6,27 +6,29 @@
 
 use std::path::Path;
 
-/// The 10 commands the About window's webview may send over IPC
+/// The 6 commands the About window's webview may send over IPC
 /// (`window.ipc.postMessage("<command>")`). Anything else is rejected by
-/// `parse_ipc_command`, never dispatched.
+/// `parse_ipc_command`, never dispatched. "Start at login" and "Quit" moved
+/// to the tray menu / Settings window (`settings_state::IpcCommand`);
+/// "Open Figma" was removed entirely (see `ARCHITECTURE.md`'s About-window
+/// entry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcCommand {
     CopyManifestPath,
-    OpenFigma,
     CopyAgentPrompt,
     CopyMcpCommand,
     CopyMcpJson,
     OpenDocs,
-    Quit,
-    /// The footer "Start at login" checkbox was checked.
-    StartAtLoginOn,
-    /// The footer "Start at login" checkbox was unchecked.
-    StartAtLoginOff,
     /// "Show in Finder": reveals the plugin manifest (`open -R`).
     RevealManifest,
+    /// The page's own script has finished running and defined the real
+    /// `window.turbofigSetStatus`/`turbofigSetStatic`: re-push whatever
+    /// status Rust currently holds, in case an earlier push raced the page
+    /// load and was lost (see `about_window::handle_ipc_message`).
+    PageReady,
 }
 
-/// Parses a raw IPC message into one of the 10 known commands. Returns
+/// Parses a raw IPC message into one of the 6 known commands. Returns
 /// `None` for anything else at all: an unknown command, extra whitespace, a
 /// different case, or a non-command payload. The About window's IPC handler
 /// silently drops a `None`, so a stray or malformed message can never
@@ -34,15 +36,12 @@ pub enum IpcCommand {
 pub fn parse_ipc_command(raw: &str) -> Option<IpcCommand> {
     match raw {
         "copy_manifest_path" => Some(IpcCommand::CopyManifestPath),
-        "open_figma" => Some(IpcCommand::OpenFigma),
         "copy_agent_prompt" => Some(IpcCommand::CopyAgentPrompt),
         "copy_mcp_command" => Some(IpcCommand::CopyMcpCommand),
         "copy_mcp_json" => Some(IpcCommand::CopyMcpJson),
         "open_docs" => Some(IpcCommand::OpenDocs),
-        "quit" => Some(IpcCommand::Quit),
-        "start_at_login_on" => Some(IpcCommand::StartAtLoginOn),
-        "start_at_login_off" => Some(IpcCommand::StartAtLoginOff),
         "reveal_manifest" => Some(IpcCommand::RevealManifest),
+        "page_ready" => Some(IpcCommand::PageReady),
         _ => None,
     }
 }
@@ -93,12 +92,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_ipc_command_accepts_all_10_commands() {
+    fn parse_ipc_command_accepts_all_6_commands() {
         assert_eq!(
             parse_ipc_command("copy_manifest_path"),
             Some(IpcCommand::CopyManifestPath)
         );
-        assert_eq!(parse_ipc_command("open_figma"), Some(IpcCommand::OpenFigma));
         assert_eq!(
             parse_ipc_command("copy_agent_prompt"),
             Some(IpcCommand::CopyAgentPrompt)
@@ -112,19 +110,19 @@ mod tests {
             Some(IpcCommand::CopyMcpJson)
         );
         assert_eq!(parse_ipc_command("open_docs"), Some(IpcCommand::OpenDocs));
-        assert_eq!(parse_ipc_command("quit"), Some(IpcCommand::Quit));
-        assert_eq!(
-            parse_ipc_command("start_at_login_on"),
-            Some(IpcCommand::StartAtLoginOn)
-        );
-        assert_eq!(
-            parse_ipc_command("start_at_login_off"),
-            Some(IpcCommand::StartAtLoginOff)
-        );
         assert_eq!(
             parse_ipc_command("reveal_manifest"),
             Some(IpcCommand::RevealManifest)
         );
+        assert_eq!(parse_ipc_command("page_ready"), Some(IpcCommand::PageReady));
+    }
+
+    #[test]
+    fn parse_ipc_command_rejects_commands_moved_elsewhere_or_removed() {
+        assert_eq!(parse_ipc_command("open_figma"), None);
+        assert_eq!(parse_ipc_command("start_at_login_on"), None);
+        assert_eq!(parse_ipc_command("start_at_login_off"), None);
+        assert_eq!(parse_ipc_command("quit"), None);
     }
 
     #[test]

@@ -16,11 +16,14 @@
 
 mod about_state;
 mod about_window;
+mod activate;
 mod icon;
 mod lock;
 mod quit;
 mod second_instance;
 mod self_update;
+mod settings_state;
+mod settings_window;
 mod state;
 
 pub use lock::{try_acquire, AppLock};
@@ -42,6 +45,7 @@ use crate::first_run::{AppOpener, Clipboard};
 #[cfg(debug_assertions)]
 use crate::first_run::{FakeClipboard, FakeOpener, NullClipboard};
 use about_window::{create_about_window, AboutWindowContext, AboutWindowHandle};
+use settings_window::{create_settings_window, SettingsWindowContext, SettingsWindowHandle};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -50,7 +54,7 @@ use std::time::Duration;
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopWindowTarget};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::TrayIconBuilder;
 
 /// How often the background poller refetches `/health`.
@@ -166,48 +170,36 @@ enum UserEvent {
 }
 
 /// Builds the static part of the menu (every item, in the exact documented
-/// order) and returns handles to the 3 that change after construction: the
-/// status line, the tray icon's menu itself (so `mod.rs` can hand it to the
-/// tray builder), and the ids needed to dispatch clicks.
+/// order) and returns handles to the ones that change or that `mod.rs`
+/// dispatches clicks against: the status line, the tray icon's menu itself
+/// (so `mod.rs` can hand it to the tray builder), and the item ids.
+///
+/// The menu is exactly: the disabled status line, a separator, "About
+/// Turbofig…", "Settings…", a separator, "Quit Turbofig". Every other
+/// action (copying the agent prompt or the manifest path, revealing the
+/// plugin in Finder, opening Figma, Start at Login, Open Log) moved into
+/// the About or Settings window; "Open Figma" was removed entirely. See
+/// `ARCHITECTURE.md`'s "Menu-bar app" section.
 struct MenuHandles {
     menu: Menu,
     status_item: MenuItem,
-    copy_prompt_item: MenuItem,
-    copy_manifest_item: MenuItem,
-    reveal_manifest_item: MenuItem,
-    open_figma_item: MenuItem,
     about_item: MenuItem,
-    start_at_login_item: CheckMenuItem,
-    open_log_item: MenuItem,
+    settings_item: MenuItem,
     quit_item: MenuItem,
 }
 
-fn build_menu(header: &str, status_text: &str, start_at_login_checked: bool) -> MenuHandles {
+fn build_menu(status_text: &str) -> MenuHandles {
     let menu = Menu::new();
-    let header_item = MenuItem::new(header, false, None);
     let status_item = MenuItem::new(status_text, false, None);
-    let copy_prompt_item = MenuItem::new("Copy Agent Prompt", true, None);
-    let copy_manifest_item = MenuItem::new("Copy Plugin Manifest Path", true, None);
-    let reveal_manifest_item = MenuItem::new("Show Plugin in Finder", true, None);
-    let open_figma_item = MenuItem::new("Open Figma", true, None);
     let about_item = MenuItem::new("About Turbofig\u{2026}", true, None);
-    let start_at_login_item =
-        CheckMenuItem::new("Start at Login", true, start_at_login_checked, None);
-    let open_log_item = MenuItem::new("Open Log", true, None);
+    let settings_item = MenuItem::new("Settings\u{2026}", true, None);
     let quit_item = MenuItem::new("Quit Turbofig", true, None);
 
     let _ = menu.append_items(&[
-        &header_item,
         &status_item,
         &PredefinedMenuItem::separator(),
-        &copy_prompt_item,
-        &copy_manifest_item,
-        &reveal_manifest_item,
-        &open_figma_item,
         &about_item,
-        &PredefinedMenuItem::separator(),
-        &start_at_login_item,
-        &open_log_item,
+        &settings_item,
         &PredefinedMenuItem::separator(),
         &quit_item,
     ]);
@@ -215,13 +207,8 @@ fn build_menu(header: &str, status_text: &str, start_at_login_checked: bool) -> 
     MenuHandles {
         menu,
         status_item,
-        copy_prompt_item,
-        copy_manifest_item,
-        reveal_manifest_item,
-        open_figma_item,
         about_item,
-        start_at_login_item,
-        open_log_item,
+        settings_item,
         quit_item,
     }
 }
@@ -249,6 +236,27 @@ fn open_or_focus_about_window(
         }
         Err(e) => {
             eprintln!("turbofig: could not open the About window: {e}");
+        }
+    }
+}
+
+/// Opens the Settings window, or brings it to the front if it is already
+/// open. A second "Settings…" click just focuses the existing window, the
+/// same rule `open_or_focus_about_window` follows for About.
+fn open_or_focus_settings_window(
+    target: &EventLoopWindowTarget<UserEvent>,
+    handle_cell: &Rc<RefCell<Option<SettingsWindowHandle>>>,
+    ctx: &SettingsWindowContext,
+) {
+    let mut guard = handle_cell.borrow_mut();
+    if let Some(handle) = guard.as_ref() {
+        handle.focus();
+        return;
+    }
+    match create_settings_window(target, ctx.clone()) {
+        Ok(handle) => *guard = Some(handle),
+        Err(e) => {
+            eprintln!("turbofig: could not open the Settings window: {e}");
         }
     }
 }
@@ -348,9 +356,6 @@ pub async fn run_menu_bar_app() {
         }
     }
 
-    let manifest_path = home.join("figma-plugin").join("manifest.json");
-    let log_path = home.join("daemon.log");
-
     let initial_health = crate::spawn::fetch_health_with_token(
         &client,
         mcp_port,
@@ -366,28 +371,26 @@ pub async fn run_menu_bar_app() {
     let MenuHandles {
         menu,
         status_item,
-        copy_prompt_item,
-        copy_manifest_item,
-        reveal_manifest_item,
-        open_figma_item,
         about_item,
-        start_at_login_item,
-        open_log_item,
+        settings_item,
         quit_item,
-    } = build_menu(
-        &initial_state.header,
-        &initial_state.status_text,
-        crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env()),
-    );
+    } = build_menu(&initial_state.status_text);
 
     let current_state = Arc::new(Mutex::new(initial_state.clone()));
     let last_health = Rc::new(RefCell::new(initial_health.clone()));
     let about_window_handle: Rc<RefCell<Option<AboutWindowHandle>>> = Rc::new(RefCell::new(None));
+    let settings_window_handle: Rc<RefCell<Option<SettingsWindowHandle>>> =
+        Rc::new(RefCell::new(None));
     let should_auto_open_about = about_state::should_auto_open_about_window(&home);
     let about_ctx = AboutWindowContext {
         home: home.clone(),
-        mcp_port,
         current_state: current_state.clone(),
+        last_health: last_health.clone(),
+        handle: about_window_handle.clone(),
+    };
+    let settings_ctx = SettingsWindowContext {
+        home: home.clone(),
+        handle: settings_window_handle.clone(),
     };
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -475,13 +478,8 @@ pub async fn run_menu_bar_app() {
         }
     };
 
-    let copy_prompt_id = copy_prompt_item.id().clone();
-    let copy_manifest_id = copy_manifest_item.id().clone();
-    let reveal_manifest_id = reveal_manifest_item.id().clone();
-    let open_figma_id = open_figma_item.id().clone();
     let about_id = about_item.id().clone();
-    let start_at_login_id = start_at_login_item.id().clone();
-    let open_log_id = open_log_item.id().clone();
+    let settings_id = settings_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     event_loop.run(move |event, target, control_flow| {
@@ -531,26 +529,10 @@ pub async fn run_menu_bar_app() {
         }
 
         if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == copy_prompt_id {
-                if let Ok(guard) = current_state.lock() {
-                    clipboard_for_app().copy(&guard.agent_prompt);
-                }
-            } else if event.id == copy_manifest_id {
-                clipboard_for_app().copy(&manifest_path.display().to_string());
-            } else if event.id == reveal_manifest_id {
-                opener_for_app().reveal_in_finder(&manifest_path);
-            } else if event.id == open_figma_id {
-                opener_for_app().open_figma();
-            } else if event.id == about_id {
+            if event.id == about_id {
                 open_or_focus_about_window(target, &about_window_handle, &about_ctx, &last_health);
-            } else if event.id == start_at_login_id {
-                let checked = start_at_login_item.is_checked();
-                if let Err(e) = set_start_at_login(checked, &home) {
-                    eprintln!("turbofig: Start at Login -> {checked} failed: {e}");
-                    start_at_login_item.set_checked(!checked);
-                }
-            } else if event.id == open_log_id {
-                opener_for_app().open_app_with_path("Console", &log_path);
+            } else if event.id == settings_id {
+                open_or_focus_settings_window(target, &settings_window_handle, &settings_ctx);
             } else if event.id == quit_id {
                 perform_quit(&home, mcp_port);
             }
