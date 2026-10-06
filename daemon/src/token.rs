@@ -36,15 +36,22 @@ pub(crate) fn random_token_hex() -> String {
 
 /// Extracts the bearer token from `Authorization: Bearer <token>`.
 /// Returns `None` for a missing header, a non-UTF-8 header, or a header that
-/// does not carry the `Bearer ` prefix. Shared by `/control` (`control.rs`)
-/// and the `/job`/`/mcp` auth middleware and `/health` payload shaping
-/// (`mcp.rs`), so the three authenticated surfaces parse the header the same
-/// way.
+/// does not carry the `Bearer ` prefix. The scheme name is matched without
+/// regard to case (`bearer`, `BEARER`), per RFC 7235's `auth-scheme` grammar.
+/// Shared by `/control` (`control.rs`) and the `/job`/`/mcp` auth middleware
+/// and `/health` payload shaping (`mcp.rs`), so the three authenticated
+/// surfaces parse the header the same way.
 pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers
+    const SCHEME: &str = "Bearer ";
+    let value = headers
         .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| v.to_str().ok())?;
+    let prefix = value.get(..SCHEME.len())?;
+    if prefix.eq_ignore_ascii_case(SCHEME) {
+        Some(&value[SCHEME.len()..])
+    } else {
+        None
+    }
 }
 
 /// Returns true when `headers` carries a bearer token that matches `expected`
@@ -217,6 +224,23 @@ mod tests {
         headers.insert(
             axum::http::header::AUTHORIZATION,
             "Bearer abc123".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers), Some("abc123"));
+    }
+
+    #[test]
+    fn bearer_token_accepts_any_case_scheme() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "bearer abc123".parse().unwrap(),
+        );
+        assert_eq!(bearer_token(&headers), Some("abc123"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "BEARER abc123".parse().unwrap(),
         );
         assert_eq!(bearer_token(&headers), Some("abc123"));
     }
