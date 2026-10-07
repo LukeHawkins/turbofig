@@ -8,6 +8,8 @@ recorded under Unreleased.
 
 ## [Unreleased] - 0.1.0
 
+## [0.1.0] - 2026-10-07
+
 ### Added
 
 - `turbofig` CLI (`clap`): `turbofig` with no subcommand, on its first run,
@@ -133,3 +135,4 @@ recorded under Unreleased.
   `TURBOFIG_PROFILES_DIR`, and the plugin profile selector), ahead of the
   public release. Taste is a per-user, per-project judgement call; it now
   belongs in each user's own repo, not in turbofig. See `DECISIONS.md` #29.
+
