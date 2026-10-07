@@ -1,7 +1,7 @@
 # How turbofig compares
 
 Facts below are from each project's own docs, checked 2026-10-07. Sources
-are listed at the end of each section and inline for the Figma facts.
+are listed in the Sources section at the end.
 
 ## turbofig
 
@@ -22,12 +22,25 @@ are listed at the end of each section and inline for the Figma facts.
 - No comments, no REST API access, and no reading a file without Figma
   open.
 
-## Figma's official MCP server
+## figma-console-mcp (npm `figma-console-mcp`, v1.40.9, 2026-10-02)
 
-Sources: [Write to canvas](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas/)
-and [Rate limits and access](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/),
-and the [MCP server docs](https://developers.figma.com/docs/figma-mcp-server/)
-and [Figma's help center article](https://help.figma.com/hc/en-us/articles/32132100833559).
+- **NPX/Local mode:** 121 tools. Reads and writes. Needs Node.js, Figma
+  Desktop, and its own Desktop Bridge plugin. Needs a Figma personal
+  access token.
+- **Cloud mode:** 96 tools. Writes to the canvas. No Node.js needed. Still
+  needs Figma Desktop and the Desktop Bridge plugin, paired once. Needs a
+  Figma personal access token.
+- **Remote SSE mode:** a read-only subset of tools. Cannot create or
+  modify designs.
+- Supports several files at once: one connection per file, with
+  cross-file execute since v1.39.0.
+- `figma_execute` runs any Figma Plugin API code; `figma_execute_across_files`
+  runs it across several open files at once.
+- Also has REST-based features, including comments and reading a file
+  without Figma open.
+- No published usage quota in these sources.
+
+## Figma for Agents (Figma's MCP server)
 
 - **Needs a paid seat to edit.** "You need a Full seat to write to Figma
   files with agents. Dev seat holders can use the Figma MCP server for
@@ -45,41 +58,30 @@ and [Figma's help center article](https://help.figma.com/hc/en-us/articles/32132
   modify frames, components, variables, and auto layout (on a Full seat).
 - **Desktop server:** needs the Figma desktop app and a Dev or Full seat
   on a paid plan.
+- **Write-to-canvas limits:** 20 KB output per call, no image or asset
+  support, no custom fonts, and components must be published manually.
+  Write tools are exempt from the rate limits above.
+- **Pricing status, from Figma's own FAQ:** "This will eventually be a
+  usage-based paid feature, but is currently available for free during the
+  beta period."
 - Tool count: not stated in these sources, so not given here.
 - Several files at once, and comments: not stated in these sources.
 
-## figma-console-mcp (npm `figma-console-mcp`, v1.40.9, 2026-10-02)
-
-Source: [its README](https://github.com/southleft/figma-console-mcp).
-
-- **NPX/Local mode:** 121 tools. Reads and writes. Needs Node.js, Figma
-  Desktop, and its own Desktop Bridge plugin. Needs a Figma personal
-  access token.
-- **Cloud mode:** 96 tools. Writes to the canvas. No Node.js needed. Still
-  needs Figma Desktop and the Desktop Bridge plugin, paired once. Needs a
-  Figma personal access token.
-- **Remote SSE mode:** a read-only subset of tools. Cannot create or
-  modify designs.
-- Supports several files at once: one connection per file, with
-  cross-file execute since v1.39.0.
-- Also has REST-based features, including comments and reading a file
-  without Figma open.
-- No published usage quota in these sources.
-
 ## Table
 
-| | turbofig | Figma's MCP server (Figma for Agents) | figma-console-mcp |
+| | turbofig | figma-console-mcp | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|
-| Needs a paid Figma seat to edit | No | Yes, a Full seat (Dev seats are read-only) | No |
-| Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
-| What you need | Figma Desktop + plugin. No token, no sign-in, no Node | OAuth sign-in | Figma Desktop + Desktop Bridge, a Figma personal access token, Node.js (not needed in Cloud Mode) |
-| Tool definitions your agent loads every session | 4 tools, 2.8 KB | Not published | 121 tools, 163 KB (NPX mode; 96 tools in Cloud Mode) |
-| Ready to use after the agent starts | About 66 ms (already running in the background) | Hosted remote server, not measured | About 1.9 s: npx starts a fresh process each session (29 s on a first run) |
-| Several files at once | Yes | Not stated in their docs | Yes |
+| AI memory used just to load the tools | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
+| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, not measured |
+| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Partly: no images or custom fonts, 20 KB output per call |
+| Cost | **Free** | Free | Editing needs a paid Full seat; write tools free in beta, later usage-based |
+| Usage limits | **None** | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
+| Setup | Homebrew + one plugin import | Node.js (or Cloud Mode), a Figma access token, the Desktop Bridge plugin | Sign in with Figma |
+| Several files at once | Yes | Yes | Not stated |
+| Comments | No | Yes | Not stated |
+| Works without Figma Desktop open | No | Partly | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No |
 | Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
-| Comments | No | Not stated in their docs | Yes (REST tools) |
-| Works without Figma Desktop open | No | Yes (remote server) | Partly (REST tools) |
 
 Tool size and startup time are measured: see
 [bench/results](../bench/results/session-cost-20261007-144824.md) for the
@@ -101,3 +103,33 @@ Desktop open, Figma's remote server can.
 
 Measured speed and token-per-edit numbers will be added after the
 benchmark run.
+
+## Sources
+
+Dated 2026-10-07.
+
+- **Tool tokens.** turbofig about 680 tokens, figma-console-mcp about
+  36,600 tokens, counted with `o200k_base` (`cl100k_base`: 668 and 35,848).
+  That is 0.34% against 18.3% of a 200K-token context. Method and raw
+  data: [bench/results/tool-tokens-20261007-221725.md](../bench/results/tool-tokens-20261007-221725.md).
+- **Figma for Agents write-to-canvas limits:** 20 KB output per call, no
+  image or asset support, no custom fonts, components must be published
+  manually, write tools exempt from rate limits.
+  [developers.figma.com/docs/figma-mcp-server/write-to-canvas](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas)
+- **Figma for Agents rate limits and access:**
+  [developers.figma.com/docs/figma-mcp-server/rate-limits-access](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access)
+- **Figma's MCP server FAQ**, on pricing: "This will eventually be a
+  usage-based paid feature, but is currently available for free during the
+  beta period."
+  [help.figma.com/hc/en-us/articles/39252411778583-Figma-MCP-server-FAQs](https://help.figma.com/hc/en-us/articles/39252411778583-Figma-MCP-server-FAQs)
+- **Figma for Agents, general docs and seat requirement:**
+  [developers.figma.com/docs/figma-mcp-server](https://developers.figma.com/docs/figma-mcp-server/)
+  and [help.figma.com/hc/en-us/articles/32132100833559](https://help.figma.com/hc/en-us/articles/32132100833559).
+- **figma-console-mcp README**, source for tool modes, tool counts,
+  `figma_execute` ("Run any Figma Plugin API code"), and
+  `figma_execute_across_files`:
+  [github.com/southleft/figma-console-mcp](https://github.com/southleft/figma-console-mcp)
+- **turbofig's own file-bridge protocol:** [skills/file-bridge.md](../skills/file-bridge.md).
+- **turbofig's own screenshot defaults:** `daemon/src/mcp.rs`.
+- **Anthropic, "Advanced tool use"** (72K-token figure for loading 50+ MCP
+  tools): [anthropic.com/engineering/advanced-tool-use](https://www.anthropic.com/engineering/advanced-tool-use)

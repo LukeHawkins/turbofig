@@ -5,6 +5,7 @@
 // No estimates: byte lengths are Buffer.byteLength of the real JSON text.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
 
 function usage() {
   console.error("usage: mcp-stdio-probe.mjs <command> [--arg ...] [--env KEY=VAL ...] [--timeout-ms N]");
@@ -15,6 +16,7 @@ const argv = process.argv.slice(2);
 if (argv.length === 0) usage();
 
 let timeoutMs = 60000;
+let dumpToolsPath = null;
 const cmdParts = [];
 const env = { ...process.env };
 let i = 0;
@@ -28,6 +30,8 @@ for (let j = 0; j < flags.length; j++) {
     env[k] = rest.join("=");
   } else if (flags[j] === "--timeout-ms" && flags[j + 1]) {
     timeoutMs = Number.parseInt(flags[++j], 10);
+  } else if (flags[j] === "--dump-tools" && flags[j + 1]) {
+    dumpToolsPath = flags[++j];
   }
 }
 if (cmdArgs.length === 0) usage();
@@ -107,6 +111,9 @@ async function probeOnce() {
         result.toolsBytes = bytes;
         result.bytesPerTool = tools.length > 0 ? bytes / tools.length : null;
         result.toolNames = tools.map((t) => t.name);
+        if (dumpToolsPath) {
+          writeFileSync(dumpToolsPath, serialized, "utf8");
+        }
       })(),
       timeout,
     ]);

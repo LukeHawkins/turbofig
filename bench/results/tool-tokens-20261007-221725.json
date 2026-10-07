@@ -1,0 +1,29 @@
+{
+  "approximate": true,
+  "note": "Claude's tokenizer is not public. These are OpenAI-tokenizer proxies, not a real Claude count.",
+  "date": "2026-10-07T20:17:25Z",
+  "tokenizer_package": "js-tiktoken",
+  "tokenizer_package_version": "1.0.21",
+  "context_window_tokens": 200000,
+  "source_tools_json": "exact tools/list response from bench/mcp-stdio-probe.mjs --dump-tools, same as session-cost-20261007-144824.md",
+  "results": [
+    {
+      "target": "turbofig",
+      "tools": 4,
+      "bytes": 2824,
+      "approx_tokens_o200k_base": 680,
+      "approx_tokens_cl100k_base": 668,
+      "share_of_200k_context_o200k": 0.0034,
+      "share_of_200k_context_cl100k": 0.00334
+    },
+    {
+      "target": "figma-console-mcp (default NPX mode)",
+      "tools": 121,
+      "bytes": 163208,
+      "approx_tokens_o200k_base": 36569,
+      "approx_tokens_cl100k_base": 35848,
+      "share_of_200k_context_o200k": 0.1828,
+      "share_of_200k_context_cl100k": 0.1792
+    }
+  ]
+}

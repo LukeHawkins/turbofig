@@ -24,9 +24,10 @@ the file you have open.
 - **Fast, start to finish.** It runs on your Mac and stays connected to
   Figma, so every request goes straight to your file: no server to start,
   no cloud round trip. One request can make many changes at once.
-- **Token-efficient.** It gives your AI a short list of 4 actions instead
-  of a long manual, and keeps screenshots small. More of your AI plan goes
-  into the design, and long sessions fill up more slowly.
+- **Far more token-efficient, so far cheaper to run.** Your AI gets a
+  short list of 4 actions instead of a long manual, and screenshots stay
+  small. The same Figma work uses much less of your AI plan, and long
+  sessions last much longer before they need compacting.
 - **Free to use.** No paid Figma seat, no monthly quota.
 
 <sub>See [how turbofig compares](#how-turbofig-compares) and [how we measured](bench/results/session-cost-20261007-144824.md).</sub>
@@ -52,14 +53,17 @@ the file you have open.
 
 ## Why I made it
 
-I use AI agents for Figma work every day. The bridges I tried were slow to
-respond, spent a big part of my AI plan just loading their tools, and in my
-setup often needed restarts before they would connect. turbofig is the
-bridge I wanted: always on, light on tokens, and quick enough that I hand
-it big jobs and keep working. Since switching, I no longer have to compact
-long design sessions in Claude Code.
+I build in Figma with AI agents every day, and two things kept getting in
+the way: speed and cost. The bridges I tried were slow to respond, and
+they spent a big part of my AI plan just loading their tools before any
+work began, so long sessions filled up and needed compacting. In my setup
+they also often needed restarts before they would connect.
 
-Luke Hawkins
+turbofig is the bridge I wanted. It is always on and answers straight
+away, so big jobs move fast. It gives the AI only what it needs, so the
+same work costs far less. Since switching, I no longer have to compact
+long design sessions in Claude Code, and I give it big jobs without
+worrying about the cost.
 
 ## Get started
 
@@ -134,39 +138,34 @@ chat agent.
 
 ## How turbofig compares
 
-| | turbofig | Figma's MCP server (Figma for Agents) | figma-console-mcp |
+| | turbofig | figma-console-mcp | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|
-| Needs a paid Figma seat to edit | No | Yes, a Full seat (Dev seats are read-only) | No |
-| Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
-| What you need | Figma Desktop + plugin. No token, no sign-in, no Node | OAuth sign-in | Figma Desktop + Desktop Bridge, a Figma personal access token, Node.js (not needed in Cloud Mode) |
-| Tool definitions your agent loads every session | **4 tools, 2.8 KB** | Not published | 121 tools, 163 KB (NPX mode; 96 tools in Cloud Mode) |
-| Ready to use after the agent starts | **About 66 ms** (already running in the background) | Hosted remote server, not measured | About 1.9 s: npx starts a fresh process each session (29 s on a first run) |
-| Several files at once | Yes | Not stated in their docs | Yes |
-| Works without adding an MCP server | Yes, file bridge | No | No |
-| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
-| Comments | No | Not stated in their docs | Yes (REST tools) |
-| Works without Figma Desktop open | No | Yes (remote server) | Partly (REST tools) |
+| AI memory used just to load the tools | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
+| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, not measured |
+| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Partly: no images or custom fonts, 20 KB output per call |
+| Cost | **Free** | Free | Editing needs a paid Full seat; write tools free in beta, later usage-based |
+| Usage limits | **None** | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
+| Setup | Homebrew + one plugin import | Node.js (or Cloud Mode), a Figma access token, the Desktop Bridge plugin | Sign in with Figma |
+| Several files at once | Yes | Yes | Not stated |
+| Comments | No | Yes | Not stated |
+| Works without Figma Desktop open | No | Partly | Yes |
 
-turbofig has no quota and needs no paid seat. If you need comments,
-figma-console-mcp's REST tools cover them. If you must work without Figma
-Desktop open, Figma's remote server can. Full comparison, with sources:
-[docs/comparison.md](docs/comparison.md).
+<sub>AI memory: share of a 200K-token context window. Tokens are approximate,
+counted with OpenAI's tokenizer because Claude's is not public; exact byte
+sizes are 2.8 KB against 163 KB. Speed and cost per task will be added
+after the full benchmark. Methods and raw data:
+[tool tokens](bench/results/tool-tokens-20261007-221725.md),
+[startup and size](bench/results/session-cost-20261007-144824.md).
+Competitor facts and sources, dated: [docs/comparison.md](docs/comparison.md).</sub>
 
-Why fewer tools matters: before doing any work, many AI agents read the
-full description of every tool they have. Anthropic measured about 72K
-tokens (a token is a small chunk of text the AI reads and you pay for) to
-load 50+ MCP tools ([Anthropic, "Advanced tool
-use"](https://www.anthropic.com/engineering/advanced-tool-use)). Our
-sizes above are exact bytes, not tokens; token counts come with the full
-benchmark. Some newer agents look tools up on demand instead, which adds
-a lookup each time. Either way, fewer tools leaves more room for your
-design.
+**Why tool count matters.** Before it does any work, your AI reads the
+description of every tool it has, in every session, and you pay for that
+reading. 121 tools fill almost a fifth of its memory before you have asked
+for anything. turbofig gives it 4, and lets one script do the work.
 
-Tool size and startup time are measured: see
-[bench/results](bench/results/session-cost-20261007-144824.md) for the
-method and raw data, and run `bench/mcp-stdio-probe.mjs` to check them
-yourself. Speed and token cost per edit will be added after the full
-benchmark run.
+**When to use something else.** If you need comments, use
+figma-console-mcp. If you must work without Figma Desktop open, use Figma
+for Agents.
 
 ## For developers
 
