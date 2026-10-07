@@ -21,24 +21,20 @@
 Ask your AI for real Figma work in plain English, and watch it build in
 the file you have open.
 
-- **Starts instantly.** It is always running in the background, so there
-  is no wait for it to boot when your AI starts.
-- **Lightweight.** It gives your AI a short list of 4 actions instead of a
-  long manual, so more of your AI's memory and plan goes into the design.
+- **Fast, start to finish.** It runs on your Mac and stays connected to
+  Figma, so every request goes straight to your file: no server to start,
+  no cloud round trip. One request can make many changes at once.
+- **Token-efficient.** It gives your AI a short list of 4 actions instead
+  of a long manual, and keeps screenshots small. More of your AI plan goes
+  into the design, and long sessions fill up more slowly.
 - **Free to use.** No paid Figma seat, no monthly quota.
 
 <sub>See [how turbofig compares](#how-turbofig-compares) and [how we measured](bench/results/session-cost-20261007-144824.md).</sub>
 
 ## Why turbofig
 
-> From the creator: since switching to turbofig, I no longer have to
-> compact long design sessions in Claude Code, and big jobs finish much
-> faster.
-
-- **One request, many changes.** Your AI can send a whole script at once,
-  not one change per request.
-- **Easy.** One Homebrew command installs it, and `brew upgrade turbofig`
-  updates it. Import the plugin into Figma once, paste the copy-prompt
+- **Easy.** A small native app, with no Node. One Homebrew command
+  installs it, and `brew upgrade turbofig` updates it. Import the plugin into Figma once, paste the copy-prompt
   into your agent, and you are done. No Figma token, no sign-in, no
   shared billing, so a whole team or class can run it side by side.
 - **Connects by itself, stays connected.** Open the plugin and it finds
@@ -53,6 +49,17 @@ the file you have open.
   to approve every tool call, or block adding MCP servers. turbofig talks
   to your AI through plain files, so it avoids both and a long job can
   run without you. See [docs/reliability.md](docs/reliability.md).
+
+## Why I made it
+
+I use AI agents for Figma work every day. The bridges I tried were slow to
+respond, spent a big part of my AI plan just loading their tools, and in my
+setup often needed restarts before they would connect. turbofig is the
+bridge I wanted: always on, light on tokens, and quick enough that I hand
+it big jobs and keep working. Since switching, I no longer have to compact
+long design sessions in Claude Code.
+
+Luke Hawkins
 
 ## Get started
 
