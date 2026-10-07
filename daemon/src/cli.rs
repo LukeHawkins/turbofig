@@ -4,10 +4,12 @@
 //! use the seams here (`Launchctl`, explicit `home`/`launch_agents_dir`/`uid`
 //! arguments) instead.
 
+#[cfg(target_os = "macos")]
+use crate::launchd::app_plist_contents;
 use crate::launchd::{
-    app_plist_contents, app_plist_file_name, app_service_target, carry_over_turbofig_env,
-    domain_target, is_in_homebrew_cellar, plist_contents, plist_file_name, service_target,
-    stable_binary_path, Launchctl,
+    app_plist_file_name, app_service_target, carry_over_turbofig_env, domain_target,
+    is_in_homebrew_cellar, plist_contents, plist_file_name, service_target, stable_binary_path,
+    Launchctl,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io;
@@ -1085,6 +1087,7 @@ mod tests {
         std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn run_autostart_on_app_installs_the_bundle_when_missing_and_writes_its_plist() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1138,6 +1141,7 @@ mod tests {
         std::fs::remove_dir_all(&applications_dir).ok();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn run_autostart_on_app_removes_a_preexisting_headless_plist() {
         let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
