@@ -71,7 +71,7 @@ are listed in the Sources section at the end.
 
 | | turbofig | figma-console-mcp | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|
-| AI memory used just to load the tools | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
+| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
 | Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, not measured |
 | Runs any Figma plugin script (advanced work) | **Yes** | Yes | Partly: no images or custom fonts, 20 KB output per call |
 | Cost | **Free** | Free | Editing needs a paid Full seat; write tools free in beta, later usage-based |

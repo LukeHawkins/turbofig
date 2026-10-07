@@ -140,7 +140,7 @@ chat agent.
 
 | | turbofig | figma-console-mcp | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|
-| AI memory used just to load the tools | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
+| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
 | Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, not measured |
 | Runs any Figma plugin script (advanced work) | **Yes** | Yes | Partly: no images or custom fonts, 20 KB output per call |
 | Cost | **Free** | Free | Editing needs a paid Full seat; write tools free in beta, later usage-based |
@@ -158,10 +158,14 @@ after the full benchmark. Methods and raw data:
 [startup and size](bench/results/session-cost-20261007-144824.md).
 Competitor facts and sources, dated: [docs/comparison.md](docs/comparison.md).</sub>
 
-**Why tool count matters.** Before it does any work, your AI reads the
-description of every tool it has, in every session, and you pay for that
-reading. 121 tools fill almost a fifth of its memory before you have asked
-for anything. turbofig gives it 4, and lets one script do the work.
+**Why tool count matters.** Many AI agents read the description of every
+tool they have before doing any work, in every session, and you pay for
+that reading. Loaded up front, 121 tools fill almost a fifth of a
+200K-token memory. Claude Code avoids that by switching to looking tools
+up on demand once they pass 10% of its memory
+([docs](https://code.claude.com/docs/en/agent-sdk/tool-search)), which
+adds a search step each time it needs a tool. turbofig needs neither: its
+4 tools load up front at 0.3%, and one script does the work.
 
 **When to use something else.** If you need comments, use
 figma-console-mcp. If you must work without Figma Desktop open, use Figma
