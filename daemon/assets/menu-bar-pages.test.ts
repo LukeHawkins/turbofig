@@ -32,7 +32,6 @@ const ALLOWED_SETTINGS_ACTIONS = [
   "copy-path",
   "show-plugin-folder",
 ];
-const README_URL = "https://github.com/LukeHawkins/turbofig#readme";
 const WEBSITE_URL = "https://lukehawkins.eu";
 
 /** Loads `html` into a fresh headless window: no `window.ipc` stub needed
@@ -80,9 +79,9 @@ describe("about.html", () => {
     }
   });
 
-  it("has exactly the 2 allowed external links", () => {
+  it("has exactly the 1 allowed external link", () => {
     const hrefs = externalHrefs(document).sort();
-    expect(hrefs).toEqual([README_URL, WEBSITE_URL].sort());
+    expect(hrefs).toEqual([WEBSITE_URL]);
   });
 
   it("renders the version into the footer", () => {

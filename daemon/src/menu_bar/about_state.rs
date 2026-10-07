@@ -106,26 +106,22 @@ mod tests {
     /// The same embedded template `about_window.rs` loads with
     /// `include_str!`, read again here so this pure-logic test needs no
     /// `wry`/`tao` import at all. Asserts there is no `<script>` anywhere,
-    /// and no remote `src`/`href` except the 2 allowed external links
-    /// (the README on GitHub, and the owner's website).
+    /// and no remote `src`/`href` except the 1 allowed external link
+    /// (the owner's website).
     const ABOUT_HTML: &str = include_str!("../../assets/about/about.html");
-    const README_HREF: &str = "href=\"https://github.com/LukeHawkins/turbofig#readme\"";
     const WEBSITE_HREF: &str = "href=\"https://lukehawkins.eu\"";
 
     #[test]
-    fn the_about_page_has_no_script_and_only_the_2_allowed_remote_links() {
+    fn the_about_page_has_no_script_and_only_the_1_allowed_remote_link() {
         assert!(
             !ABOUT_HTML.to_lowercase().contains("<script"),
             "the page must have no <script> at all"
         );
-        assert!(ABOUT_HTML.contains(README_HREF), "expected the README link");
         assert!(
             ABOUT_HTML.contains(WEBSITE_HREF),
             "expected the website link"
         );
-        let without_allowed = ABOUT_HTML
-            .replacen(README_HREF, "", 1)
-            .replacen(WEBSITE_HREF, "", 1);
+        let without_allowed = ABOUT_HTML.replacen(WEBSITE_HREF, "", 1);
         assert!(
             !without_allowed.contains("src=\"http"),
             "no src attribute may point at a remote URL"

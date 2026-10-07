@@ -26,10 +26,6 @@ use wry::{WebView, WebViewBuilder};
 /// live update into, so every value the page shows is baked in up front.
 const ABOUT_HTML_TEMPLATE: &str = include_str!("../../assets/about/about.html");
 
-/// The README's own anchor, also the "See the README on GitHub" link's
-/// destination.
-const README_URL: &str = "https://github.com/LukeHawkins/turbofig#readme";
-
 /// The owner's website, the footer link's destination.
 const WEBSITE_URL: &str = "https://lukehawkins.eu";
 
@@ -79,8 +75,8 @@ fn render_about_html(version: &str) -> String {
 
 /// Builds the About window: a 420x480, non-resizable, titled "turbofig"
 /// window hosting a webview over the rendered page, wired to a navigation
-/// handler that intercepts every `turbofig-action://` link, opens the 2
-/// allow-listed external links (the README, the owner's website) through
+/// handler that intercepts every `turbofig-action://` link, opens the 1
+/// allow-listed external link (the owner's website) through
 /// the `AppOpener` seam, and blocks every other navigation away from the
 /// embedded page. Activates the app and focuses the window once built (see
 /// `AboutWindowHandle::focus`), and enables the Web Inspector in debug
@@ -134,8 +130,8 @@ fn dispatch_about_action(action: AboutAction, ctx: &AboutWindowContext) {
 /// content in this webview, and the dispatch point for every
 /// `turbofig-action://` link (there is no IPC channel any more: the page has
 /// no `<script>` to send one). Allows only the initial `about:blank` load
-/// that `WebViewBuilder::with_html` itself performs; for the 2 allow-listed
-/// external links (the README, the owner's website), opens them externally
+/// that `WebViewBuilder::with_html` itself performs; for the 1 allow-listed
+/// external link (the owner's website), opens it externally
 /// through the opener seam and still cancels the in-webview navigation; for
 /// a known action link, runs it and cancels the navigation; blocks
 /// everything else outright.
@@ -143,7 +139,7 @@ fn navigation_is_allowed(url: &str, ctx: &AboutWindowContext) -> bool {
     if url == "about:blank" || url.starts_with("about:") {
         return true;
     }
-    if url == README_URL || url == WEBSITE_URL {
+    if url == WEBSITE_URL {
         opener_for_app().open_url(url);
         return false;
     }

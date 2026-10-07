@@ -242,18 +242,22 @@
         <a class="text-link" href="turbofig-action://copy-path">Copy path</a>
         <a class="text-link" href="turbofig-action://show-plugin-folder">Show plugin folder</a>
       </div>
-      <p class="muted-line">In the file picker, press Cmd+Shift+G and paste the path.</p>
+      <p class="muted-line">In the macOS file picker, press Cmd+Shift+G, paste the path, then press Return.</p>
     </div>
 
     <div class="step">
       <p class="step-title">2. Run it in your file</p>
       <p class="step-hint">Plugins &gt; Development &gt; turbofig.</p>
+      <p class="step-hint">You can connect several files at once: run the plugin in each Figma file you want your agent to work on.</p>
     </div>
 
     <div class="step">
       <p class="step-title">3. Connect your agent</p>
+      <p class="step-hint">
+        The turbofig plugin in Figma shows a copy button. Press it, paste the prompt into your coding agent (Claude Code, Copilot CLI, Cursor or any other), and it connects by itself. That's it.
+      </p>
       <div class="action-row">
-        <span class="step-hint">Copy agent prompt</span>
+        <span class="step-hint">Or copy it from here:</span>
         <a
           id="copy-agent-prompt"
           class="icon-btn brand-btn"
@@ -267,14 +271,7 @@
           </svg>
         </a>
       </div>
-      <p class="step-hint">Paste it into Claude Code, Cursor or any agent.</p>
     </div>
-
-    <p class="muted-line">
-      Prefer MCP (Claude Code, Cursor)?
-      <a class="text-link" href="https://github.com/LukeHawkins/turbofig#readme">See the README on GitHub</a>.
-      This app is the native way.
-    </p>
 
     <div class="footer">
       <a class="link" href="https://lukehawkins.eu">lukehawkins.eu</a>
