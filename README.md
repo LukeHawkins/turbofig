@@ -5,7 +5,7 @@
     <img alt="turbofig wordmark" src="docs/wordmark-light.png" height="80">
   </picture>
 
-  <p><strong>Let AI drive Figma. Fast, light on tokens, hands-off.</strong><br>
+  <p><strong>Let AI drive Figma. Instant, lightweight, free.</strong><br>
   <sub>No paid Figma seat. No quota. No Figma token. Free and open source, for macOS.</sub></p>
 
   [![CI](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml/badge.svg)](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml)
