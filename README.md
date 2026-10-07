@@ -138,38 +138,39 @@ chat agent.
 
 ## How turbofig compares
 
-| | turbofig | figma-console-mcp | Figma for Agents (Figma's MCP server) |
-|---|---|---|---|
-| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
-| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, not measured |
-| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Partly: no images or custom fonts, 20 KB output per call |
-| Cost | **Free** | Free | Editing needs a paid Full seat; write tools free in beta, later usage-based |
-| Usage limits | **None** | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
-| Setup | Homebrew + one plugin import | Node.js (or Cloud Mode), a Figma access token, the Desktop Bridge plugin | Sign in with Figma |
-| Several files at once | Yes | Yes | Not stated |
-| Comments | No | Yes | Not stated |
-| Works without Figma Desktop open | No | Partly | Yes |
+| | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud) | Figma for Agents |
+|---|---|---|---|---|
+| Cost | ✓ **Free** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit |
+| Usage limits | ✓ **None** | ✓ None stated | ✓ None stated | ✗ 20 read calls a month (Starter) to 600 a day (Enterprise) |
+| Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
+| AI memory the tools take | ✓ **0.3%** | ✗ 18% | ? (96 tools) | ? |
+| Ready when your AI starts | ✓ **Under 0.1 s** | About 2 s (30 s first run) | ? | ? |
+| Setup | ✓ **Homebrew + one plugin import** | Node.js, Figma token, Desktop Bridge | Figma token, Desktop Bridge pairing | Sign in with Figma |
+| The catch | Needs Figma Desktop open; no comments | Heavy tool list, most setup | Token and pairing setup | Paid seat, read quotas, limited writes; usage-based pricing coming |
 
-<sub>AI memory: share of a 200K-token context window. Tokens are approximate,
-counted with OpenAI's tokenizer because Claude's is not public; exact byte
-sizes are 2.8 KB against 163 KB. Speed and cost per task will be added
-after the full benchmark. Methods and raw data:
+**Bottom line:** if you work in Figma Desktop, turbofig gives your AI full
+scripting power for free, with no limits and the lightest load. Pick
+figma-console-mcp if you need comments, or Figma for Agents if you have a
+Full seat and must work without Desktop open.
+
+<sub>? = not published or not measured: Cloud Mode lists its tools only with
+a real Figma token. AI memory = share of a 200K-token context if every tool
+is loaded up front; tokens are approximate (OpenAI tokenizer, as Claude's is
+not public); exact sizes are 2.8 KB against 163 KB. Speed and cost per task
+come with the full benchmark. Methods and raw data:
 [tool tokens](bench/results/tool-tokens-20261007-221725.md),
-[startup and size](bench/results/session-cost-20261007-144824.md).
-Competitor facts and sources, dated: [docs/comparison.md](docs/comparison.md).</sub>
+[startup and size](bench/results/session-cost-20261007-144824.md),
+[Cloud Mode](bench/results/cloud-mode-20261007-203749.md). Every competitor
+fact, with dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 **Why tool count matters.** Many AI agents read the description of every
 tool they have before doing any work, in every session, and you pay for
 that reading. Loaded up front, 121 tools fill almost a fifth of a
-200K-token memory. Claude Code avoids that by switching to looking tools
-up on demand once they pass 10% of its memory
-([docs](https://code.claude.com/docs/en/agent-sdk/tool-search)), which
-adds a search step each time it needs a tool. turbofig needs neither: its
-4 tools load up front at 0.3%, and one script does the work.
-
-**When to use something else.** If you need comments, use
-figma-console-mcp. If you must work without Figma Desktop open, use Figma
-for Agents.
+200K-token memory. Claude Code avoids that by looking tools up on demand
+once they pass 10% of its memory
+([docs](https://code.claude.com/docs/en/agent-sdk/tool-search)), which adds
+a search step each time it needs a tool. turbofig needs neither: its 4
+tools load up front at 0.3%, and one script does the work.
 
 ## For developers
 

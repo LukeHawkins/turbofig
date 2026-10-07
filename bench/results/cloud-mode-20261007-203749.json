@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-07T20:37:49Z",
+  "target": "figma-console-mcp (Cloud Mode)",
+  "target_version": "v1.40.9 (README \"Current Status\" line)",
+  "method": "streamable-http POST to the documented Cloud Mode MCP endpoint, no real Figma credential, no plugin pairing",
+  "endpoint": "https://figma-console-mcp.southleft.com/mcp",
+  "requests": [
+    {
+      "label": "initialize, no Authorization header",
+      "request": {
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body_method": "initialize"
+      },
+      "response_status": 401,
+      "response_headers": {
+        "www-authenticate": "Bearer resource_metadata=\"https://figma-console-mcp.southleft.com/.well-known/oauth-protected-resource\""
+      },
+      "response_body": {
+        "error": "unauthorized",
+        "error_description": "Authorization header with Bearer token is required"
+      }
+    },
+    {
+      "label": "initialize, Authorization: Bearer figd_dummy (placeholder, not a real token)",
+      "request": {
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "Authorization": "Bearer figd_dummy"
+        },
+        "body_method": "initialize"
+      },
+      "response_status": 401,
+      "response_headers": {
+        "www-authenticate": "Bearer resource_metadata=\"https://figma-console-mcp.southleft.com/.well-known/oauth-protected-resource\", error=\"invalid_token\""
+      },
+      "response_body": {
+        "error": "invalid_token",
+        "error_description": "Figma Personal Access Token is invalid or expired. Ensure your PAT (figd_...) is valid and has not been revoked."
+      }
+    },
+    {
+      "label": "GET /.well-known/oauth-protected-resource",
+      "response_status": 200,
+      "response_body": {
+        "resource": "https://figma-console-mcp.southleft.com",
+        "authorization_servers": ["https://figma-console-mcp.southleft.com/"],
+        "scopes_supported": [
+          "file_content:read",
+          "file_versions:read",
+          "file_variables:read",
+          "file_comments:read",
+          "file_comments:write",
+          "library_content:read"
+        ],
+        "bearer_methods_supported": ["header"],
+        "resource_signing_alg_values_supported": ["RS256"]
+      }
+    }
+  ],
+  "blocker": "The Cloud Mode /mcp endpoint validates the Figma PAT in the Authorization header before accepting any JSON-RPC method, including initialize and tools/list. A dummy figd_-shaped token is rejected with 401 invalid_token. There is no unauthenticated or dummy-token path to tools/list, so tool count, exact bytes, token counts, context share and timing could not be measured without a real, valid Figma Personal Access Token.",
+  "tools_list_reached": false,
+  "n_samples": 0,
+  "median_time_to_tools_list_ms": null
+}

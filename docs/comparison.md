@@ -69,19 +69,19 @@ are listed in the Sources section at the end.
 
 ## Table
 
-| | turbofig | figma-console-mcp | Figma for Agents (Figma's MCP server) |
-|---|---|---|---|
-| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not published |
-| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, not measured |
-| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Partly: no images or custom fonts, 20 KB output per call |
-| Cost | **Free** | Free | Editing needs a paid Full seat; write tools free in beta, later usage-based |
-| Usage limits | **None** | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
-| Setup | Homebrew + one plugin import | Node.js (or Cloud Mode), a Figma access token, the Desktop Bridge plugin | Sign in with Figma |
-| Several files at once | Yes | Yes | Not stated |
-| Comments | No | Yes | Not stated |
-| Works without Figma Desktop open | No | Partly | Yes |
-| Works without adding an MCP server | Yes, file bridge | No | No |
-| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
+| | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud Mode) | Figma for Agents (Figma's MCP server) |
+|---|---|---|---|---|
+| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not measured (96 tools per vendor docs) | Not published |
+| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Not measured | Hosted, not measured |
+| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Yes | Partly: no images or custom fonts, 20 KB output per call |
+| Cost | **Free** | Free | Free (no Cloud-specific pricing or limits stated) | Editing needs a paid Full seat; write tools free in beta, later usage-based |
+| Usage limits | **None** | None stated | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
+| Setup | Homebrew + one plugin import | Node.js, a Figma access token, the Desktop Bridge plugin | No Node.js; still needs Figma Desktop, the Desktop Bridge plugin paired once, and a Figma access token | Sign in with Figma |
+| Several files at once | Yes | Yes | Yes | Not stated |
+| Comments | No | Yes | Yes | Not stated |
+| Works without Figma Desktop open | No | Partly | Partly | Yes |
+| Works without adding an MCP server | Yes, file bridge | No | No | No |
+| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs | Not stated in their docs |
 
 Tool size and startup time are measured: see
 [bench/results](../bench/results/session-cost-20261007-144824.md) for the
@@ -108,10 +108,18 @@ benchmark run.
 
 Dated 2026-10-07.
 
-- **Tool tokens.** turbofig about 680 tokens, figma-console-mcp about
+- **Tool tokens.** turbofig about 680 tokens, figma-console-mcp (NPX) about
   36,600 tokens, counted with `o200k_base` (`cl100k_base`: 668 and 35,848).
   That is 0.34% against 18.3% of a 200K-token context. Method and raw
   data: [bench/results/tool-tokens-20261007-221725.md](../bench/results/tool-tokens-20261007-221725.md).
+- **figma-console-mcp Cloud Mode: not measured.** The Cloud Mode `/mcp`
+  endpoint (`https://figma-console-mcp.southleft.com/mcp`) rejects a
+  placeholder `figd_dummy` token with `401 invalid_token` before it will
+  answer `tools/list`, so tool count, byte size, token count, and timing
+  could not be measured without a real, valid Figma personal access
+  token. The 96-tool figure for Cloud Mode is a vendor-stated count from
+  the README, not a bench result. Method and raw data:
+  [bench/results/cloud-mode-20261007-203749.md](../bench/results/cloud-mode-20261007-203749.md).
 - **Figma for Agents write-to-canvas limits:** 20 KB output per call, no
   image or asset support, no custom fonts, components must be published
   manually, write tools exempt from rate limits.
