@@ -18,13 +18,17 @@
 
 ---
 
-Give your agent a brief in plain English, walk away, and come back to
-finished Figma work.
+Ask your AI for real Figma work in plain English, and watch it build in
+the file you have open.
 
-**Ready in about 66 ms, because it is already running. Its tool
-definitions are 2.8 KB against 163 KB for figma-console-mcp, so your AI
-spends less of its plan before work starts. No paid seat, no quota.**
-([method and caveats](bench/results/session-cost-20261007-144824.md))
+- **Starts instantly.** Ready in under a tenth of a second.
+  figma-console-mcp takes about 2 seconds each session, and about 30 on a
+  first run.
+- **58× lighter.** Your AI reads 58 times less setup before it starts, so
+  more of your AI plan goes into the actual design.
+- **Free to use.** No paid Figma seat, no monthly quota.
+
+<sub>[How we measured](bench/results/session-cost-20261007-144824.md)</sub>
 
 ## Why turbofig
 
@@ -32,10 +36,9 @@ spends less of its plan before work starts. No paid seat, no quota.**
 > compact long design sessions in Claude Code, and big jobs finish much
 > faster.
 
-- **Fast.** turbofig's tools answer in about 66 ms, because it is already
-  running in the background. figma-console-mcp starts a fresh npx process
-  each session, about 1.9 s in our test, 29 s on a first run. One call can
-  carry out many Figma operations at once.
+- **Fast.** turbofig is always running in the background, so there is no
+  start-up wait, and one call can carry out many Figma operations at
+  once.
 - **No paid seat, no quota.** Figma's own official AI connector (an MCP
   server) needs a paid Full seat to edit files with agents, and caps read
   tools at 20 calls a month on the Starter plan, 200 a day on
@@ -45,15 +48,8 @@ spends less of its plan before work starts. No paid seat, no quota.**
 - **Easy.** One Homebrew command installs it, and `brew upgrade turbofig`
   updates it. Import the plugin into Figma once, paste the copy-prompt
   into your agent, and you are done. No Node, no Figma token, no sign-in.
-- **Built to walk away from.** Give your agent a big task and leave it
-  running: it keeps working on its own, so you do not watch or approve
-  each step. See [docs/reliability.md](docs/reliability.md). It needs no
-  MCP server, so it also works where adding one is restricted.
-- **Token-light.** Your agent loads turbofig's tool definitions at the
-  start of every session: 4 tools, 2.8 KB. figma-console-mcp's are 121
-  tools, 163 KB. Less to load means less of your AI plan is spent on
-  Figma before any work starts, and fewer long sessions that need
-  compacting.
+- **Token-light.** Your agent loads 4 tools instead of 121, so long
+  sessions fill up more slowly.
 - **Connects by itself, stays connected.** Open the plugin and it finds
   turbofig. No restarting plugins or gateways to get a connection. If the
   link drops, it reconnects on its own.
@@ -63,6 +59,10 @@ spends less of its plan before work starts. No paid seat, no quota.**
   resolution.
 - **Multi-file.** Several files and several agent sessions can run at
   once, handy when you juggle clients.
+- **No approval clicks, if your setup asks for them.** Some setups ask you
+  to approve every tool call, or block adding MCP servers. The file bridge
+  avoids both, so a long job can run without you. See
+  [docs/reliability.md](docs/reliability.md).
 
 ## Get started
 
