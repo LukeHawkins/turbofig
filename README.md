@@ -6,7 +6,7 @@
   </picture>
 
   <p><strong>Let AI drive Figma. Fast, light on tokens, hands-off.</strong><br>
-  <sub>Bridge any AI to Figma, on macOS.</sub></p>
+  <sub>No paid Figma seat. No quota. No Figma token. Free and open source, for macOS.</sub></p>
 
   [![CI](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml/badge.svg)](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml)
   [![Release](https://img.shields.io/github/v/release/LukeHawkins/turbofig)](https://github.com/LukeHawkins/turbofig/releases)
@@ -16,18 +16,9 @@
 
 <!-- DEMO VIDEO: replace with a GitHub user-attachments video URL. Drag the .mp4 into the README in GitHub's web editor to get one. -->
 
-<p align="center">
-  <img src="docs/menu-bar.png" alt="The turbofig menu-bar menu" width="185" valign="top">
-  &nbsp;&nbsp;
-  <img src="docs/about-window.png" alt="The turbofig About window" width="442" valign="top">
-</p>
-
 ---
 
-turbofig is a small menu-bar app that lets your AI agent work in the
-Figma file you have open. Install it once, open the file, and give your
-agent a brief. It builds, edits, and checks real Figma work while you walk
-away.
+Give your agent a brief, walk away, and come back to finished Figma work.
 
 ## Why turbofig
 
@@ -38,37 +29,28 @@ away.
 - **Fast.** turbofig runs all the time in the background, so your agent
   never waits for a server to start. One call can carry out many Figma
   operations at once.
-- **Easy.** Install with Homebrew, run `turbofig`, import the plugin into
-  Figma once, and paste the copy-prompt into your agent. No Figma account
-  token or sign-in.
-- **Token-light.** turbofig gives your agent only 4 tools, so the tool
-  schema it loads every session is small. See [How turbofig
-  compares](#how-turbofig-compares).
-- **Keeps screenshots out of your agent's context.** A screenshot is saved
-  to a file by default, so your agent gets a path, not image data, and it
-  is shrunk so its longest edge is at most 1200 px unless the agent asks
-  for full resolution. A screenshot never floods the conversation or wastes
-  tokens.
+- **No paid seat, no quota.** Figma's own MCP server (MCP is the standard
+  way AI apps plug into tools) needs a paid Full seat to edit files with
+  agents, and caps read tools at 20 calls a month
+  on the Starter plan, 200 a day on Professional. turbofig needs neither.
+  See [How turbofig compares](#how-turbofig-compares).
 - **Built to walk away from.** Give your agent a big task and leave it
   running: it keeps working on its own, so you do not watch or approve
   each step. See [docs/reliability.md](docs/reliability.md). It needs no
   MCP server, so it also works where adding one is restricted.
-- **Multi-file.** Run the plugin in several Figma files, and run several
-  agent sessions at once, one per file.
-
-**Works with:**
-
-- **Platform:** macOS (Apple Silicon and Intel). Windows and Linux are not
-  supported yet.
-- **Agents:** Cursor, Copilot CLI, and any other agent that can read and
-  write local files use the file bridge: click **Copy agent prompt**, no
-  MCP setup needed. An MCP client that starts its own local process, such
-  as Claude Code, can instead run `turbofig mcp`. Any MCP client with
-  streamable HTTP works too, as an advanced fallback.
-- Chat apps that run in a browser cannot reach your Mac, so they cannot use
-  turbofig.
+- **Token-light.** turbofig gives your agent only 4 tools. Fewer tools
+  means less of your AI plan is spent loading Figma before any work
+  starts.
+- **Screenshots stay small.** A screenshot is saved to a file by default,
+  so your agent gets a path, not image data, and it is shrunk so its
+  longest edge is at most 1200 px unless the agent asks for full
+  resolution.
+- **Multi-file.** Several files and several agent sessions can run at
+  once, handy when you juggle clients.
 
 ## Get started
+
+Takes a few minutes, most of it waiting for Homebrew.
 
 1. **Install.** New to the terminal? Open the Terminal app, paste each line
    below one at a time, and press Return. Need Homebrew first? Get it from
@@ -83,6 +65,12 @@ away.
    A tf icon appears in your menu bar. Click it and choose **About
    turbofig…** to get started.
 
+   <p align="center">
+     <img src="docs/menu-bar.png" alt="The turbofig menu-bar menu" width="185" valign="top">
+     &nbsp;&nbsp;
+     <img src="docs/about-window.png" alt="The turbofig About window" width="442" valign="top">
+   </p>
+
 2. **Add the plugin to Figma (once).** In the About window, click **Show
    plugin folder**. In Figma Desktop, choose **Plugins > Development >
    Import plugin from manifest…**, then drag `manifest.json` from the
@@ -96,39 +84,52 @@ away.
    and no permission dialog. See [docs/agents.md](docs/agents.md) for an
    agent-neutral version of the same prompt.
 
-**Using Claude Code's own MCP support instead?**
+**Prefer MCP?** Claude Code: `claude mcp add turbofig -- turbofig mcp`. See
+[docs/mcp-clients.md](docs/mcp-clients.md) for this and other MCP clients.
 
-```bash
-claude mcp add turbofig -- turbofig mcp
-```
+## Works with
 
-See [docs/mcp-clients.md](docs/mcp-clients.md) for this and other MCP
-clients.
+- **Agents:** Cursor, Copilot CLI, and any other agent that can read and
+  write local files use the file bridge: click **Copy agent prompt**, no
+  MCP setup needed. An MCP client that starts its own local process, such
+  as Claude Code, can instead run `turbofig mcp`. Any MCP client with
+  streamable HTTP works too, as an advanced fallback.
+- Chat apps that run in a browser cannot reach your Mac, so they cannot use
+  turbofig.
 
 ## What you can ask it
 
 - Build a pricing page frame from my existing components.
 - Tidy the auto layout spacing and padding across a whole page.
-- Rename layers across a page to match a naming rule.
 - Create a set of button components with size and state variants.
 - Update a text style or a color variable everywhere it is used.
 - Make a dark-mode variant of this frame.
 - Lay out a slide deck from a text outline.
 - Screenshot a frame so the agent can check its own work before you look.
+- Swap copy across dozens of frames and keep every text style intact.
+- Rename or restyle hundreds of layers to match a naming rule, from one
+  brief.
+- Match a coded component's spacing, colors and type in Figma so design
+  and code agree.
 
 Any instruction a Figma Plugin API script can carry out works, because
 `turbofig_execute` runs that script directly, including work on variables,
-components, component sets, and styles.
+components, component sets, and styles. Scriptable too: any process that
+can write a job file to the bridge folder can drive turbofig, not only a
+chat agent.
 
 ## How turbofig compares
 
 | | turbofig | Figma's MCP server | figma-console-mcp |
 |---|---|---|---|
-| Edits your canvas | Yes | Yes (remote server) | Yes (NPX/Local and Cloud modes) |
-| What you need | Figma Desktop + plugin running. No token, no sign-in, no Node | OAuth sign-in. Desktop server also needs Figma Desktop + a paid seat | Node.js (NPX/Local) or none (Cloud); Figma Desktop + Desktop Bridge; a Figma personal access token |
-| Tools your agent loads | 4 | Not listed | 96-121, depending on mode |
-| Works without adding an MCP server | Yes, with the file bridge | No | No |
-| Screenshots kept small by default | Yes: saved to a file, downscaled to 1200 px | See their docs | See their docs |
+| Needs a paid Figma seat to edit | No | Yes, a Full seat (Dev seats are read-only) | No |
+| Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
+| What you need | Figma Desktop + plugin. No token, no sign-in, no Node | OAuth sign-in | Figma Desktop + Desktop Bridge, a Figma personal access token, Node.js (not needed in Cloud Mode) |
+| Tools your agent loads | 4 | Not stated in their docs | 96 to 121, by mode |
+| Several files at once | Yes | Not stated in their docs | Yes |
+| Works without adding an MCP server | Yes, file bridge | No | No |
+| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
+| Comments, or work without Figma open | No | Without Figma open: yes (remote server) | Comments: yes (REST tools) |
 
 Fewer tools matters because many agents load every tool's name,
 description, and settings into context at the start of a session, before
@@ -140,10 +141,13 @@ lookup on every use. Either way, more tools means more for the agent to
 choose between. turbofig gives the agent 4 tools and lets one script do
 the work.
 
-**When to use something else.** If you need comments, use
-figma-console-mcp's REST tools. If you need to work without Figma Desktop
-open, use Figma's remote MCP server. Full comparison, with sources:
+turbofig has no quota and needs no paid seat. If you need comments,
+figma-console-mcp's REST tools cover them. If you must work without Figma
+Desktop open, Figma's remote server can. Full comparison, with sources:
 [docs/comparison.md](docs/comparison.md).
+
+Measured speed and token-per-edit numbers will be added after the
+benchmark run.
 
 ## For developers
 
