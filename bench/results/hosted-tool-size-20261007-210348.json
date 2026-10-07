@@ -1,0 +1,39 @@
+{
+  "date": "2026-10-07T21:03:48Z",
+  "note": "Approximate. Claude's tokenizer is not public; counts use js-tiktoken 1.0.21 as a proxy (o200k_base, cl100k_base), the same method as tool-tokens-20261007-221725.md.",
+  "context_window_tokens": 200000,
+  "figma_console_mcp_cloud_mode": {
+    "method": "estimate",
+    "reason": "The upstream README (figma/southleft figma-console-mcp, README.md on main, fetched 2026-10-07) states Cloud Mode exposes 96 of 121 tools, and tags most tool-doc sections '(Local Mode + Cloud Mode)' or '(Local Mode only)'. Reconciling every explicit tag against the stated 121-96=25 exclusions only accounts for 14-18 tools (Real-Time Awareness x2, figma_get_design_system_summary/figma_get_token_values x2, figma_execute_across_files x1, figma_search_components/figma_get_component_details x2, the Design System Extraction figma_ds_* group x7, plus an ambiguous Console Debugging group x4 that the capability table implies is excluded but the per-tool doc does not tag). The remaining 7-11 tools cannot be attributed to specific names with confidence, so the README does not name the Cloud tool set precisely enough to filter the NPX dump by name. Falls back to the proportional estimate the task specifies: 96/121 of the measured NPX figures.",
+    "base_npx_measurement": {
+      "source": "bench/results/tool-tokens-20261007-221725.md (same repo, same day)",
+      "tools": 121,
+      "bytes": 163208,
+      "approx_tokens_o200k_base": 36569,
+      "approx_tokens_cl100k_base": 35848
+    },
+    "cloud_mode_tools": 96,
+    "cloud_mode_estimate": {
+      "bytes_est": 129487,
+      "approx_tokens_o200k_base_est": 29013,
+      "approx_tokens_cl100k_base_est": 28441,
+      "share_of_200k_context_o200k_est": 0.1451
+    }
+  },
+  "figma_for_agents": {
+    "method": "approximate JSON built from published docs",
+    "source": "https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/ (fetched 2026-10-07), cross-checked against https://github.com/figma/mcp-server-guide",
+    "tools": 36,
+    "tool_groups": ["Design to code (7)", "Code to design (5)", "Image generation (1)", "Design systems and Code Connect (5)", "Generative plugins and shaders (9)", "Account (1)", "Weave tools (6)"],
+    "mcp_prompts_not_counted_as_tools": 1,
+    "tool_list_json": "bench/results/hosted-tool-size-20261007-210348-figma-for-agents-tools.json",
+    "bytes": 6262,
+    "approx_tokens_o200k_base": 1366,
+    "approx_tokens_cl100k_base": 1352,
+    "share_of_200k_context_o200k": 0.00683
+  },
+  "ready_time": {
+    "figma_console_mcp_cloud_mode": "Hosted, no local start",
+    "figma_for_agents": "Hosted, no local start"
+  }
+}

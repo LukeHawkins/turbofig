@@ -64,15 +64,17 @@ are listed in the Sources section at the end.
 - **Pricing status, from Figma's own FAQ:** "This will eventually be a
   usage-based paid feature, but is currently available for free during the
   beta period."
-- Tool count: not stated in these sources, so not given here.
+- Tool count: 36, across 7 groups (design to code, code to design, image
+  generation, design systems and Code Connect, generative plugins and
+  shaders, account, Weave tools), per the published tool-and-prompts docs.
 - Several files at once, and comments: not stated in these sources.
 
 ## Table
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud Mode) | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|---|
-| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | Not measured (96 tools per vendor docs) | Not published |
-| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Not measured | Hosted, not measured |
+| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | 14.5% est. (96 tools, scaled from the measured NPX tokens) | 36 tools; size not published (a docs-based lower bound is 0.7%, see below) |
+| Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, no local start | Hosted, no local start |
 | Runs any Figma plugin script (advanced work) | **Yes** | Yes | Yes | Partly: no images or custom fonts, 20 KB output per call |
 | Cost | **Free** | Free | Free (no Cloud-specific pricing or limits stated) | Editing needs a paid Full seat; write tools free in beta, later usage-based |
 | Usage limits | **None** | None stated | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
@@ -112,14 +114,31 @@ Dated 2026-10-07.
   36,600 tokens, counted with `o200k_base` (`cl100k_base`: 668 and 35,848).
   That is 0.34% against 18.3% of a 200K-token context. Method and raw
   data: [bench/results/tool-tokens-20261007-221725.md](../bench/results/tool-tokens-20261007-221725.md).
-- **figma-console-mcp Cloud Mode: not measured.** The Cloud Mode `/mcp`
-  endpoint (`https://figma-console-mcp.southleft.com/mcp`) rejects a
-  placeholder `figd_dummy` token with `401 invalid_token` before it will
-  answer `tools/list`, so tool count, byte size, token count, and timing
+- **figma-console-mcp Cloud Mode: live `tools/list` not measured, size
+  estimated.** The Cloud Mode `/mcp` endpoint
+  (`https://figma-console-mcp.southleft.com/mcp`) rejects a placeholder
+  `figd_dummy` token with `401 invalid_token` before it will answer
+  `tools/list`, so a live tool count, byte size, token count, and timing
   could not be measured without a real, valid Figma personal access
-  token. The 96-tool figure for Cloud Mode is a vendor-stated count from
-  the README, not a bench result. Method and raw data:
+  token. Method and raw data:
   [bench/results/cloud-mode-20261007-203749.md](../bench/results/cloud-mode-20261007-203749.md).
+  The README names which tool groups Cloud Mode excludes, but the tags do
+  not reconcile to an exact 96-tool list, so the 14.5% figure above is a
+  proportional estimate (96 of the 121 measured NPX tools), not a filtered
+  tool-name list. Method and raw data:
+  [bench/results/hosted-tool-size-20261007-210348.md](../bench/results/hosted-tool-size-20261007-210348.md).
+- **Figma for Agents tool size: estimated from published docs.** Figma
+  publishes a name, description, group and (for most tools) a parameters
+  list for its 36 tools at
+  [developers.figma.com/docs/figma-mcp-server/tools-and-prompts](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/),
+  but not a `tools/list` JSON-RPC response or full JSON Schema types, so
+  the 0.7% figure above counts an approximate JSON built from that page,
+  not a real server response. It is a lower bound: the docs give short
+  descriptions and no full schemas, so the real definitions are larger
+  (figma-console-mcp's real definitions average about 1,350 bytes per tool;
+  this docs-based JSON averages about 170). Even this lower bound, 6.3 KB,
+  is more than twice turbofig's 2.8 KB. Method and raw data:
+  [bench/results/hosted-tool-size-20261007-210348.md](../bench/results/hosted-tool-size-20261007-210348.md).
 - **Figma for Agents write-to-canvas limits:** 20 KB output per call, no
   image or asset support, no custom fonts, components must be published
   manually, write tools exempt from rate limits.
@@ -133,6 +152,14 @@ Dated 2026-10-07.
 - **Figma for Agents, general docs and seat requirement:**
   [developers.figma.com/docs/figma-mcp-server](https://developers.figma.com/docs/figma-mcp-server/)
   and [help.figma.com/hc/en-us/articles/32132100833559](https://help.figma.com/hc/en-us/articles/32132100833559).
+- **Figma for Agents tool list**, source for the 36-tool count, groups,
+  descriptions and parameters:
+  [developers.figma.com/docs/figma-mcp-server/tools-and-prompts](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/),
+  cross-checked against
+  [github.com/figma/mcp-server-guide](https://github.com/figma/mcp-server-guide).
+- **Hosted-option tool size (both Cloud Mode and Figma for Agents)**,
+  method and raw data:
+  [bench/results/hosted-tool-size-20261007-210348.md](../bench/results/hosted-tool-size-20261007-210348.md).
 - **figma-console-mcp README**, source for tool modes, tool counts,
   `figma_execute` ("Run any Figma Plugin API code"), and
   `figma_execute_across_files`:

@@ -140,28 +140,37 @@ chat agent.
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud) | Figma for Agents |
 |---|---|---|---|---|
-| Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
-| AI memory the tools take | ✓ **0.3%** | ✗ 18% | ? (96 tools) | ? |
-| Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | ? | ? |
+| AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | 36 tools, size not published |
+| Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | Hosted, no local start | Hosted, no local start |
+| Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
+| Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files (an MCP server is there too, if you prefer) | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
 | Needs a Figma access token | ✓ **No** | ✗ Yes, you create one | ✗ Yes, you create one | Sign in with Figma |
 | Extra setup | ✓ **None after one plugin import** | ✗ Node.js, MCP config, Desktop Bridge plugin | ✗ Pair the Desktop Bridge plugin | Connect your AI client |
-| Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
 | Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
 
 **Bottom line:** if you work in Figma Desktop, turbofig is the only option
 here that needs no MCP server, no token and no extra setup, and it gives
 your AI full scripting power with the lightest load, for free.
 
-<sub>? = not published or not measured: Cloud Mode lists its tools only with
-a real Figma token. Comments, and working without Figma Desktop open, are
-covered in the full comparison. AI memory = share of a 200K-token context if every tool
-is loaded up front; tokens are approximate (OpenAI tokenizer, as Claude's is
-not public); exact sizes are 2.8 KB against 163 KB. Speed and cost per task
+Prefer MCP? turbofig also runs as an MCP server:
+`claude mcp add turbofig -- turbofig mcp`.
+
+<sub>? = not published or not measured. est. = a clearly labelled estimate,
+not a direct measurement: Cloud Mode lists its tools only with a real
+Figma token, so its figure scales the measured NPX tool list by its
+published tool count (96 of 121); Figma for Agents has no public
+`tools/list` response, so its figure counts an approximate JSON built from
+its published tool names, descriptions and parameters. Comments, and
+working without Figma Desktop open, are covered in the full comparison. AI
+memory = share of a 200K-token context if every tool is loaded up front;
+tokens are approximate (OpenAI tokenizer, as Claude's is not public); exact
+sizes are 2.8 KB (turbofig) against 163 KB (NPX). Speed and cost per task
 come with the full benchmark. Methods and raw data:
 [tool tokens](bench/results/tool-tokens-20261007-221725.md),
 [startup and size](bench/results/session-cost-20261007-144824.md),
-[Cloud Mode](bench/results/cloud-mode-20261007-203749.md). Every competitor
-fact, with dated sources: [docs/comparison.md](docs/comparison.md).</sub>
+[Cloud Mode reachability](bench/results/cloud-mode-20261007-203749.md),
+[hosted-option tool size](bench/results/hosted-tool-size-20261007-210348.md).
+Every competitor fact, with dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 **Why tool count matters.** Many AI agents read the description of every
 tool they have before doing any work, in every session, and you pay for
