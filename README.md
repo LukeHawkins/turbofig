@@ -140,21 +140,21 @@ chat agent.
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud) | Figma for Agents |
 |---|---|---|---|---|
-| Cost | ✓ **Free** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit |
-| Usage limits | ✓ **None** | ✓ None stated | ✓ None stated | ✗ 20 read calls a month (Starter) to 600 a day (Enterprise) |
-| Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
+| Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
 | AI memory the tools take | ✓ **0.3%** | ✗ 18% | ? (96 tools) | ? |
-| Ready when your AI starts | ✓ **Under 0.1 s** | About 2 s (30 s first run) | ? | ? |
-| Setup | ✓ **Homebrew + one plugin import** | Node.js, Figma token, Desktop Bridge | Figma token, Desktop Bridge pairing | Sign in with Figma |
-| The catch | Needs Figma Desktop open; no comments | Heavy tool list, most setup | Token and pairing setup | Paid seat, read quotas, limited writes; usage-based pricing coming |
+| Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | ? | ? |
+| Needs a Figma access token | ✓ **No** | ✗ Yes, you create one | ✗ Yes, you create one | Sign in with Figma |
+| Extra setup | ✓ **None after one plugin import** | ✗ Node.js, MCP config, Desktop Bridge plugin | ✗ Pair the Desktop Bridge plugin | Connect your AI client |
+| Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
+| Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
 
-**Bottom line:** if you work in Figma Desktop, turbofig gives your AI full
-scripting power for free, with no limits and the lightest load. Pick
-figma-console-mcp if you need comments, or Figma for Agents if you have a
-Full seat and must work without Desktop open.
+**Bottom line:** if you work in Figma Desktop, turbofig is the only option
+here that needs no MCP server, no token and no extra setup, and it gives
+your AI full scripting power with the lightest load, for free.
 
 <sub>? = not published or not measured: Cloud Mode lists its tools only with
-a real Figma token. AI memory = share of a 200K-token context if every tool
+a real Figma token. Comments, and working without Figma Desktop open, are
+covered in the full comparison. AI memory = share of a 200K-token context if every tool
 is loaded up front; tokens are approximate (OpenAI tokenizer, as Claude's is
 not public); exact sizes are 2.8 KB against 163 KB. Speed and cost per task
 come with the full benchmark. Methods and raw data:
