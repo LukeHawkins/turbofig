@@ -23,7 +23,11 @@ exposes 4 tools, including one that runs Figma Plugin API JavaScript
 directly. `turbofig mcp` starts the daemon when your agent's MCP client
 launches it, and the daemon keeps running after the agent session ends.
 
-<!-- SCREENSHOT: menu-bar menu (tray icon open) and the About window, side by side -->
+<p align="center">
+  <img src="docs/menu-bar.png" alt="The turbofig menu-bar menu" width="185" valign="top">
+  &nbsp;&nbsp;
+  <img src="docs/about-window.png" alt="The turbofig About window" width="442" valign="top">
+</p>
 
 **Works with:**
 
