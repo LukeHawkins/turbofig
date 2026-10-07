@@ -21,14 +21,13 @@
 Ask your AI for real Figma work in plain English, and watch it build in
 the file you have open.
 
-- **Starts instantly.** Ready in under a tenth of a second.
-  figma-console-mcp takes about 2 seconds each session, and about 30 on a
-  first run.
-- **58× lighter.** Your AI reads 58 times less setup before it starts, so
-  more of your AI plan goes into the actual design.
+- **Starts instantly.** It is always running in the background, so there
+  is no wait for it to boot when your AI starts.
+- **Lightweight.** It gives your AI a short list of 4 actions instead of a
+  long manual, so more of your AI's memory and plan goes into the design.
 - **Free to use.** No paid Figma seat, no monthly quota.
 
-<sub>[How we measured](bench/results/session-cost-20261007-144824.md)</sub>
+<sub>See [how turbofig compares](#how-turbofig-compares) and [how we measured](bench/results/session-cost-20261007-144824.md).</sub>
 
 ## Why turbofig
 
@@ -36,33 +35,24 @@ the file you have open.
 > compact long design sessions in Claude Code, and big jobs finish much
 > faster.
 
-- **Fast.** turbofig is always running in the background, so there is no
-  start-up wait, and one call can carry out many Figma operations at
-  once.
-- **No paid seat, no quota.** Figma's own official AI connector (an MCP
-  server) needs a paid Full seat to edit files with agents, and caps read
-  tools at 20 calls a month on the Starter plan, 200 a day on
-  Professional. turbofig needs neither. See [How turbofig
-  compares](#how-turbofig-compares). No shared login or billing either, so
-  a whole team or class can run it side by side.
+- **One request, many changes.** Your AI can send a whole script at once,
+  not one change per request.
 - **Easy.** One Homebrew command installs it, and `brew upgrade turbofig`
   updates it. Import the plugin into Figma once, paste the copy-prompt
-  into your agent, and you are done. No Node, no Figma token, no sign-in.
-- **Token-light.** Your agent loads 4 tools instead of 121, so long
-  sessions fill up more slowly.
+  into your agent, and you are done. No Figma token, no sign-in, no
+  shared billing, so a whole team or class can run it side by side.
 - **Connects by itself, stays connected.** Open the plugin and it finds
   turbofig. No restarting plugins or gateways to get a connection. If the
   link drops, it reconnects on its own.
-- **Screenshots stay small.** A screenshot is saved to a file by default,
-  so your agent gets a path, not image data, and it is shrunk so its
-  longest edge is at most 1200 px unless the agent asks for full
-  resolution.
+- **Screenshots stay small.** Screenshots are saved as files and shrunk
+  to at most 1200 px, so they do not fill up your AI's memory. Full size
+  is there when your AI asks for it.
 - **Multi-file.** Several files and several agent sessions can run at
   once, handy when you juggle clients.
 - **No approval clicks, if your setup asks for them.** Some setups ask you
-  to approve every tool call, or block adding MCP servers. The file bridge
-  avoids both, so a long job can run without you. See
-  [docs/reliability.md](docs/reliability.md).
+  to approve every tool call, or block adding MCP servers. turbofig talks
+  to your AI through plain files, so it avoids both and a long job can
+  run without you. See [docs/reliability.md](docs/reliability.md).
 
 ## Get started
 
@@ -103,7 +93,8 @@ Code, Cursor or Copilot CLI.
    and no permission dialog. See [docs/agents.md](docs/agents.md) for an
    agent-neutral version of the same prompt.
 
-**Prefer MCP?** Claude Code: `claude mcp add turbofig -- turbofig mcp`. See
+**Prefer MCP (how apps like Claude Code plug in extra tools)?** Claude
+Code: `claude mcp add turbofig -- turbofig mcp`. See
 [docs/mcp-clients.md](docs/mcp-clients.md) for this and other MCP clients.
 
 ## Works with
@@ -111,8 +102,7 @@ Code, Cursor or Copilot CLI.
 - **Agents:** Cursor, Copilot CLI, and any other agent that can read and
   write local files use the file bridge: click **Copy agent prompt**, no
   MCP setup needed. An MCP client that starts its own local process, such
-  as Claude Code, can instead run `turbofig mcp`. Any MCP client with
-  streamable HTTP works too, as an advanced fallback.
+  as Claude Code, can instead run `turbofig mcp`.
 - Chat apps that run in a browser cannot reach your Mac, so they cannot use
   turbofig.
 
@@ -130,15 +120,14 @@ Code, Cursor or Copilot CLI.
 - Match a coded component's spacing, colors and type in Figma so design
   and code agree.
 
-Any instruction a Figma Plugin API script can carry out works, because
-`turbofig_execute` runs that script directly, including work on variables,
-components, component sets, and styles. Scriptable too: any process that
+turbofig can run any script a Figma plugin could run, so variables,
+components, component sets and styles all work. Scriptable too: any process that
 can write a job file to the bridge folder can drive turbofig, not only a
 chat agent.
 
 ## How turbofig compares
 
-| | turbofig | Figma's MCP server | figma-console-mcp |
+| | turbofig | Figma's MCP server (Figma for Agents) | figma-console-mcp |
 |---|---|---|---|
 | Needs a paid Figma seat to edit | No | Yes, a Full seat (Dev seats are read-only) | No |
 | Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
@@ -148,29 +137,29 @@ chat agent.
 | Several files at once | Yes | Not stated in their docs | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No |
 | Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
-| Comments, or work without Figma open | No | Without Figma open: yes (remote server) | Comments: yes (REST tools) |
+| Comments | No | Not stated in their docs | Yes (REST tools) |
+| Works without Figma Desktop open | No | Yes (remote server) | Partly (REST tools) |
 
 turbofig has no quota and needs no paid seat. If you need comments,
 figma-console-mcp's REST tools cover them. If you must work without Figma
 Desktop open, Figma's remote server can. Full comparison, with sources:
 [docs/comparison.md](docs/comparison.md).
 
-Fewer tools matters because many agents load every tool's name,
-description, and settings into context at the start of a session, before
-any work starts: Anthropic measured about 72K tokens to load 50+ MCP tools
-up front ([Anthropic, "Advanced tool
-use"](https://www.anthropic.com/engineering/advanced-tool-use)). Some
-newer clients defer tools behind a search step instead, which adds a
-lookup on every use. Either way, more tools means more for the agent to
-choose between. turbofig gives the agent 4 tools and lets one script do
-the work.
+Why fewer tools matters: before doing any work, many AI agents read the
+full description of every tool they have. Anthropic measured about 72K
+tokens (a token is a small chunk of text the AI reads and you pay for) to
+load 50+ MCP tools ([Anthropic, "Advanced tool
+use"](https://www.anthropic.com/engineering/advanced-tool-use)). Our
+sizes above are exact bytes, not tokens; token counts come with the full
+benchmark. Some newer agents look tools up on demand instead, which adds
+a lookup each time. Either way, fewer tools leaves more room for your
+design.
 
 Tool size and startup time are measured: see
 [bench/results](bench/results/session-cost-20261007-144824.md) for the
 method and raw data, and run `bench/mcp-stdio-probe.mjs` to check them
-yourself. Sizes are exact bytes, not tokens: a token count needs a real
-agent session, which the full benchmark will measure. Speed and token
-cost per edit will be added after the full benchmark run.
+yourself. Speed and token cost per edit will be added after the full
+benchmark run.
 
 ## For developers
 
