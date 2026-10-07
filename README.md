@@ -20,15 +20,19 @@
 
 Give your agent a brief, walk away, and come back to finished Figma work.
 
+**Ready in 66 ms. Tool definitions 58× smaller than figma-console-mcp's.
+No paid seat, no quota.** ([measured](bench/results/session-cost-20261007-144824.md))
+
 ## Why turbofig
 
 > From the creator: since switching to turbofig, I no longer have to
 > compact long design sessions in Claude Code, and big jobs finish much
 > faster.
 
-- **Fast.** turbofig runs all the time in the background, so your agent
-  never waits for a server to start. One call can carry out many Figma
-  operations at once.
+- **Fast.** turbofig runs all the time in the background, so its tools
+  are ready in about 66 ms. figma-console-mcp starts through npx, which
+  took about 1.9 s per session in our test, and 29 s on a first run. One
+  call can carry out many Figma operations at once.
 - **No paid seat, no quota.** Figma's own MCP server (MCP is the standard
   way AI apps plug into tools) needs a paid Full seat to edit files with
   agents, and caps read tools at 20 calls a month
@@ -38,9 +42,14 @@ Give your agent a brief, walk away, and come back to finished Figma work.
   running: it keeps working on its own, so you do not watch or approve
   each step. See [docs/reliability.md](docs/reliability.md). It needs no
   MCP server, so it also works where adding one is restricted.
-- **Token-light.** turbofig gives your agent only 4 tools. Fewer tools
-  means less of your AI plan is spent loading Figma before any work
-  starts.
+- **Token-light.** Your agent loads turbofig's tool definitions at the
+  start of every session: 4 tools, 2.8 KB. figma-console-mcp's are 121
+  tools, 163 KB. Less to load means less of your AI plan is spent on
+  Figma before any work starts, and fewer long sessions that need
+  compacting.
+- **Connects by itself, stays connected.** Open the plugin and it finds
+  turbofig. No restarting plugins or gateways to get a connection. If the
+  link drops, it reconnects on its own.
 - **Screenshots stay small.** A screenshot is saved to a file by default,
   so your agent gets a path, not image data, and it is shrunk so its
   longest edge is at most 1200 px unless the agent asks for full
@@ -125,7 +134,8 @@ chat agent.
 | Needs a paid Figma seat to edit | No | Yes, a Full seat (Dev seats are read-only) | No |
 | Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
 | What you need | Figma Desktop + plugin. No token, no sign-in, no Node | OAuth sign-in | Figma Desktop + Desktop Bridge, a Figma personal access token, Node.js (not needed in Cloud Mode) |
-| Tools your agent loads | 4 | Not stated in their docs | 96 to 121, by mode |
+| Tool definitions your agent loads every session | **4 tools, 2.8 KB** | Not stated in their docs | 121 tools, 163 KB (NPX mode; 96 tools in Cloud Mode) |
+| Ready to use after the agent starts | **About 66 ms** (always running) | Hosted (remote server) | About 1.9 s via npx, 29 s on a first run |
 | Several files at once | Yes | Not stated in their docs | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No |
 | Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
@@ -146,7 +156,10 @@ figma-console-mcp's REST tools cover them. If you must work without Figma
 Desktop open, Figma's remote server can. Full comparison, with sources:
 [docs/comparison.md](docs/comparison.md).
 
-Measured speed and token-per-edit numbers will be added after the
+Tool size and startup time are measured: see
+[bench/results](bench/results/session-cost-20261007-144824.md) for the
+method and raw data, and run `bench/mcp-stdio-probe.mjs` to check them
+yourself. Speed and token cost per edit will be added after the full
 benchmark run.
 
 ## For developers
