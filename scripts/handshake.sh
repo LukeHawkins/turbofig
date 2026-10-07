@@ -13,9 +13,12 @@
 
 set -euo pipefail
 
-# Use a dedicated test port so the script never clashes with a real daemon on
-# the default 18846. Override with TURBOFIG_MCP_PORT if needed.
+# Use dedicated test ports and a throwaway bridge dir so the script never
+# clashes with a real daemon or touches the real token. Override the ports with
+# TURBOFIG_MCP_PORT / TURBOFIG_WS_PORT if needed.
 PORT="${TURBOFIG_MCP_PORT:-18860}"
+WS_PORT="${TURBOFIG_WS_PORT:-18861}"
+BRIDGE_DIR="$(mktemp -d)"
 BASE="http://127.0.0.1:${PORT}/mcp"
 ACCEPT="application/json, text/event-stream"
 
@@ -34,6 +37,7 @@ cleanup() {
   kill "${DAEMON_PID:-}" 2>/dev/null || true
   wait "${DAEMON_PID:-}" 2>/dev/null || true
   [ -n "${HEADERS:-}" ] && rm -f "${HEADERS}"
+  [ -n "${BRIDGE_DIR:-}" ] && rm -rf "${BRIDGE_DIR}"
 }
 trap cleanup EXIT
 
@@ -43,14 +47,17 @@ if [ ! -x "${BIN}" ]; then
   (cd "${ROOT}" && cargo build --quiet)
 fi
 
-# Start the daemon in the background.
-TURBOFIG_MCP_PORT="${PORT}" "${BIN}" &
+# Start the daemon in the foreground mode, backgrounded by the shell, so the
+# script owns its PID. Bare `turbofig` is the first-run helper, not the daemon.
+TURBOFIG_MCP_PORT="${PORT}" TURBOFIG_WS_PORT="${WS_PORT}" \
+  TURBOFIG_BRIDGE_DIR="${BRIDGE_DIR}" "${BIN}" serve &
 DAEMON_PID=$!
 
-# Wait for the daemon to accept connections (up to 5 seconds).
+# Wait for the daemon to accept connections and write its token (up to 5 s).
 READY=0
 for _ in $(seq 1 50); do
-  if curl -s -o /dev/null "http://127.0.0.1:${PORT}/mcp" 2>/dev/null; then
+  if [ -s "${BRIDGE_DIR}/token" ] \
+    && curl -s -o /dev/null "http://127.0.0.1:${PORT}/mcp" 2>/dev/null; then
     READY=1
     break
   fi
@@ -61,22 +68,28 @@ if [ "${READY}" -eq 0 ]; then
   fail "daemon did not become ready within 5 seconds"
 fi
 
+# /mcp requires the pairing token as a bearer token.
+AUTH="Authorization: Bearer $(tr -d '\r\n' < "${BRIDGE_DIR}/token")"
+
 # Step 1: initialize. Capture the response headers to read mcp-session-id.
 INIT_BODY='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"curl-skill","version":"0.1.0"},"capabilities":{}}}'
 curl -s -D "${HEADERS}" -o /dev/null \
+  -H "${AUTH}" \
   -H "Accept: ${ACCEPT}" \
   -H "Content-Type: application/json" \
   -d "${INIT_BODY}" \
   "${BASE}"
 
 # Read the session id from the response headers (case-insensitive match).
-SESSION_ID="$(grep -i '^mcp-session-id:' "${HEADERS}" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r\n')"
-[ -n "${SESSION_ID}" ] || fail "initialize did not return an mcp-session-id header"
+SESSION_ID="$(grep -i '^mcp-session-id:' "${HEADERS}" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r\n' || true)"
+[ -n "${SESSION_ID}" ] || fail "initialize did not return an mcp-session-id header. Headers:
+$(cat "${HEADERS}")"
 echo "Got session id: ${SESSION_ID}"
 
 # Step 2: notifications/initialized with the session id.
 NOTIF_BODY='{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
 curl -s -o /dev/null \
+  -H "${AUTH}" \
   -H "Accept: ${ACCEPT}" \
   -H "Content-Type: application/json" \
   -H "mcp-session-id: ${SESSION_ID}" \
@@ -86,6 +99,7 @@ curl -s -o /dev/null \
 # Step 3: tools/call turbofig_status with the session id.
 CALL_BODY='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"turbofig_status","arguments":{}}}'
 RESPONSE="$(curl -s \
+  -H "${AUTH}" \
   -H "Accept: ${ACCEPT}" \
   -H "Content-Type: application/json" \
   -H "mcp-session-id: ${SESSION_ID}" \
@@ -102,6 +116,7 @@ ${RESPONSE}"
 
 # Step 4: statefulness. A tools/call without the session id must be rejected.
 STATUS="$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "${AUTH}" \
   -H "Accept: ${ACCEPT}" \
   -H "Content-Type: application/json" \
   -d "${CALL_BODY}" \
