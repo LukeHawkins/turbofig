@@ -18,10 +18,13 @@
 
 ---
 
-Give your agent a brief, walk away, and come back to finished Figma work.
+Give your agent a brief in plain English, walk away, and come back to
+finished Figma work.
 
-**Ready in 66 ms. Tool definitions 58× smaller than figma-console-mcp's.
-No paid seat, no quota.** ([measured](bench/results/session-cost-20261007-144824.md))
+**Ready in about 66 ms, because it is already running. Its tool
+definitions are 2.8 KB against 163 KB for figma-console-mcp, so your AI
+spends less of its plan before work starts. No paid seat, no quota.**
+([method and caveats](bench/results/session-cost-20261007-144824.md))
 
 ## Why turbofig
 
@@ -29,15 +32,19 @@ No paid seat, no quota.** ([measured](bench/results/session-cost-20261007-144824
 > compact long design sessions in Claude Code, and big jobs finish much
 > faster.
 
-- **Fast.** turbofig runs all the time in the background, so its tools
-  are ready in about 66 ms. figma-console-mcp starts through npx, which
-  took about 1.9 s per session in our test, and 29 s on a first run. One
-  call can carry out many Figma operations at once.
-- **No paid seat, no quota.** Figma's own MCP server (MCP is the standard
-  way AI apps plug into tools) needs a paid Full seat to edit files with
-  agents, and caps read tools at 20 calls a month
-  on the Starter plan, 200 a day on Professional. turbofig needs neither.
-  See [How turbofig compares](#how-turbofig-compares).
+- **Fast.** turbofig's tools answer in about 66 ms, because it is already
+  running in the background. figma-console-mcp starts a fresh npx process
+  each session, about 1.9 s in our test, 29 s on a first run. One call can
+  carry out many Figma operations at once.
+- **No paid seat, no quota.** Figma's own official AI connector (an MCP
+  server) needs a paid Full seat to edit files with agents, and caps read
+  tools at 20 calls a month on the Starter plan, 200 a day on
+  Professional. turbofig needs neither. See [How turbofig
+  compares](#how-turbofig-compares). No shared login or billing either, so
+  a whole team or class can run it side by side.
+- **Easy.** One Homebrew command installs it, and `brew upgrade turbofig`
+  updates it. Import the plugin into Figma once, paste the copy-prompt
+  into your agent, and you are done. No Node, no Figma token, no sign-in.
 - **Built to walk away from.** Give your agent a big task and leave it
   running: it keeps working on its own, so you do not watch or approve
   each step. See [docs/reliability.md](docs/reliability.md). It needs no
@@ -61,9 +68,12 @@ No paid seat, no quota.** ([measured](bench/results/session-cost-20261007-144824
 
 Takes a few minutes, most of it waiting for Homebrew.
 
-1. **Install.** New to the terminal? Open the Terminal app, paste each line
-   below one at a time, and press Return. Need Homebrew first? Get it from
-   [brew.sh](https://brew.sh).
+You need an AI agent that can work with files on your Mac, such as Claude
+Code, Cursor or Copilot CLI.
+
+1. **Install.** New to the terminal? No typing needed: open the Terminal
+   app, paste each line below, and press Return. Need Homebrew first? Get
+   it from [brew.sh](https://brew.sh).
 
    ```bash
    brew install LukeHawkins/tap/turbofig
@@ -109,15 +119,14 @@ Takes a few minutes, most of it waiting for Homebrew.
 ## What you can ask it
 
 - Build a pricing page frame from my existing components.
-- Tidy the auto layout spacing and padding across a whole page.
+- Resize one master frame into a full set of ad and social formats.
+- Swap copy across dozens of frames and keep every text style intact.
+- Rename or restyle hundreds of layers to match a naming rule.
 - Create a set of button components with size and state variants.
 - Update a text style or a color variable everywhere it is used.
 - Make a dark-mode variant of this frame.
-- Lay out a slide deck from a text outline.
-- Screenshot a frame so the agent can check its own work before you look.
-- Swap copy across dozens of frames and keep every text style intact.
-- Rename or restyle hundreds of layers to match a naming rule, from one
-  brief.
+- Lay out a slide deck or a storyboard from a text outline.
+- Generate a grid of frames from a CSV or JSON list.
 - Match a coded component's spacing, colors and type in Figma so design
   and code agree.
 
@@ -134,12 +143,17 @@ chat agent.
 | Needs a paid Figma seat to edit | No | Yes, a Full seat (Dev seats are read-only) | No |
 | Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
 | What you need | Figma Desktop + plugin. No token, no sign-in, no Node | OAuth sign-in | Figma Desktop + Desktop Bridge, a Figma personal access token, Node.js (not needed in Cloud Mode) |
-| Tool definitions your agent loads every session | **4 tools, 2.8 KB** | Not stated in their docs | 121 tools, 163 KB (NPX mode; 96 tools in Cloud Mode) |
-| Ready to use after the agent starts | **About 66 ms** (always running) | Hosted (remote server) | About 1.9 s via npx, 29 s on a first run |
+| Tool definitions your agent loads every session | **4 tools, 2.8 KB** | Not published | 121 tools, 163 KB (NPX mode; 96 tools in Cloud Mode) |
+| Ready to use after the agent starts | **About 66 ms** (already running in the background) | Hosted remote server, not measured | About 1.9 s: npx starts a fresh process each session (29 s on a first run) |
 | Several files at once | Yes | Not stated in their docs | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No |
 | Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
 | Comments, or work without Figma open | No | Without Figma open: yes (remote server) | Comments: yes (REST tools) |
+
+turbofig has no quota and needs no paid seat. If you need comments,
+figma-console-mcp's REST tools cover them. If you must work without Figma
+Desktop open, Figma's remote server can. Full comparison, with sources:
+[docs/comparison.md](docs/comparison.md).
 
 Fewer tools matters because many agents load every tool's name,
 description, and settings into context at the start of a session, before
@@ -151,16 +165,12 @@ lookup on every use. Either way, more tools means more for the agent to
 choose between. turbofig gives the agent 4 tools and lets one script do
 the work.
 
-turbofig has no quota and needs no paid seat. If you need comments,
-figma-console-mcp's REST tools cover them. If you must work without Figma
-Desktop open, Figma's remote server can. Full comparison, with sources:
-[docs/comparison.md](docs/comparison.md).
-
 Tool size and startup time are measured: see
 [bench/results](bench/results/session-cost-20261007-144824.md) for the
 method and raw data, and run `bench/mcp-stdio-probe.mjs` to check them
-yourself. Speed and token cost per edit will be added after the full
-benchmark run.
+yourself. Sizes are exact bytes, not tokens: a token count needs a real
+agent session, which the full benchmark will measure. Speed and token
+cost per edit will be added after the full benchmark run.
 
 ## For developers
 

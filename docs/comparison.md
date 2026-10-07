@@ -74,10 +74,16 @@ Source: [its README](https://github.com/southleft/figma-console-mcp).
 | Usage limits | None | Read tools: 20 calls/month (Starter, View/Collab), 200/day (Professional, Organization), 600/day (Enterprise) | See their docs |
 | What you need | Figma Desktop + plugin. No token, no sign-in, no Node | OAuth sign-in | Figma Desktop + Desktop Bridge, a Figma personal access token, Node.js (not needed in Cloud Mode) |
 | Tools your agent loads | 4 | Not stated in their docs | 96 to 121, by mode |
+| Tool definitions your agent loads every session | 4 tools, 2.8 KB | Not published | 121 tools, 163 KB (NPX mode; 96 tools in Cloud Mode) |
+| Ready to use after the agent starts | About 66 ms (already running in the background) | Hosted remote server, not measured | About 1.9 s: npx starts a fresh process each session (29 s on a first run) |
 | Several files at once | Yes | Not stated in their docs | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No |
 | Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs |
 | Comments, or work without Figma open | No | Without Figma open: yes (remote server) | Comments: yes (REST tools) |
+
+Tool size and startup time are measured: see
+[bench/results](../bench/results/session-cost-20261007-144824.md) for the
+method and raw data.
 
 Fewer tools matters because many agents load every tool's name,
 description, and settings into context at the start of a session, before
