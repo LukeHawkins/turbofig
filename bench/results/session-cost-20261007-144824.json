@@ -1,0 +1,78 @@
+{
+  "date": "2026-10-07T14:48:24Z",
+  "machine": {
+    "productName": "macOS",
+    "productVersion": "15.8",
+    "buildVersion": "24H23",
+    "arch": "arm64"
+  },
+  "versions": {
+    "claudeCli": "2.1.292 (Claude Code)",
+    "figmaConsoleMcp": "1.40.9",
+    "turbofigBinary": "turbofig 0.1.0 (at turbofig, proxies to the running daemon)",
+    "node": "v24.13.0"
+  },
+  "goalB_startupTime": {
+    "method": "Node script spawns the server over stdio, sends JSON-RPC 'initialize' then 'notifications/initialized' then 'tools/list', and times from process spawn to a successful tools/list response using process.hrtime.bigint(). No estimate: real wall-clock per run.",
+    "targets": {
+      "turbofig-mcp": {
+        "command": "turbofig mcp",
+        "note": "stdio MCP server forwards onto the already-running daemon's POST /job; no job (execute/screenshot) was ever sent, only initialize + tools/list",
+        "runs_startupMs": [
+          104.01587500423193,
+          77.2261669933796,
+          63.16108299791813,
+          65.77670799940825,
+          61.11441699415445
+        ],
+        "n": 5,
+        "allWarm": true,
+        "medianMs": 65.77670799940825,
+        "minMs": 61.11441699415445,
+        "maxMs": 104.01587500423193
+      },
+      "console-mcp": {
+        "command": "npx -y figma-console-mcp@latest (env FIGMA_ACCESS_TOKEN=figd_dummy)",
+        "note": "A dummy token was required and sufficient: the server started and listed its full tool set without a real Figma personal access token.",
+        "coldRun_startupMs": 29037.210832998157,
+        "coldRunNote": "First invocation in this session (npm package was already present in the local npm cache from an earlier `npm view`, so this is 'npx resolve + spawn' cold, not a from-scratch npm download). Excluded from the warm N=5 set below.",
+        "runs_startupMs": [
+          2191.7492500022054,
+          1744.9110829979181,
+          1859.741333000362,
+          1878.7580829933286,
+          1836.2233750000596
+        ],
+        "n": 5,
+        "allWarm": true,
+        "medianMs": 1859.741333000362,
+        "minMs": 1744.9110829979181,
+        "maxMs": 2191.7492500022054
+      }
+    }
+  },
+  "goalC_toolDefinitionSize": {
+    "method": "Buffer.byteLength(JSON.stringify(result.tools), 'utf8') from the same tools/list response used for goal B. Exact bytes, no token or char/4 estimate.",
+    "targets": {
+      "turbofig-mcp": {
+        "toolCount": 4,
+        "toolsBytes": 2824,
+        "bytesPerTool": 706,
+        "toolNames": [
+          "turbofig_execute",
+          "turbofig_get_selection",
+          "turbofig_screenshot",
+          "turbofig_status"
+        ]
+      },
+      "console-mcp": {
+        "mode": "default NPX mode (figma-console-mcp@latest, local stdio)",
+        "note": "figma-console-mcp exposes a different, smaller tool count in Cloud Mode (96) and Remote SSE (read-only subset) per its own docs; only the default NPX mode was measured here.",
+        "toolCount": 121,
+        "toolsBytes": 163208,
+        "bytesPerTool": 1348.8264462809918
+      }
+    }
+  },
+  "note": "Per-session token cost inside a real agent session is not included here; it is measured separately with bench/agent.ts."
+}
