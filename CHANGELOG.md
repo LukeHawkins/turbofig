@@ -32,8 +32,8 @@ recorded under Unreleased.
   token, also the connected files (name, key, plugin version) and the
   daemon's `pid`. Same Origin and `Host` checks as `/mcp`. Never includes
   the pairing token itself.
-- `POST /job` and `POST /mcp` require `Authorization: Bearer <pairing
-  token>`, like `POST /control`. Another macOS account on the same Mac can
+- `POST /job` and `POST /mcp` require the pairing token as a bearer token
+  in the `Authorization` header, like `POST /control`. Another macOS account on the same Mac can
   no longer drive Figma through the HTTP port. The file-bridge stays
   tokenless, protected instead by its directory mode (`0700`).
 - `POST /control` replies `202` at once and drains and exits in the
