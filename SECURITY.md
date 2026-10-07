@@ -88,14 +88,23 @@ could otherwise open the socket and receive the AI's jobs.
   leaves the daemon stopped even with autostart on (`turbofig autostart
   on`), so the `turbofig start` step is always required to finish the
   rotation.
+- **Known limit on a shared Mac:** if more than one local account runs
+  turbofig, whichever account's daemon binds the ports first holds the
+  pairing token for that session. turbofig is designed for a single-user
+  Mac, not a Mac shared between several accounts.
 
 ## Data handling
 
 - **turbofig makes no outbound network calls of its own.** The daemon only
   serves `127.0.0.1`; it never calls out to any remote service.
-- **Design data moves only between the plugin, the daemon on `127.0.0.1`,
-  and the local agent (AI client).** Nothing in that path leaves the
-  machine.
+- **The plugin's manifest allows it to reach any domain
+  (`networkAccess.allowedDomains: ["*"]`).** This is deliberate: Figma
+  rejects a wildcard port, so allow-all is the only value that covers a
+  user-configurable daemon port (see `DECISIONS.md` #23). The real limit is
+  that JS run through `turbofig_execute` could use this to make a network
+  request from inside Figma. turbofig itself still sends nothing off the
+  machine; narrowing the allowed domain to the daemon's configured port is
+  planned.
 - **The file-bridge inbox and outbox hold job and result files, including
   eval code and its output.** The daemon prunes outbox entries (results and
   file-mode screenshot PNGs) older than 24 hours; a result nobody reads in
@@ -111,8 +120,10 @@ could otherwise open the socket and receive the AI's jobs.
   `brew install` verifies that checksum before installing. See
   `RELEASING.md`'s "Unsigned binaries" section for the Gatekeeper caveat.
 - **The Homebrew tap and the releases are built and published by GitHub
-  Actions, not by hand.** The `release.yml` workflow runs only on a tagged
-  commit and publishes the artifacts and their SHA256 checksums.
+  Actions, not by hand.** The `release.yml` workflow's `plan` job also runs
+  on every pull request, as a dry run with no publish step; only a tagged
+  commit builds and publishes the real artifacts and their SHA256
+  checksums.
 
 ## `GET /health`
 

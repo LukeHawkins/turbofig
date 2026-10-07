@@ -39,7 +39,7 @@ reachable (see "Daemon lifecycle" below). See `DECISIONS.md` item 15 and
 
 The daemon is a single Rust process. It runs three servers as three `tokio::spawn` tasks that share one `Arc<AppState>`:
 
-- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. Each tool reads the `mcp-session-id` from the HTTP request parts and maps the session to a plugin connection by `fileKey` (Phase 4). `allowed_hosts` is pinned explicitly to `localhost`, `127.0.0.1`, `::1` rather than left to `rmcp`'s default, so a future crate upgrade cannot silently widen the daemon's DNS-rebinding guard.
+- **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. Each tool reads the `mcp-session-id` from the HTTP request parts and maps the session to a plugin connection by `fileKey`. `allowed_hosts` is pinned explicitly to `localhost`, `127.0.0.1`, `::1` rather than left to `rmcp`'s default, so a future crate upgrade cannot silently widen the daemon's DNS-rebinding guard.
 - **WebSocket server** (port 18847): requires a `token` query parameter on the upgrade, matching `~/.turbofig/token` (constant-time compare, checked after the Origin check, 401 on mismatch or absence). This closes a gap Origin checking alone leaves: a sandboxed `<iframe>` on a malicious web page reports Origin `null`, the same value the real Figma plugin UI reports. See `DECISIONS.md` #39 and `SECURITY.md`. Holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect, and again whenever it re-announces (e.g. a detected file rename). The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000, clamped to 600000) stops a silent plugin from hanging a call; `EXECUTE`, `GET_SELECTION`, and `SCREENSHOT` all carry that timeout to the plugin as `timeoutMs`, and the daemon itself waits `timeoutMs + 1000ms` for `EXECUTE`, so the plugin's own "I gave up" reply usually beats the daemon's bare timeout (see `DECISIONS.md`). The daemon holds one connection per open file in a `conn_id`-keyed registry. Two live connections may hold the same `fileKey` at once (a reconnect, or a second window on the same file): neither evicts the other, so neither one's in-flight jobs are ever cancelled by the other connecting, and a later FILE_INFO from either connection can never knock the other out of the registry. Routing (`connections_named`/`resolve_route`) dedupes a shared `fileKey` down to the newest (highest conn_id) live connection, so a caller never sees Ambiguous for a single logical file; if that newest connection closes, routing falls back to an older one still open. A frame from a conn_id no longer in the registry is ignored outright. A `RESULT` only resolves the pending request if it arrives on the same connection the request was sent to, so one connection can never forge another's reply. Message and frame size are capped at 32 MiB; a keepalive ping goes out every 15s and a connection with no pong in 45s is dropped. On socket close the daemon drops only that connection and fails only that connection's in-flight requests at once, so other files keep working.
 - **File-bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It parses each job into the same typed parameter structs the MCP tools use (one `#[serde(tag = "op")]` enum, so a bad field fails to parse the same way for both transports): a file that reads and parses as JSON but fails the Job schema (a bad field, an unknown op) is rejected at once with a clear error, never held for the parse-grace window that exists only for a half-written file. A valid job is claimed (removes the inbox file), gets any stale same-id outbox result deleted, and runs in its own task so one slow job never blocks the loop. Job ids are a documented client contract: unique per job, never reused while the first job with that id may still be in flight (`skills/file-bridge.md`, `helpers/tf-api.md`, the plugin's connect prompt). A duplicate id that arrives while its twin is still running is left untouched in the inbox (not claimed, not answered) until the first finishes, so neither job's `.tmp` file or result is ever touched by the other. The ops are `status`, `execute`, `get_selection`, and `screenshot`. Screenshot file-mode writes the PNG into `outbox/<requestId>-<nanos>.png` (`AppState.screenshot_dir`) and returns its path; a subagent reads it. The outbox is a drop box, not storage: a backstop sweep deletes results and PNGs older than 24h. An inbox entry that never reads or parses (a bad write, an unreadable file, a non-UTF-8 name) gets one error result after a short grace window and is then left alone, instead of being retried and re-logged forever.
 
@@ -72,9 +72,33 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
 | `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
-| `app_bundle.rs` | macOS-only (`cfg(target_os = "macos")`): `install_app_bundle` assembles `turbofig.app` (`Info.plist`, a byte copy of the running binary, the embedded icon), ad-hoc signed best-effort, then registered with Launch Services best-effort (`LaunchServicesRegistrar` seam, `RealLaunchServicesRegistrar`/`NoopLaunchServicesRegistrar`, so Spotlight/Launchpad find it); `app_bundle_outdated` (version, or a same-version rebuild via `TurbofigBuildId`, an FNV-1a fingerprint of the binary, `build_id_for_bytes`), `running_inside_app_bundle`, `remove_turbofig_app_bundle`; the `CodeSigner` seam (`RealCodeSigner`/`NoopCodeSigner`). `applications_dir_from_env` is the one shared resolver for where the bundle lives: `/Applications` (Finder's sidebar) when writable, else `~/Applications` (a non-admin managed Mac), always preferring whichever already holds our own bundle (`has_our_bundle`) so there is never 2 copies; every consumer (the outdated check, autostart, uninstall, the app LaunchAgent's `ProgramArguments`) goes through it. The bundle is assembled on the user's own Mac, so it carries no Gatekeeper quarantine flag |
+| `app_bundle.rs` | macOS-only: assembles and tracks `turbofig.app`. See "`app_bundle.rs` in detail" below |
 | `agent_prompt.rs` | Not macOS-only: the agent-connect prompt's fill logic (`fill_agent_prompt`), shared byte-for-byte with the plugin's own copy via `prompts/agent-prompt.txt` (`include_str!` here, inlined by `plugin/build-ui.ts` there). A golden test on each side checks the same inputs give identical text |
-| `menu_bar/` | macOS-only: the menu-bar app (`mod.rs`'s `run_menu_bar_app`, and `about_window.rs`'s `create_about_window`/`settings_window.rs`'s `create_settings_window`, the only things in the crate that build a real tray icon, window, webview, or event loop); `state.rs` (`MenuState`, the pure `/health`-to-menu translation); `icon.rs` (PNG decode for the 2 tray-icon states); `lock.rs` (the single-instance `flock` guard); `quit.rs` (the stop-then-confirm sequence, seamed off a real HTTP stopper via `DaemonStopper`); `activate.rs` (`activate_app_and_focus`, shared by both windows); `about_state.rs`/`about_window.rs` (the About window's IPC parsing and `tao`/`wry` glue); `settings_state.rs`/`settings_window.rs` (the same split for the Settings window); `second_instance.rs` (the `<home>/app.sock` signal: a second launch asks the first to open the About window, `turbofig uninstall` asks it to quit); `self_update.rs` (the relaunch-once-per-daemon-version decision, and its `<home>/app-relaunched-for` state file). See "Menu-bar app" below |
+| `menu_bar/` | macOS-only: the menu-bar app, its tray icon, the About and Settings windows, and single-instance/self-update logic. See "Menu-bar app" below |
+
+### `app_bundle.rs` in detail
+
+macOS-only (`cfg(target_os = "macos")`).
+
+- `install_app_bundle` assembles `turbofig.app`: `Info.plist`, a byte copy
+  of the running binary, and the embedded icon. It is ad-hoc signed
+  best-effort, then registered with Launch Services best-effort
+  (`LaunchServicesRegistrar` seam, `RealLaunchServicesRegistrar`/
+  `NoopLaunchServicesRegistrar`, so Spotlight/Launchpad find it).
+- `app_bundle_outdated` detects a stale bundle, by version or by a
+  same-version rebuild (`TurbofigBuildId`, an FNV-1a fingerprint of the
+  binary, `build_id_for_bytes`).
+- `running_inside_app_bundle` and `remove_turbofig_app_bundle` cover
+  detection and removal. The `CodeSigner` seam
+  (`RealCodeSigner`/`NoopCodeSigner`) covers signing.
+- `applications_dir_from_env` is the one shared resolver for where the
+  bundle lives: `/Applications` (Finder's sidebar) when writable, else
+  `~/Applications` (a non-admin managed Mac), always preferring whichever
+  already holds our own bundle (`has_our_bundle`) so there is never 2
+  copies. Every consumer (the outdated check, autostart, uninstall, the
+  app LaunchAgent's `ProgramArguments`) goes through it.
+- The bundle is assembled on the user's own Mac, so it carries no
+  Gatekeeper quarantine flag.
 
 ## Plugin
 
@@ -87,14 +111,14 @@ The plugin dispatches on a `{type}` field in each message:
 
 | Type | Direction | Description |
 |---|---|---|
-| `READY` | UI to main thread | Sent once, on load; the main thread replies with `FILE_INFO` and `PORT` (Phase 12) |
-| `FILE_INFO` | plugin to daemon | Sent on connect, and again on a detected file rename: fileKey and root name (Phase 2) |
-| `STATUS` | daemon to plugin | Liveness ping carrying a `requestId`; bypasses the job queue (Phase 2) |
-| `RESULT` | plugin to daemon | Reply carrying the matching `requestId` (Phase 2) |
+| `READY` | UI to main thread | Sent once, on load; the main thread replies with `FILE_INFO` and `PORT` |
+| `FILE_INFO` | plugin to daemon | Sent on connect, and again on a detected file rename: fileKey and root name |
+| `STATUS` | daemon to plugin | Liveness ping carrying a `requestId`; bypasses the job queue |
+| `RESULT` | plugin to daemon | Reply carrying the matching `requestId` |
 | `STARTED` | plugin to daemon | Sent the moment a queued job is dequeued and begins running (not when the frame arrives); lets a later timeout or disconnect be reported as "not_started" (safe to retry) or "started_unknown" (may have run) instead of always warning of a possible duplicate mutation |
-| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS; queued (Phase 3). Carries `timeoutMs`: the plugin must stop waiting and reply `ok:false` at that point; the daemon itself waits `timeoutMs + 1000ms` |
-| `GET_SELECTION` | daemon to plugin | Return compact selection info; queued (Phase 3). Carries `timeoutMs`, raced the same way as `EXECUTE` |
-| `SCREENSHOT` | daemon to plugin | Export PNG; queued (Phase 3). Carries `timeoutMs`, raced the same way as `EXECUTE` |
+| `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS; queued. Carries `timeoutMs`: the plugin must stop waiting and reply `ok:false` at that point; the daemon itself waits `timeoutMs + 1000ms` |
+| `GET_SELECTION` | daemon to plugin | Return compact selection info; queued. Carries `timeoutMs`, raced the same way as `EXECUTE` |
+| `SCREENSHOT` | daemon to plugin | Export PNG; queued. Carries `timeoutMs`, raced the same way as `EXECUTE` |
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
@@ -110,7 +134,7 @@ The queue itself is one chained promise (`queueTail`); each enqueue appends a `.
 
 `EXECUTE` runs the JS as an async function built with the Function constructor (validated in Figma's sandbox, see `DECISIONS.md` #17). Two things are injected into the eval scope before user code runs: the sync-to-async deprecation preamble (runs first), and the `tf` craft namespace (`createTf(figma)`, passed as a second parameter beside `figma`). So generated code calls `figma.*` and `tf.*` directly. Eval errors return a clean message (with a line/column relative to the user's own code, adjusted for the preamble) and never crash the plugin.
 
-## Routing registry (Phase 4)
+## Routing registry
 
 The daemon keeps a connection registry keyed by two dimensions:
 
@@ -123,7 +147,7 @@ Two live connections may hold the same `fileKey` at once: `set_connection_info` 
 
 ## Helper layer
 
-The `tf` namespace is a compact JS craft library injected into every eval. Source lives in `plugin/src/helpers.ts` (pure logic unit-tested; figma glue smoke-tested), exposed via `createTf(figma)` and passed into the eval as `tf`. The compact API reference is `helpers/tf-api.md` (this is what the model reads to learn the helpers cheaply). The library is complete as of Phase 6. Categories and members:
+The `tf` namespace is a compact JS craft library injected into every eval. Source lives in `plugin/src/helpers.ts` (pure logic unit-tested; figma glue smoke-tested), exposed via `createTf(figma)` and passed into the eval as `tf`. The compact API reference is `helpers/tf-api.md` (this is what the model reads to learn the helpers cheaply). Categories and members:
 
 - Layout primitives: `frame` (per-axis sizing, transparent by default), `rect`, `append`, `clear`, `findOrCreate` (idempotent-by-name).
 - Text and fonts: `text` (font-load, optional `width` for wrapping), `loadFonts`, `color`, `solid`.
@@ -137,13 +161,9 @@ All functions use the async Figma API surface required by `documentAccess: dynam
 
 Idempotency pattern for re-runnable sections: `findOrCreate(parent, name, factory)` then `clear(node)` then rebuild. `findOrCreate` protects only the named node, so `clear` before rebuilding prevents duplicated children on a resume.
 
-## Design orchestration
-
-`.claude/commands/design.md` is the `/design` command: a brief becomes a full page via plan-first spec (persisted to `~/.turbofig/design/<job-id>/plan.json` + `status.json` as the checkpoint) -> parallel firewalled builder subagents (each one batched `tf.*` call, unique per-request bridge id) -> an assembly step that stacks sections in order (parallel builds otherwise overlap at 0,0) -> a QA critic subagent that reads the screenshot and returns text only -> a capped refine loop -> resume from the last completed section. Images live and die in subagents; the orchestrator never holds a screenshot.
-
 ## Skill layer
 
-`skills/` (Phase 7+): the design-worker recipes, led by `design.md` (the `/design` command).
+`skills/` holds the client recipes for the file-bridge transport. See `skills/file-bridge.md`.
 
 ## Ports
 
@@ -355,11 +375,10 @@ come from `clap`.
 
 ## Menu-bar app (`daemon/src/menu_bar/`)
 
-Steps 2 (tray icon, menu, status polling, Quit), 3 (the About window), and
-4a (app lifecycle: first-run opens the app, Start at Login means the app,
-self-update, `uninstall` quits the app) of the macOS app bundle, all here
-(step 1: `app_bundle.rs`, above; step 4b: docs, still to come). Reached
-either by opening
+Holds the tray icon, menu, status polling, Quit, the About window, and the
+app lifecycle (first-run opens the app, Start at Login means the app,
+self-update, `uninstall` quits the app). `app_bundle.rs`, above, assembles
+the app bundle itself. Reached either by opening
 `turbofig.app` (`main.rs`'s `cmd_run_or_app_mode` dispatches into it when
 `running_inside_app_bundle()` is true) or the hidden dev command `turbofig
 app run`. macOS-only, same target-gating as its 3 extra dependencies,
@@ -482,7 +501,7 @@ resolves any of them.
   all 3 quit identically. Best-effort: no app running at all (the ordinary
   case for a headless install) is not an error.
 
-### About window (step 3: `about_window.rs`, `about_state.rs`, `second_instance.rs`)
+### About window (`about_window.rs`, `about_state.rs`, `second_instance.rs`)
 
 A real `tao` window (420x520, not resizable, titled "turbofig") hosting 1
 `wry` webview over exactly 1 embedded page
@@ -533,7 +552,7 @@ second instance's signal; already open, any of those 3 just calls
   (`WebView::evaluate_script`) with the status text
   (`about_state::chips_from_connected_files`, the same
   bridge-reachable/connected-file-names shape `MenuState` is built from)
-  and whether step 2's checkmark should show; `push_static` does the same
+  and whether the "add the plugin" checkmark should show; `push_static` does the same
   for the version and MCP json. A real race exists here: `evaluate_script`
   can run before the page's own `<script>` has defined the real,
   DOM-touching versions of those 2 functions (WebKit parses/runs the page

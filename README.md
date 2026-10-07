@@ -17,14 +17,11 @@
 
 turbofig is a menu-bar app and a local, always-on daemon that let any AI
 agent read and edit the Figma file open in Figma Desktop. Run `turbofig`
-once and a tf icon appears in your menu bar; click it for status, the
-plugin manifest, and an About window that walks you through the rest.
+once and a tf icon appears in your menu bar for status and setup.
 Underneath, the daemon talks to a thin Figma plugin over a WebSocket and
-exposes 4 tools to the agent, including one tool that runs Figma Plugin
-API JavaScript directly. `turbofig mcp`, a stdio MCP server, starts the
-daemon when your agent's MCP client launches it, the same way `npx` starts
-a Node MCP server. The daemon then keeps running after your agent session
-ends.
+exposes 4 tools, including one that runs Figma Plugin API JavaScript
+directly. `turbofig mcp` starts the daemon when your agent's MCP client
+launches it, and the daemon keeps running after the agent session ends.
 
 <!-- SCREENSHOT: menu-bar menu (tray icon open) and the About window, side by side -->
 
@@ -68,8 +65,7 @@ WebSocket.*
 
 ### turbofig vs figma-console-mcp
 
-Countable facts, not an opinion. figma-console-mcp facts are from its npm
-package, version 1.22.1.
+figma-console-mcp facts are from its npm package, version 1.22.1.
 
 | | turbofig | figma-console-mcp 1.22.1 |
 |---|---|---|
@@ -81,8 +77,7 @@ package, version 1.22.1.
 
 **When to use something else.** If you need comments, or file access
 without Figma open, use a REST-based server such as figma-console-mcp or
-Figma's own MCP server. This README makes no claim about Figma's own MCP
-server beyond that it exists.
+Figma's own MCP server.
 
 Both tools are started by the MCP client the same way: the client launches
 a server process at session start. The difference is what happens after.
@@ -287,55 +282,10 @@ return list.id;
 
 ## Menu bar
 
-`turbofig.app` is assembled on your own Mac (not downloaded as a `.app`),
-so it carries no quarantine flag and opens with no "unidentified
-developer" prompt, even though the `turbofig` binary itself is not
-notarized. It shows as a tf icon in your menu bar, dimmed when no Figma
-file is connected or the daemon is unreachable, and solid once a file
-connects. Its menu:
-
-| Item | Does |
-|---|---|
-| About turbofig… | Opens the About window: the "How to use" steps and Copy agent prompt |
-| Settings… | Opens the Settings window: Start at login, Copy plugin manifest path, Open plugin folder |
-| Quit turbofig | Stops the daemon and quits the app |
-
-The menu is kept small on purpose: copying the agent prompt lives in the
-About window; copying the manifest path, revealing the plugin in Finder,
-and Start at login live in the Settings window. Both windows are plain
-pages with no script: every button is a link Rust intercepts and runs, so
-there is no live status display to go stale; close either window with its
-title bar button or Cmd+W.
-
-**Start at Login:** `turbofig autostart on` (the default) installs a
-LaunchAgent that launches `turbofig.app` itself at login; `turbofig
-autostart on --headless` installs a daemon-only LaunchAgent instead, with
-no app, no tray icon, no window, for a machine where you only want the
-background service. `turbofig autostart off` removes whichever one is
-installed. Turning one on always replaces the other, so the 2 never run
-at once. The Settings window's "Start at login" link is the one view onto
-this setting now; it shows the current state as plain text and reopen the
-window to see the setting change take effect.
-
-**Updating:**
-
-```bash
-brew upgrade turbofig
-```
-
-The next `turbofig mcp` start (or the next time you open the app) sees an
-older daemon, lets its in-flight jobs finish, then restarts it on the new
-version. An older proxy never restarts a newer daemon. The daemon
-rewrites the plugin files and refreshes `turbofig.app` on every start, so
-the Figma import only happens once: reopen the plugin in Figma after an
-upgrade to pick up the refreshed files. If the app was already open when
-you upgraded, it notices the daemon is now newer and relaunches itself
-once, automatically, to pick up the refreshed bundle; it never relaunches
-twice for the same upgrade.
-
-**Uninstalling:** run `turbofig uninstall` before `brew uninstall
-turbofig`. It quits a running app first (if any), stops the running
-daemon, turns off autostart, and removes the app bundle.
+The tf icon in your menu bar gives status, the About and Settings windows,
+and controls for autostart, updating, and uninstalling. See
+[docs/menu-bar.md](docs/menu-bar.md) for the full menu and window
+reference.
 
 ## Commands
 
@@ -387,20 +337,9 @@ vulnerability.
 
 ## Reliability and retries
 
-- **`turbofig mcp` restarts the daemon if it is not reachable.** Your agent's
-  MCP client starts `turbofig mcp` on demand; it starts the daemon too, if
-  needed. With autostart on, launchd also restarts the daemon after a crash,
-  running with `KeepAlive`, so a crash is followed by a restart, not a dead
-  daemon. A clean `turbofig stop` is not a crash: the daemon stays stopped
-  until the next login, or until `turbofig start` is run.
-- **A job in flight when the plugin disconnects, or that times out, may
-  still be running.** A retry of that job is not idempotent: the first
-  attempt can still complete in Figma after you retry.
-- **"Expired in the queue; the job did not run" is safe to retry.** This
-  reply means the job's deadline passed before it started, so nothing ran.
-- **Use a unique job id for every job.** Reusing an id while the first job
-  with that id may still be running does not get you a result; see
-  `skills/file-bridge.md`.
+The daemon restarts itself on crash or on-demand, and most failed jobs are
+safe to retry. See [docs/reliability.md](docs/reliability.md) for the full
+retry rules.
 
 ## Troubleshooting
 
@@ -425,6 +364,9 @@ vulnerability.
 - **The panel or `turbofig status` warns of a version mismatch.** The
   daemon upgraded but the plugin in Figma has not reloaded. Reopen the
   turbofig plugin in Figma.
+- **Uninstalling.** Run `turbofig uninstall` before `brew uninstall
+  turbofig`. Homebrew alone leaves `turbofig.app` and the login item in
+  place.
 
 ## Roadmap
 
