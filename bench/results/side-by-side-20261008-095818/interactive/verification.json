@@ -1,0 +1,33 @@
+{
+  "turbofig": {
+    "bridge_connected": true,
+    "bench1": {
+      "status": "PASS with flag",
+      "page_name": "Bench 1",
+      "note": "two pages named 'Bench 1' exist in the file: one empty (id 2:2, left over from a script_error retry), one holding the rectangle (id 2:3). Spec said 'do nothing else'; the empty duplicate was never cleaned up.",
+      "rect": {"name": "Square", "w": 200, "h": 200, "x": 0, "y": 0, "fill_rgb": {"r": 1, "g": 0, "b": 0}, "expected_fill": "#FF0000", "match": true}
+    },
+    "bench2": {
+      "status": "PASS structure / recolour not run",
+      "frame_count": 40,
+      "frame_size": "1920x1080 (match)",
+      "grid_gap_px": 100,
+      "sample_frame_positions": [[0,0],[2020,0],[4040,0]],
+      "text_check": "all 40 'Speaker notes' text layers present, Inter Regular 24, fill #000000 (unchanged) -- Prompt 2b (recolour) was never sent to the turbofig session, so no slide was recoloured"
+    },
+    "bench3": {
+      "status": "PASS",
+      "hero": {"w": 1440, "h": 800, "fill_hex_expected": "#0B1020", "fill_rgb_actual": {"r": 0.0431, "g": 0.0627, "b": 0.1255}, "match": true,
+        "layoutMode": "VERTICAL", "padding_trbl": [120,120,120,120], "gap": 32, "align": "CENTER/CENTER"},
+      "title_text": {"chars": "Ship designs at the speed of thought", "font": "Inter Bold 64", "fill": "#FFFFFF", "match": true},
+      "subtitle_text": {"chars": "turbofig lets your AI build in Figma directly.", "font": "Inter Regular 24", "fill_rgb": {"r":0.627,"g":0.658,"b":0.753}, "expected_hex": "#A0A8C0", "match": true},
+      "buttons_frame": {"layoutMode": "HORIZONTAL", "gap": 16, "fill": "none", "match": true},
+      "get_started_button": {"w": 200, "h": 56, "radius": 12, "fill_rgb": {"r":0.4235,"g":0.3608,"b":0.9059}, "expected_hex": "#6C5CE7", "match": true, "label": "Inter Medium 18 #FFFFFF match"},
+      "learn_more_button": {"w": 200, "h": 56, "radius": 12, "fill": "none", "stroke_rgb": {"r":1,"g":1,"b":1}, "stroke_weight": 1, "expected_stroke_hex": "#FFFFFF", "match": true, "label": "Inter Medium 18 #FFFFFF match"}
+    }
+  },
+  "console": {
+    "bridge_connected": false,
+    "note": "figma-console-mcp Desktop Bridge plugin was not connected at verification time (connection error: 'Cannot connect to Figma Desktop'). Per instructions, not reconnected. Bench 1/2/3 on bench-console were not read back; no screenshots taken for this stack."
+  }
+}

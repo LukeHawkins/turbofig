@@ -1,0 +1,172 @@
+{
+  "date": "2026-10-08",
+  "model": "claude-sonnet-5",
+  "sessions": {
+    "turbofig": {
+      "session_id": "05e71403-4819-4110-a8bc-47fc80a711ac",
+      "cwd": "~/Development/luke-os",
+      "transport": "file-bridge (~/.turbofig/inbox, ~/.turbofig/outbox)",
+      "figma_file": "bench-turbofig",
+      "baseline_input_tokens_per_turn": 50232
+    },
+    "console": {
+      "session_id": "5c067b95-f804-40bd-8e52-aa5e394dae1b",
+      "cwd": "~/Development/flow-mcp",
+      "transport": "curl http://127.0.0.1:3846/mcp (figma-console-mcp via flow-mcp/supergateway)",
+      "figma_file": "bench-console",
+      "baseline_input_tokens_per_turn": 42309
+    }
+  },
+  "prompts": {
+    "1": {
+      "label": "red square",
+      "turbofig": {
+        "wall_s": 25.0,
+        "ai_working_s": 25.0,
+        "approval_wait_s": 0,
+        "approvals": 0,
+        "turns": 9,
+        "raw_input_tokens": 462626,
+        "net_input_tokens": 10538,
+        "output_tokens": 2986,
+        "tool_calls": {
+          "Bash": 3,
+          "Write": 2
+        }
+      },
+      "console": {
+        "wall_s": 26.9,
+        "ai_working_s": 22.2,
+        "approval_wait_s": 4.7,
+        "approval_wait_estimated": true,
+        "approvals": 3,
+        "turns": 7,
+        "raw_input_tokens": 348912,
+        "net_input_tokens": 52749,
+        "output_tokens": 3927,
+        "tool_calls": {
+          "Bash": 3
+        }
+      },
+      "ratio_console_over_turbofig": {
+        "wall": 1.08,
+        "ai_working": 0.89,
+        "net_tokens": 5.01,
+        "turns": 0.78
+      }
+    },
+    "2a_setup": {
+      "label": "40-slide setup (untimed)",
+      "turbofig": {
+        "wall_s": 15.9,
+        "ai_working_s": 15.9,
+        "approval_wait_s": 0,
+        "approvals": 0,
+        "turns": 5,
+        "raw_input_tokens": 266535,
+        "net_input_tokens": 15375,
+        "output_tokens": 1619,
+        "tool_calls": {
+          "Bash": 2,
+          "Write": 1
+        }
+      },
+      "console": {
+        "wall_s": 18.0,
+        "ai_working_s": 13.0,
+        "approval_wait_s": 5.0,
+        "approval_wait_estimated": true,
+        "approvals": 1,
+        "turns": 4,
+        "raw_input_tokens": 208436,
+        "net_input_tokens": 39200,
+        "output_tokens": 2370,
+        "tool_calls": {
+          "Bash": 1
+        }
+      },
+      "ratio_console_over_turbofig": {
+        "wall": 1.13,
+        "ai_working": 0.82,
+        "net_tokens": 2.55,
+        "turns": 0.8
+      }
+    },
+    "2b_recolour": {
+      "label": "recolour 40 speaker-notes layers (timed)",
+      "turbofig": {
+        "status": "not run in this session",
+        "wall_s": null,
+        "ai_working_s": null
+      },
+      "console": {
+        "wall_s": 11.7,
+        "ai_working_s": 10.6,
+        "approval_wait_s": 1.1,
+        "approval_wait_estimated": true,
+        "approval_wait_method": "fallback: median of turbofig's other 3 prompt tool-times (no matched prompt available)",
+        "approvals": 1,
+        "turns": 3,
+        "raw_input_tokens": 161619,
+        "net_input_tokens": 34692,
+        "output_tokens": 2305,
+        "tool_calls": {
+          "Bash": 1
+        }
+      },
+      "ratio_console_over_turbofig": null
+    },
+    "3": {
+      "label": "hero section",
+      "turbofig": {
+        "wall_s": 29.5,
+        "ai_working_s": 29.5,
+        "approval_wait_s": 0,
+        "approvals": 0,
+        "turns": 5,
+        "raw_input_tokens": 280237,
+        "net_input_tokens": 29077,
+        "output_tokens": 4319,
+        "tool_calls": {
+          "Bash": 2,
+          "Write": 1
+        }
+      },
+      "console": {
+        "wall_s": 33.3,
+        "ai_working_s": 27.9,
+        "approval_wait_s": 5.4,
+        "approval_wait_estimated": true,
+        "approvals": 1,
+        "turns": 3,
+        "raw_input_tokens": 168803,
+        "net_input_tokens": 41876,
+        "output_tokens": 5995,
+        "tool_calls": {
+          "Bash": 1
+        }
+      },
+      "ratio_console_over_turbofig": {
+        "wall": 1.13,
+        "ai_working": 0.95,
+        "net_tokens": 1.44,
+        "turns": 0.6
+      }
+    }
+  },
+  "verification_file": "interactive/verification.json",
+  "screenshots": [
+    "interactive/screenshots/turbofig-runA-bench1.png",
+    "interactive/screenshots/turbofig-runA-bench2.png",
+    "interactive/screenshots/turbofig-runA-bench3.png",
+    "interactive/screenshots/turbofig-runB-bench1.png",
+    "interactive/screenshots/turbofig-runB-bench2.png",
+    "interactive/screenshots/turbofig-runB-bench3.png"
+  ],
+  "evidence": {
+    "turbofig_slice": "WITHHELD: bench/side-by-side/private-evidence/turbofig-interactive-20261008.jsonl (gitignored). The turbofig session ran in the luke-os repo, which loads a large personal CLAUDE.md/memory; withheld by policy regardless of the scoped slice's own scan result, only aggregate numbers published here.",
+    "console_slice": "interactive/runs/console.jsonl",
+    "privacy_scan": "both scoped benchmark-prompt slices scanned for a list of private terms (case-insensitive): no matches in either scoped slice. console.jsonl published as-is. turbofig's slice withheld anyway per the luke-os-repo privacy policy (see turbofig_slice note)."
+  },
+  "rerun_see_also": "interactive/rerun-results.json (Run B: neutral headless re-run, lower baseline, combined table in results.md)"
+}

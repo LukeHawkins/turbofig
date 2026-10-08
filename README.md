@@ -24,8 +24,10 @@ the file you have open.
 - **Fast, start to finish.** It runs on your Mac and stays connected to
   Figma, so every request goes straight to your file: no server to start,
   no cloud round trip. One request can make many changes at once.
-- **Far more token-efficient, so far cheaper to run.** Your AI gets a
-  short list of 4 actions instead of a long manual, and screenshots stay
+- **Far more token-efficient, so far cheaper to run.** In a
+  [side-by-side test](bench/results/side-by-side-20261008-095818/interactive/results.md), the same Figma jobs used up to 4× fewer
+  tokens, and about 2× fewer across the whole test. Your AI gets a short
+  list of 4 actions instead of a long manual, and screenshots stay
   small. The same Figma work uses much less of your AI plan, and long
   sessions last much longer before they need compacting.
 - **Free to use.** No paid Figma seat, no monthly quota.
@@ -140,6 +142,8 @@ chat agent.
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud) | Figma for Agents |
 |---|---|---|---|---|
+| Tokens for the same 4 jobs (side-by-side test) | ✓ **72,700** | ✗ 168,500 (2.3× more) | Not tested | Not tested |
+| Approval prompts during those jobs | ✓ **0** | ✗ 6 | Not tested | Not tested |
 | AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | 36 tools, size not published |
 | Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | Hosted, no local start | Hosted, no local start |
 | Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
@@ -155,7 +159,7 @@ your AI full scripting power with the lightest load, for free.
 Prefer MCP? turbofig also runs as an MCP server:
 `claude mcp add turbofig -- turbofig mcp`.
 
-<sub>? = not published or not measured. est. = a clearly labelled estimate,
+<sub>Side-by-side test: the same 4 prompts and the same model (Claude Sonnet 5), one run each, tokens net of each session's own baseline, every turbofig output checked against the spec; approval prompts as seen with the tester's default settings. Details: [results](bench/results/side-by-side-20261008-095818/interactive/results.md). ? = not published or not measured. est. = a clearly labelled estimate,
 not a direct measurement: Cloud Mode lists its tools only with a real
 Figma token, so its figure scales the measured NPX tool list by its
 published tool count (96 of 121); Figma for Agents has no public
