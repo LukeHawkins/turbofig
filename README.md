@@ -185,6 +185,32 @@ once they pass 10% of its memory
 a search step each time it needs a tool. turbofig needs neither: its 4
 tools load up front at 0.3%, and one script does the work.
 
+## Benchmark
+
+The same 4 Figma jobs, the same prompts, the same model (Claude Sonnet 5),
+run once with turbofig and once with figma-console-mcp. Every turbofig
+result was read back from Figma and matched the spec exactly.
+
+| Job | turbofig tokens | figma-console-mcp tokens | turbofig uses | Approval prompts (turbofig / figma-console-mcp) |
+|---|---|---|---|---|
+| Red 200 × 200 square | **13,700** | 52,700 | **3.9× fewer** | 0 / 3 |
+| Lay out 40 slides | **13,000** | 39,200 | **3.0× fewer** | 0 / 1 |
+| Recolour text on all 40 slides | **18,800** | 34,700 | **1.9× fewer** | 0 / 1 |
+| Hero section | **27,200** | 41,900 | **1.5× fewer** | 0 / 1 |
+| **All 4 jobs** | **72,700** | **168,500** | **2.3× fewer** | **0 / 6** |
+
+Tokens are net of each session's own fixed starting context, so a larger
+project file does not count against either side. Time per job was about
+the same for both (12 to 40 seconds); the difference you feel is the
+approval prompts, not the AI. One run per job, so treat the ratios as a
+guide, not a guarantee.
+
+Evidence: [results and method](bench/results/side-by-side-20261008-095818/interactive/results.md), [turbofig re-run](bench/results/side-by-side-20261008-095818/interactive/rerun-results.md),
+[spec check](bench/results/side-by-side-20261008-095818/interactive/verification.json), [screenshots](bench/results/side-by-side-20261008-095818/interactive/screenshots/),
+[figma-console-mcp session log](bench/results/side-by-side-20261008-095818/interactive/runs/console.jsonl). The turbofig
+session logs stay private because they contain unrelated personal context;
+their numbers are in the results files.
+
 ## For developers
 
 - [docs/how-it-works.md](docs/how-it-works.md): architecture overview.
