@@ -47,12 +47,11 @@ are listed in the Sources section at the end.
   read-only workflows." (Write to canvas)
 - **Read tools are rate limited; write tools are exempt** (Rate limits and
   access):
-  - Starter plan: 20 tool calls a month.
-  - View or Collab seat on Organization or Enterprise: 20 tool calls a
-    month.
-  - Full or Dev seat on Professional or Organization: 200 a day, 10 a
-    minute.
-  - Enterprise: 600 a day.
+  - View or Collab seat, on every plan (Starter, Professional,
+    Organization, Enterprise): 20 tool calls a month.
+  - Full or Dev seat on Professional: 200 a day, 10 a minute.
+  - Full or Dev seat on Organization: 200 a day, 15 a minute.
+  - Full or Dev seat on Enterprise: 600 a day, 20 a minute.
 - **Remote server (Figma's recommended option):** hosted by Figma. Sign in
   with OAuth; no Figma Desktop needed. Can write to the canvas: create and
   modify frames, components, variables, and auto layout (on a Full seat).
@@ -64,30 +63,35 @@ are listed in the Sources section at the end.
 - **Pricing status, from Figma's own FAQ:** "This will eventually be a
   usage-based paid feature, but is currently available for free during the
   beta period."
-- Tool count: 36, across 7 groups (design to code, code to design, image
-  generation, design systems and Code Connect, generative plugins and
-  shaders, account, Weave tools), per the published tool-and-prompts docs.
+- Tool count: 41 measured on the live server (2026-10-08). The published
+  tool-and-prompts docs list 36, across 7 groups (design to code, code to
+  design, image generation, design systems and Code Connect, generative
+  plugins and shaders, account, Weave tools).
+- **Custom clients could not sign in.** A direct MCP SDK client got
+  `403 Forbidden` from Figma's OAuth client registration endpoint.
+  Copilot CLI connected without a problem.
 - Several files at once, and comments: not stated in these sources.
 
 ## Table
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud Mode) | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|---|
-| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | 14.5% est. (96 tools, scaled from the measured NPX tokens) | 36 tools; size not published (a docs-based lower bound is 0.7%, see below) |
+| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | 14.5% est. (96 tools, scaled from the measured NPX tokens) | 10.3% (about 20,600 tokens, 41 tools; measured through Copilot CLI, see below) |
 | Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, no local start | Hosted, no local start |
 | Runs any Figma plugin script (advanced work) | **Yes** | Yes | Yes | Partly: no images or custom fonts, 20 KB output per call |
 | Cost | **Free** | Free | Free (no Cloud-specific pricing or limits stated) | Editing needs a paid Full seat; write tools free in beta, later usage-based |
-| Usage limits | **None** | None stated | None stated | Read tools: 20 calls a month (Starter) up to 600 a day (Enterprise) |
+| Usage limits | **None** | None stated | None stated | Read tools: 20 calls a month on a View or Collab seat, on every plan including Enterprise; 200 to 600 a day on a Dev or Full seat |
 | Setup | Homebrew + one plugin import | Node.js, a Figma access token, the Desktop Bridge plugin | No Node.js; still needs Figma Desktop, the Desktop Bridge plugin paired once, and a Figma access token | Sign in with Figma |
 | Several files at once | Yes | Yes | Yes | Not stated |
 | Comments | No | Yes | Yes | Not stated |
 | Works without Figma Desktop open | No | Partly | Partly | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No | No |
-| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs | Not stated in their docs |
+| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs | Yes, image link + 1024 px cap (measured) |
 
 Tool size and startup time are measured: see
 [bench/results](../bench/results/session-cost-20261007-144824.md) for the
-method and raw data.
+method and raw data. Figma for Agents tool size:
+[bench/results/figma-for-agents-copilot-20261008-185755.md](../bench/results/figma-for-agents-copilot-20261008-185755.md).
 
 Fewer tools matters because many agents load every tool's name,
 description, and settings into context at the start of a session, before
@@ -103,12 +107,14 @@ turbofig has no quota and needs no paid seat. If you need comments,
 figma-console-mcp's REST tools cover them. If you must work without Figma
 Desktop open, Figma's remote server can.
 
-Measured speed and token-per-edit numbers will be added after the
-benchmark run.
+Figma for Agents write speed and tokens per edit are not measured yet.
+The test account was a View seat, which cannot write. Its read timings
+went through Copilot CLI, so they are in the results file but not in this
+table.
 
 ## Sources
 
-Dated 2026-10-07.
+Dated 2026-10-07. Figma for Agents tool size and rate limits: 2026-10-08.
 
 - **Tool tokens.** turbofig about 680 tokens, figma-console-mcp (NPX) about
   36,600 tokens, counted with `o200k_base` (`cl100k_base`: 668 and 35,848).
@@ -127,18 +133,15 @@ Dated 2026-10-07.
   proportional estimate (96 of the 121 measured NPX tools), not a filtered
   tool-name list. Method and raw data:
   [bench/results/hosted-tool-size-20261007-210348.md](../bench/results/hosted-tool-size-20261007-210348.md).
-- **Figma for Agents tool size: estimated from published docs.** Figma
-  publishes a name, description, group and (for most tools) a parameters
-  list for its 36 tools at
-  [developers.figma.com/docs/figma-mcp-server/tools-and-prompts](https://developers.figma.com/docs/figma-mcp-server/tools-and-prompts/),
-  but not a `tools/list` JSON-RPC response or full JSON Schema types, so
-  the 0.7% figure above counts an approximate JSON built from that page,
-  not a real server response. It is a lower bound: the docs give short
-  descriptions and no full schemas, so the real definitions are larger
-  (figma-console-mcp's real definitions average about 1,350 bytes per tool;
-  this docs-based JSON averages about 170). Even this lower bound, 6.3 KB,
-  is more than twice turbofig's 2.8 KB. Method and raw data:
-  [bench/results/hosted-tool-size-20261007-210348.md](../bench/results/hosted-tool-size-20261007-210348.md).
+- **Figma for Agents tool size: measured through Copilot CLI**
+  (2026-10-08). 41 tools, 85,025 bytes, about 20,600 tokens with
+  `o200k_base` (`cl100k_base`: 20,358). That is 10.3% of a 200K-token
+  context. A direct client was refused (`403 Forbidden` at OAuth client
+  registration), so the definitions were copied from what Copilot CLI
+  showed the model, not from the raw `tools/list` response. Treat the size
+  as accurate to a few percent. The earlier docs-based lower bound (0.7%)
+  was about 13 times too small. Method and raw data:
+  [bench/results/figma-for-agents-copilot-20261008-185755.md](../bench/results/figma-for-agents-copilot-20261008-185755.md).
 - **Figma for Agents write-to-canvas limits:** 20 KB output per call, no
   image or asset support, no custom fonts, components must be published
   manually, write tools exempt from rate limits.

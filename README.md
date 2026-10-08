@@ -139,7 +139,7 @@ Code: `claude mcp add turbofig -- turbofig mcp`. See
 | Tokens for one screenshot of the same frame | ✓ **1,225** | ✗ 3,264 (2.7× more) | Not tested | Not tested |
 | Tokens for 4 small jobs, in apps that load every tool (est.) | ✓ **~57K** | ✗ ~405K (7× more) | Not tested | Not tested |
 | Approval prompts in a 4-job test (tester's usual settings) | ✓ **0** | ✗ 6 | Not tested | Not tested |
-| AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | 36 tools, size not published |
+| AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | ✗ 10.3% (41 tools) |
 | Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | Hosted, no local start | Hosted, no local start |
 | Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
 | Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files (an MCP server is there too, if you prefer) | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
@@ -151,7 +151,7 @@ Code: `claude mcp add turbofig -- turbofig mcp`. See
 here that needs no MCP server, no token and no extra setup. It gives your
 AI full scripting power with the lightest load, for free.
 
-<sub>Measured: one run each, same prompts and model; time spent recovering from tool failures is left out on both sides; the cost gap is smaller than the token gap because both re-read a similar fixed context on every call; see [Benchmark](#benchmark). est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer. Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
+<sub>Measured: one run each, same prompts and model; time spent recovering from tool failures is left out on both sides; the cost gap is smaller than the token gap because both re-read a similar fixed context on every call; see [Benchmark](#benchmark). est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer; Figma for Agents measured through Copilot CLI. Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 ## Benchmark
 

@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "runUtc": { "start": "2026-10-08T18:43:04Z", "readCallsStart": "2026-10-08T18:53:16.871Z", "readCallsEnd": "2026-10-08T18:57:55.053Z" },
+    "client": "GitHub Copilot CLI 1.0.93 (VS Code not used)",
+    "copilotModel": "claude-opus-5.5 (benchmark + all 10 read calls); gpt-6-luna for OAuth setup + whoami; claude-sonnet-5.5 for the headless tools/list capture run",
+    "node": "v24.19.0",
+    "os": "macOS 26.6.2 (25G83) arm64",
+    "figma": { "tier": "enterprise", "seat": "View", "role": "member", "figmaAi": false, "figmaDesktopApp": "not used (remote server)", "note": "organisation name withheld" },
+    "serverUrl": "https://mcp.figma.com/mcp",
+    "serverInfo": { "name": "Figma MCP Server", "version": "1.0.0", "protocolVersion": "2026-07-28", "source": "Copilot CLI log (rmcp Service initialized)" },
+    "libs": { "@modelcontextprotocol/sdk": "1.32.1", "js-tiktoken": "1.0.21" },
+    "turbofigCommit": "9cc0bd2dabc274a5d49aa296bf2c780f27714785"
+  },
+  "toolList": {
+    "method": "Transcribed from the tool definitions Copilot CLI presented to the model (names prefixed Figma-, JSON Schema keywords folded into description text, keys sorted), serialized with JSON.stringify. Names verified 41/41 against the headless Copilot run fingerprint. Not the raw tools/list response.",
+    "file": "figma-copilot-presented-tools.json (kept on the test device, not committed)",
+    "count": 41,
+    "bytes": 85025,
+    "tokens": { "o200k_base": 20626, "cl100k_base": 20358 },
+    "shareOf200k": { "o200k_base_pct": 10.31, "cl100k_base_pct": 10.18 },
+    "names": ["add_code_connect_map","create_generative_plugin","create_new_file","create_shader","download_assets","export_video","generate_diagram","generate_figma_design","generate_image","get_code_connect_map","get_code_connect_suggestions","get_context_for_code_connect","get_design_context","get_figjam","get_generative_plugin","get_libraries","get_metadata","get_motion_context","get_screenshot","get_shader","get_variable_defs","list_file_components_for_code_connect","list_file_shaders","list_generative_plugins","list_shaders","search_design_system","send_code_connect_mappings","update_generative_plugin","update_shader","upload_assets","use_figma","weave_cancel_tool_run","weave_find_model","weave_get_model_run_output","weave_get_tool_inputs","weave_get_tool_run_output","weave_list_tools","weave_run_model","weave_run_tool","weave_upload_asset","whoami"],
+    "readWriteAnnotations": null,
+    "writesPerDescriptionText": {
+      "canvasOrFile": ["use_figma","generate_figma_design","upload_assets","generate_diagram","create_new_file"],
+      "codeConnect": ["add_code_connect_map","send_code_connect_mappings"],
+      "accountLibrary": ["create_generative_plugin","update_generative_plugin","create_shader","update_shader"],
+      "note": "Derived from description text, not from MCP annotations."
+    },
+    "rawToolsListBytes": null
+  },
+  "reads": {
+    "via": "via Copilot, not direct",
+    "timingSource": "Copilot events.jsonl tool.execution_start -> tool.execution_complete timestamps; includes Copilot CLI MCP client overhead; no permission prompt inside any call",
+    "node": { "fileKey": "withheld", "nodeId": "2:2", "type": "FRAME", "width": 203, "height": 232, "childCount": 0 },
+    "readSelection": {
+      "tool": "get_metadata",
+      "calls": 5, "allMs": [1429, 1023, 852, 811, 728],
+      "coldMs": 1429, "warmMedianMs": 831.5, "warmP95Ms": 1023, "warmMinMs": 728, "warmMaxMs": 1023, "failures": 0,
+      "requestBytes": null, "responseBytes": null,
+      "copilotResultTextBytes": 346,
+      "note": "Returns id/type/name/position/size only, no fills (turbofig get_selection requested fills). copilotResultTextBytes is the result text Copilot received, not wire bytes."
+    },
+    "readScreenshot": {
+      "tool": "get_screenshot",
+      "mode": "default URL mode (enableBase64Response false, maxDimension default 1024); turbofig scenario used inline, fullRes, scale 2",
+      "calls": 5, "allMs": [1912, 2230, 1798, 2076, 1967],
+      "coldMs": 1912, "warmMedianMs": 2021.5, "warmP95Ms": 2230, "warmMinMs": 1798, "warmMaxMs": 2230, "failures": 0,
+      "requestBytes": null, "responseBytes": null,
+      "copilotResultTextBytes": 494,
+      "image": { "format": "png", "widthPx": 203, "heightPx": 232, "colour": "8-bit RGBA", "pngBytes": 744, "base64Length": 992, "base64Note": "Buffer base64 of the downloaded PNG; inline base64 not requested", "identicalAcross5": true }
+    }
+  },
+  "rateLimitedCallsUsed": 10,
+  "exemptCallsUsed": { "whoami": 1 },
+  "limits": [
+    { "where": "POST https://api.figma.com/v1/oauth/mcp/register (dynamic client registration, direct SDK client)", "status": 403, "body": "Forbidden", "sdkError": "HTTP 403: Invalid OAuth error response: SyntaxError: Unexpected token 'F', \"Forbidden\" is not valid JSON. Raw body: Forbidden" },
+    { "where": "POST https://mcp.figma.com/mcp initialize without token", "status": 401, "body": "Unauthorized" },
+    { "where": "Figma docs, rate-limits-access", "text": "View, Collab: Up to 20/month (Enterprise)" },
+    { "where": "10 read calls in this run", "text": "no rate-limit, quota or seat error returned" }
+  ],
+  "notMeasured": [
+    { "metric": "raw tools/list bytes and tokens", "reason": "direct client blocked at DCR (403 Forbidden); Copilot CLI logs only tool-name hashes, not raw JSON-RPC" },
+    { "metric": "read/write tool annotations", "reason": "annotations not exposed in the Copilot-presented schemas; raw tools/list unreachable" },
+    { "metric": "tools/list latency", "reason": "no direct client; Copilot does not time tools/list" },
+    { "metric": "request/response wire bytes for reads", "reason": "calls ran through Copilot, which does not log raw JSON-RPC" },
+    { "metric": "inline base64 screenshot payload", "reason": "default URL mode used; base64 length computed from the downloaded PNG instead" },
+    { "metric": "read on a rectangle node", "reason": "supplied node 2:2 is an empty FRAME (0 children)" },
+    { "metric": "webpage-plain, deck20-plain, create-frame", "reason": "View seat cannot write; writes excluded by brief" },
+    { "metric": "agent session cost", "reason": "out of scope in this brief; claude CLI not on PATH" },
+    { "metric": "desktop server http://127.0.0.1:3845/mcp", "reason": "needs Dev or Full seat; not attempted" },
+    { "metric": "remaining monthly quota", "reason": "no quota counter exposed by the server" }
+  ]
+}
