@@ -1,4 +1,8 @@
-# How turbofig compares
+# Figma AI bridges compared: turbofig vs figma-console-mcp vs Figma's MCP server
+
+How turbofig, a file bridge with an optional MCP mode, compares with two
+Figma MCP servers: figma-console-mcp (NPX and Cloud Mode) and Figma for
+Agents, Figma's own. Tool size, speed, cost, limits and setup.
 
 Facts below are from each project's own docs, checked 2026-10-07. Sources
 are listed in the Sources section at the end.

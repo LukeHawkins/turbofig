@@ -7,7 +7,9 @@ version = "0.1.0"
 rust-version = "1.94"
 repository = "https://github.com/LukeHawkins/turbofig"
 homepage = "https://github.com/LukeHawkins/turbofig"
-description = "The always-on Figma design agent: a Rust daemon plus a thin Figma plugin"
+description = "Free, always-on bridge that lets Claude Code, Cursor and Copilot drive Figma"
+keywords = ["figma", "mcp", "mcp-server", "claude", "design"]
+categories = ["development-tools", "command-line-utilities"]
 license = "MIT"
 
 # The profile that 'dist' will build with

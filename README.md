@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/wordmark-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/wordmark-light.png">
-    <img alt="turbofig wordmark" src="docs/wordmark-light.png" height="80">
+    <img alt="turbofig: free Figma bridge for Claude Code, Cursor, Codex and Copilot, no MCP server needed" src="docs/wordmark-light.png" height="80">
   </picture>
 
   <p><strong>Let AI drive Figma. Instant, lightweight, free.</strong><br>
@@ -18,8 +18,11 @@
 
 ---
 
-Ask your AI for real Figma work in plain English, and watch it build in
-the file you have open.
+turbofig is a free, open-source **Figma bridge for AI agents** on macOS.
+It talks to your agent through plain files, so it needs no MCP server (an
+MCP mode is there if you prefer). Ask Claude Code, Cursor, Codex or
+Copilot for real Figma work in plain English, and watch it build in the
+file you have open.
 
 - **Fast, start to finish.** Ready the moment your AI starts and already
   connected, so your first request lands in your file in seconds. Nothing
@@ -181,6 +184,45 @@ One run each, so treat the results as a guide. Evidence:
 [results and method](bench/results/side-by-side-20261008-095818/interactive/results.md), [spec check](bench/results/side-by-side-20261008-095818/interactive/verification.json),
 [figma-console-mcp log](bench/results/side-by-side-20261008-095818/interactive/runs/console.jsonl). The turbofig logs stay
 private because they contain unrelated personal context.
+
+## FAQ
+
+### How do I connect Claude Code to Figma?
+
+Install turbofig, import the plugin into Figma Desktop once, then paste
+the copy-prompt into Claude Code. It drives Figma through plain files, with
+no MCP setup. Prefer MCP? Run `claude mcp add turbofig -- turbofig mcp`.
+See [Get started](#get-started).
+
+### Is there a free alternative to Figma's own MCP server?
+
+Yes. Figma's MCP server needs a paid Full seat to edit, and View or Collab
+seats get 20 read calls a month, on every plan. turbofig needs no paid
+seat, has no quota and needs no MCP server. In MCP mode, its tool list is
+about 30× smaller. See
+[docs/comparison.md](docs/comparison.md).
+
+### How is turbofig different from figma-console-mcp?
+
+turbofig gives your AI 4 tools instead of 121, needs no Node.js and no
+Figma access token, and is always running. In a side-by-side design
+session it used 2.8× fewer tokens and finished in half the time. See
+[Benchmark](#benchmark).
+
+### Does it work with Cursor, Codex, Copilot or other agents?
+
+Yes. Any agent that can read and write files on your Mac can use the file
+bridge, and any MCP client can use `turbofig mcp`. See
+[docs/mcp-clients.md](docs/mcp-clients.md) and [docs/agents.md](docs/agents.md).
+
+### Can it edit designs, or only read them?
+
+Both. turbofig runs any script a Figma plugin could run: frames, text,
+components, variants, variables and styles.
+
+### Does it work in the Figma web app, or on Windows?
+
+No. turbofig needs Figma Desktop on macOS.
 
 ## For developers
 
