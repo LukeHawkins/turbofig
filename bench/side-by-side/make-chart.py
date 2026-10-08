@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Generate the benchmark overview chart as light and dark SVGs.
 
-Three stacked panels, each on its own scale: tokens (segmented into the
-work and the tool list), approval prompts, and startup latency. Data
-source: bench/results/side-by-side-20261008-095818/ and the README
-benchmark table. Re-run this script after any data change instead of
-hand-editing the SVGs.
+Four stacked panels, each on its own scale: tokens (segmented into the
+work and the tool list), screenshot tokens, approval prompts, and startup
+latency. Data source: bench/results/side-by-side-20261008-095818/ and the
+README benchmark table. Re-run this script after any data change instead
+of hand-editing the SVGs.
 """
 
 import os
@@ -24,6 +24,16 @@ TOKENS_PANEL = {
         "Solid = the work (measured). "
         "Light = tool list re-read on each of 10 AI calls (estimate)."
     ),
+}
+
+SCREENSHOT_PANEL = {
+    "type": "simple",
+    "title": "Tokens for one screenshot of the same frame, default settings",
+    "turbofig_value": 1225,
+    "console_value": 3264,
+    "turbofig_label": "1,225 (1200 px)",
+    "console_label": "3,264 (2000 px)",
+    "note": None,
 }
 
 APPROVALS_PANEL = {
@@ -46,7 +56,7 @@ STARTUP_PANEL = {
     "note": "figma-console-mcp: 29 s on a first run",
 }
 
-PANELS = [TOKENS_PANEL, APPROVALS_PANEL, STARTUP_PANEL]
+PANELS = [TOKENS_PANEL, SCREENSHOT_PANEL, APPROVALS_PANEL, STARTUP_PANEL]
 
 FOOTER = (
     "Repeated tool lists are cached, so the cost gap is smaller than the "
@@ -232,15 +242,17 @@ def render(theme_name):
     )
     parts.append("<title>turbofig vs figma-console-mcp, where the difference comes from</title>")
     parts.append(
-        "<desc>Three panels comparing turbofig to figma-console-mcp. "
+        "<desc>Four panels comparing turbofig to figma-console-mcp. "
         "Tokens across the same 4 jobs, if all tools are loaded (estimate): "
         "turbofig about 57,200 tokens total (50,400 for the work, about "
         "6,800 for the tool list), figma-console-mcp about 404,500 tokens "
         "total (38,500 for the work, about 366,000 for the tool list). "
-        "Approval prompts across the same 4 jobs: turbofig 0, "
-        "figma-console-mcp 6. Ready when your AI starts: turbofig 0.07 "
-        "seconds, figma-console-mcp 1.9 seconds (29 seconds on a first "
-        "run).</desc>"
+        "Tokens for one screenshot of the same frame, default settings: "
+        "turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 "
+        "tokens at 2000 pixels. Approval prompts across the same 4 jobs: "
+        "turbofig 0, figma-console-mcp 6. Ready when your AI starts: "
+        "turbofig 0.07 seconds, figma-console-mcp 1.9 seconds (29 seconds "
+        "on a first run).</desc>"
     )
     parts.append(f'<rect x="0" y="0" width="{WIDTH}" height="{total_height}" fill="{c["surface"]}" />')
 

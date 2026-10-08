@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 370" width="860" height="370" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 440" width="860" height="440" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title>turbofig vs figma-console-mcp, where the difference comes from</title>
-<desc>Three panels comparing turbofig to figma-console-mcp. Tokens across the same 4 jobs, if all tools are loaded (estimate): turbofig about 57,200 tokens total (50,400 for the work, about 6,800 for the tool list), figma-console-mcp about 404,500 tokens total (38,500 for the work, about 366,000 for the tool list). Approval prompts across the same 4 jobs: turbofig 0, figma-console-mcp 6. Ready when your AI starts: turbofig 0.07 seconds, figma-console-mcp 1.9 seconds (29 seconds on a first run).</desc>
-<rect x="0" y="0" width="860" height="370" fill="#fcfcfb" />
+<desc>Four panels comparing turbofig to figma-console-mcp. Tokens across the same 4 jobs, if all tools are loaded (estimate): turbofig about 57,200 tokens total (50,400 for the work, about 6,800 for the tool list), figma-console-mcp about 404,500 tokens total (38,500 for the work, about 366,000 for the tool list). Tokens for one screenshot of the same frame, default settings: turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at 2000 pixels. Approval prompts across the same 4 jobs: turbofig 0, figma-console-mcp 6. Ready when your AI starts: turbofig 0.07 seconds, figma-console-mcp 1.9 seconds (29 seconds on a first run).</desc>
+<rect x="0" y="0" width="860" height="440" fill="#fcfcfb" />
 <text x="20" y="30" font-size="17" font-weight="700" fill="#0b0b0b">Where the difference comes from</text>
 <text x="20" y="50" font-size="12.5" fill="#52514e">One Mac, macOS 15, October 2026. Lower is better.</text>
 <rect x="20" y="62" width="10" height="10" rx="2" fill="#2a78d6" />
@@ -19,16 +19,21 @@
 <text x="34" y="157.0" font-size="11" fill="#52514e">Solid = the work (measured).</text>
 <rect x="210" y="149" width="9" height="9" rx="1.5" fill="#f6bba4" />
 <text x="224" y="157.0" font-size="11" fill="#52514e">Light = tool list re-read on each of 10 AI calls (estimate).</text>
-<text x="20" y="200.0" font-size="13" font-weight="600" fill="#0b0b0b">Approval prompts in the same 4 jobs</text>
-<rect x="20.0" y="206.0" width="0.0" height="13" fill="#2a78d6" />
+<text x="20" y="200.0" font-size="13" font-weight="600" fill="#0b0b0b">Tokens for one screenshot of the same frame, default settings</text>
+<path d="M 20.0 206.0 H 259.9 A 4 4 0 0 1 263.9 210.0 V 215.0 A 4 4 0 0 1 259.9 219.0 H 20.0 Z" fill="#2a78d6" />
 <path d="M 20.0 221.0 H 666.0 A 4 4 0 0 1 670.0 225.0 V 230.0 A 4 4 0 0 1 666.0 234.0 H 20.0 Z" fill="#eb6834" />
-<text x="28.0" y="216.5" font-size="11.5" fill="#52514e">0</text>
-<text x="678.0" y="231.5" font-size="11.5" fill="#52514e">6</text>
-<text x="20" y="270.0" font-size="13" font-weight="600" fill="#0b0b0b">Ready when your AI starts</text>
-<path d="M 20.0 276.0 H 39.9 A 4 4 0 0 1 43.9 280.0 V 285.0 A 4 4 0 0 1 39.9 289.0 H 20.0 Z" fill="#2a78d6" />
+<text x="271.9" y="216.5" font-size="11.5" fill="#52514e">1,225 (1200 px)</text>
+<text x="678.0" y="231.5" font-size="11.5" fill="#52514e">3,264 (2000 px)</text>
+<text x="20" y="270.0" font-size="13" font-weight="600" fill="#0b0b0b">Approval prompts in the same 4 jobs</text>
+<rect x="20.0" y="276.0" width="0.0" height="13" fill="#2a78d6" />
 <path d="M 20.0 291.0 H 666.0 A 4 4 0 0 1 670.0 295.0 V 300.0 A 4 4 0 0 1 666.0 304.0 H 20.0 Z" fill="#eb6834" />
-<text x="51.9" y="286.5" font-size="11.5" fill="#52514e">0.07 s</text>
-<text x="678.0" y="301.5" font-size="11.5" fill="#52514e">1.9 s</text>
-<text x="20" y="317.0" font-size="11" fill="#52514e">figma-console-mcp: 29 s on a first run</text>
-<text x="20" y="350.0" font-size="11" fill="#52514e">Repeated tool lists are cached, so the cost gap is smaller than the token gap. See recount.md in the benchmark results.</text>
+<text x="28.0" y="286.5" font-size="11.5" fill="#52514e">0</text>
+<text x="678.0" y="301.5" font-size="11.5" fill="#52514e">6</text>
+<text x="20" y="340.0" font-size="13" font-weight="600" fill="#0b0b0b">Ready when your AI starts</text>
+<path d="M 20.0 346.0 H 39.9 A 4 4 0 0 1 43.9 350.0 V 355.0 A 4 4 0 0 1 39.9 359.0 H 20.0 Z" fill="#2a78d6" />
+<path d="M 20.0 361.0 H 666.0 A 4 4 0 0 1 670.0 365.0 V 370.0 A 4 4 0 0 1 666.0 374.0 H 20.0 Z" fill="#eb6834" />
+<text x="51.9" y="356.5" font-size="11.5" fill="#52514e">0.07 s</text>
+<text x="678.0" y="371.5" font-size="11.5" fill="#52514e">1.9 s</text>
+<text x="20" y="387.0" font-size="11" fill="#52514e">figma-console-mcp: 29 s on a first run</text>
+<text x="20" y="420.0" font-size="11" fill="#52514e">Repeated tool lists are cached, so the cost gap is smaller than the token gap. See recount.md in the benchmark results.</text>
 </svg>
