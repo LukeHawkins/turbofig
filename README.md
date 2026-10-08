@@ -191,6 +191,11 @@ The same 4 Figma jobs, the same prompts, the same model (Claude Sonnet 5),
 run once with turbofig and once with figma-console-mcp. Every turbofig
 result was read back from Figma and matched the spec exactly.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-tokens-dark.svg">
+  <img alt="Bar chart: tokens per job, turbofig vs figma-console-mcp. Red square 13.7K vs 52.7K, 40 slides 13.0K vs 39.2K, recolour 18.8K vs 34.7K, hero section 27.2K vs 41.9K. turbofig used 2.3 times fewer tokens overall." src="docs/benchmark-tokens-light.svg" width="860">
+</picture>
+
 | Job | turbofig tokens | figma-console-mcp tokens | turbofig uses | Approval prompts (turbofig / figma-console-mcp) |
 |---|---|---|---|---|
 | Red 200 × 200 square | **13,700** | 52,700 | **3.9× fewer** | 0 / 3 |

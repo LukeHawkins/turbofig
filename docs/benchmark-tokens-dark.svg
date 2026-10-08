@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 300" width="860" height="300" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title>Tokens per job, turbofig vs figma-console-mcp</title>
+<desc>Grouped horizontal bar chart comparing net tokens per job between turbofig and figma-console-mcp across 4 Figma jobs: red square, 40-slide layout, recolour, and hero section. turbofig used fewer tokens in every job.</desc>
+<rect x="0" y="0" width="860" height="300" fill="#1a1a19" />
+<text x="20" y="30" font-size="17" font-weight="700" fill="#ffffff">Tokens per job (lower is better)</text>
+<text x="20" y="50" font-size="12.5" fill="#c3c2b7">Same prompts, same model (Claude Sonnet 5). turbofig used 2.3× fewer tokens across all 4 jobs.</text>
+<rect x="20" y="62" width="10" height="10" rx="2" fill="#3987e5" />
+<text x="36" y="71" font-size="12.5" fill="#ffffff">turbofig</text>
+<rect x="120" y="62" width="10" height="10" rx="2" fill="#d95926" />
+<text x="136" y="71" font-size="12.5" fill="#ffffff">figma-console-mcp</text>
+<line x1="190.0" y1="104" x2="190.0" y2="258" stroke="#333331" stroke-width="1" />
+<text x="190.0" y="274" font-size="11" fill="#c3c2b7" text-anchor="middle">0</text>
+<line x1="370.0" y1="104" x2="370.0" y2="258" stroke="#333331" stroke-width="1" />
+<text x="370.0" y="274" font-size="11" fill="#c3c2b7" text-anchor="middle">20K</text>
+<line x1="550.0" y1="104" x2="550.0" y2="258" stroke="#333331" stroke-width="1" />
+<text x="550.0" y="274" font-size="11" fill="#c3c2b7" text-anchor="middle">40K</text>
+<line x1="730.0" y1="104" x2="730.0" y2="258" stroke="#333331" stroke-width="1" />
+<text x="730.0" y="274" font-size="11" fill="#c3c2b7" text-anchor="middle">60K</text>
+<text x="176" y="129.0" font-size="12.5" fill="#ffffff" text-anchor="end">Red 200×200 square</text>
+<path d="M 190.0 110.0 H 309.4 A 4 4 0 0 1 313.4 114.0 V 120.0 A 4 4 0 0 1 309.4 124.0 H 190.0 Z" fill="#3987e5" />
+<path d="M 190.0 126.0 H 660.7 A 4 4 0 0 1 664.7 130.0 V 136.0 A 4 4 0 0 1 660.7 140.0 H 190.0 Z" fill="#d95926" />
+<text x="321.4" y="121.0" font-size="11" fill="#c3c2b7">13.7K</text>
+<text x="672.7" y="137.0" font-size="11" fill="#c3c2b7">52.7K</text>
+<text x="840" y="129.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">3.9× fewer</text>
+<text x="176" y="167.0" font-size="12.5" fill="#ffffff" text-anchor="end">Lay out 40 slides</text>
+<path d="M 190.0 148.0 H 303.2 A 4 4 0 0 1 307.2 152.0 V 158.0 A 4 4 0 0 1 303.2 162.0 H 190.0 Z" fill="#3987e5" />
+<path d="M 190.0 164.0 H 538.8 A 4 4 0 0 1 542.8 168.0 V 174.0 A 4 4 0 0 1 538.8 178.0 H 190.0 Z" fill="#d95926" />
+<text x="315.2" y="159.0" font-size="11" fill="#c3c2b7">13.0K</text>
+<text x="550.8" y="175.0" font-size="11" fill="#c3c2b7">39.2K</text>
+<text x="840" y="167.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">3.0× fewer</text>
+<text x="176" y="205.0" font-size="12.5" fill="#ffffff" text-anchor="end">Recolour text on 40 slides</text>
+<path d="M 190.0 186.0 H 355.2 A 4 4 0 0 1 359.2 190.0 V 196.0 A 4 4 0 0 1 355.2 200.0 H 190.0 Z" fill="#3987e5" />
+<path d="M 190.0 202.0 H 498.2 A 4 4 0 0 1 502.2 206.0 V 212.0 A 4 4 0 0 1 498.2 216.0 H 190.0 Z" fill="#d95926" />
+<text x="367.2" y="197.0" font-size="11" fill="#c3c2b7">18.8K</text>
+<text x="510.2" y="213.0" font-size="11" fill="#c3c2b7">34.7K</text>
+<text x="840" y="205.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">1.9× fewer</text>
+<text x="176" y="243.0" font-size="12.5" fill="#ffffff" text-anchor="end">Hero section</text>
+<path d="M 190.0 224.0 H 430.4 A 4 4 0 0 1 434.4 228.0 V 234.0 A 4 4 0 0 1 430.4 238.0 H 190.0 Z" fill="#3987e5" />
+<path d="M 190.0 240.0 H 562.9 A 4 4 0 0 1 566.9 244.0 V 250.0 A 4 4 0 0 1 562.9 254.0 H 190.0 Z" fill="#d95926" />
+<text x="442.4" y="235.0" font-size="11" fill="#c3c2b7">27.2K</text>
+<text x="574.9" y="251.0" font-size="11" fill="#c3c2b7">41.9K</text>
+<text x="840" y="243.0" font-size="12.5" font-weight="700" fill="#ffffff" text-anchor="end">1.5× fewer</text>
+</svg>
