@@ -45,6 +45,19 @@ Left out:
 | Wall time | **171 s (2.9 min)** | 355 s (5.9 min), incl. approval waits | 2.1× faster |
 | AI time | **~134 s** | ~199 s | 1.5× less |
 
+Billed cost, split (input-token equivalents):
+
+| | turbofig | figma-console-mcp |
+|---|---|---|
+| Fixed context re-read on each call (first-call context × calls × 0.1) | 138,560 (81,506 × 17) | 186,242 (77,601 × 24) |
+| The work | **89,434** | **163,580** (1.8× more) |
+| Total | **227,994** | 349,822 (35% more) |
+
+The cost gap is smaller than the token gap because both sessions re-read
+a similar fixed context on every call. These chats carried about 80K of
+earlier test history; a fresh chat carries less, so the cost gap there
+would be larger.
+
 ## Full session, nothing left out
 
 **Every number in this section includes both tools' problems** (listed

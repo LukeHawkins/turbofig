@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 400" width="860" height="400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 488" width="860" height="488" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title>turbofig vs figma-console-mcp, measured side by side</title>
-<desc>Four panels comparing turbofig to figma-console-mcp, one run each. Tokens for one design session, a 4-step landing page with a screenshot after each step: turbofig 134,000 tokens, figma-console-mcp 375,000 tokens (2.8 times more). Time for that session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes (includes approval waits). Tokens for one screenshot of the same frame, default settings: turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at 2000 pixels. Approval prompts in 4 small jobs: turbofig 0, figma-console-mcp 6.</desc>
-<rect x="0" y="0" width="860" height="400" fill="#1a1a19" />
+<desc>Five panels comparing turbofig to figma-console-mcp, one run each. Tokens for one design session, a 4-step landing page with a screenshot after each step: turbofig 134,000 tokens, figma-console-mcp 375,000 tokens (2.8 times more). Billed cost for that session, in input-token units: turbofig 228,000 total (89,400 for the work, 138,600 for the fixed context), figma-console-mcp 350,000 total, 35 percent more (163,600 for the work, 186,200 for the fixed context). Time for that session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes (includes approval waits). Tokens for one screenshot of the same frame, default settings: turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at 2000 pixels. Approval prompts in 4 small jobs: turbofig 0, figma-console-mcp 6.</desc>
+<rect x="0" y="0" width="860" height="488" fill="#1a1a19" />
 <text x="20" y="30" font-size="17" font-weight="700" fill="#ffffff">Measured side by side</text>
 <text x="20" y="50" font-size="12.5" fill="#c3c2b7">Same prompts, same model (Claude Sonnet 5), one run each. Lower is better.</text>
 <rect x="20" y="62" width="10" height="10" rx="2" fill="#3987e5" />
@@ -13,20 +13,33 @@
 <path d="M 20.0 131.0 H 626.0 A 4 4 0 0 1 630.0 135.0 V 140.0 A 4 4 0 0 1 626.0 144.0 H 20.0 Z" fill="#d95926" />
 <text x="245.3" y="126.5" font-size="11.5" fill="#c3c2b7">134K</text>
 <text x="638.0" y="141.5" font-size="11.5" fill="#c3c2b7">375K (2.8× more)</text>
-<text x="20" y="180.0" font-size="13" font-weight="600" fill="#ffffff">Time for that session</text>
-<path d="M 20.0 186.0 H 315.8 A 4 4 0 0 1 319.8 190.0 V 195.0 A 4 4 0 0 1 315.8 199.0 H 20.0 Z" fill="#3987e5" />
-<path d="M 20.0 201.0 H 626.0 A 4 4 0 0 1 630.0 205.0 V 210.0 A 4 4 0 0 1 626.0 214.0 H 20.0 Z" fill="#d95926" />
-<text x="327.8" y="196.5" font-size="11.5" fill="#c3c2b7">2.9 min</text>
-<text x="638.0" y="211.5" font-size="11.5" fill="#c3c2b7">5.9 min (includes approval waits)</text>
-<text x="20" y="250.0" font-size="13" font-weight="600" fill="#ffffff">Tokens for one screenshot of the same frame, default settings</text>
-<path d="M 20.0 256.0 H 244.9 A 4 4 0 0 1 248.9 260.0 V 265.0 A 4 4 0 0 1 244.9 269.0 H 20.0 Z" fill="#3987e5" />
-<path d="M 20.0 271.0 H 626.0 A 4 4 0 0 1 630.0 275.0 V 280.0 A 4 4 0 0 1 626.0 284.0 H 20.0 Z" fill="#d95926" />
-<text x="256.9" y="266.5" font-size="11.5" fill="#c3c2b7">1,225 (1200 px)</text>
-<text x="638.0" y="281.5" font-size="11.5" fill="#c3c2b7">3,264 (2000 px)</text>
-<text x="20" y="320.0" font-size="13" font-weight="600" fill="#ffffff">Approval prompts in 4 small jobs</text>
-<rect x="20.0" y="326.0" width="0.0" height="13" fill="#3987e5" />
-<path d="M 20.0 341.0 H 626.0 A 4 4 0 0 1 630.0 345.0 V 350.0 A 4 4 0 0 1 626.0 354.0 H 20.0 Z" fill="#d95926" />
-<text x="28.0" y="336.5" font-size="11.5" fill="#c3c2b7">0</text>
-<text x="638.0" y="351.5" font-size="11.5" fill="#c3c2b7">6</text>
-<text x="20" y="380.0" font-size="11" fill="#c3c2b7">Session figures leave out time spent recovering from tool failures, on both sides. Details: session-test.md in the benchmark results.</text>
+<text x="20" y="180.0" font-size="13" font-weight="600" fill="#ffffff">Billed cost for that session, in input-token units</text>
+<rect x="20.0" y="186.0" width="155.4" height="13" fill="#3987e5" />
+<text x="97.7" y="196.0" font-size="10.5" fill="#ffffff" text-anchor="middle">89K</text>
+<path d="M 177.4 186.0 H 414.3 A 4 4 0 0 1 418.3 190.0 V 195.0 A 4 4 0 0 1 414.3 199.0 H 177.4 Z" fill="#a6c9f3" />
+<text x="426.3" y="196.5" font-size="11.5" fill="#c3c2b7">228K</text>
+<rect x="20.0" y="201.0" width="284.4" height="13" fill="#d95926" />
+<text x="162.2" y="211.0" font-size="10.5" fill="#ffffff" text-anchor="middle">164K</text>
+<path d="M 306.4 201.0 H 626.0 A 4 4 0 0 1 630.0 205.0 V 210.0 A 4 4 0 0 1 626.0 214.0 H 306.4 Z" fill="#eeb49d" />
+<text x="638.0" y="211.5" font-size="11.5" fill="#c3c2b7">350K (35% more)</text>
+<rect x="20" y="219" width="9" height="9" rx="1.5" fill="#d95926" />
+<text x="34" y="227.0" font-size="11" fill="#c3c2b7">Solid = the work.</text>
+<rect x="170" y="219" width="9" height="9" rx="1.5" fill="#eeb49d" />
+<text x="184" y="227.0" font-size="11" fill="#c3c2b7">Light = fixed context every call re-reads, cached at a tenth of the price.</text>
+<text x="20" y="268.0" font-size="13" font-weight="600" fill="#ffffff">Time for that session</text>
+<path d="M 20.0 274.0 H 315.8 A 4 4 0 0 1 319.8 278.0 V 283.0 A 4 4 0 0 1 315.8 287.0 H 20.0 Z" fill="#3987e5" />
+<path d="M 20.0 289.0 H 626.0 A 4 4 0 0 1 630.0 293.0 V 298.0 A 4 4 0 0 1 626.0 302.0 H 20.0 Z" fill="#d95926" />
+<text x="327.8" y="284.5" font-size="11.5" fill="#c3c2b7">2.9 min</text>
+<text x="638.0" y="299.5" font-size="11.5" fill="#c3c2b7">5.9 min (includes approval waits)</text>
+<text x="20" y="338.0" font-size="13" font-weight="600" fill="#ffffff">Tokens for one screenshot of the same frame, default settings</text>
+<path d="M 20.0 344.0 H 244.9 A 4 4 0 0 1 248.9 348.0 V 353.0 A 4 4 0 0 1 244.9 357.0 H 20.0 Z" fill="#3987e5" />
+<path d="M 20.0 359.0 H 626.0 A 4 4 0 0 1 630.0 363.0 V 368.0 A 4 4 0 0 1 626.0 372.0 H 20.0 Z" fill="#d95926" />
+<text x="256.9" y="354.5" font-size="11.5" fill="#c3c2b7">1,225 (1200 px)</text>
+<text x="638.0" y="369.5" font-size="11.5" fill="#c3c2b7">3,264 (2000 px)</text>
+<text x="20" y="408.0" font-size="13" font-weight="600" fill="#ffffff">Approval prompts in 4 small jobs</text>
+<rect x="20.0" y="414.0" width="0.0" height="13" fill="#3987e5" />
+<path d="M 20.0 429.0 H 626.0 A 4 4 0 0 1 630.0 433.0 V 438.0 A 4 4 0 0 1 626.0 442.0 H 20.0 Z" fill="#d95926" />
+<text x="28.0" y="424.5" font-size="11.5" fill="#c3c2b7">0</text>
+<text x="638.0" y="439.5" font-size="11.5" fill="#c3c2b7">6</text>
+<text x="20" y="468.0" font-size="11" fill="#c3c2b7">Session figures leave out time spent recovering from tool failures, on both sides. Details: session-test.md in the benchmark results.</text>
 </svg>

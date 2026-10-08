@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Generate the benchmark overview chart as light and dark SVGs.
 
-Four stacked panels, each a plain two-bar turbofig vs figma-console-mcp
-pair on its own scale: session tokens, session time, screenshot tokens,
-and approval prompts. Data source: bench/results/side-by-side-20261008-095818/
-session-test.md and the README benchmark table. Re-run this script after
-any data change instead of hand-editing the SVGs.
+Five stacked panels, each on its own scale: session tokens, billed cost
+(segmented into the work and the fixed context), session time, screenshot
+tokens, and approval prompts. Data source:
+bench/results/side-by-side-20261008-095818/session-test.md and the README
+benchmark table. Re-run this script after any data change instead of
+hand-editing the SVGs.
 """
 
 import os
@@ -14,6 +15,7 @@ TITLE = "Measured side by side"
 SUBTITLE = "Same prompts, same model (Claude Sonnet 5), one run each. Lower is better."
 
 SESSION_TOKENS_PANEL = {
+    "type": "simple",
     "title": "Tokens for one design session: a 4-step landing page, screenshot after each step",
     "turbofig_value": 133500,
     "console_value": 374800,
@@ -22,7 +24,25 @@ SESSION_TOKENS_PANEL = {
     "note": None,
 }
 
+BILLED_COST_PANEL = {
+    "type": "stacked",
+    "title": "Billed cost for that session, in input-token units",
+    "turbofig_work": 89400,
+    "turbofig_tool": 138600,
+    "console_work": 163600,
+    "console_tool": 186200,
+    "turbofig_total_label": "228K",
+    "console_total_label": "350K (35% more)",
+    "turbofig_work_label": "89K",
+    "console_work_label": "164K",
+    "note": (
+        "Solid = the work. Light = fixed context every call re-reads, "
+        "cached at a tenth of the price."
+    ),
+}
+
 SESSION_TIME_PANEL = {
+    "type": "simple",
     "title": "Time for that session",
     "turbofig_value": 2.9,
     "console_value": 5.9,
@@ -32,6 +52,7 @@ SESSION_TIME_PANEL = {
 }
 
 SCREENSHOT_PANEL = {
+    "type": "simple",
     "title": "Tokens for one screenshot of the same frame, default settings",
     "turbofig_value": 1225,
     "console_value": 3264,
@@ -41,6 +62,7 @@ SCREENSHOT_PANEL = {
 }
 
 APPROVALS_PANEL = {
+    "type": "simple",
     "title": "Approval prompts in 4 small jobs",
     "turbofig_value": 0,
     "console_value": 6,
@@ -49,7 +71,7 @@ APPROVALS_PANEL = {
     "note": None,
 }
 
-PANELS = [SESSION_TOKENS_PANEL, SESSION_TIME_PANEL, SCREENSHOT_PANEL, APPROVALS_PANEL]
+PANELS = [SESSION_TOKENS_PANEL, BILLED_COST_PANEL, SESSION_TIME_PANEL, SCREENSHOT_PANEL, APPROVALS_PANEL]
 
 FOOTER = (
     "Session figures leave out time spent recovering from tool failures, on both sides. "
@@ -63,6 +85,7 @@ FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-se
 PLOT_LEFT = 20
 RIGHT_GUTTER = 230
 PLOT_WIDTH = WIDTH - PLOT_LEFT - RIGHT_GUTTER
+SEGMENT_GAP = 2  # surface-colour gap between the two segments of a stacked bar
 
 BAR_H = 13
 BAR_GAP = 2  # between the two bars in a panel
@@ -82,7 +105,9 @@ FOOTER_H = 20
 COLORS = {
     "light": {
         "turbofig": "#2a78d6",
+        "turbofig_tint": "#9fc2ed",
         "console": "#eb6834",
+        "console_tint": "#f6bba4",
         "surface": "#fcfcfb",
         "text_primary": "#0b0b0b",
         "text_secondary": "#52514e",
@@ -90,7 +115,9 @@ COLORS = {
     },
     "dark": {
         "turbofig": "#3987e5",
+        "turbofig_tint": "#a6c9f3",
         "console": "#d95926",
+        "console_tint": "#eeb49d",
         "surface": "#1a1a19",
         "text_primary": "#ffffff",
         "text_secondary": "#c3c2b7",
@@ -111,6 +138,11 @@ def bar(x, y, w, h, color, radius=4):
         f'A {radius} {radius} 0 0 1 {x + w - radius:.1f} {y + h:.1f} '
         f'H {x:.1f} Z" fill="{color}" />'
     )
+
+
+def flat_rect(x, y, w, h, color):
+    """Square-cornered rectangle, for a segment that is not the bar's data end."""
+    return f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(w, 0):.1f}" height="{h}" fill="{color}" />'
 
 
 def panel_height(panel):
@@ -153,6 +185,81 @@ def render_panel(parts, panel, y, c):
     return y
 
 
+def render_stacked_panel(parts, panel, y, c):
+    bars_top = y + PANEL_TITLE_H
+    tf_y = bars_top
+    cs_y = bars_top + BAR_H + BAR_GAP
+
+    tf_total = panel["turbofig_work"] + panel["turbofig_tool"]
+    cs_total = panel["console_work"] + panel["console_tool"]
+    axis_max = max(tf_total, cs_total) or 1
+    data_width = PLOT_WIDTH - SEGMENT_GAP
+
+    def segment_widths(work, tool):
+        return (work / axis_max) * data_width, (tool / axis_max) * data_width
+
+    tf_work_w, tf_tool_w = segment_widths(panel["turbofig_work"], panel["turbofig_tool"])
+    cs_work_w, cs_tool_w = segment_widths(panel["console_work"], panel["console_tool"])
+
+    def work_label(row_y, work_w, label):
+        # Label the work segment inside it if there is room, just after it
+        # if there is a little room, otherwise skip it.
+        if work_w >= 30:
+            cx = PLOT_LEFT + work_w / 2
+            cy = row_y + BAR_H / 2 + 3.5
+            parts.append(
+                f'<text x="{cx:.1f}" y="{cy:.1f}" font-size="10.5" fill="#ffffff" '
+                f'text-anchor="middle">{label}</text>'
+            )
+        elif work_w >= 20:
+            tx = PLOT_LEFT + work_w + 4
+            cy = row_y + BAR_H - 2.5
+            parts.append(
+                f'<text x="{tx:.1f}" y="{cy:.1f}" font-size="10.5" '
+                f'fill="{c["text_secondary"]}">{label}</text>'
+            )
+
+    def draw_row(row_y, work_w, tool_w, solid, tint, work_lbl, total_lbl):
+        parts.append(flat_rect(PLOT_LEFT, row_y, work_w, BAR_H, solid))
+        work_label(row_y, work_w, work_lbl)
+        tool_x = PLOT_LEFT + work_w + SEGMENT_GAP
+        parts.append(bar(tool_x, row_y, tool_w, BAR_H, tint))
+        end_x = tool_x + tool_w
+        parts.append(
+            f'<text x="{end_x + 8:.1f}" y="{row_y + BAR_H - 2.5:.1f}" font-size="11.5" '
+            f'fill="{c["text_secondary"]}">{total_lbl}</text>'
+        )
+
+    draw_row(
+        tf_y, tf_work_w, tf_tool_w, c["turbofig"], c["turbofig_tint"],
+        panel["turbofig_work_label"], panel["turbofig_total_label"],
+    )
+    draw_row(
+        cs_y, cs_work_w, cs_tool_w, c["console"], c["console_tint"],
+        panel["console_work_label"], panel["console_total_label"],
+    )
+
+    y = bars_top + BARS_H
+
+    if panel["note"]:
+        swatch_y = y + 5
+        sx = PLOT_LEFT
+        parts.append(f'<rect x="{sx}" y="{swatch_y}" width="9" height="9" rx="1.5" fill="{c["console"]}" />')
+        parts.append(
+            f'<text x="{sx + 14}" y="{y + 13:.1f}" font-size="11" fill="{c["text_secondary"]}">'
+            "Solid = the work.</text>"
+        )
+        tx = sx + 150
+        parts.append(f'<rect x="{tx}" y="{swatch_y}" width="9" height="9" rx="1.5" fill="{c["console_tint"]}" />')
+        parts.append(
+            f'<text x="{tx + 14}" y="{y + 13:.1f}" font-size="11" fill="{c["text_secondary"]}">'
+            "Light = fixed context every call re-reads, cached at a tenth of the price.</text>"
+        )
+        y += NOTE_H
+
+    return y
+
+
 def render(theme_name):
     c = COLORS[theme_name]
     parts = []
@@ -171,15 +278,19 @@ def render(theme_name):
     )
     parts.append("<title>turbofig vs figma-console-mcp, measured side by side</title>")
     parts.append(
-        "<desc>Four panels comparing turbofig to figma-console-mcp, one run "
+        "<desc>Five panels comparing turbofig to figma-console-mcp, one run "
         "each. Tokens for one design session, a 4-step landing page with a "
         "screenshot after each step: turbofig 134,000 tokens, "
-        "figma-console-mcp 375,000 tokens (2.8 times more). Time for that "
-        "session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes "
-        "(includes approval waits). Tokens for one screenshot of the same "
-        "frame, default settings: turbofig 1,225 tokens at 1200 pixels, "
-        "figma-console-mcp 3,264 tokens at 2000 pixels. Approval prompts in "
-        "4 small jobs: turbofig 0, figma-console-mcp 6.</desc>"
+        "figma-console-mcp 375,000 tokens (2.8 times more). Billed cost for "
+        "that session, in input-token units: turbofig 228,000 total (89,400 "
+        "for the work, 138,600 for the fixed context), figma-console-mcp "
+        "350,000 total, 35 percent more (163,600 for the work, 186,200 for "
+        "the fixed context). Time for that session: turbofig 2.9 minutes, "
+        "figma-console-mcp 5.9 minutes (includes approval waits). Tokens "
+        "for one screenshot of the same frame, default settings: turbofig "
+        "1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at "
+        "2000 pixels. Approval prompts in 4 small jobs: turbofig 0, "
+        "figma-console-mcp 6.</desc>"
     )
     parts.append(f'<rect x="0" y="0" width="{WIDTH}" height="{total_height}" fill="{c["surface"]}" />')
 
@@ -205,7 +316,10 @@ def render(theme_name):
             f'fill="{c["text_primary"]}">{panel["title"]}</text>'
         )
 
-        y = render_panel(parts, panel, y, c)
+        if panel["type"] == "stacked":
+            y = render_stacked_panel(parts, panel, y, c)
+        else:
+            y = render_panel(parts, panel, y, c)
         y += PANEL_GAP
 
     footer_y = y - PANEL_GAP + FOOTER_GAP
