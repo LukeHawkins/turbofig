@@ -180,8 +180,9 @@ figma-console-mcp ran over curl, so its 121 tool descriptions were never
 sent. As a normal MCP server in a client that loads every tool, each of
 the 10 AI calls would carry about 36,600 tokens of them, against about
 680 for turbofig. The chart adds that to the measured work, as an
-estimate. Screenshots, where turbofig also saves, were not part of this
-test. See the [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md).
+estimate. A separate [screenshot test](bench/results/side-by-side-20261008-095818/interactive/screenshot-test.md)
+found about the same cost per image with both, a few hundred to about
+1,200 tokens. See the [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md).
 
 **Where the speed comes from.** This test timed only the AI's working
 time, once both tools were connected, with approval waits removed. That
