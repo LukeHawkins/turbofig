@@ -25,12 +25,10 @@ the file you have open.
   first request lands in your file in seconds. Nothing to start, nothing
   to reconnect, no approval stops in the middle of a job. One request can
   make hundreds of changes at once.
-- **Far more token-efficient, so far cheaper to run.** In a
-  [side-by-side test](#benchmark), the same Figma jobs used about 2× fewer
-  tokens overall, and up to 4× fewer on small edits. Your AI gets a short
-  list of 4 actions instead of a long manual, and screenshots stay small.
-  The same work uses much less of your AI plan, and long sessions keep
-  going without stopping to compact.
+- **Light on tokens.** Your AI gets a short list of 4 actions instead of
+  a manual of 121, screenshots are shrunk before your AI sees them, and
+  there is no connection chat to fill the session. Less of your AI plan
+  goes on overhead, and more goes on the work.
 - **Free to use.** No paid Figma seat, no monthly quota.
 
 <sub>See [how turbofig compares](#how-turbofig-compares) and [the benchmark](#benchmark).</sub>
@@ -63,8 +61,8 @@ work began, so long sessions filled up and needed compacting. In my setup
 they also often needed restarts before they would connect.
 
 turbofig is the bridge I wanted. It is always on and answers straight
-away, so big jobs move fast. It gives the AI only what it needs, so the
-same work costs far less. Since switching, I no longer have to compact
+away, so big jobs move fast. It gives the AI only what it needs, so less
+of every session goes on overhead. Since switching, I no longer have to compact
 long design sessions in Claude Code, and I give it big jobs without
 worrying about the cost.
 
@@ -135,8 +133,7 @@ Code: `claude mcp add turbofig -- turbofig mcp`. See
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud) | Figma for Agents |
 |---|---|---|---|---|
-| Tokens for the same 4 jobs (side-by-side test) | ✓ **72,700** | ✗ 168,500 (2.3× more) | Not tested | Not tested |
-| Approval prompts during those jobs (tester's usual settings) | ✓ **0** | ✗ 6 | Not tested | Not tested |
+| Approval prompts in a 4-job test (tester's usual settings) | ✓ **0** | ✗ 6 | Not tested | Not tested |
 | AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | 36 tools, size not published |
 | Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | Hosted, no local start | Hosted, no local start |
 | Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
@@ -149,7 +146,7 @@ Code: `claude mcp add turbofig -- turbofig mcp`. See
 here that needs no MCP server, no token and no extra setup, and it gives
 your AI full scripting power with the lightest load, for free.
 
-<sub>Tokens and approvals: one side-by-side run, see [Benchmark](#benchmark). AI memory = share of a 200K-token context if every tool is loaded up front, counted with an OpenAI tokenizer as Claude's is not public; est. = scaled from the measured NPX tool list. Methods, raw data and every competitor fact with dated sources: [docs/comparison.md](docs/comparison.md).</sub>
+<sub>Approvals: one side-by-side run, see [Benchmark](#benchmark). AI memory = share of a 200K-token context if every tool is loaded up front, counted with an OpenAI tokenizer as Claude's is not public; est. = scaled from the measured NPX tool list. Methods, raw data and every competitor fact with dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 **Why tool count matters.** Many AI agents read every tool description
 before any work, in every session, and you pay for that reading. 121 tools
@@ -164,22 +161,19 @@ The same 4 Figma jobs, the same prompts, the same model (Claude Sonnet 5),
 run once with turbofig and once with figma-console-mcp. Every turbofig
 result was read back from Figma and matched the spec exactly.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-tokens-dark.svg">
-  <img alt="Bar chart: tokens per job, turbofig vs figma-console-mcp. Red square 13.7K vs 52.7K, 40 slides 13.0K vs 39.2K, recolour 18.8K vs 34.7K, hero section 27.2K vs 41.9K. turbofig used 2.3 times fewer tokens overall." src="docs/benchmark-tokens-light.svg" width="860">
-</picture>
+| Job | Approval prompts (turbofig / figma-console-mcp) |
+|---|---|
+| Red 200 × 200 square | **0** / 3 |
+| Lay out 40 slides | **0** / 1 |
+| Recolour text on all 40 slides | **0** / 1 |
+| Hero section | **0** / 1 |
+| **All 4 jobs** | **0 / 6** |
 
-| Job | turbofig tokens | figma-console-mcp tokens | turbofig uses | Approval prompts (turbofig / figma-console-mcp) |
-|---|---|---|---|---|
-| Red 200 × 200 square | **13,700** | 52,700 | **3.9× fewer** | 0 / 3 |
-| Lay out 40 slides | **13,000** | 39,200 | **3.0× fewer** | 0 / 1 |
-| Recolour text on all 40 slides | **18,800** | 34,700 | **1.9× fewer** | 0 / 1 |
-| Hero section | **27,200** | 41,900 | **1.5× fewer** | 0 / 1 |
-| **All 4 jobs** | **72,700** | **168,500** | **2.3× fewer** | **0 / 6** |
-
-Tokens are net of each session's own fixed starting context, so a larger
-project file does not count against either side. One run per job, so
-treat the ratios as a guide, not a guarantee.
+**Tokens.** Per job, both used about the same. Here figma-console-mcp
+ran over curl, so its 121 tool descriptions were never loaded, and no
+job took a screenshot. Those are the two places turbofig saves tokens,
+so this test could not measure them. A test that does is planned. See
+the [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md).
 
 **Where the speed comes from.** This test timed only the AI's working
 time, once both tools were connected, with approval waits removed. That
@@ -192,9 +186,10 @@ model thinking. turbofig's speed is everything around it:
   the first try. The figma-console-mcp setup took 3 to 4 tries, and its
   Desktop Bridge dropped once before the test and once after it.
 - **No stops.** 0 approval prompts, against 6 for the same 4 jobs.
-- **No compacting.** Fewer tokens per job, so long sessions keep going.
 
-Evidence: [results and method](bench/results/side-by-side-20261008-095818/interactive/results.md), [turbofig re-run](bench/results/side-by-side-20261008-095818/interactive/rerun-results.md),
+One run per job, so treat these results as a guide, not a guarantee.
+
+Evidence: [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md), [results and method](bench/results/side-by-side-20261008-095818/interactive/results.md), [turbofig re-run](bench/results/side-by-side-20261008-095818/interactive/rerun-results.md),
 [spec check](bench/results/side-by-side-20261008-095818/interactive/verification.json), [screenshots](bench/results/side-by-side-20261008-095818/interactive/screenshots/),
 [figma-console-mcp session log](bench/results/side-by-side-20261008-095818/interactive/runs/console.jsonl). The turbofig
 session logs stay private because they contain unrelated personal context;
