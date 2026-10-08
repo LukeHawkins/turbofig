@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 488" width="860" height="488" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 418" width="860" height="418" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 <title>turbofig vs figma-console-mcp, measured side by side</title>
-<desc>Five panels comparing turbofig to figma-console-mcp, one run each. Tokens for one design session, a 4-step landing page with a screenshot after each step: turbofig 134,000 tokens, figma-console-mcp 375,000 tokens (2.8 times more). Billed cost for that session, in input-token units: turbofig 228,000 total (89,400 for the work, 138,600 for the fixed context), figma-console-mcp 350,000 total, 35 percent more (163,600 for the work, 186,200 for the fixed context). Time for that session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes (includes approval waits). Tokens for one screenshot of the same frame, default settings: turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at 2000 pixels. Approval prompts in 4 small jobs: turbofig 0, figma-console-mcp 6.</desc>
-<rect x="0" y="0" width="860" height="488" fill="#fcfcfb" />
+<desc>Five panels comparing turbofig to figma-console-mcp, one run each. Tokens for one design session, a 4-step landing page with a screenshot after each step: turbofig 134,000 tokens, figma-console-mcp 375,000 tokens (2.8 times more). Billed cost for that session, in input-token units: turbofig 228,000 total (89,400 for the work, 138,600 for the fixed context), figma-console-mcp 350,000 total, 35 percent more (163,600 for the work, 186,200 for the fixed context). Time for that session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes (includes approval waits). Tokens for one screenshot of the same frame, default settings: turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at 2000 pixels.</desc>
+<rect x="0" y="0" width="860" height="418" fill="#fcfcfb" />
 <text x="20" y="30" font-size="17" font-weight="700" fill="#0b0b0b">Measured side by side</text>
 <text x="20" y="50" font-size="12.5" fill="#52514e">Same prompts, same model (Claude Sonnet 5), one run each. Lower is better.</text>
 <rect x="20" y="62" width="10" height="10" rx="2" fill="#2a78d6" />
@@ -36,10 +36,5 @@
 <path d="M 20.0 359.0 H 626.0 A 4 4 0 0 1 630.0 363.0 V 368.0 A 4 4 0 0 1 626.0 372.0 H 20.0 Z" fill="#eb6834" />
 <text x="256.9" y="354.5" font-size="11.5" fill="#52514e">1,225 (1200 px)</text>
 <text x="638.0" y="369.5" font-size="11.5" fill="#52514e">3,264 (2000 px)</text>
-<text x="20" y="408.0" font-size="13" font-weight="600" fill="#0b0b0b">Approval prompts in 4 small jobs</text>
-<rect x="20.0" y="414.0" width="0.0" height="13" fill="#2a78d6" />
-<path d="M 20.0 429.0 H 626.0 A 4 4 0 0 1 630.0 433.0 V 438.0 A 4 4 0 0 1 626.0 442.0 H 20.0 Z" fill="#eb6834" />
-<text x="28.0" y="424.5" font-size="11.5" fill="#52514e">0</text>
-<text x="638.0" y="439.5" font-size="11.5" fill="#52514e">6</text>
-<text x="20" y="468.0" font-size="11" fill="#52514e">Session figures leave out time spent recovering from tool failures, on both sides. Details: session-test.md in the benchmark results.</text>
+<text x="20" y="398.0" font-size="11" fill="#52514e">Session figures leave out time spent recovering from tool failures, on both sides. Details: session-test.md in the benchmark results.</text>
 </svg>

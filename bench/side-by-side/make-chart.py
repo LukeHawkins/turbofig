@@ -71,7 +71,7 @@ APPROVALS_PANEL = {
     "note": None,
 }
 
-PANELS = [SESSION_TOKENS_PANEL, BILLED_COST_PANEL, SESSION_TIME_PANEL, SCREENSHOT_PANEL, APPROVALS_PANEL]
+PANELS = [SESSION_TOKENS_PANEL, BILLED_COST_PANEL, SESSION_TIME_PANEL, SCREENSHOT_PANEL]
 
 FOOTER = (
     "Session figures leave out time spent recovering from tool failures, on both sides. "
@@ -289,8 +289,7 @@ def render(theme_name):
         "figma-console-mcp 5.9 minutes (includes approval waits). Tokens "
         "for one screenshot of the same frame, default settings: turbofig "
         "1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at "
-        "2000 pixels. Approval prompts in 4 small jobs: turbofig 0, "
-        "figma-console-mcp 6.</desc>"
+        "2000 pixels.</desc>"
     )
     parts.append(f'<rect x="0" y="0" width="{WIDTH}" height="{total_height}" fill="{c["surface"]}" />')
 
