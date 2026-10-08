@@ -14,11 +14,41 @@ the prompt at the same time (turbofig 13:01:01, figma-console-mcp
 > file. At the end, tell me in one sentence what you built.
 
 Same sessions and counting method as `screenshot-test-2.md`: each API
-call counted once, from the first call after the prompt. **Every number
-below includes both tools' problems** (listed at the end). Nothing is
-excluded.
+call counted once, from the first call after the prompt.
 
-## Result
+## Clean comparison (used in the README)
+
+One rule for both tools: leave out every stretch where the agent was
+recovering from a tool failure, and keep normal design iteration (fixing
+the nav width, fixing card text wrapping). Context added during a left-out
+stretch is also subtracted from every later call.
+
+Left out:
+
+- **turbofig:** 13:01:24 to 13:03:39, the step-1 job that never returned
+  and the polling around it (13 calls, 135 s).
+- **figma-console-mcp:** 13:01:36 to 13:02:57 (failed screenshot decode on
+  step 1 and its recovery); 13:03:31 to 13:03:58 and 13:05:01 to 13:05:49
+  (stale screenshots, byte for byte the same image as the step before, and
+  the cache-busting retries); 13:09:13 to 13:09:54 (a step-4 retry with the
+  same cache-busting pattern; doubtful, left out in figma-console-mcp's
+  favour). 17 calls in total.
+
+| | turbofig | figma-console-mcp | Ratio |
+|---|---|---|---|
+| Tokens processed for the work (NET input) | **133,538** | 374,752 | **2.8× fewer** |
+| Context growth | 15,540 | 35,312 | 2.3× fewer |
+| Output tokens | 11,572 | 18,089 | 1.6× fewer |
+| Billed cost, in input-token equivalents | **227,994** | 349,822 | **35% cheaper** |
+| AI calls | 17 | 24 | |
+| Screenshots | 5 | 6 | |
+| Wall time | **171 s (2.9 min)** | 355 s (5.9 min), incl. approval waits | 2.1× faster |
+| AI time | **~134 s** | ~199 s | 1.5× less |
+
+## Full session, nothing left out
+
+**Every number in this section includes both tools' problems** (listed
+at the end).
 
 | | turbofig | figma-console-mcp | Ratio |
 |---|---|---|---|
@@ -74,9 +104,7 @@ output, so each one also needed a decode step.
   and read the flow-mcp tool docs. It opened a stale image once, and
   re-took screenshots on steps 3 and 4.
 
-Without turbofig's stall (from 13:03:39 only): 17 calls, 15,540 context
-growth, 171 s. That figure excludes only one side's problems, so it is
-recorded here but not used in the README.
+The clean comparison at the top leaves these out on both sides.
 
 ## Limits
 
