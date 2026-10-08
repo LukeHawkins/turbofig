@@ -1,51 +1,88 @@
 #!/usr/bin/env python3
-"""Generate the benchmark bar chart as light and dark SVGs.
+"""Generate the benchmark overview chart as light and dark SVGs.
 
-Data source: bench/results/side-by-side-20261008-095818/interactive/
-rerun-results.md and results.md (Run B NET tokens, checked against the
-README benchmark table). Re-run this script after any data change instead
-of hand-editing the SVGs.
+Three stacked panels, each on its own scale: tokens (segmented into the
+work and the tool list), approval prompts, and startup latency. Data
+source: bench/results/side-by-side-20261008-095818/ and the README
+benchmark table. Re-run this script after any data change instead of
+hand-editing the SVGs.
 """
 
 import os
 
-JOBS = [
-    {"name": "Red 200×200 square", "turbofig": 13711, "console": 52749, "ratio": "3.9× fewer"},
-    {"name": "Lay out 40 slides", "turbofig": 13025, "console": 39200, "ratio": "3.0× fewer"},
-    {"name": "Recolour text on 40 slides", "turbofig": 18804, "console": 34692, "ratio": "1.9× fewer"},
-    {"name": "Hero section", "turbofig": 27150, "console": 41876, "ratio": "1.5× fewer"},
-]
+TITLE = "Where the difference comes from"
+SUBTITLE = "One Mac, macOS 15, October 2026. Lower is better."
 
-TITLE = "Tokens per job (lower is better)"
-SUBTITLE = (
-    "Same prompts, same model (Claude Sonnet 5). turbofig used 2.3× "
-    "fewer tokens across all 4 jobs."
+TOKENS_PANEL = {
+    "type": "stacked",
+    "title": "Tokens across the same 4 jobs, if all tools are loaded (estimate)",
+    "turbofig_work": 50400,
+    "turbofig_tool": 6800,
+    "console_work": 38500,
+    "console_tool": 366000,
+    "note": (
+        "Solid = the work (measured). "
+        "Light = tool list re-read on each of 10 AI calls (estimate)."
+    ),
+}
+
+APPROVALS_PANEL = {
+    "type": "simple",
+    "title": "Approval prompts in the same 4 jobs",
+    "turbofig_value": 0,
+    "console_value": 6,
+    "turbofig_label": "0",
+    "console_label": "6",
+    "note": None,
+}
+
+STARTUP_PANEL = {
+    "type": "simple",
+    "title": "Ready when your AI starts",
+    "turbofig_value": 0.07,
+    "console_value": 1.9,
+    "turbofig_label": "0.07 s",
+    "console_label": "1.9 s",
+    "note": "figma-console-mcp: 29 s on a first run",
+}
+
+PANELS = [TOKENS_PANEL, APPROVALS_PANEL, STARTUP_PANEL]
+
+FOOTER = (
+    "Repeated tool lists are cached, so the cost gap is smaller than the "
+    "token gap. See recount.md in the benchmark results."
 )
 
 WIDTH = 860
-HEIGHT = 300
 FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 
 # Layout
-LEFT_LABEL_W = 190
-RIGHT_RATIO_W = 110
-PLOT_LEFT = LEFT_LABEL_W
-PLOT_RIGHT = WIDTH - RIGHT_RATIO_W - 20
-PLOT_WIDTH = PLOT_RIGHT - PLOT_LEFT
+PLOT_LEFT = 20
+RIGHT_GUTTER = 190
+PLOT_WIDTH = WIDTH - PLOT_LEFT - RIGHT_GUTTER
+SEGMENT_GAP = 2  # surface-colour gap between the two segments of a stacked bar
 
-BAR_H = 14
-BAR_GAP = 2  # between the two bars in a row
-ROW_GAP = 8  # extra gap between rows
-ROW_H = BAR_H * 2 + BAR_GAP + ROW_GAP
+BAR_H = 13
+BAR_GAP = 2  # between the two bars in a panel
 
-PLOT_TOP = 110
-AXIS_MAX = 60000
-TICKS = [0, 20000, 40000, 60000]
+TITLE_Y = 30
+SUBTITLE_Y = 50
+LEGEND_Y = 72
+PANELS_TOP = 96
+
+PANEL_TITLE_H = 20
+BARS_H = BAR_H * 2 + BAR_GAP
+NOTE_H = 20
+PANEL_GAP = 22
+FOOTER_GAP = 26
+FOOTER_H = 20
 
 COLORS = {
     "light": {
         "turbofig": "#2a78d6",
+        "turbofig_tint": "#9fc2ed",
         "console": "#eb6834",
+        "console_tint": "#f6bba4",
         "surface": "#fcfcfb",
         "text_primary": "#0b0b0b",
         "text_secondary": "#52514e",
@@ -53,7 +90,9 @@ COLORS = {
     },
     "dark": {
         "turbofig": "#3987e5",
+        "turbofig_tint": "#a6c9f3",
         "console": "#d95926",
+        "console_tint": "#eeb49d",
         "surface": "#1a1a19",
         "text_primary": "#ffffff",
         "text_secondary": "#c3c2b7",
@@ -63,14 +102,7 @@ COLORS = {
 
 
 def fmt_k(value):
-    k = value / 1000.0
-    if k == int(k):
-        return f"{int(k)}K"
-    return f"{int(value / 100 + 0.5) / 10:.1f}K"  # round half up, like the README table
-
-
-def x_for(value):
-    return PLOT_LEFT + (value / AXIS_MAX) * PLOT_WIDTH
+    return f"~{int(value / 1000 + 0.5)}K"
 
 
 def bar(x, y, w, h, color, radius=4):
@@ -87,86 +119,164 @@ def bar(x, y, w, h, color, radius=4):
     )
 
 
+def flat_rect(x, y, w, h, color):
+    """Square-cornered rectangle, for a segment that is not the bar's data end."""
+    return f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(w, 0):.1f}" height="{h}" fill="{color}" />'
+
+
+def panel_height(panel):
+    h = PANEL_TITLE_H + BARS_H
+    if panel["note"]:
+        h += NOTE_H
+    return h
+
+
+def render_simple_panel(parts, panel, y, c):
+    bars_top = y + PANEL_TITLE_H
+    tf_y = bars_top
+    cs_y = bars_top + BAR_H + BAR_GAP
+
+    axis_max = max(panel["turbofig_value"], panel["console_value"]) or 1
+    tf_w = (panel["turbofig_value"] / axis_max) * PLOT_WIDTH
+    cs_w = (panel["console_value"] / axis_max) * PLOT_WIDTH
+
+    parts.append(bar(PLOT_LEFT, tf_y, tf_w, BAR_H, c["turbofig"]))
+    parts.append(bar(PLOT_LEFT, cs_y, cs_w, BAR_H, c["console"]))
+
+    parts.append(
+        f'<text x="{PLOT_LEFT + tf_w + 8:.1f}" y="{tf_y + BAR_H - 2.5:.1f}" font-size="11.5" '
+        f'fill="{c["text_secondary"]}">{panel["turbofig_label"]}</text>'
+    )
+    parts.append(
+        f'<text x="{PLOT_LEFT + cs_w + 8:.1f}" y="{cs_y + BAR_H - 2.5:.1f}" font-size="11.5" '
+        f'fill="{c["text_secondary"]}">{panel["console_label"]}</text>'
+    )
+
+    y = bars_top + BARS_H
+
+    if panel["note"]:
+        parts.append(
+            f'<text x="{PLOT_LEFT}" y="{y + 13:.1f}" font-size="11" '
+            f'fill="{c["text_secondary"]}">{panel["note"]}</text>'
+        )
+        y += NOTE_H
+
+    return y
+
+
+def render_stacked_panel(parts, panel, y, c):
+    bars_top = y + PANEL_TITLE_H
+    tf_y = bars_top
+    cs_y = bars_top + BAR_H + BAR_GAP
+
+    tf_total = panel["turbofig_work"] + panel["turbofig_tool"]
+    cs_total = panel["console_work"] + panel["console_tool"]
+    axis_max = max(tf_total, cs_total) or 1
+    data_width = PLOT_WIDTH - SEGMENT_GAP
+
+    def segment_widths(work, tool):
+        return (work / axis_max) * data_width, (tool / axis_max) * data_width
+
+    tf_work_w, tf_tool_w = segment_widths(panel["turbofig_work"], panel["turbofig_tool"])
+    cs_work_w, cs_tool_w = segment_widths(panel["console_work"], panel["console_tool"])
+
+    def draw_row(row_y, work_w, tool_w, solid, tint, total_value):
+        parts.append(flat_rect(PLOT_LEFT, row_y, work_w, BAR_H, solid))
+        tool_x = PLOT_LEFT + work_w + SEGMENT_GAP
+        parts.append(bar(tool_x, row_y, tool_w, BAR_H, tint))
+        end_x = tool_x + tool_w
+        parts.append(
+            f'<text x="{end_x + 8:.1f}" y="{row_y + BAR_H - 2.5:.1f}" font-size="11.5" '
+            f'fill="{c["text_secondary"]}">{fmt_k(total_value)}</text>'
+        )
+
+    draw_row(tf_y, tf_work_w, tf_tool_w, c["turbofig"], c["turbofig_tint"], tf_total)
+    draw_row(cs_y, cs_work_w, cs_tool_w, c["console"], c["console_tint"], cs_total)
+
+    y = bars_top + BARS_H
+
+    if panel["note"]:
+        swatch_y = y + 5
+        sx = PLOT_LEFT
+        parts.append(f'<rect x="{sx}" y="{swatch_y}" width="9" height="9" rx="1.5" fill="{c["console"]}" />')
+        parts.append(
+            f'<text x="{sx + 14}" y="{y + 13:.1f}" font-size="11" fill="{c["text_secondary"]}">'
+            "Solid = the work (measured).</text>"
+        )
+        tx = sx + 190
+        parts.append(f'<rect x="{tx}" y="{swatch_y}" width="9" height="9" rx="1.5" fill="{c["console_tint"]}" />')
+        parts.append(
+            f'<text x="{tx + 14}" y="{y + 13:.1f}" font-size="11" fill="{c["text_secondary"]}">'
+            "Light = tool list re-read on each of 10 AI calls (estimate).</text>"
+        )
+        y += NOTE_H
+
+    return y
+
+
 def render(theme_name):
     c = COLORS[theme_name]
     parts = []
+
+    # First pass: compute total height.
+    y = PANELS_TOP
+    for i, panel in enumerate(PANELS):
+        y += panel_height(panel)
+        if i < len(PANELS) - 1:
+            y += PANEL_GAP
+    total_height = y + FOOTER_GAP + FOOTER_H
+
     parts.append(
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
-        f'width="{WIDTH}" height="{HEIGHT}" font-family="{FONT}">'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {total_height}" '
+        f'width="{WIDTH}" height="{total_height}" font-family="{FONT}">'
     )
+    parts.append("<title>turbofig vs figma-console-mcp, where the difference comes from</title>")
     parts.append(
-        "<title>Tokens per job, turbofig vs figma-console-mcp</title>"
+        "<desc>Three panels comparing turbofig to figma-console-mcp. "
+        "Tokens across the same 4 jobs, if all tools are loaded (estimate): "
+        "turbofig about 57,200 tokens total (50,400 for the work, about "
+        "6,800 for the tool list), figma-console-mcp about 404,500 tokens "
+        "total (38,500 for the work, about 366,000 for the tool list). "
+        "Approval prompts across the same 4 jobs: turbofig 0, "
+        "figma-console-mcp 6. Ready when your AI starts: turbofig 0.07 "
+        "seconds, figma-console-mcp 1.9 seconds (29 seconds on a first "
+        "run).</desc>"
     )
-    parts.append(
-        "<desc>Grouped horizontal bar chart comparing net tokens per job "
-        "between turbofig and figma-console-mcp across 4 Figma jobs: "
-        "red square, 40-slide layout, recolour, and hero section. "
-        "turbofig used fewer tokens in every job.</desc>"
-    )
-    parts.append(f'<rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="{c["surface"]}" />')
+    parts.append(f'<rect x="0" y="0" width="{WIDTH}" height="{total_height}" fill="{c["surface"]}" />')
 
     # Title + subtitle
     parts.append(
-        f'<text x="20" y="30" font-size="17" font-weight="700" fill="{c["text_primary"]}">{TITLE}</text>'
+        f'<text x="20" y="{TITLE_Y}" font-size="17" font-weight="700" fill="{c["text_primary"]}">{TITLE}</text>'
     )
     parts.append(
-        f'<text x="20" y="50" font-size="12.5" fill="{c["text_secondary"]}">{SUBTITLE}</text>'
+        f'<text x="20" y="{SUBTITLE_Y}" font-size="12.5" fill="{c["text_secondary"]}">{SUBTITLE}</text>'
     )
 
     # Legend
-    legend_y = 72
-    parts.append(f'<rect x="20" y="{legend_y - 10}" width="10" height="10" rx="2" fill="{c["turbofig"]}" />')
-    parts.append(f'<text x="36" y="{legend_y - 1}" font-size="12.5" fill="{c["text_primary"]}">turbofig</text>')
-    parts.append(f'<rect x="120" y="{legend_y - 10}" width="10" height="10" rx="2" fill="{c["console"]}" />')
-    parts.append(f'<text x="136" y="{legend_y - 1}" font-size="12.5" fill="{c["text_primary"]}">figma-console-mcp</text>')
+    parts.append(f'<rect x="20" y="{LEGEND_Y - 10}" width="10" height="10" rx="2" fill="{c["turbofig"]}" />')
+    parts.append(f'<text x="36" y="{LEGEND_Y - 1}" font-size="12.5" fill="{c["text_primary"]}">turbofig</text>')
+    parts.append(f'<rect x="120" y="{LEGEND_Y - 10}" width="10" height="10" rx="2" fill="{c["console"]}" />')
+    parts.append(f'<text x="136" y="{LEGEND_Y - 1}" font-size="12.5" fill="{c["text_primary"]}">figma-console-mcp</text>')
 
-    plot_bottom = PLOT_TOP + len(JOBS) * ROW_H - ROW_GAP
-
-    # Gridlines + tick labels
-    for tick in TICKS:
-        gx = x_for(tick)
+    y = PANELS_TOP
+    for panel in PANELS:
+        title_y = y + 14
         parts.append(
-            f'<line x1="{gx:.1f}" y1="{PLOT_TOP - 6}" x2="{gx:.1f}" y2="{plot_bottom + 4}" '
-            f'stroke="{c["grid"]}" stroke-width="1" />'
-        )
-        parts.append(
-            f'<text x="{gx:.1f}" y="{plot_bottom + 20}" font-size="11" fill="{c["text_secondary"]}" '
-            f'text-anchor="middle">{fmt_k(tick) if tick else "0"}</text>'
+            f'<text x="20" y="{title_y:.1f}" font-size="13" font-weight="600" '
+            f'fill="{c["text_primary"]}">{panel["title"]}</text>'
         )
 
-    for i, job in enumerate(JOBS):
-        row_top = PLOT_TOP + i * ROW_H
-        tf_y = row_top
-        cs_y = row_top + BAR_H + BAR_GAP
-        row_mid = row_top + BAR_H + BAR_GAP / 2
+        if panel["type"] == "stacked":
+            y = render_stacked_panel(parts, panel, y, c)
+        else:
+            y = render_simple_panel(parts, panel, y, c)
 
-        # Job name (left)
-        parts.append(
-            f'<text x="{LEFT_LABEL_W - 14}" y="{row_mid + 4:.1f}" font-size="12.5" '
-            f'fill="{c["text_primary"]}" text-anchor="end">{job["name"]}</text>'
-        )
+        y += PANEL_GAP
 
-        tf_w = (job["turbofig"] / AXIS_MAX) * PLOT_WIDTH
-        cs_w = (job["console"] / AXIS_MAX) * PLOT_WIDTH
-
-        parts.append(bar(PLOT_LEFT, tf_y, tf_w, BAR_H, c["turbofig"]))
-        parts.append(bar(PLOT_LEFT, cs_y, cs_w, BAR_H, c["console"]))
-
-        # Value labels at bar ends
-        parts.append(
-            f'<text x="{PLOT_LEFT + tf_w + 8:.1f}" y="{tf_y + BAR_H - 3:.1f}" font-size="11" '
-            f'fill="{c["text_secondary"]}">{fmt_k(job["turbofig"])}</text>'
-        )
-        parts.append(
-            f'<text x="{PLOT_LEFT + cs_w + 8:.1f}" y="{cs_y + BAR_H - 3:.1f}" font-size="11" '
-            f'fill="{c["text_secondary"]}">{fmt_k(job["console"])}</text>'
-        )
-
-        # Ratio, far right of the row
-        parts.append(
-            f'<text x="{WIDTH - 20}" y="{row_mid + 4:.1f}" font-size="12.5" font-weight="700" '
-            f'fill="{c["text_primary"]}" text-anchor="end">{job["ratio"]}</text>'
-        )
+    footer_y = y - PANEL_GAP + FOOTER_GAP
+    parts.append(
+        f'<text x="20" y="{footer_y:.1f}" font-size="11" fill="{c["text_secondary"]}">{FOOTER}</text>'
+    )
 
     parts.append("</svg>")
     return "\n".join(parts)
@@ -178,8 +288,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     for theme in ("light", "dark"):
+        path = os.path.join(out_dir, f"benchmark-overview-{theme}.svg")
         svg = render(theme)
-        path = os.path.join(out_dir, f"benchmark-tokens-{theme}.svg")
         with open(path, "w") as f:
             f.write(svg + "\n")
         print(f"wrote {path}")

@@ -161,6 +161,11 @@ The same 4 Figma jobs, the same prompts, the same model (Claude Sonnet 5),
 run once with turbofig and once with figma-console-mcp. Every turbofig
 result was read back from Figma and matched the spec exactly.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-overview-dark.svg">
+  <img src="docs/benchmark-overview-light.svg" width="860" alt="Where the difference comes from. One Mac, macOS 15, October 2026, lower is better. Tokens across the same 4 jobs, if all tools are loaded (estimate): turbofig about 57,200 tokens total (50,400 for the work, about 6,800 for the tool list), figma-console-mcp about 404,500 tokens total (38,500 for the work, about 366,000 for the tool list). Approval prompts in the same 4 jobs: turbofig 0, figma-console-mcp 6. Ready when your AI starts: turbofig 0.07 seconds, figma-console-mcp 1.9 seconds (29 seconds on a first run).">
+</picture>
+
 | Job | Approval prompts (turbofig / figma-console-mcp) |
 |---|---|
 | Red 200 × 200 square | **0** / 3 |
@@ -169,11 +174,14 @@ result was read back from Figma and matched the spec exactly.
 | Hero section | **0** / 1 |
 | **All 4 jobs** | **0 / 6** |
 
-**Tokens.** Per job, both used about the same. Here figma-console-mcp
-ran over curl, so its 121 tool descriptions were never loaded, and no
-job took a screenshot. Those are the two places turbofig saves tokens,
-so this test could not measure them. A test that does is planned. See
-the [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md).
+**Tokens.** The work itself cost about the same with both: the same AI
+writes the same kind of script. The difference is overhead. In this test
+figma-console-mcp ran over curl, so its 121 tool descriptions were never
+sent. As a normal MCP server in a client that loads every tool, each of
+the 10 AI calls would carry about 36,600 tokens of them, against about
+680 for turbofig. The chart adds that to the measured work, as an
+estimate. Screenshots, where turbofig also saves, were not part of this
+test. See the [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md).
 
 **Where the speed comes from.** This test timed only the AI's working
 time, once both tools were connected, with approval waits removed. That
