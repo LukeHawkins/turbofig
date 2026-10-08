@@ -27,8 +27,8 @@ the file you have open.
   job. One request can make hundreds of changes at once.
 - **Far lighter on tokens.** Each screenshot costs 2.7× fewer tokens, and
   your AI learns 4 actions instead of 121. In AI apps that load every
-  tool, the same jobs take about 7× fewer tokens, by our estimate. Less of your AI
-  plan goes on overhead, so long sessions go further.
+  tool, the same jobs take about 7× fewer tokens, by our estimate. Less
+  of your AI plan goes on overhead, so long sessions go further.
 - **Free to use.** No paid Figma seat, no monthly quota.
 
 <sub>See [how turbofig compares](#how-turbofig-compares) and [the benchmark](#benchmark).</sub>
@@ -36,16 +36,15 @@ the file you have open.
 ## Why turbofig
 
 - **Easy.** A small native app, with no Node. One Homebrew command
-  installs it, and `brew upgrade turbofig` updates it. Import the plugin into Figma once, paste the copy-prompt
-  into your agent, and you are done. No Figma token, no sign-in, no
+  installs it, and `brew upgrade turbofig` updates it. Import the plugin
+  into Figma once, paste the copy-prompt into your agent, and you are done. No Figma token, no sign-in, no
   shared billing, so a whole team or class can run it side by side.
 - **Connects by itself, stays connected.** Open the plugin and it finds
   turbofig. No restarting plugins or gateways to get a connection. If the
   link drops, it reconnects on its own.
 - **Screenshots stay small.** Screenshots are saved as files and shrunk
-  to at most 1200 px, so they do not fill up your AI's memory. In a
-  side-by-side test, the same screenshot cost 2.7× fewer tokens. Full
-  size is there when your AI asks for it.
+  to at most 1200 px, so they do not fill up your AI's memory. Full size
+  is there when your AI asks for it.
 - **Multi-file.** Several files and several agent sessions can run at
   once, handy when you juggle clients.
 - **No approval clicks, if your setup asks for them.** Some setups ask you
@@ -63,8 +62,8 @@ they also often needed restarts before they would connect.
 
 turbofig is the bridge I wanted. It is always on and answers straight
 away, so big jobs move fast. It gives the AI only what it needs, so less
-of every session goes on overhead. Since switching, I no longer have to compact
-long design sessions in Claude Code, and I give it big jobs without
+of every session goes on overhead. Since switching, I no longer have to
+compact long design sessions in Claude Code, and I give it big jobs without
 worrying about the cost.
 
 ## What you can ask it
@@ -146,73 +145,36 @@ Code: `claude mcp add turbofig -- turbofig mcp`. See
 | Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
 
 **Bottom line:** if you work in Figma Desktop, turbofig is the only option
-here that needs no MCP server, no token and no extra setup. It gives
-your AI full scripting power with the lightest load: about 7× fewer
-tokens where every tool is loaded, 2.7× fewer per screenshot, and no
-approval stops. Free.
+here that needs no MCP server, no token and no extra setup. It gives your
+AI full scripting power with the lightest load, for free.
 
-<sub>Tokens, screenshots and approvals: side-by-side runs, see [Benchmark](#benchmark). 4-job tokens = the measured work plus each tool list re-read on each of 10 AI calls; repeated tool lists are cached, so the cost gap is smaller than the token gap. AI memory = share of a 200K-token context if every tool is loaded up front, counted with an OpenAI tokenizer as Claude's is not public; est. = scaled from the measured NPX tool list. Methods, raw data and every competitor fact with dated sources: [docs/comparison.md](docs/comparison.md).</sub>
-
-**Why tool count matters.** Many AI agents read every tool description
-before any work, in every session, and you pay for that reading. 121 tools
-fill almost a fifth of a 200K-token memory. Claude Code looks tools up on
-demand once they pass 10% of its memory
-([docs](https://code.claude.com/docs/en/agent-sdk/tool-search)), which
-adds a search step each time. turbofig needs neither: 4 tools, 0.3%.
+<sub>est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer. Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 ## Benchmark
 
-The same 4 Figma jobs, the same prompts, the same model (Claude Sonnet 5),
-run once with turbofig and once with figma-console-mcp. Every turbofig
-result was read back from Figma and matched the spec exactly.
-
-**About 7× fewer tokens where every tool is loaded (estimate). 2.7× fewer
-per screenshot. 0 approval stops, against 6.**
+The same jobs, prompts and model (Claude Sonnet 5), run once with each
+tool. Every turbofig result was read back from Figma and matched the spec.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-overview-dark.svg">
   <img src="docs/benchmark-overview-light.svg" width="860" alt="Where the difference comes from. One Mac, macOS 15, October 2026, lower is better. Tokens across the same 4 jobs, if all tools are loaded (estimate): turbofig about 57,200 tokens total (50,400 for the work, about 6,800 for the tool list), figma-console-mcp about 404,500 tokens total (38,500 for the work, about 366,000 for the tool list). Tokens for one screenshot of the same frame, default settings: turbofig 1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at 2000 pixels. Approval prompts in the same 4 jobs: turbofig 0, figma-console-mcp 6. Ready when your AI starts: turbofig 0.07 seconds, figma-console-mcp 1.9 seconds (29 seconds on a first run).">
 </picture>
 
-| Job | Approval prompts (turbofig / figma-console-mcp) |
-|---|---|
-| Red 200 × 200 square | **0** / 3 |
-| Lay out 40 slides | **0** / 1 |
-| Recolour text on all 40 slides | **0** / 1 |
-| Hero section | **0** / 1 |
-| **All 4 jobs** | **0 / 6** |
+- **Tokens.** The work itself cost about the same with both: the same AI
+  writes the same kind of script. The difference is overhead: 121 tool
+  descriptions against 4, and larger screenshots.
+- **Screenshots.** Each one stays in the conversation, so the saving
+  repeats on every later call.
+- **Speed.** The AI's thinking time was about the same, 12 to 40 seconds
+  a job. turbofig's speed is everything around it: ready at once,
+  connected on the first try (the figma-console-mcp setup took 3 to 4
+  tries), and no approval stops.
 
-**Tokens.** The work itself cost about the same with both: the same AI
-writes the same kind of script. The difference is overhead. In this test
-figma-console-mcp ran over curl, so its 121 tool descriptions were never
-sent. As a normal MCP server in a client that loads every tool, each of
-the 10 AI calls would carry about 36,600 tokens of them, against about
-680 for turbofig. The chart adds that to the measured work, as an
-estimate. In a [screenshot test](bench/results/side-by-side-20261008-095818/interactive/screenshot-test-2.md),
-one screenshot of the hero frame cost 1,225 tokens with turbofig against
-3,264 with figma-console-mcp, each at its default size: 2.7× fewer. Each
-screenshot then stays in the conversation, so the saving repeats on every
-later call. See the [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md).
-
-**Where the speed comes from.** This test timed only the AI's working
-time, once both tools were connected, with approval waits removed. That
-part was about the same for both (12 to 40 seconds), because it is the
-model thinking. turbofig's speed is everything around it:
-
-- **Ready at once.** Under 0.1 s to start, against about 2 s (30 s on a
-  first run).
-- **Connects first time.** In the tester's setup, turbofig connected on
-  the first try. The figma-console-mcp setup took 3 to 4 tries, and its
-  Desktop Bridge dropped once before the test and once after it.
-- **No stops.** 0 approval prompts, against 6 for the same 4 jobs.
-
-One run per job, so treat these results as a guide, not a guarantee.
-
-Evidence: [recount](bench/results/side-by-side-20261008-095818/interactive/recount.md), [results and method](bench/results/side-by-side-20261008-095818/interactive/results.md), [turbofig re-run](bench/results/side-by-side-20261008-095818/interactive/rerun-results.md),
-[spec check](bench/results/side-by-side-20261008-095818/interactive/verification.json), [screenshots](bench/results/side-by-side-20261008-095818/interactive/screenshots/),
-[figma-console-mcp session log](bench/results/side-by-side-20261008-095818/interactive/runs/console.jsonl). The turbofig
-session logs stay private because they contain unrelated personal context;
-their numbers are in the results files.
+One run each, so treat the results as a guide. Evidence:
+[recount](bench/results/side-by-side-20261008-095818/interactive/recount.md), [screenshot test](bench/results/side-by-side-20261008-095818/interactive/screenshot-test-2.md),
+[results and method](bench/results/side-by-side-20261008-095818/interactive/results.md), [spec check](bench/results/side-by-side-20261008-095818/interactive/verification.json),
+[figma-console-mcp log](bench/results/side-by-side-20261008-095818/interactive/runs/console.jsonl). The turbofig logs stay
+private because they contain unrelated personal context.
 
 ## For developers
 
