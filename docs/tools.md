@@ -25,7 +25,7 @@ empty `plugins` lists and a `pluginVersion` that equals the daemon version.
 {"ok":true,"plugin":{"connected":false,"reason":"open the turbofig plugin in Figma"}}
 ```
 
-`turbofig_execute` omits `result` when the result is null:
+`turbofig_execute` omits `result` when the code returns nothing (null). `{"ok":true}` with no `result` key means the code returned nothing:
 
 ```json
 {"ok":true,"result":"1:23"}
@@ -38,7 +38,10 @@ Errors carry a `code`:
 {"ok":false,"code":"not_started","error":"did not start, safe to retry"}
 {"ok":false,"code":"started_unknown","error":"started, may have run: check before retry"}
 {"ok":false,"code":"busy","error":"too many jobs in flight","queueDepth":3,"retryAfterMs":750}
+{"ok":false,"code":"invalid_job","error":"..."}
 ```
+
+`invalid_job` means the daemon could not parse the job. Fix the JSON and send it again with a new id.
 
 A read over budget adds a `warning`:
 

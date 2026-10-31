@@ -79,9 +79,7 @@ pub(crate) struct SelectionParams {
     #[schemars(description = "File key; omit when one file is open")]
     pub(crate) file_key: Option<String>,
     #[serde(default)]
-    #[schemars(
-        description = "Extra node property names to include alongside the base seven fields"
-    )]
+    #[schemars(description = "Extra props to add to each node")]
     pub(crate) fields: Option<Vec<String>>,
     #[serde(default)]
     #[schemars(
@@ -93,7 +91,7 @@ pub(crate) struct SelectionParams {
 /// Parameters for the turbofig_execute tool.
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ExecuteParams {
-    #[schemars(description = "Async JS body")]
+    #[schemars(description = "Async JS code")]
     pub(crate) code: String,
     #[serde(rename = "fileKey", default)]
     #[schemars(description = "File key; omit when one file is open")]
@@ -119,7 +117,7 @@ pub(crate) struct ScreenshotParams {
     #[schemars(description = "Longest-edge pixel cap, default 1200")]
     pub(crate) max_dim: u32,
     #[serde(rename = "fullRes", default)]
-    #[schemars(description = "Skip the downscale")]
+    #[schemars(description = "Skip the maxDim downscale")]
     pub(crate) full_res: bool,
 }
 
