@@ -40,19 +40,30 @@ describe("hexToRgb", () => {
     expect(result.b).toBeCloseTo(0.8, 3);
   });
 
-  test("returns black for an invalid hex string", () => {
-    const result = hexToRgb("not-a-color");
-    expect(result).toEqual({ r: 0, g: 0, b: 0 });
+  test("parses #RRGGBBAA and adds alpha as a", () => {
+    const result = hexToRgb("#ff000080");
+    expect(result.r).toBe(1);
+    expect(result.g).toBe(0);
+    expect(result.a).toBeCloseTo(128 / 255, 5);
   });
 
-  test("returns black for an empty string", () => {
-    const result = hexToRgb("");
-    expect(result).toEqual({ r: 0, g: 0, b: 0 });
+  test("parses #RRGGBBAA without a hash", () => {
+    expect(hexToRgb("0000ffff")).toEqual({ r: 0, g: 0, b: 1, a: 1 });
   });
 
-  test("returns black for a partial hex string", () => {
-    const result = hexToRgb("#33");
-    expect(result).toEqual({ r: 0, g: 0, b: 0 });
+  test("a 3 or 6 digit value has no a key", () => {
+    expect("a" in hexToRgb("#fff")).toBe(false);
+    expect("a" in hexToRgb("123456")).toBe(false);
+  });
+
+  test("throws and names the value for a bad string", () => {
+    expect(() => hexToRgb("not-a-color")).toThrow("not-a-color");
+  });
+
+  test("throws for an empty, partial, 4, 5 or 7 digit value", () => {
+    for (const bad of ["", "#33", "#ffff", "#fffff", "#fffffff", "#gggggg"]) {
+      expect(() => hexToRgb(bad)).toThrow(/Bad colour/);
+    }
   });
 
   test("all components are in the range 0..1", () => {
@@ -87,6 +98,20 @@ describe("solidPaint", () => {
   test("applies a custom opacity", () => {
     const paint = solidPaint("#000000", 0.5);
     expect(paint.opacity).toBe(0.5);
+  });
+
+  test("maps #RRGGBBAA alpha to paint opacity and keeps color to r,g,b", () => {
+    const paint = solidPaint("#ff000080");
+    expect(paint.opacity).toBeCloseTo(128 / 255, 5);
+    expect(Object.keys(paint.color).sort()).toEqual(["b", "g", "r"]);
+  });
+
+  test("multiplies alpha by an explicit opacity", () => {
+    expect(solidPaint("#00000080", 0.5).opacity).toBeCloseTo(64 / 255, 5);
+  });
+
+  test("throws for a bad hex", () => {
+    expect(() => solidPaint("nope")).toThrow("nope");
   });
 
   test("returns a plain object with exactly three top-level keys", () => {
@@ -861,5 +886,52 @@ describe("tf.commit", () => {
     const mockFigma = { commitUndo() {} } as unknown as PluginAPI;
     const tf = createTf(mockFigma);
     expect(() => tf.commit("my label")).not.toThrow();
+  });
+});
+
+describe("bad colour creates no node", () => {
+  const made: string[] = [];
+  const fig = {
+    createFrame: () => {
+      made.push("frame");
+      return {};
+    },
+    createRectangle: () => {
+      made.push("rect");
+      return {};
+    },
+    createText: () => {
+      made.push("text");
+      return {};
+    },
+    loadFontAsync: async () => {},
+  } as unknown as PluginAPI;
+  const tf = createTf(fig);
+
+  test("frame throws and creates no node", () => {
+    expect(() => tf.frame({ fill: "nope" })).toThrow(/Bad colour/);
+    expect(made).toEqual([]);
+  });
+
+  test("rect throws and creates no node", () => {
+    expect(() => tf.rect({ width: 1, height: 1, fill: "nope" })).toThrow(/Bad colour/);
+    expect(made).toEqual([]);
+  });
+
+  test("text rejects and creates no node", async () => {
+    await expect(tf.text({ text: "x", color: "nope" })).rejects.toThrow(/Bad colour/);
+    expect(made).toEqual([]);
+  });
+});
+
+describe("hexToRgb input edge cases", () => {
+  test("trims surrounding whitespace", () => {
+    expect(hexToRgb(" #fff ")).toEqual(hexToRgb("#ffffff"));
+  });
+
+  test("throws for non-string input and a lone hash", () => {
+    for (const bad of [null, undefined, 123, "#"]) {
+      expect(() => hexToRgb(bad as unknown as string)).toThrow(/Bad colour/);
+    }
   });
 });

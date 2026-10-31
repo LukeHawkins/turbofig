@@ -65,11 +65,18 @@ export interface SlideOpts extends FrameOpts {}
 
 /**
  * Converts a hex colour string to an RGB triple with components in the range 0..1.
- * Accepts #RRGGBB, RRGGBB, and short #RGB. Returns black on invalid input.
+ * Accepts #RGB, #RRGGBB and #RRGGBBAA, with or without the hash.
+ * An 8-digit value adds `a` (alpha, 0..1) to the result. Other input has no `a` key.
+ * Throws an Error that names the bad value.
  */
-export function hexToRgb(hex: string): { r: number; g: number; b: number } {
-  // Strip a leading hash if present.
-  const raw = hex.startsWith("#") ? hex.slice(1) : hex;
+export function hexToRgb(hex: string): { r: number; g: number; b: number; a?: number } {
+  const trimmed = typeof hex === "string" ? hex.trim() : hex;
+  const raw = typeof trimmed === "string" && trimmed.startsWith("#") ? trimmed.slice(1) : trimmed;
+  if (typeof raw !== "string" || !/^([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(raw)) {
+    throw new Error(
+      `Bad colour ${JSON.stringify(hex)}. Use #RGB, #RRGGBB or #RRGGBBAA (hash optional).`,
+    );
+  }
   // Expand short RGB to RRGGBB.
   const full =
     raw.length === 3
@@ -78,18 +85,23 @@ export function hexToRgb(hex: string): { r: number; g: number; b: number } {
           .map((c) => c + c)
           .join("")
       : raw;
-  if (!/^[0-9a-fA-F]{6}$/.test(full)) return { r: 0, g: 0, b: 0 };
-  const n = parseInt(full, 16);
-  return {
+  const n = parseInt(full.slice(0, 6), 16);
+  const rgb: { r: number; g: number; b: number; a?: number } = {
     r: ((n >> 16) & 0xff) / 255,
     g: ((n >> 8) & 0xff) / 255,
     b: (n & 0xff) / 255,
   };
+  if (full.length === 8) rgb.a = parseInt(full.slice(6), 16) / 255;
+  return rgb;
 }
 
-/** Builds a SolidPaint from a hex colour string and an optional opacity value. */
+/**
+ * Builds a SolidPaint from a hex colour string and an optional opacity value.
+ * A #RRGGBBAA colour sets the paint opacity to its alpha, multiplied by `opacity`.
+ */
 export function solidPaint(hex: string, opacity = 1): SolidPaint {
-  return { type: "SOLID", color: hexToRgb(hex), opacity };
+  const { a, ...color } = hexToRgb(hex);
+  return { type: "SOLID", color, opacity: a === undefined ? opacity : a * opacity };
 }
 
 /**
@@ -219,12 +231,14 @@ export function createTf(figma: PluginAPI) {
       const family = opts.family ?? "Inter";
       const style = opts.style ?? "Regular";
       const color = opts.color ?? "#000000";
+      // Build the paint first: a bad colour must throw before any node exists.
+      const paint = solidPaint(color);
       await figma.loadFontAsync({ family, style });
       const node = figma.createText();
       node.fontName = { family, style };
       node.fontSize = size;
       // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
-      node.fills = [solidPaint(color)];
+      node.fills = [paint];
       if (opts.width !== undefined) {
         // Fixed-width wrapping: resize to the given width, then wrap within it.
         // Set textAutoResize before characters so wrapping applies immediately.
@@ -239,6 +253,8 @@ export function createTf(figma: PluginAPI) {
 
     /** Creates and configures a FrameNode with auto-layout options. */
     frame(opts: FrameOpts): FrameNode {
+      // Build the paint first: a bad colour must throw before any node exists.
+      const fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
       const node = figma.createFrame();
       const direction = opts.direction ?? "VERTICAL";
       node.layoutMode = direction;
@@ -257,7 +273,7 @@ export function createTf(figma: PluginAPI) {
       }
       // Always set fills explicitly. An empty array makes the frame transparent.
       // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
-      node.fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
+      node.fills = fills;
       const hasWidth = opts.width !== undefined;
       const hasHeight = opts.height !== undefined;
       // Resize whenever at least one dimension is given.
@@ -286,11 +302,13 @@ export function createTf(figma: PluginAPI) {
 
     /** Creates and configures a RectangleNode with optional fill and corner radius. Transparent by default. */
     rect(opts: RectOpts): RectangleNode {
+      // Build the paint first: a bad colour must throw before any node exists.
+      const fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
       const node = figma.createRectangle();
       node.resize(opts.width, opts.height);
       // Always set fills explicitly. An empty array makes the rect transparent.
       // SolidPaint[] is assignable to ReadonlyArray<Paint>, the non-mixed branch.
-      node.fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
+      node.fills = fills;
       if (opts.corner !== undefined) {
         node.cornerRadius = opts.corner;
       }
