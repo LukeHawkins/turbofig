@@ -58,6 +58,27 @@ pub fn build_job_client() -> Result<reqwest::Client, reqwest::Error> {
 /// never more: this is a size cap, not a full log-retention scheme.
 const LOG_ROTATE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
 
+/// Opens `path` for append, creating it with mode 0600. A symlink at `path`
+/// is never followed (`O_NOFOLLOW`): the open fails instead, so a planted
+/// link cannot redirect the log (and its content) to another file.
+fn open_log_nofollow(path: &Path) -> io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = opts.open(path)?;
+    // `mode` applies only at creation: tighten an older, looser log too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 /// Rotates `<home>/daemon.log` to `<home>/daemon.log.1` if it is currently
 /// over `LOG_ROTATE_THRESHOLD_BYTES`. A missing log (nothing to rotate yet)
 /// is not an error; any other failure to read its size is propagated.
@@ -157,11 +178,7 @@ pub fn rotate_daemon_log_and_reopen_std_streams(home: &Path) {
 #[cfg(unix)]
 fn reopen_std_streams_onto(path: &Path) {
     use std::os::fd::AsRawFd;
-    let file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    let file = match open_log_nofollow(path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!(
@@ -217,10 +234,7 @@ pub fn spawn_detached_daemon(turbofig_binary: &Path, home: &Path) -> io::Result<
     std::fs::create_dir_all(home)?;
     rotate_daemon_log_best_effort(home);
     let log_path = home.join("daemon.log");
-    let stdout_log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
+    let stdout_log = open_log_nofollow(&log_path)?;
     let stderr_log = stdout_log.try_clone()?;
     let dev_null = std::fs::File::open("/dev/null")?;
 
@@ -760,5 +774,44 @@ mod tests {
             fresh.len() < oversize.len() as u64,
             "the fresh log must not still carry the oversize content"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_detached_daemon_does_not_follow_a_daemon_log_symlink() {
+        let tmp = tempfile::tempdir().expect("temp home");
+        let target = tmp.path().join("victim");
+        std::fs::write(&target, b"keep\n").expect("seed target");
+        std::os::unix::fs::symlink(&target, tmp.path().join("daemon.log")).expect("symlink");
+
+        let err = spawn_detached_daemon(Path::new("/bin/echo"), tmp.path())
+            .expect_err("a symlinked daemon.log must be refused");
+        assert_eq!(err.raw_os_error(), Some(libc::ELOOP));
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_log_nofollow_creates_the_log_with_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("temp home");
+        let path = tmp.path().join("daemon.log");
+        open_log_nofollow(&path).expect("open");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_log_nofollow_tightens_an_existing_0644_log() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("temp home");
+        let path = tmp.path().join("daemon.log");
+        std::fs::write(&path, b"old\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        open_log_nofollow(&path).expect("open");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

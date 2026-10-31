@@ -35,6 +35,10 @@ const MARKER_FILE: &str = ".turbofig-version";
 /// itself, so a group- or world-readable folder would leak it to another
 /// local user.
 pub fn write_plugin_files(home: &Path, token: &str) -> io::Result<PathBuf> {
+    // Refuse a symlinked or foreign-owned plugin folder before anything is
+    // written: the files embed the token.
+    let refused_dir = home.join("figma-plugin");
+    crate::secure_fs::check_existing(&refused_dir)?;
     let plugin = embedded_plugin().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -45,6 +49,8 @@ pub fn write_plugin_files(home: &Path, token: &str) -> io::Result<PathBuf> {
     let dir = home.join("figma-plugin");
     let dist_dir = dir.join("dist");
     std::fs::create_dir_all(&dist_dir)?;
+    crate::secure_fs::check_existing(&dir)?;
+    crate::secure_fs::check_existing(&dist_dir)?;
     set_owner_only(&dir)?;
     set_owner_only(&dist_dir)?;
 
@@ -387,5 +393,23 @@ mod tests {
         assert!(ui_html.contains("tok-b"));
         assert!(!ui_html.contains("tok-a"));
         assert!(!plugin_files_outdated(tmp.path(), "tok-b"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_plugin_files_refuses_a_symlinked_plugin_dir_and_writes_nothing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("elsewhere");
+        std::fs::create_dir(&target).expect("mkdir target");
+        std::os::unix::fs::symlink(&target, tmp.path().join("figma-plugin")).expect("symlink");
+
+        let err = write_plugin_files(tmp.path(), "secret-token")
+            .expect_err("a symlinked figma-plugin must be refused");
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert_eq!(
+            std::fs::read_dir(&target).unwrap().count(),
+            0,
+            "no file may be written into the refused folder"
+        );
     }
 }

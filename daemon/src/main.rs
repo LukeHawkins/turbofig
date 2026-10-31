@@ -922,6 +922,20 @@ fn already_running_exit_code() -> i32 {
     }
 }
 
+/// Exits after a startup error. A refusal from `secure_fs` under the launchd
+/// service exits 0, so `KeepAlive {SuccessfulExit: false}` does not restart
+/// the daemon every 10 s on a folder only the user can repair. Any other
+/// error exits 1.
+fn exit_for_startup_error(e: &std::io::Error) -> ! {
+    let code = turbofig::exit_code_for_error(e);
+    if code == 0 {
+        eprintln!(
+            "turbofig daemon: not restarting under launchd. Fix the problem above, then run `turbofig autostart on` or `turbofig serve`."
+        );
+    }
+    std::process::exit(code)
+}
+
 /// Runs the daemon exactly as `turbofig` with no arguments always has: binds
 /// both ports, ensures the pairing token, refreshes a stale on-disk plugin
 /// copy, and runs the three servers until one of them dies. Shared by the
@@ -1019,7 +1033,7 @@ async fn run_daemon() {
         Ok(t) => t,
         Err(e) => {
             eprintln!("turbofig daemon: failed to create or read the pairing token: {e}");
-            std::process::exit(1);
+            exit_for_startup_error(&e);
         }
     };
 
@@ -1086,7 +1100,7 @@ async fn run_daemon() {
     let bridge_handle = tokio::spawn(async move {
         if let Err(e) = turbofig::serve_bridge(bridge_state, bridge_dir).await {
             eprintln!("turbofig daemon: bridge error: {e}");
-            std::process::exit(1);
+            exit_for_startup_error(&e);
         }
     });
 

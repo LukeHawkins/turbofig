@@ -103,49 +103,15 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
 ///
 /// Also tightens `dir` itself to 0700, but only when it is the default
 /// `~/.turbofig` the daemon owns outright (i.e. `is_default_home` is true).
-/// A custom `TURBOFIG_BRIDGE_DIR` can be an existing, shared path the user
-/// pointed us at (`/tmp`, a project folder); the daemon does not own its
-/// mode there and must never touch it or fail startup because it could not.
+/// A custom `TURBOFIG_BRIDGE_DIR` keeps its own mode: the daemon never
+/// changes it. It still gets the symlink and owner checks, so a folder that
+/// is a symlink or is owned by another user (`TURBOFIG_BRIDGE_DIR=/tmp`
+/// itself, a root-owned symlink on macOS) is refused. A folder of the
+/// user's own inside `/tmp` works.
 async fn prepare_dirs(dir: &Path, is_default_home: bool) -> std::io::Result<(PathBuf, PathBuf)> {
-    let inbox = dir.join("inbox");
-    let outbox = dir.join("outbox");
-
-    tokio::fs::create_dir_all(dir).await?;
-    tokio::fs::create_dir_all(&inbox).await?;
-    tokio::fs::create_dir_all(&outbox).await?;
-
-    // A failure to tighten any of these is logged, not fatal: a locked-down
-    // bridge dir is a hardening goal, not a precondition for the daemon to
-    // run at all.
-    if is_default_home {
-        if let Err(e) = set_owner_only(dir).await {
-            eprintln!("turbofig bridge: could not set the home dir to owner-only: {e}");
-        }
-    }
-    if let Err(e) = set_owner_only(&inbox).await {
-        eprintln!("turbofig bridge: could not set inbox to owner-only: {e}");
-    }
-    if let Err(e) = set_owner_only(&outbox).await {
-        eprintln!("turbofig bridge: could not set outbox to owner-only: {e}");
-    }
-
-    Ok((inbox, outbox))
-}
-
-/// Sets `path` to mode 0700 (owner read/write/execute only, no group or world
-/// access). Fixes the mode on every startup, so an existing install created
-/// before this check (or loosened by an `umask`) gets corrected, not just a
-/// fresh one.
-#[cfg(unix)]
-async fn set_owner_only(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).await
-}
-
-/// No-op on non-Unix platforms: there is no POSIX mode to set.
-#[cfg(not(unix))]
-async fn set_owner_only(_path: &Path) -> std::io::Result<()> {
-    Ok(())
+    // Symlink, owner and chmod checks live in `secure_fs`. A failure is
+    // fatal: the daemon must not run on a folder it cannot trust.
+    crate::secure_fs::prepare_bridge_dirs(dir, is_default_home)
 }
 
 /// Run the inbox event loop.

@@ -106,6 +106,7 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
 /// and return its contents.
 pub fn ensure_token(home: &Path) -> io::Result<String> {
     std::fs::create_dir_all(home)?;
+    crate::secure_fs::check_existing(home)?;
     let path = home.join("token");
 
     match create_token_file(&path) {
@@ -185,11 +186,14 @@ fn create_token_file(path: &Path) -> io::Result<String> {
 }
 
 /// Reads an existing token file, trimming whitespace.
-/// Returns an error if the file is empty: a zero-byte token file is corrupt,
+/// Returns an error if the file is a symlink, has a foreign owner, or has any
+/// group or world permission bit set. Returns an error if the file is empty: a zero-byte token file is corrupt,
 /// not a valid "no token yet" state, since `create_token_file` never writes
 /// an empty token.
 fn read_existing_token(path: &Path) -> io::Result<String> {
-    let contents = std::fs::read_to_string(path)?;
+    // Refuse a planted token (symlink, foreign owner, group or world bits).
+    // The check and the read use one handle: see `read_token_nofollow`.
+    let contents = crate::secure_fs::read_token_nofollow(path)?;
     let trimmed = contents.trim().to_owned();
     if trimmed.is_empty() {
         return Err(io::Error::new(
@@ -317,6 +321,15 @@ mod tests {
     fn ensure_token_never_overwrites_a_pre_existing_token() {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::write(tmp.path().join("token"), "preset-token-value").expect("preset token");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                tmp.path().join("token"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("chmod preset token");
+        }
         let token = ensure_token(tmp.path()).expect("ensure_token");
         assert_eq!(token, "preset-token-value");
     }
@@ -398,5 +411,29 @@ mod tests {
             leftovers.is_empty(),
             "temp file must be cleaned up: {leftovers:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_token_refuses_a_world_readable_planted_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("token");
+        std::fs::write(&path, "a".repeat(64)).expect("plant token");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let err = ensure_token(tmp.path()).expect_err("0644 token must be refused");
+        assert!(err.to_string().contains("chmod 600"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_token_refuses_a_symlinked_home() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).expect("mkdir");
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let err = ensure_token(&link).expect_err("symlinked home must be refused");
+        assert!(err.to_string().contains("symlink"), "{err}");
     }
 }

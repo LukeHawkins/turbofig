@@ -103,25 +103,46 @@ pub fn max_inflight_from_env() -> usize {
 /// Resolve the bridge directory from optional env string values.
 ///
 /// - If `bridge_dir_val` is `Some(path)`, use it directly.
-/// - Else if `home_val` is `Some(home)`, use `<home>/.turbofig`.
-/// - Else fall back to `./.turbofig`.
-fn bridge_dir_or(bridge_dir_val: Option<&str>, home_val: Option<&str>) -> PathBuf {
+/// - Else if `home_val` is `Some(home)` (not empty), use `<home>/.turbofig`.
+/// - Else refuse: a `./.turbofig` relative to the working directory could be
+///   a folder that another account controls.
+fn bridge_dir_or(bridge_dir_val: Option<&str>, home_val: Option<&str>) -> Result<PathBuf, String> {
     if let Some(val) = bridge_dir_val {
-        return PathBuf::from(val);
+        // A trailing separator makes `lstat` follow a symlink, which would
+        // skip the symlink check. Strip it (keep a bare "/").
+        let trimmed = val.trim_end_matches('/');
+        return Ok(PathBuf::from(if trimmed.is_empty() {
+            val
+        } else {
+            trimmed
+        }));
     }
     match home_val {
-        Some(home) => PathBuf::from(home).join(".turbofig"),
-        None => PathBuf::from(".turbofig"),
+        Some(home) if !home.is_empty() => Ok(PathBuf::from(home).join(".turbofig")),
+        _ => Err("HOME is not set, so the turbofig folder is unknown. \
+             Set HOME or set TURBOFIG_BRIDGE_DIR."
+            .to_owned()),
     }
 }
 
 /// Read the bridge directory from `TURBOFIG_BRIDGE_DIR`.
-/// Default: `~/.turbofig` (falls back to `./.turbofig` if `HOME` is unset).
+/// Default: `~/.turbofig`. When both `TURBOFIG_BRIDGE_DIR` and `HOME` are
+/// unset, prints an error and exits with status 1.
 pub fn bridge_dir_from_env() -> PathBuf {
-    bridge_dir_or(
+    match bridge_dir_or(
         std::env::var("TURBOFIG_BRIDGE_DIR").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
-    )
+    ) {
+        Ok(dir) => dir,
+        Err(msg) => {
+            // Under launchd a restart cannot fix a missing HOME: exit 0.
+            eprintln!("turbofig: {msg}");
+            std::process::exit(crate::secure_fs::startup_exit_code(
+                true,
+                crate::supervisor::is_supervised(),
+            ));
+        }
+    }
 }
 
 /// A display form of the bridge directory for the plugin panel's copy-prompt
@@ -238,25 +259,35 @@ mod tests {
 
     #[test]
     fn bridge_dir_uses_explicit_value_when_set() {
-        let path = bridge_dir_or(Some("/custom/dir"), None);
+        let path = bridge_dir_or(Some("/custom/dir"), None).unwrap();
         assert_eq!(path, PathBuf::from("/custom/dir"));
     }
 
     #[test]
     fn bridge_dir_uses_home_turbofig_when_unset() {
-        let path = bridge_dir_or(None, Some("/home/alice"));
+        let path = bridge_dir_or(None, Some("/home/alice")).unwrap();
         assert_eq!(path, PathBuf::from("/home/alice/.turbofig"));
     }
 
     #[test]
-    fn bridge_dir_falls_back_to_relative_when_home_also_unset() {
-        let path = bridge_dir_or(None, None);
-        assert_eq!(path, PathBuf::from(".turbofig"));
+    fn bridge_dir_is_refused_when_home_and_bridge_dir_are_unset() {
+        let err = bridge_dir_or(None, None).unwrap_err();
+        assert!(err.contains("HOME is not set"), "{err}");
+        assert!(bridge_dir_or(None, Some("")).is_err());
+    }
+
+    #[test]
+    fn bridge_dir_strips_trailing_separators() {
+        // Compare as strings: `PathBuf` equality ignores a trailing slash.
+        let dir = bridge_dir_or(Some("/custom/dir//"), None).unwrap();
+        assert_eq!(dir.to_str(), Some("/custom/dir"));
+        let root = bridge_dir_or(Some("/"), None).unwrap();
+        assert_eq!(root.to_str(), Some("/"));
     }
 
     #[test]
     fn bridge_dir_explicit_value_wins_over_home() {
-        let path = bridge_dir_or(Some("/override"), Some("/home/alice"));
+        let path = bridge_dir_or(Some("/override"), Some("/home/alice")).unwrap();
         assert_eq!(path, PathBuf::from("/override"));
     }
 
