@@ -331,7 +331,10 @@ export async function handleScreenshot(
         // Unreadable bounds (e.g. an unloaded page): skip the cap.
       }
       if (longest > 0) {
-        scale = Math.min(4, Math.max(0.01, Math.min(scale, msg.maxDim / longest)));
+        // Floor to 4 dp so float error never exports maxDim + 1 px, which
+        // would make the daemon decode and resize the whole PNG for 1 px.
+        const cap = Math.floor((msg.maxDim / longest) * 1e4) / 1e4;
+        scale = Math.min(4, Math.max(0.01, Math.min(scale, cap)));
       }
     }
     const bytes = await exportable.exportAsync({

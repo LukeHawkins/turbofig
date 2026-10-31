@@ -348,6 +348,12 @@ describe("handleScreenshot", () => {
     expect(await scaleFor(4000, 2000, { scale: 2, maxDim: 1000 })).toBe(0.25);
   });
 
+  test("maxDim floors the scale so the export never exceeds maxDim", async () => {
+    const scale = await scaleFor(3000, 100, { maxDim: 1000 });
+    expect(scale).toBe(0.3333);
+    expect(scale * 3000).toBeLessThanOrEqual(1000);
+  });
+
   test("maxDim does not change a small node", async () => {
     expect(await scaleFor(100, 50, { scale: 2, maxDim: 1000 })).toBe(2);
   });
