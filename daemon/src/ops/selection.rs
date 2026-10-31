@@ -52,7 +52,7 @@ pub async fn run_get_selection(
         request["depth"] = json!(d.min(5));
     }
 
-    let (id, outcome) = call_plugin(state, conn_id, &tx, request, state.request_timeout).await;
+    let (_, outcome) = call_plugin(state, conn_id, &tx, request, state.request_timeout).await;
 
     match outcome {
         CallOutcome::Reply(reply) => {
@@ -80,8 +80,8 @@ pub async fn run_get_selection(
                 json!({"ok": false, "error": error, "code": code})
             }
         }
-        CallOutcome::Disconnected(started) => idempotency_error_json(id, started),
+        CallOutcome::Disconnected(started) => idempotency_error_json(started),
         CallOutcome::NotConnected => plugin_disconnected_json(),
-        CallOutcome::TimedOut(started) => idempotency_error_json(id, started),
+        CallOutcome::TimedOut(started) => idempotency_error_json(started),
     }
 }

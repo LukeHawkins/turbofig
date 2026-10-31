@@ -55,7 +55,7 @@ pub async fn run_execute(
         "timeoutMs": timeout_ms
     });
     let wait = state.request_timeout + EXECUTE_GRACE;
-    let (id, outcome) = call_plugin(state, conn_id, &tx, request, wait).await;
+    let (_, outcome) = call_plugin(state, conn_id, &tx, request, wait).await;
 
     match outcome {
         CallOutcome::Reply(reply) => {
@@ -82,9 +82,9 @@ pub async fn run_execute(
                 json!({"ok": false, "error": error, "code": code})
             }
         }
-        CallOutcome::Disconnected(started) => idempotency_error_json(id, started),
+        CallOutcome::Disconnected(started) => idempotency_error_json(started),
         CallOutcome::NotConnected => plugin_disconnected_json(),
-        CallOutcome::TimedOut(started) => idempotency_error_json(id, started),
+        CallOutcome::TimedOut(started) => idempotency_error_json(started),
     }
 }
 

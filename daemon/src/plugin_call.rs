@@ -38,7 +38,7 @@ pub(crate) enum CallOutcome {
 /// `ops::run_screenshot`, so a caller on any transport (MCP, `POST /job`, the
 /// filesystem bridge) sees the same wording and the same machine-readable
 /// `code` for the same situation.
-pub(crate) fn idempotency_error_json(_id: u64, started: bool) -> Value {
+pub(crate) fn idempotency_error_json(started: bool) -> Value {
     if started {
         serde_json::json!({
             "ok": false,
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn idempotency_error_json_not_started_carries_the_not_started_code() {
-        let v = idempotency_error_json(42, false);
+        let v = idempotency_error_json(false);
         assert_eq!(v["ok"], json!(false));
         assert_eq!(v["code"], json!("not_started"));
         assert_eq!(v["error"], json!("did not start, safe to retry"));
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn idempotency_error_json_started_carries_the_started_unknown_code() {
-        let v = idempotency_error_json(42, true);
+        let v = idempotency_error_json(true);
         assert_eq!(v["code"], json!("started_unknown"));
         assert_eq!(
             v["error"],
