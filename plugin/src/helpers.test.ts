@@ -935,3 +935,88 @@ describe("hexToRgb input edge cases", () => {
     }
   });
 });
+
+describe("unknown option names", () => {
+  const fig = {
+    createFrame: () => makeFakeFrame(),
+    createRectangle: () => ({ resize() {} }),
+    createText: () => ({ resize() {} }),
+    loadFontAsync: async () => {},
+  } as unknown as PluginAPI;
+  const tf = createTf(fig);
+
+  test("frame names the unknown key and lists options", () => {
+    expect(() => tf.frame({ nme: "x" } as never)).toThrow(
+      'tf.frame: unknown option "nme". Options: name, direction, gap, padding, fill, width, height, primaryAlign, counterAlign',
+    );
+  });
+
+  test("frame accepts known keys set to undefined", () => {
+    expect(() => tf.frame({ name: undefined, fill: undefined, gap: undefined })).not.toThrow();
+  });
+
+  test("rect throws on an unknown key", () => {
+    expect(() => tf.rect({ width: 1, height: 1, colour: "#fff" } as never)).toThrow(
+      /tf\.rect: unknown option "colour"/,
+    );
+  });
+
+  test("text rejects on an unknown key", async () => {
+    await expect(tf.text({ text: "x", colour: "#fff" } as never)).rejects.toThrow(
+      /tf\.text: unknown option "colour"/,
+    );
+  });
+
+  test("slide throws on an unknown key", () => {
+    expect(() => tf.slide({ nme: "x" } as never)).toThrow(/tf\.slide: unknown option "nme"/);
+  });
+
+  test("deck throws on an unknown key and accepts all known keys", async () => {
+    const parent = { appendChild() {}, layoutMode: "NONE" } as never;
+    await expect(tf.deck({ parent, count: 1, rows: 2 } as never)).rejects.toThrow(
+      /tf\.deck: unknown option "rows"/,
+    );
+    await expect(
+      tf.deck({ parent, count: 1, cols: 1, gap: 1, build: () => {} }),
+    ).resolves.toHaveLength(1);
+  });
+});
+
+describe("colour errors name the helper and option", () => {
+  const fig = {
+    createFrame: () => makeFakeFrame(),
+    createRectangle: () => ({ resize() {} }),
+    createText: () => ({ resize() {} }),
+    loadFontAsync: async () => {},
+  } as unknown as PluginAPI;
+  const tf = createTf(fig);
+  const tail = 'Bad colour "#12". Use #RGB, #RRGGBB or #RRGGBBAA (hash optional).';
+
+  test("frame fill", () => {
+    expect(() => tf.frame({ fill: "#12" })).toThrow(`tf.frame fill: ${tail}`);
+  });
+  test("rect fill", () => {
+    expect(() => tf.rect({ width: 1, height: 1, fill: "#12" })).toThrow(`tf.rect fill: ${tail}`);
+  });
+  test("text color", async () => {
+    await expect(tf.text({ text: "x", color: "#12" })).rejects.toThrow(`tf.text color: ${tail}`);
+  });
+  test("direct tf.color and tf.solid keep the plain message", () => {
+    expect(() => tf.color("#12")).toThrow(new RegExp(`^${tail.replace(/[.()#]/g, "\\$&")}$`));
+    expect(() => tf.solid("#12")).toThrow(`${tail}`);
+  });
+});
+
+describe("bad option key creates no node", () => {
+  test("frame with an unknown key calls createFrame zero times", () => {
+    let calls = 0;
+    const fig = {
+      createFrame: () => {
+        calls++;
+        return makeFakeFrame();
+      },
+    } as unknown as PluginAPI;
+    expect(() => createTf(fig).frame({ nme: "x" } as never)).toThrow(/unknown option/);
+    expect(calls).toBe(0);
+  });
+});

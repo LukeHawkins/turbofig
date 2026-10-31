@@ -123,12 +123,80 @@ describe("handleExecute", () => {
 
   test("adds a hint for a missing tf helper", async () => {
     const code = `tf.nope();`;
-    const result = await handleExecute(mockFigma, {} as never, {
+    const result = await handleExecute(mockFigma, { zeta() {}, alpha() {}, n: 1 } as never, {
       type: "EXECUTE",
       requestId: 23,
       code,
     });
-    expect(result.error).toContain("tf-api.md");
+    expect(result.error).toContain("tf has: alpha, zeta");
+    expect(result.error).not.toContain("tf-api.md");
+  });
+
+  test("adds a hint for a syntax error", async () => {
+    const result = await handleExecute(mockFigma, mockTf, {
+      type: "EXECUTE",
+      requestId: 28,
+      code: "const a = ;",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(
+      "Hint: syntax error in your code: check quotes, brackets and commas",
+    );
+  });
+
+  test("syntax hint mentions redeclaring figma or tf", async () => {
+    const result = await handleExecute(mockFigma, mockTf, {
+      type: "EXECUTE",
+      requestId: 30,
+      code: "const tf = 1;",
+    });
+    expect(result.error).toContain("do not redeclare figma or tf");
+  });
+
+  test("a throwing tf getter does not break the hint", async () => {
+    const tf = {
+      get boom(): never {
+        throw new Error("x");
+      },
+    };
+    const result = await handleExecute(mockFigma, tf as never, {
+      type: "EXECUTE",
+      requestId: 31,
+      code: "tf.nope();",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("that tf helper does not exist");
+  });
+
+  test("a null-prototype thrown value gives an error RESULT", async () => {
+    const result = await handleExecute(mockFigma, mockTf, {
+      type: "EXECUTE",
+      requestId: 32,
+      code: "throw Object.create(null);",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("script_error");
+    expect(result.error).toContain("non-printable thrown value");
+  });
+
+  test("a throwing message getter gives an error RESULT", async () => {
+    const result = await handleExecute(mockFigma, mockTf, {
+      type: "EXECUTE",
+      requestId: 33,
+      code: "throw { get message() { throw 1; } };",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("script_error");
+    expect(result.error).toContain("non-printable thrown value");
+  });
+
+  test("adds no syntax hint for a runtime error", async () => {
+    const result = await handleExecute(mockFigma, mockTf, {
+      type: "EXECUTE",
+      requestId: 29,
+      code: "throw new Error('oops');",
+    });
+    expect(result.error).not.toContain("syntax error");
   });
 
   test("adds no hint for an unrelated error", async () => {

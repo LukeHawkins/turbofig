@@ -208,6 +208,41 @@ export function axisSizing(
   return null;
 }
 
+/** Option names each tf helper reads. Keep in step with the helper bodies. */
+const FRAME_KEYS = [
+  "name",
+  "direction",
+  "gap",
+  "padding",
+  "fill",
+  "width",
+  "height",
+  "primaryAlign",
+  "counterAlign",
+];
+const TEXT_KEYS = ["text", "size", "family", "style", "color", "autoResize", "width"];
+const RECT_KEYS = ["width", "height", "fill", "corner"];
+const DECK_KEYS = ["parent", "count", "cols", "gap", "build"];
+
+/** Throws a clear Error when `opts` holds a key that the helper does not read. */
+function checkOpts(fn: string, opts: unknown, known: string[]): void {
+  if (opts == null || typeof opts !== "object") return;
+  for (const key of Object.keys(opts)) {
+    if (!known.includes(key)) {
+      throw new Error(`${fn}: unknown option ${JSON.stringify(key)}. Options: ${known.join(", ")}`);
+    }
+  }
+}
+
+/** Builds a SolidPaint for one option and names the helper and option in a colour error. */
+function optionPaint(fn: string, option: string, value: string): SolidPaint {
+  try {
+    return solidPaint(value);
+  } catch (err) {
+    throw new Error(`${fn} ${option}: ${(err as Error).message}`);
+  }
+}
+
 // --- Factory ---
 
 /** Creates and returns the tf namespace bound to a live PluginAPI instance. */
@@ -227,12 +262,13 @@ export function createTf(figma: PluginAPI) {
 
     /** Creates and configures a TextNode. Loads the font before creating the node. */
     async text(opts: TextOpts): Promise<TextNode> {
+      checkOpts("tf.text", opts, TEXT_KEYS);
       const size = opts.size ?? 16;
       const family = opts.family ?? "Inter";
       const style = opts.style ?? "Regular";
       const color = opts.color ?? "#000000";
       // Build the paint first: a bad colour must throw before any node exists.
-      const paint = solidPaint(color);
+      const paint = optionPaint("tf.text", "color", color);
       await figma.loadFontAsync({ family, style });
       const node = figma.createText();
       node.fontName = { family, style };
@@ -253,8 +289,9 @@ export function createTf(figma: PluginAPI) {
 
     /** Creates and configures a FrameNode with auto-layout options. */
     frame(opts: FrameOpts): FrameNode {
+      checkOpts("tf.frame", opts, FRAME_KEYS);
       // Build the paint first: a bad colour must throw before any node exists.
-      const fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
+      const fills = opts.fill !== undefined ? [optionPaint("tf.frame", "fill", opts.fill)] : [];
       const node = figma.createFrame();
       const direction = opts.direction ?? "VERTICAL";
       node.layoutMode = direction;
@@ -302,8 +339,9 @@ export function createTf(figma: PluginAPI) {
 
     /** Creates and configures a RectangleNode with optional fill and corner radius. Transparent by default. */
     rect(opts: RectOpts): RectangleNode {
+      checkOpts("tf.rect", opts, RECT_KEYS);
       // Build the paint first: a bad colour must throw before any node exists.
-      const fills = opts.fill !== undefined ? [solidPaint(opts.fill)] : [];
+      const fills = opts.fill !== undefined ? [optionPaint("tf.rect", "fill", opts.fill)] : [];
       const node = figma.createRectangle();
       node.resize(opts.width, opts.height);
       // Always set fills explicitly. An empty array makes the rect transparent.
@@ -410,6 +448,7 @@ export function createTf(figma: PluginAPI) {
      * Accepts all FrameOpts fields. Provide width/height to override the defaults.
      */
     slide(opts: SlideOpts = {}): FrameNode {
+      checkOpts("tf.slide", opts, FRAME_KEYS);
       // Default to a plain frame so slide children keep free x/y positions.
       // Auto-layout would override child positions. The caller can still set direction.
       return tf.frame({ name: "Slide", width: 1920, height: 1080, direction: "NONE", ...opts });
@@ -428,6 +467,7 @@ export function createTf(figma: PluginAPI) {
       gap?: number;
       build?: (slide: FrameNode, index: number) => void | Promise<void>;
     }): Promise<FrameNode[]> {
+      checkOpts("tf.deck", opts, DECK_KEYS);
       // Guard: an auto-layout parent silently overrides the grid positions.
       if ("layoutMode" in opts.parent && (opts.parent as FrameNode).layoutMode !== "NONE") {
         throw new Error("deck: parent must not use auto-layout (set layoutMode to NONE)");

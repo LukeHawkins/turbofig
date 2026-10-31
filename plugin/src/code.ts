@@ -33,9 +33,14 @@ interface ClientStorage {
  * and anything else via String(). Never throws itself.
  */
 function errorMessageOf(err: unknown): string {
-  return err != null && typeof err === "object" && "message" in err
-    ? String((err as { message: unknown }).message)
-    : String(err);
+  try {
+    return err != null && typeof err === "object" && "message" in err
+      ? String((err as { message: unknown }).message)
+      : String(err);
+  } catch {
+    // A hostile or odd thrown value (null prototype, throwing getter): never throw here.
+    return "non-printable thrown value";
+  }
 }
 
 /**
@@ -43,7 +48,7 @@ function errorMessageOf(err: unknown): string {
  * The sync-to-async table already reaches the consumer in the eval preamble,
  * so only the generic dynamic-page message gets a short pointer here.
  */
-function errorHint(msg: string): string | null {
+function errorHint(msg: string, tf: object): string | null {
   if (/unloaded font|font .*not loaded/i.test(msg)) {
     return "call await figma.loadFontAsync(node.fontName) first; tf.text loads fonts itself";
   }
@@ -51,7 +56,16 @@ function errorHint(msg: string): string | null {
     return "use the Async variant, e.g. await figma.getNodeByIdAsync(id)";
   }
   if (/\btf\.\w+ is not a function/.test(msg)) {
-    return "that tf helper does not exist; see the tf-api.md quick start for the list";
+    let list = "";
+    try {
+      const names = Object.keys(tf)
+        .filter((k) => typeof (tf as Record<string, unknown>)[k] === "function")
+        .sort();
+      list = `. tf has: ${names.join(", ")}`;
+    } catch {
+      // User code can change tf (e.g. a throwing getter): fall back to no list.
+    }
+    return `that tf helper does not exist${list}`;
   }
   if (/cannot read propert(y|ies).* of null|null is not an object/i.test(msg)) {
     return "a lookup returned null: the node was not found; check the id";
@@ -189,22 +203,38 @@ export async function handleExecute(
   const run = async (): Promise<ResultMessage> => {
     try {
       // Build and run the user code in an async function with figma and tf in scope.
-      const fn = new AsyncFunction("figma", "tf", wrapUserCode(code));
+      let fn: (...args: unknown[]) => Promise<unknown>;
+      try {
+        fn = new AsyncFunction("figma", "tf", wrapUserCode(code));
+      } catch (buildErr) {
+        // A SyntaxError here has no position in the user code: add a hint, not a line.
+        if (buildErr != null && (buildErr as { name?: unknown }).name === "SyntaxError") {
+          return buildExecuteError(
+            requestId,
+            `${errorMessageOf(buildErr)}\nHint: syntax error in your code: check quotes, brackets and commas; do not redeclare figma or tf`,
+          );
+        }
+        throw buildErr;
+      }
       const result = await fn(figma, tf);
       return buildExecuteSuccess(requestId, safeResult(result));
     } catch (err) {
-      const pos = await userCodePosition(err, code.split("\n").length);
-      const base = errorMessageOf(err);
-      let message = pos ? `${base} (line ${pos.line}, column ${pos.column})` : base;
-      if (pos) {
-        const srcLine = code.split("\n")[pos.line - 1]?.trim();
-        if (srcLine) {
-          message += `\n> ${srcLine.length > 120 ? `${srcLine.slice(0, 120)}...` : srcLine}`;
+      try {
+        const pos = await userCodePosition(err, code.split("\n").length);
+        const base = errorMessageOf(err);
+        let message = pos ? `${base} (line ${pos.line}, column ${pos.column})` : base;
+        if (pos) {
+          const srcLine = code.split("\n")[pos.line - 1]?.trim();
+          if (srcLine) {
+            message += `\n> ${srcLine.length > 120 ? `${srcLine.slice(0, 120)}...` : srcLine}`;
+          }
         }
+        const hint = errorHint(base, tf);
+        if (hint) message += `\nHint: ${hint}`;
+        return buildExecuteError(requestId, message);
+      } catch {
+        return buildExecuteError(requestId, "non-printable thrown value");
       }
-      const hint = errorHint(base);
-      if (hint) message += `\nHint: ${hint}`;
-      return buildExecuteError(requestId, message);
     }
   };
 
