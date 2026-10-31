@@ -12,8 +12,8 @@ pub(crate) fn probe_dims(bytes: &[u8]) -> Option<(u32, u32)> {
         .ok()
 }
 
-/// Decode, Lanczos3-resize so the longest edge is at most `max_dim`, and
-/// re-encode as PNG.
+/// Decode, CatmullRom-resize so the longest edge is at most `max_dim`, and
+/// re-encode as fast-compressed PNG.
 ///
 /// This does a full pixel decode: callers on an async runtime should run it
 /// inside `spawn_blocking`. Call this only when a resize is actually needed
@@ -25,14 +25,18 @@ pub(crate) fn resize_png(bytes: &[u8], max_dim: u32) -> (Vec<u8>, u32, u32) {
         Ok(img) => img,
         Err(_) => return (bytes.to_vec(), 0, 0),
     };
-    let resized = img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3);
+    let resized = img.resize(max_dim, max_dim, image::imageops::FilterType::CatmullRom);
     let new_w = resized.width();
     let new_h = resized.height();
     let mut out: Vec<u8> = Vec::new();
-    if resized
-        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
-        .is_err()
-    {
+    // Fast compression: the output is for agent viewing. Image tokens depend
+    // on pixel size, not file bytes.
+    let encoder = image::codecs::png::PngEncoder::new_with_quality(
+        std::io::Cursor::new(&mut out),
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Adaptive,
+    );
+    if resized.write_with_encoder(encoder).is_err() {
         return (bytes.to_vec(), img.width(), img.height());
     }
     (out, new_w, new_h)

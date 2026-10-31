@@ -1881,11 +1881,14 @@ async fn test_run_screenshot_real_png_is_downscaled() {
     .await;
 
     let b64_for_plugin = png_b64.clone();
+    let frames: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let frames_for_plugin = frames.clone();
     tokio::spawn(async move {
         while let Some(Ok(msg)) = plugin_ws.next().await {
             if let TtMessage::Text(text) = msg {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                     if json.get("type").and_then(|t| t.as_str()) == Some("SCREENSHOT") {
+                        frames_for_plugin.lock().unwrap().push(json.clone());
                         if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
                             let reply = serde_json::json!({
                                 "type": "RESULT", "requestId": id, "ok": true,
@@ -1918,6 +1921,12 @@ async fn test_run_screenshot_real_png_is_downscaled() {
         "h must be proportionally halved to 600 after downscale: {result}"
     );
 
+    assert_eq!(
+        frames.lock().unwrap()[0]["maxDim"],
+        serde_json::json!(1200),
+        "default frame must carry maxDim"
+    );
+
     // fullRes=true: no downscaling; original dims from the decoded image.
     let result_full =
         turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, true).await;
@@ -1935,6 +1944,10 @@ async fn test_run_screenshot_real_png_is_downscaled() {
         result_full["h"],
         serde_json::json!(1000u64),
         "h must be original 1000 for fullRes=true: {result_full}"
+    );
+    assert!(
+        frames.lock().unwrap()[1].get("maxDim").is_none(),
+        "fullRes frame must omit maxDim"
     );
 }
 
