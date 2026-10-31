@@ -562,7 +562,9 @@ impl ProxyHandler {
         Ok(call_tool_result(value))
     }
 
-    #[tool(description = "Execute JavaScript in the Figma plugin and return the result")]
+    #[tool(
+        description = "Run async JS in the Figma plugin; `figma` and `tf.*` are in scope. Use return. Return ids, not nodes."
+    )]
     async fn turbofig_execute(
         &self,
         Parameters(params): Parameters<ExecuteParams>,
@@ -580,7 +582,7 @@ impl ProxyHandler {
         Ok(call_tool_result(value))
     }
 
-    #[tool(description = "Capture a PNG screenshot of a Figma node")]
+    #[tool(description = "PNG screenshot of a node. File mode (default) returns a file path.")]
     async fn turbofig_screenshot(
         &self,
         Parameters(params): Parameters<ScreenshotParams>,

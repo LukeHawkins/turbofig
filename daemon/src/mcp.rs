@@ -64,9 +64,7 @@ impl ReturnMode {
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct FileTargetParams {
     #[serde(rename = "fileKey", default)]
-    #[schemars(
-        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
-    )]
+    #[schemars(description = "File key; omit when one file is open")]
     pub(crate) file_key: Option<String>,
 }
 
@@ -78,9 +76,7 @@ pub(crate) struct FileTargetParams {
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct SelectionParams {
     #[serde(rename = "fileKey", default)]
-    #[schemars(
-        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
-    )]
+    #[schemars(description = "File key; omit when one file is open")]
     pub(crate) file_key: Option<String>,
     #[serde(default)]
     #[schemars(
@@ -97,12 +93,10 @@ pub(crate) struct SelectionParams {
 /// Parameters for the turbofig_execute tool.
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ExecuteParams {
-    #[schemars(description = "JavaScript code to execute in the Figma plugin context")]
+    #[schemars(description = "Async JS body")]
     pub(crate) code: String,
     #[serde(rename = "fileKey", default)]
-    #[schemars(
-        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
-    )]
+    #[schemars(description = "File key; omit when one file is open")]
     pub(crate) file_key: Option<String>,
 }
 
@@ -110,28 +104,22 @@ pub(crate) struct ExecuteParams {
 #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub(crate) struct ScreenshotParams {
     #[serde(default = "default_screenshot_scale")]
-    #[schemars(description = "Export scale factor (default 1.0, clamped to 0.1-4.0)")]
+    #[schemars(description = "0.1-4, default 1")]
     pub(crate) scale: f64,
     #[serde(rename = "nodeId", default)]
-    #[schemars(description = "Figma node ID to screenshot; uses current selection if omitted")]
+    #[schemars(description = "Node id; default is the selection")]
     pub(crate) node_id: Option<String>,
     #[serde(rename = "return", default)]
-    #[schemars(
-        description = "Return mode: 'file' (default) writes a PNG to disk; 'inline' returns base64"
-    )]
+    #[schemars(description = "file (default) or inline")]
     pub(crate) return_mode: ReturnMode,
     #[serde(rename = "fileKey", default)]
-    #[schemars(
-        description = "Target Figma file key; omit to use the sole connected file or the session's paired file"
-    )]
+    #[schemars(description = "File key; omit when one file is open")]
     pub(crate) file_key: Option<String>,
     #[serde(rename = "maxDim", default = "default_max_dim")]
-    #[schemars(description = "Longest-edge pixel cap for downscaling; default 1200")]
+    #[schemars(description = "Longest-edge pixel cap, default 1200")]
     pub(crate) max_dim: u32,
     #[serde(rename = "fullRes", default)]
-    #[schemars(
-        description = "Return full resolution with no downscaling; default false. Combine with return:'inline' for a high-res inline image"
-    )]
+    #[schemars(description = "Skip the downscale")]
     pub(crate) full_res: bool,
 }
 
@@ -188,7 +176,9 @@ impl TurbofigHandler {
     ///
     /// Delegates to `run_execute` for the shared logic; wraps the result in a
     /// `CallToolResult` for the MCP wire format.
-    #[tool(description = "Execute JavaScript in the Figma plugin and return the result")]
+    #[tool(
+        description = "Run async JS in the Figma plugin; `figma` and `tf.*` are in scope. Use return. Return ids, not nodes."
+    )]
     async fn turbofig_execute(
         &self,
         Parameters(ExecuteParams { code, file_key }): Parameters<ExecuteParams>,
@@ -233,7 +223,7 @@ impl TurbofigHandler {
     ///
     /// Delegates to `run_screenshot` for the shared logic; wraps the result in a
     /// `CallToolResult` for the MCP wire format.
-    #[tool(description = "Capture a PNG screenshot of a Figma node")]
+    #[tool(description = "PNG screenshot of a node. File mode (default) returns a file path.")]
     async fn turbofig_screenshot(
         &self,
         Parameters(ScreenshotParams {
@@ -307,9 +297,7 @@ pub const HELP_TEXT: &str = "\
 turbofig: always-on Figma design daemon
 =========================================
 
-Two transports. Prefer the file-bridge: it is faster and more token-efficient
-(no MCP tool definitions, no JSON-RPC or SSE envelope) and fires no permission
-dialog. Use MCP only when the file-bridge is not available.
+Two transports. Prefer the file-bridge. Use MCP only when it is not available.
 
 File-bridge (recommended, dialog-free)
 --------------------------------------
