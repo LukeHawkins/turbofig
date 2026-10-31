@@ -10,6 +10,44 @@
 Every tool accepts an optional `fileKey` to target one of several open
 files. Omit it to use the paired or sole connected file.
 
+## Reply shapes
+
+Every reply is JSON with an `ok` key. MCP and the file bridge send the same JSON.
+MCP sets `isError` when `ok` is false.
+
+`turbofig_status` omits fields that only say "nothing is happening". It omits
+null values, zero counters (`inFlight`, `pendingJobs`), `saturated:false`,
+empty `plugins` lists and a `pluginVersion` that equals the daemon version.
+`/health` lists files in the same per-file shape, so it omits the same null, 0 and false stats.
+
+```json
+{"ok":true,"plugin":{"connected":true,"fileKey":"fk1","name":"File 1"},"plugins":[{"fileKey":"fk1","name":"File 1"}]}
+{"ok":true,"plugin":{"connected":false,"reason":"open the turbofig plugin in Figma"}}
+```
+
+`turbofig_execute` omits `result` when the result is null:
+
+```json
+{"ok":true,"result":"1:23"}
+{"ok":true}
+```
+
+Errors carry a `code`:
+
+```json
+{"ok":false,"code":"not_started","error":"did not start, safe to retry"}
+{"ok":false,"code":"started_unknown","error":"started, may have run: check before retry"}
+{"ok":false,"code":"busy","error":"too many jobs in flight","queueDepth":3,"retryAfterMs":750}
+```
+
+A read over budget adds a `warning`:
+
+```json
+{"ok":true,"result":"...","warning":"23000 B over the 20000 B budget: use fields or depth"}
+```
+
+An inline screenshot over budget says "use file mode or maxDim".
+
 `turbofig_execute` example, matching the helper API in `helpers/tf-api.md`:
 
 ```js

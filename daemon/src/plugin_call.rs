@@ -31,29 +31,25 @@ pub(crate) enum CallOutcome {
 }
 
 /// Builds the caller-facing JSON for a timed-out or disconnected call.
-/// `id` is the request id (named in the message so a caller can correlate it
-/// against a later STARTED/RESULT if one ever turns up); `started` is the
-/// outcome's own flag (see `CallOutcome::TimedOut`/`Disconnected`).
+/// `started` is the outcome's own flag (see `CallOutcome::TimedOut`/`Disconnected`).
 ///
 /// This is the one place `not_started`/`started_unknown` text and codes are
 /// built, shared by `ops::run_execute`, `ops::run_get_selection`, and
 /// `ops::run_screenshot`, so a caller on any transport (MCP, `POST /job`, the
 /// filesystem bridge) sees the same wording and the same machine-readable
 /// `code` for the same situation.
-pub(crate) fn idempotency_error_json(id: u64, started: bool) -> Value {
+pub(crate) fn idempotency_error_json(_id: u64, started: bool) -> Value {
     if started {
         serde_json::json!({
             "ok": false,
             "code": "started_unknown",
-            "error": format!(
-                "requestId {id}: started, may have run, check before retrying"
-            )
+            "error": "started, may have run: check before retry"
         })
     } else {
         serde_json::json!({
             "ok": false,
             "code": "not_started",
-            "error": format!("requestId {id}: did not start, safe to retry")
+            "error": "did not start, safe to retry"
         })
     }
 }
@@ -77,9 +73,7 @@ pub(crate) fn busy_json(queue_depth: usize, retry_after_ms: u64) -> Value {
     serde_json::json!({
         "ok": false,
         "code": "busy",
-        "error": format!(
-            "too many jobs in flight on this connection ({queue_depth}); retry after {retry_after_ms}ms"
-        ),
+        "error": "too many jobs in flight",
         "queueDepth": queue_depth,
         "retryAfterMs": retry_after_ms
     })
@@ -309,14 +303,17 @@ mod tests {
         let v = idempotency_error_json(42, false);
         assert_eq!(v["ok"], json!(false));
         assert_eq!(v["code"], json!("not_started"));
-        assert!(v["error"].as_str().unwrap().contains("safe to retry"));
+        assert_eq!(v["error"], json!("did not start, safe to retry"));
     }
 
     #[test]
     fn idempotency_error_json_started_carries_the_started_unknown_code() {
         let v = idempotency_error_json(42, true);
         assert_eq!(v["code"], json!("started_unknown"));
-        assert!(v["error"].as_str().unwrap().contains("may have run"));
+        assert_eq!(
+            v["error"],
+            json!("started, may have run: check before retry")
+        );
     }
 
     #[test]
@@ -331,6 +328,7 @@ mod tests {
         let v = busy_json(3, 750);
         assert_eq!(v["ok"], json!(false));
         assert_eq!(v["code"], json!("busy"));
+        assert_eq!(v["error"], json!("too many jobs in flight"));
         assert_eq!(v["queueDepth"], json!(3));
         assert_eq!(v["retryAfterMs"], json!(750));
     }

@@ -62,7 +62,11 @@ pub async fn run_execute(
             if reply.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
                 let result = reply.get("result").cloned().unwrap_or(Value::Null);
                 let len = serde_json::to_string(&result).map(|s| s.len()).unwrap_or(0);
-                let resp = json!({"ok": true, "result": result});
+                let resp = if result.is_null() {
+                    json!({"ok": true})
+                } else {
+                    json!({"ok": true, "result": result})
+                };
                 with_warning(resp, read_budget_warning(len))
             } else {
                 let error = reply
@@ -81,5 +85,46 @@ pub async fn run_execute(
         CallOutcome::Disconnected(started) => idempotency_error_json(id, started),
         CallOutcome::NotConnected => plugin_disconnected_json(),
         CallOutcome::TimedOut(started) => idempotency_error_json(id, started),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    async fn run_with_reply(reply: Value) -> Value {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned());
+        let state2 = state.clone();
+        tokio::spawn(async move {
+            if let Some(msg) = rx.recv().await {
+                let req: Value = serde_json::from_str(&msg).expect("frame");
+                let id = req["requestId"].as_u64().expect("requestId");
+                state2.resolve(id, conn, reply);
+            }
+        });
+        run_execute(&state, None, None, "return null").await
+    }
+
+    #[tokio::test]
+    async fn null_result_replies_ok_without_a_result_key() {
+        let v = run_with_reply(json!({"ok": true, "result": null})).await;
+        assert_eq!(v, json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn missing_result_replies_ok_without_a_result_key() {
+        let v = run_with_reply(json!({"ok": true})).await;
+        assert_eq!(v, json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn non_null_result_keeps_the_result_key() {
+        let v = run_with_reply(json!({"ok": true, "result": 0})).await;
+        assert_eq!(v, json!({"ok": true, "result": 0}));
     }
 }

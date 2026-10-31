@@ -17,8 +17,7 @@ pub(crate) const INLINE_SCREENSHOT_BUDGET_BYTES: usize = 100_000;
 pub(crate) fn read_budget_warning(len: usize) -> Option<String> {
     if len > READ_BUDGET_BYTES {
         Some(format!(
-            "result is {len} bytes, over the {READ_BUDGET_BYTES} byte budget; \
-             shape the read with fields/depth or write to file"
+            "{len} B over the {READ_BUDGET_BYTES} B budget: use fields or depth"
         ))
     } else {
         None
@@ -30,8 +29,7 @@ pub(crate) fn read_budget_warning(len: usize) -> Option<String> {
 pub(crate) fn inline_screenshot_warning(len: usize) -> Option<String> {
     if len > INLINE_SCREENSHOT_BUDGET_BYTES {
         Some(format!(
-            "inline screenshot is {len} base64 bytes, over the {INLINE_SCREENSHOT_BUDGET_BYTES} \
-             byte budget; use return:'file' and read it in a subagent"
+            "{len} B over the {INLINE_SCREENSHOT_BUDGET_BYTES} B budget: use file mode or maxDim"
         ))
     } else {
         None
@@ -70,11 +68,10 @@ mod tests {
             w.contains(&count),
             "message must contain the byte count: {w}"
         );
-        assert!(
-            w.contains("fields"),
-            "message must name the fields remedy: {w}"
+        assert_eq!(
+            w,
+            format!("{count} B over the {READ_BUDGET_BYTES} B budget: use fields or depth")
         );
-        assert!(w.contains("file"), "message must name the file remedy: {w}");
     }
 
     #[test]
@@ -96,8 +93,8 @@ mod tests {
             w.contains(&count),
             "message must contain the byte count: {w}"
         );
-        assert!(w.contains("file"), "message must name file mode: {w}");
-        assert!(w.contains("subagent"), "message must name subagent: {w}");
+        assert!(w.contains("file mode"), "message must name file mode: {w}");
+        assert!(w.contains("maxDim"), "message must name maxDim: {w}");
     }
 
     #[test]

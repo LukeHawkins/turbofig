@@ -652,30 +652,35 @@ impl AppState {
                 let mut obj = serde_json::json!({
                     "fileKey": fk,
                     "name": name,
-                    "pluginVersion": plugin_version,
                 });
-                if let Some(warning) = version_mismatch_warning(&plugin_version) {
-                    obj["warning"] = Value::String(warning);
-                }
-                let stats = self.queue_stats(id);
                 let map = obj.as_object_mut().expect("json!({}) is always an object");
-                map.insert("pendingJobs".to_owned(), Value::from(stats.pending_jobs));
-                map.insert("inFlight".to_owned(), Value::from(stats.in_flight));
-                map.insert(
-                    "oldestPendingAgeMs".to_owned(),
-                    stats
-                        .oldest_pending_age_ms
-                        .map(Value::from)
-                        .unwrap_or(Value::Null),
-                );
-                map.insert(
-                    "lastJobCompletedAgoMs".to_owned(),
-                    stats
-                        .last_job_completed_ago_ms
-                        .map(Value::from)
-                        .unwrap_or(Value::Null),
-                );
-                map.insert("saturated".to_owned(), Value::from(stats.saturated));
+                // The daemon version is the expected value: say nothing then.
+                if plugin_version != env!("CARGO_PKG_VERSION") {
+                    map.insert(
+                        "pluginVersion".to_owned(),
+                        Value::from(plugin_version.clone()),
+                    );
+                }
+                if let Some(warning) = version_mismatch_warning(&plugin_version) {
+                    map.insert("warning".to_owned(), Value::String(warning));
+                }
+                // Omit fields that only say "nothing is happening": 0, null, false.
+                let stats = self.queue_stats(id);
+                if stats.pending_jobs > 0 {
+                    map.insert("pendingJobs".to_owned(), Value::from(stats.pending_jobs));
+                }
+                if stats.in_flight > 0 {
+                    map.insert("inFlight".to_owned(), Value::from(stats.in_flight));
+                }
+                if let Some(age) = stats.oldest_pending_age_ms {
+                    map.insert("oldestPendingAgeMs".to_owned(), Value::from(age));
+                }
+                if let Some(ago) = stats.last_job_completed_ago_ms {
+                    map.insert("lastJobCompletedAgoMs".to_owned(), Value::from(ago));
+                }
+                if stats.saturated {
+                    map.insert("saturated".to_owned(), Value::from(true));
+                }
                 obj
             })
             .collect()
@@ -1094,7 +1099,10 @@ mod tests {
 
         let json = state.named_connections_json();
         assert_eq!(json.len(), 1);
-        assert_eq!(json[0]["pluginVersion"], env!("CARGO_PKG_VERSION"));
+        assert!(
+            json[0].get("pluginVersion").is_none(),
+            "a matching plugin version must be omitted"
+        );
         assert!(json[0].get("warning").is_none());
     }
 
@@ -1394,11 +1402,19 @@ mod tests {
         state.set_connection_info(conn, "fk1".to_owned(), "File 1".to_owned());
 
         let json = state.named_connections_json();
-        assert_eq!(json[0]["pendingJobs"], json!(0));
-        assert_eq!(json[0]["inFlight"], json!(0));
-        assert_eq!(json[0]["saturated"], json!(false));
-        assert!(json[0]["oldestPendingAgeMs"].is_null());
-        assert!(json[0]["lastJobCompletedAgoMs"].is_null());
+        // An idle file carries only its identity: no zero, null or false fields.
+        let keys: Vec<&String> = json[0].as_object().unwrap().keys().collect();
+        assert!(
+            !keys.iter().any(|k| matches!(
+                k.as_str(),
+                "pendingJobs"
+                    | "inFlight"
+                    | "saturated"
+                    | "oldestPendingAgeMs"
+                    | "lastJobCompletedAgoMs"
+            )),
+            "idle queue stats must be omitted, got {keys:?}"
+        );
     }
 
     #[test]

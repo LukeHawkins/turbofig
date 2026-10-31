@@ -588,7 +588,8 @@ pub fn format_health(body: &serde_json::Value) -> String {
         let plugin_version = f
             .get("pluginVersion")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            // The daemon omits pluginVersion when it equals its own version.
+            .unwrap_or(version);
         out.push_str(&format!("- {name} ({file_key}) plugin {plugin_version}"));
         if let Some(warning) = f.get("warning").and_then(|v| v.as_str()) {
             out.push_str(&format!(" -- {warning}"));
@@ -1400,6 +1401,17 @@ mod tests {
         assert!(text.contains("version 0.3.0"));
         assert!(text.contains("up 42s"));
         assert!(text.contains("No Figma file connected"));
+    }
+
+    #[test]
+    fn format_health_fills_a_missing_plugin_version_with_the_daemon_version() {
+        let body = serde_json::json!({
+            "version": "9.9.9",
+            "uptimeSeconds": 1,
+            "connectedFiles": [{"fileKey": "fk1", "name": "Design"}]
+        });
+        let text = format_health(&body);
+        assert!(text.contains("- Design (fk1) plugin 9.9.9"), "got: {text}");
     }
 
     #[test]

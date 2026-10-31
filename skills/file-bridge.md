@@ -42,7 +42,7 @@ Add `"fileKey":"<key>"` to target one of several open files. Omit it when one fi
 { "ok": true, "plugin": { "connected": true, "fileKey": "abc123", "name": "My Design File" } }
 ```
 
-`status` omits fields whose value is null, 0 or false. When no plugin is connected, `plugin.connected` is false and `plugin.reason` says why. Ask the user to open the plugin by hand (Plugins > Development > turbofig).
+`status` omits zero counters, null ages and `saturated: false`. When no plugin is connected, `plugin.connected` is false and `plugin.reason` says why. Ask the user to open the plugin by hand (Plugins > Development > turbofig).
 
 Errors: `{ "ok": false, "code": "...", "error": "..." }`. Act on `code`:
 
