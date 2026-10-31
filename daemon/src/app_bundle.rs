@@ -39,7 +39,7 @@ pub struct RealCodeSigner;
 
 impl CodeSigner for RealCodeSigner {
     fn sign(&self, bundle_path: &Path) -> io::Result<()> {
-        let status = std::process::Command::new("codesign")
+        let status = std::process::Command::new("/usr/bin/codesign")
             .args(["--force", "--sign", "-"])
             .arg(bundle_path)
             .status()?;
@@ -83,6 +83,38 @@ pub fn has_our_bundle(dir: &Path) -> bool {
     bundle_identifier_at(dir).as_deref() == Some(BUNDLE_IDENTIFIER)
 }
 
+/// True when `owner` may own a trusted bundle for `uid`: the user
+/// themselves, or root (a sudo, pkg or MDM install).
+fn owner_is_trusted(owner: u32, uid: u32) -> bool {
+    owner == uid || owner == 0
+}
+
+/// True when the bundle directory and its executable are both real files
+/// (not symlinks, checked with `symlink_metadata`) owned by `uid` or root.
+/// Pure apart from the `stat` calls: tests pass a fake uid.
+pub fn bundle_owned_by(dir: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let ok = |p: &Path| {
+        std::fs::symlink_metadata(p)
+            .map(|m| !m.file_type().is_symlink() && owner_is_trusted(m.uid(), uid))
+            .unwrap_or(false)
+    };
+    ok(&dir.join("turbofig.app")) && ok(&app_bundle_executable_path(dir))
+}
+
+/// True when `dir` holds our bundle (`has_our_bundle`) AND it is owned by
+/// the current effective user or root. Another account must not be able to
+/// swap the bundle that autostart runs as this user. `geteuid` is used
+/// (also by `launchd::current_uid`) because files we create carry it.
+pub fn bundle_is_trusted(dir: &Path) -> bool {
+    bundle_is_trusted_for(dir, unsafe { libc::geteuid() })
+}
+
+/// `bundle_is_trusted` with an explicit uid, for tests.
+pub fn bundle_is_trusted_for(dir: &Path, uid: u32) -> bool {
+    has_our_bundle(dir) && bundle_owned_by(dir, uid)
+}
+
 /// Reads `<dir>/turbofig.app`'s own `CFBundleIdentifier`, or `None` if no
 /// bundle (or no readable `Info.plist`) is there. Shared by `has_our_bundle`
 /// and `remove_turbofig_app_bundle`'s ownership check.
@@ -124,13 +156,31 @@ pub fn applications_dir_from_env() -> PathBuf {
     }
     let global = global_applications_dir();
     let home = home_applications_dir();
-    if has_our_bundle(&global) {
+    let uid = unsafe { libc::geteuid() };
+    pick_applications_dir(global.clone(), home, uid, dir_is_writable(&global))
+}
+
+/// The pure half of `applications_dir_from_env`. Our bundle in `global`
+/// that another non-root user owns is untrusted: skip `global` and use
+/// `home`, so autostart never runs or rewrites a swapped bundle.
+pub fn pick_applications_dir(
+    global: PathBuf,
+    home: PathBuf,
+    uid: u32,
+    global_writable: bool,
+) -> PathBuf {
+    if has_our_bundle(&global) && bundle_owned_by(&global, uid) {
         return global;
+    }
+    // A foreign or untrusted bundle in `global` (another user's, or not
+    // ours): leave it alone and use `home`.
+    if app_bundle_executable_path(&global).exists() {
+        return home;
     }
     if has_our_bundle(&home) {
         return home;
     }
-    if dir_is_writable(&global) {
+    if global_writable {
         global
     } else {
         home
@@ -354,7 +404,24 @@ pub fn install_app_bundle_with_signer(
 ) -> io::Result<PathBuf> {
     refuse_real_applications_dir(applications_dir)?;
 
+    // A foreign turbofig.app is never touched (same rule as
+    // `remove_turbofig_app_bundle`): fail before writing anything.
+    if app_bundle_executable_path(applications_dir).exists() && !has_our_bundle(applications_dir) {
+        return Err(io::Error::other(format!(
+            "{} holds a turbofig.app with a different bundle identifier; refusing to overwrite it",
+            applications_dir.display()
+        )));
+    }
+
     let bundle_dir = applications_dir.join("turbofig.app");
+    // A symlinked bundle dir would make the writes below land in its target:
+    // drop the link itself (never its target) first.
+    if std::fs::symlink_metadata(&bundle_dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        std::fs::remove_file(&bundle_dir)?;
+    }
     let contents_dir = bundle_dir.join("Contents");
     let macos_dir = contents_dir.join("MacOS");
     let resources_dir = contents_dir.join("Resources");
@@ -963,6 +1030,123 @@ mod tests {
 
         std::fs::remove_dir_all(&global).ok();
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn bundle_trust_requires_matching_owner() {
+        let dir = unique_temp_dir("trust-owner");
+        let own_exe = std::env::current_exe().expect("exe");
+        install_app_bundle_with_signer(
+            &dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+        let me = unsafe { libc::geteuid() };
+
+        assert!(bundle_is_trusted_for(&dir, me));
+        assert!(!bundle_is_trusted_for(&dir, me.wrapping_add(1)));
+        assert!(!bundle_owned_by(&dir.join("missing"), me));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn trust_accepts_root_owner_and_rejects_other_users() {
+        assert!(owner_is_trusted(0, 501));
+        assert!(owner_is_trusted(501, 501));
+        assert!(!owner_is_trusted(502, 501));
+    }
+
+    #[test]
+    fn trust_rejects_a_symlinked_bundle() {
+        let dir = unique_temp_dir("trust-symlink");
+        let real = unique_temp_dir("trust-symlink-real");
+        let own_exe = std::env::current_exe().expect("exe");
+        install_app_bundle_with_signer(
+            &real,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(real.join("turbofig.app"), dir.join("turbofig.app")).unwrap();
+        let me = unsafe { libc::geteuid() };
+
+        assert!(bundle_is_trusted_for(&real, me));
+        assert!(!bundle_is_trusted_for(&dir, me));
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&real).ok();
+    }
+
+    #[test]
+    fn resolver_skips_an_untrusted_global_bundle() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root owns everything, so no bundle is untrusted
+        }
+        let global = unique_temp_dir("pick-global");
+        let home = unique_temp_dir("pick-home");
+        let own_exe = std::env::current_exe().expect("exe");
+        install_app_bundle_with_signer(
+            &global,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+        let me = unsafe { libc::geteuid() };
+
+        assert_eq!(
+            pick_applications_dir(global.clone(), home.clone(), me, true),
+            global
+        );
+        // Fake uid: the bundle is owned by "another non-root user".
+        let other = me.wrapping_add(1).max(1);
+        assert_eq!(
+            pick_applications_dir(global.clone(), home.clone(), other, true),
+            home
+        );
+
+        std::fs::remove_dir_all(&global).ok();
+    }
+
+    #[test]
+    fn installer_refuses_a_foreign_bundle_and_touches_nothing() {
+        let dir = unique_temp_dir("install-foreign");
+        let macos = dir.join("turbofig.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("turbofig"), "foreign").unwrap();
+        std::fs::write(
+            dir.join("turbofig.app/Contents/Info.plist"),
+            "<plist><dict><key>CFBundleIdentifier</key><string>com.example.other</string></dict></plist>",
+        )
+        .unwrap();
+        let own_exe = std::env::current_exe().expect("exe");
+
+        let err = install_app_bundle_with_signer(
+            &dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect_err("foreign bundle must be refused");
+
+        assert!(err.to_string().contains("different bundle identifier"));
+        assert_eq!(
+            std::fs::read_to_string(macos.join("turbofig")).unwrap(),
+            "foreign"
+        );
+        let me = unsafe { libc::geteuid() };
+        let home = unique_temp_dir("install-foreign-home");
+        assert_eq!(
+            pick_applications_dir(dir.clone(), home.clone(), me, true),
+            home
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

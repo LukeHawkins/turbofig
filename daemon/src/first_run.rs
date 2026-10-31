@@ -23,7 +23,7 @@ pub struct RealClipboard;
 impl Clipboard for RealClipboard {
     fn copy(&self, text: &str) -> bool {
         use std::io::Write;
-        let mut child = match std::process::Command::new("pbcopy")
+        let mut child = match std::process::Command::new("/usr/bin/pbcopy")
             .stdin(std::process::Stdio::piped())
             .spawn()
         {
@@ -106,7 +106,7 @@ pub struct RealAppOpener;
 
 impl AppOpener for RealAppOpener {
     fn open_figma(&self) -> bool {
-        std::process::Command::new("open")
+        std::process::Command::new("/usr/bin/open")
             .args(["-a", "Figma"])
             .status()
             .map(|status| status.success())
@@ -114,7 +114,7 @@ impl AppOpener for RealAppOpener {
     }
 
     fn open_app_with_path(&self, app: &str, path: &Path) -> bool {
-        std::process::Command::new("open")
+        std::process::Command::new("/usr/bin/open")
             .args(["-a", app])
             .arg(path)
             .status()
@@ -123,7 +123,7 @@ impl AppOpener for RealAppOpener {
     }
 
     fn open_url(&self, url: &str) -> bool {
-        std::process::Command::new("open")
+        std::process::Command::new("/usr/bin/open")
             .arg(url)
             .status()
             .map(|status| status.success())
@@ -131,7 +131,7 @@ impl AppOpener for RealAppOpener {
     }
 
     fn open_new_instance(&self, path: &Path) -> bool {
-        std::process::Command::new("open")
+        std::process::Command::new("/usr/bin/open")
             .arg("-n")
             .arg(path)
             .status()
@@ -140,7 +140,7 @@ impl AppOpener for RealAppOpener {
     }
 
     fn reveal_in_finder(&self, path: &Path) -> bool {
-        std::process::Command::new("open")
+        std::process::Command::new("/usr/bin/open")
             .arg("-R")
             .arg(path)
             .status()

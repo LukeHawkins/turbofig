@@ -35,6 +35,26 @@ pub fn launch_agents_dir_from_env() -> PathBuf {
     PathBuf::from(home).join("Library/LaunchAgents")
 }
 
+/// Returns the Homebrew prefix of a canonical exe path under
+/// `<prefix>/Cellar/turbofig/`, or `None`. A prefix counts when it is a
+/// default one (`/opt/homebrew`, `/usr/local`) or when `<prefix>/bin/turbofig`
+/// canonicalizes to the running exe (a custom `HOMEBREW_PREFIX`). A bare
+/// `/tmp/Cellar/turbofig/...` path therefore never counts.
+fn homebrew_prefix(canonical_current_exe: &Path) -> Option<PathBuf> {
+    const MARKER: &str = "/Cellar/turbofig/";
+    let s = canonical_current_exe.to_string_lossy();
+    let idx = s.find(MARKER)?;
+    let prefix = &s[..idx];
+    if matches!(prefix, "/opt/homebrew" | "/usr/local") {
+        return Some(PathBuf::from(prefix));
+    }
+    let link = PathBuf::from(prefix).join("bin").join("turbofig");
+    match link.canonicalize() {
+        Ok(real) if real == canonical_current_exe => Some(PathBuf::from(prefix)),
+        _ => None,
+    }
+}
+
 /// Applies the stable-binary-path rule: a path under a Homebrew Cellar
 /// (`<prefix>/Cellar/turbofig/<version>/...`) resolves to the stable
 /// `<prefix>/bin/turbofig` symlink Homebrew maintains across upgrades, so
@@ -42,31 +62,23 @@ pub fn launch_agents_dir_from_env() -> PathBuf {
 /// next `brew upgrade`. Any other path (a source checkout, a symlink
 /// resolving outside a Cellar) is returned unchanged.
 ///
-/// `canonical_current_exe` must already be canonicalized: the Cellar check
-/// is a literal substring match on `/Cellar/turbofig/`, which only a
-/// resolved path can be trusted to contain or not contain.
+/// `canonical_current_exe` must already be canonicalized. See
+/// `homebrew_prefix` for which prefixes are accepted.
 pub fn stable_binary_path(canonical_current_exe: &Path) -> PathBuf {
-    let s = canonical_current_exe.to_string_lossy();
-    const MARKER: &str = "/Cellar/turbofig/";
-    match s.find(MARKER) {
-        Some(idx) => {
-            let prefix = &s[..idx];
-            PathBuf::from(prefix).join("bin").join("turbofig")
-        }
+    match homebrew_prefix(canonical_current_exe) {
+        Some(prefix) => prefix.join("bin").join("turbofig"),
         None => canonical_current_exe.to_path_buf(),
     }
 }
 
 /// Returns true when `canonical_current_exe` resolves inside a Homebrew
-/// Cellar for this package (the same marker `stable_binary_path` matches).
-/// `autostart on` uses this to warn when the binary it is about to pin into the
-/// plist is not a Homebrew install (for example `target/release/turbofig`
-/// from a source checkout): that path breaks the service the moment the
-/// build directory moves or is cleaned.
+/// Cellar for this package (the same rule `stable_binary_path` uses, so the
+/// two never disagree). `autostart on` uses this to warn when the binary it
+/// is about to pin into the plist is not a Homebrew install (for example
+/// `target/release/turbofig` from a source checkout): that path breaks the
+/// service the moment the build directory moves or is cleaned.
 pub fn is_in_homebrew_cellar(canonical_current_exe: &Path) -> bool {
-    canonical_current_exe
-        .to_string_lossy()
-        .contains("/Cellar/turbofig/")
+    homebrew_prefix(canonical_current_exe).is_some()
 }
 
 /// Escapes the four XML special characters a plist string value might
@@ -327,13 +339,13 @@ impl Launchctl for RealLaunchctl {
         // Ignore the exit status: "service is not loaded" is the common and
         // expected case (first-ever `autostart on`, or a prior crash that
         // already unloaded it), not a failure worth reporting.
-        let _ = std::process::Command::new("launchctl")
+        let _ = std::process::Command::new("/bin/launchctl")
             .args(["bootout", service_target])
             .status();
     }
 
     fn bootstrap(&self, domain_target: &str, plist_path: &Path) -> io::Result<()> {
-        let status = std::process::Command::new("launchctl")
+        let status = std::process::Command::new("/bin/launchctl")
             .args(["bootstrap", domain_target])
             .arg(plist_path)
             .status()?;
@@ -365,21 +377,46 @@ pub fn domain_target(uid: &str) -> String {
     format!("gui/{uid}")
 }
 
-/// Runs `id -u` to get the current user's numeric uid, trimmed.
+/// Returns the current user's numeric uid via `geteuid`, no `id` spawn.
+/// `geteuid` matches the bundle trust check in `app_bundle`: files this
+/// process creates are owned by the effective uid.
 /// Only `autostart`/`uninstall` call this; it is never needed by a test, which
 /// passes its own fixed uid string to the pure functions above.
 pub fn current_uid() -> io::Result<String> {
-    let out = std::process::Command::new("id").arg("-u").output()?;
-    if !out.status.success() {
-        return Err(io::Error::other("id -u failed"));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    Ok(unsafe { libc::geteuid() }.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn stable_binary_path_ignores_a_cellar_outside_a_homebrew_prefix() {
+        let path = PathBuf::from("/tmp/Cellar/turbofig/1.0/bin/turbofig");
+        assert_eq!(stable_binary_path(&path), path);
+    }
+
+    #[test]
+    fn custom_homebrew_prefix_is_accepted_when_bin_link_resolves_to_exe() {
+        let root = std::env::temp_dir().join(format!("turbofig-prefix-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let exe_dir = root.join("Cellar/turbofig/1.0/bin");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let exe = exe_dir.join("turbofig");
+        std::fs::write(&exe, "x").unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::os::unix::fs::symlink(&exe, root.join("bin/turbofig")).unwrap();
+
+        assert_eq!(stable_binary_path(&exe), root.join("bin/turbofig"));
+        assert!(is_in_homebrew_cellar(&exe));
+
+        std::fs::remove_file(root.join("bin/turbofig")).unwrap();
+        assert_eq!(stable_binary_path(&exe), exe);
+        assert!(!is_in_homebrew_cellar(&exe));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn stable_binary_path_rewrites_an_intel_cellar_path() {

@@ -288,7 +288,22 @@ fn run_autostart_on_app_with_sleep(
     std::fs::create_dir_all(launch_agents_dir)?;
 
     let bundle_exe = crate::app_bundle::app_bundle_executable_path(applications_dir);
-    if !bundle_exe.exists() {
+    let trusted = bundle_exe.exists() && crate::app_bundle::bundle_is_trusted(applications_dir);
+    if bundle_exe.exists() && !crate::app_bundle::has_our_bundle(applications_dir) {
+        // A foreign turbofig.app is never touched (see
+        // `remove_turbofig_app_bundle`): stop with a clear error.
+        return Err(io::Error::other(format!(
+            "{} holds a turbofig.app with a different bundle identifier; refusing to overwrite it",
+            applications_dir.display()
+        )));
+    }
+    if bundle_exe.exists() && !trusted {
+        eprintln!(
+            "turbofig: existing app bundle in {} is not owned by this user or root, or is a symlink; reinstalling",
+            applications_dir.display()
+        );
+    }
+    if !trusted {
         crate::app_bundle::install_app_bundle_with_signer(
             applications_dir,
             own_exe,
@@ -1140,6 +1155,98 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&launch_agents_dir).ok();
         std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn run_autostart_on_app_refuses_a_foreign_bundle_and_leaves_it_untouched() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-app-foreign");
+        let launch_agents_dir = unique_temp_dir("agents-app-foreign");
+        let applications_dir = unique_temp_dir("apps-app-foreign");
+        let macos = applications_dir.join("turbofig.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("turbofig"), "foreign").unwrap();
+        std::fs::write(
+            applications_dir.join("turbofig.app/Contents/Info.plist"),
+            "<plist><dict><key>CFBundleIdentifier</key><string>com.example.other</string></dict></plist>",
+        )
+        .unwrap();
+        let launchctl = FakeLaunchctl::new();
+        let fake_exe = std::env::current_exe().expect("current_exe");
+
+        let err = run_autostart_on_app_with_sleep(
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &home,
+            &crate::app_bundle::NoopCodeSigner,
+            &crate::app_bundle::NoopLaunchServicesRegistrar,
+            &|_| {},
+        )
+        .expect_err("foreign bundle must be refused");
+
+        assert!(err.to_string().contains("different bundle identifier"));
+        assert_eq!(
+            std::fs::read_to_string(macos.join("turbofig")).unwrap(),
+            "foreign"
+        );
+        assert!(launchctl.calls.borrow().is_empty());
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+        std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn run_autostart_on_app_reinstalls_an_untrusted_symlinked_bundle() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = unique_temp_dir("home-app-untrusted");
+        let launch_agents_dir = unique_temp_dir("agents-app-untrusted");
+        let applications_dir = unique_temp_dir("apps-app-untrusted");
+        let real_dir = unique_temp_dir("apps-app-untrusted-real");
+        let fake_exe = std::env::current_exe().expect("current_exe");
+        crate::app_bundle::install_app_bundle_with_signer(
+            &real_dir,
+            &fake_exe,
+            &crate::app_bundle::NoopCodeSigner,
+            &crate::app_bundle::NoopLaunchServicesRegistrar,
+        )
+        .unwrap();
+        std::fs::create_dir_all(&applications_dir).unwrap();
+        std::os::unix::fs::symlink(
+            real_dir.join("turbofig.app"),
+            applications_dir.join("turbofig.app"),
+        )
+        .unwrap();
+        let launchctl = FakeLaunchctl::new();
+
+        run_autostart_on_app_with_sleep(
+            &launch_agents_dir,
+            &applications_dir,
+            &launchctl,
+            "501",
+            &fake_exe,
+            &home,
+            &crate::app_bundle::NoopCodeSigner,
+            &crate::app_bundle::NoopLaunchServicesRegistrar,
+            &|_| {},
+        )
+        .expect("autostart on (app)");
+
+        let meta = std::fs::symlink_metadata(applications_dir.join("turbofig.app")).unwrap();
+        assert!(
+            !meta.file_type().is_symlink(),
+            "bundle must be reinstalled as a real dir"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+        std::fs::remove_dir_all(&applications_dir).ok();
+        std::fs::remove_dir_all(&real_dir).ok();
     }
 
     #[cfg(target_os = "macos")]
