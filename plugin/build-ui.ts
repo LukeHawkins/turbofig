@@ -7,6 +7,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { writeOwnerOnly } from "./write-private";
 
 const TOKEN = "__UI_BUNDLE__";
 const scriptDir = import.meta.dir;
@@ -137,5 +138,6 @@ if (!template.includes(TOKEN)) {
 // never interpreted as replacement patterns.
 const html = template.replace(TOKEN, () => bundleText);
 const outPath = join(scriptDir, "dist/ui.html");
-await Bun.write(outPath, html);
+// The file can embed the real pairing token, so only the owner may read it.
+writeOwnerOnly(outPath, html);
 console.log(`Built dist/ui.html (${html.length} bytes)`);
