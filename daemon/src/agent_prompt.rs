@@ -167,7 +167,7 @@ mod tests {
         let zero = fill_agent_prompt(TEMPLATE, &[], "/tmp/bridge", 18846);
         assert_eq!(
             zero,
-            "turbofig file-bridge: write {\"op\":\"execute\",\"fileKey\":\"<fileKey>\",\"code\":\"...\"} to /tmp/bridge/inbox/<unique-id>.json (id unique per job) -> read /tmp/bridge/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. Run the status op first to learn the fileKey. If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n"
+            "turbofig file-bridge. Job: {\"op\":\"execute\",\"fileKey\":\"<fileKey>\",\"code\":\"...\"}. Ops: status|execute|get_selection|screenshot. Run the status op first to learn the fileKey. Code is async JS with `figma` and `tf.*` in scope. Use `return`. Return ids, not nodes.\nShell, one tool call (unique id per job; the quoted heredoc needs no shell escaping; the loop waits 35 s at most):\nI=job$RANDOM$RANDOM; cat > /tmp/bridge/inbox/$I.json.tmp <<'EOF'\n<job JSON>\nEOF\nmv /tmp/bridge/inbox/$I.json.tmp /tmp/bridge/inbox/$I.json; O=/tmp/bridge/outbox/$I.json; for i in $(seq 350); do [ -s $O ] && break; sleep 0.1; done; cat $O\nFile tools only: write /tmp/bridge/inbox/<unique-id>.json, then read /tmp/bridge/outbox/<unique-id>.json once.\nIf no result appears, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n"
         );
 
         let one = fill_agent_prompt(
@@ -178,7 +178,7 @@ mod tests {
         );
         assert_eq!(
             one,
-            "turbofig file-bridge: write {\"op\":\"execute\",\"fileKey\":\"ABC123\",\"code\":\"...\"} to /tmp/bridge/inbox/<unique-id>.json (id unique per job) -> read /tmp/bridge/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n"
+            "turbofig file-bridge. Job: {\"op\":\"execute\",\"fileKey\":\"ABC123\",\"code\":\"...\"}. Ops: status|execute|get_selection|screenshot. Code is async JS with `figma` and `tf.*` in scope. Use `return`. Return ids, not nodes.\nShell, one tool call (unique id per job; the quoted heredoc needs no shell escaping; the loop waits 35 s at most):\nI=job$RANDOM$RANDOM; cat > /tmp/bridge/inbox/$I.json.tmp <<'EOF'\n<job JSON>\nEOF\nmv /tmp/bridge/inbox/$I.json.tmp /tmp/bridge/inbox/$I.json; O=/tmp/bridge/outbox/$I.json; for i in $(seq 350); do [ -s $O ] && break; sleep 0.1; done; cat $O\nFile tools only: write /tmp/bridge/inbox/<unique-id>.json, then read /tmp/bridge/outbox/<unique-id>.json once.\nIf no result appears, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n"
         );
 
         let many = fill_agent_prompt(
@@ -189,7 +189,7 @@ mod tests {
         );
         assert_eq!(
             many,
-            "Connected files: Design A (key1), Design B (key2).\nturbofig file-bridge: write {\"op\":\"execute\",\"fileKey\":\"<fileKey>\",\"code\":\"...\"} to /tmp/bridge/inbox/<unique-id>.json (id unique per job) -> read /tmp/bridge/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot. Pick a fileKey from the list above. If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n"
+            "Connected files: Design A (key1), Design B (key2).\nturbofig file-bridge. Job: {\"op\":\"execute\",\"fileKey\":\"<fileKey>\",\"code\":\"...\"}. Ops: status|execute|get_selection|screenshot. Pick a fileKey from the list above. Code is async JS with `figma` and `tf.*` in scope. Use `return`. Return ids, not nodes.\nShell, one tool call (unique id per job; the quoted heredoc needs no shell escaping; the loop waits 35 s at most):\nI=job$RANDOM$RANDOM; cat > /tmp/bridge/inbox/$I.json.tmp <<'EOF'\n<job JSON>\nEOF\nmv /tmp/bridge/inbox/$I.json.tmp /tmp/bridge/inbox/$I.json; O=/tmp/bridge/outbox/$I.json; for i in $(seq 350); do [ -s $O ] && break; sleep 0.1; done; cat $O\nFile tools only: write /tmp/bridge/inbox/<unique-id>.json, then read /tmp/bridge/outbox/<unique-id>.json once.\nIf no result appears, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:18846/mcp\n"
         );
     }
 }

@@ -1,1 +1,8 @@
-{{FILES_LINE}}turbofig file-bridge: write {"op":"execute","fileKey":"{{FILE_KEY}}","code":"..."} to {{BRIDGE_DIR}}/inbox/<unique-id>.json (id unique per job) -> read {{BRIDGE_DIR}}/outbox/<unique-id>.json. Ops: status|execute|get_selection|screenshot.{{FILE_KEY_HINT}} If no result file appears within a few seconds, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:{{MCP_PORT}}/mcp
+{{FILES_LINE}}turbofig file-bridge. Job: {"op":"execute","fileKey":"{{FILE_KEY}}","code":"..."}. Ops: status|execute|get_selection|screenshot.{{FILE_KEY_HINT}} Code is async JS with `figma` and `tf.*` in scope. Use `return`. Return ids, not nodes.
+Shell, one tool call (unique id per job; the quoted heredoc needs no shell escaping; the loop waits 35 s at most):
+I=job$RANDOM$RANDOM; cat > {{BRIDGE_DIR}}/inbox/$I.json.tmp <<'EOF'
+<job JSON>
+EOF
+mv {{BRIDGE_DIR}}/inbox/$I.json.tmp {{BRIDGE_DIR}}/inbox/$I.json; O={{BRIDGE_DIR}}/outbox/$I.json; for i in $(seq 350); do [ -s $O ] && break; sleep 0.1; done; cat $O
+File tools only: write {{BRIDGE_DIR}}/inbox/<unique-id>.json, then read {{BRIDGE_DIR}}/outbox/<unique-id>.json once.
+If no result appears, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:{{MCP_PORT}}/mcp
