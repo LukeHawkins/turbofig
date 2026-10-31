@@ -34,6 +34,7 @@ pub mod supervisor;
 mod bridge;
 mod config;
 mod control;
+mod daemon_auth;
 mod embedded;
 mod image;
 mod mcp;
