@@ -16,7 +16,6 @@ import {
   buildStarted,
   capResultMessage,
   isInboundMessage,
-  PREAMBLE_LINE_OFFSET,
   safeResult,
   serializeNode,
   wrapUserCode,
@@ -40,24 +39,100 @@ function errorMessageOf(err: unknown): string {
 }
 
 /**
- * Finds a `line:column` position in an error's stack trace and adjusts the
- * line by PREAMBLE_LINE_OFFSET, so the reported position is relative to the
- * user's own code rather than the preamble-wrapped eval source.
- * Returns null when the stack carries no recognisable position, or when the
- * adjusted line would fall before the start of the user's code.
+ * Returns a one-line hint for a common execute error, or null.
+ * The sync-to-async table already reaches the consumer in the eval preamble,
+ * so only the generic dynamic-page message gets a short pointer here.
  */
-function userCodePosition(err: unknown): { line: number; column: number } | null {
+function errorHint(msg: string): string | null {
+  if (/unloaded font|font .*not loaded/i.test(msg)) {
+    return "call await figma.loadFontAsync(node.fontName) first; tf.text loads fonts itself";
+  }
+  if (/dynamic-page|Async variant|getNodeById\b(?!Async)|documentAccess/i.test(msg)) {
+    return "use the Async variant, e.g. await figma.getNodeByIdAsync(id)";
+  }
+  if (/\btf\.\w+ is not a function/.test(msg)) {
+    return "that tf helper does not exist; see the tf-api.md quick start for the list";
+  }
+  if (/cannot read propert(y|ies).* of null|null is not an object/i.test(msg)) {
+    return "a lookup returned null: the node was not found; check the id";
+  }
+  return null;
+}
+
+/** Splits a stack line into the text before ":line:col" and the numbers, or null. */
+function parseFrame(frame: string): { prefix: string; line: number; column: number } | null {
+  const m = frame.match(/^(.*):(\d+):(\d+)\)?\s*$/);
+  // V8 puts the host call site in the prefix; drop it so probe and run match.
+  return m
+    ? { prefix: m[1].replace(/eval at .*?\), /, ""), line: Number(m[2]), column: Number(m[3]) }
+    : null;
+}
+
+/** Stack lines of an error, or an empty list. */
+function stackLines(err: unknown): string[] {
   const stack =
     err != null && typeof err === "object" && "stack" in err
       ? String((err as { stack: unknown }).stack)
       : "";
-  const match = stack.match(/:(\d+):(\d+)/);
-  if (!match) return null;
-  const rawLine = Number(match[1]);
-  const column = Number(match[2]);
-  const line = rawLine - PREAMBLE_LINE_OFFSET;
-  if (!Number.isFinite(line) || !Number.isFinite(column) || line < 1) return null;
-  return { line, column };
+  return stack.split("\n");
+}
+
+/** The AsyncFunction constructor of the current engine. */
+function asyncFunctionCtor(): new (...args: string[]) => (...args: unknown[]) => Promise<unknown> {
+  return Object.getPrototypeOf(async () => {}).constructor;
+}
+
+let calibration: Promise<{ prefix: string; offset: number } | null> | undefined;
+
+/**
+ * Learns once, at runtime, how this engine reports positions in eval'd code.
+ * It runs a probe that throws on user line 2 through the same wrapUserCode
+ * path. The first stack frame gives the frame prefix (file or eval marker)
+ * and the raw line L0, so offset = L0 - 2. Returns null when the engine
+ * gives no usable frame.
+ */
+function calibrate(): Promise<{ prefix: string; offset: number } | null> {
+  calibration ??= (async () => {
+    try {
+      const fn = new (asyncFunctionCtor())("figma", "tf", wrapUserCode("\nthrow new Error()"));
+      await fn({}, {});
+    } catch (err) {
+      for (const l of stackLines(err)) {
+        const f = parseFrame(l);
+        if (f) return { prefix: f.prefix, offset: f.line - 2 };
+      }
+    }
+    return null;
+  })();
+  return calibration;
+}
+
+/** Pure mapper: first frame with the calibrated prefix, in range of the user code, else null. */
+export function mapStackToUserLine(
+  stack: string[],
+  cal: { prefix: string; offset: number },
+  lineCount: number,
+): { line: number; column: number } | null {
+  for (const l of stack) {
+    const f = parseFrame(l);
+    if (!f || f.prefix !== cal.prefix) continue;
+    const line = f.line - cal.offset;
+    return line >= 1 && line <= lineCount ? { line, column: f.column } : null;
+  }
+  return null;
+}
+
+/**
+ * Maps an error to a position in the user's own code. Only stack frames with
+ * the calibrated prefix count (see mapStackToUserLine). Returns null when
+ * calibration fails: a wrong line is worse than none.
+ */
+async function userCodePosition(
+  err: unknown,
+  lineCount: number,
+): Promise<{ line: number; column: number } | null> {
+  const cal = await calibrate();
+  return cal ? mapStackToUserLine(stackLines(err), cal, lineCount) : null;
 }
 
 /**
@@ -118,10 +193,17 @@ export async function handleExecute(
       const result = await fn(figma, tf);
       return buildExecuteSuccess(requestId, safeResult(result));
     } catch (err) {
-      const pos = userCodePosition(err);
-      const message = pos
-        ? `${errorMessageOf(err)} (line ${pos.line}, column ${pos.column})`
-        : errorMessageOf(err);
+      const pos = await userCodePosition(err, code.split("\n").length);
+      const base = errorMessageOf(err);
+      let message = pos ? `${base} (line ${pos.line}, column ${pos.column})` : base;
+      if (pos) {
+        const srcLine = code.split("\n")[pos.line - 1]?.trim();
+        if (srcLine) {
+          message += `\n> ${srcLine.length > 120 ? `${srcLine.slice(0, 120)}...` : srcLine}`;
+        }
+      }
+      const hint = errorHint(base);
+      if (hint) message += `\nHint: ${hint}`;
       return buildExecuteError(requestId, message);
     }
   };
@@ -162,6 +244,52 @@ export async function handleGetSelection(
   }
 }
 
+/** A rectangle with a size, as in absoluteRenderBounds. */
+interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function boundsOf(n: unknown, renderFirst = true): Bounds | null {
+  const o = n as { absoluteRenderBounds?: Bounds | null; absoluteBoundingBox?: Bounds | null };
+  const b = renderFirst ? (o.absoluteRenderBounds ?? o.absoluteBoundingBox) : o.absoluteBoundingBox;
+  return b && Number.isFinite(b.width) && Number.isFinite(b.height) ? b : null;
+}
+
+/**
+ * Longest edge, in px, of the PNG a node exports at scale 1, or 0 when unknown.
+ * Prefers absoluteRenderBounds (it includes effects). A page uses the union of
+ * its top-level children. Falls back to width and height.
+ */
+function longestEdge(node: BaseNode): number {
+  const n = node as unknown as {
+    type?: string;
+    children?: unknown[];
+    width?: number;
+    height?: number;
+  };
+  if (n.type === "PAGE") {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const c of n.children ?? []) {
+      const b = boundsOf(c, false);
+      if (!b) continue;
+      minX = Math.min(minX, b.x);
+      minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width);
+      maxY = Math.max(maxY, b.y + b.height);
+    }
+    return Number.isFinite(minX) ? Math.max(maxX - minX, maxY - minY) : 0;
+  }
+  const b = boundsOf(node);
+  const edge = b ? Math.max(b.width, b.height) : Math.max(n.width ?? 0, n.height ?? 0);
+  return Number.isFinite(edge) ? edge : 0;
+}
+
 /**
  * Handles a SCREENSHOT message. Exports the target node as a PNG.
  * Returns a screenshot ResultMessage, or an error ResultMessage when the node is
@@ -192,7 +320,20 @@ export async function handleScreenshot(
     // constraint, and an unbounded scale can produce an export far past the
     // result size cap.
     const requested = typeof msg.scale === "number" && msg.scale > 0 ? msg.scale : 1;
-    const scale = Math.min(4, Math.max(0.1, requested));
+    let scale = Math.min(4, Math.max(0.1, requested));
+    // Optional daemon cap on the longest edge. The typings document no SCALE
+    // limit below 4, so the floor stays 0.01. Unknown bounds skip the cap.
+    if (typeof msg.maxDim === "number" && msg.maxDim > 0) {
+      let longest = 0;
+      try {
+        longest = longestEdge(node);
+      } catch {
+        // Unreadable bounds (e.g. an unloaded page): skip the cap.
+      }
+      if (longest > 0) {
+        scale = Math.min(4, Math.max(0.01, Math.min(scale, msg.maxDim / longest)));
+      }
+    }
     const bytes = await exportable.exportAsync({
       format: "PNG",
       constraint: { type: "SCALE", value: scale },

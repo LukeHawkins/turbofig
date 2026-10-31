@@ -118,6 +118,8 @@ export interface ScreenshotMessage {
   requestId: number;
   scale?: number;
   nodeId?: string;
+  /** Optional cap, in px, on the longest edge of the export. Absent means no cap. */
+  maxDim?: number;
   /** The MCP session that issued the call. Empty string for file-bridge requests. */
   sessionId?: string;
   /**
@@ -237,6 +239,7 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
     case "SCREENSHOT":
       return (
         typeof msg.requestId === "number" &&
+        (msg.maxDim === undefined || typeof msg.maxDim === "number") &&
         (msg.timeoutMs === undefined || typeof msg.timeoutMs === "number")
       );
     case "SET_PORT":
@@ -301,10 +304,10 @@ export function buildResult(status: StatusMessage, fileKey: string, name: string
 
 /**
  * Returns the reconnect delay in milliseconds for the given attempt count.
- * Base: 500ms. Factor: 2 (exponential). Cap: 30000ms. Attempt 0 returns the base.
+ * Base: 500ms. Factor: 2 (exponential). Cap: 2000ms (localhost connect). Attempt 0 returns the base.
  */
 export function backoffDelayMs(attempt: number): number {
-  return Math.min(500 * 2 ** Math.max(0, attempt), 30000);
+  return Math.min(500 * 2 ** Math.max(0, attempt), 2000);
 }
 
 /**
@@ -338,6 +341,11 @@ export function buildStarted(requestId: number): StartedMessage {
   return { type: "STARTED", requestId };
 }
 
+/** Rounds a finite number to 2 decimal places. Other values pass through. */
+function round2(n: number): number {
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : n;
+}
+
 /**
  * Maps a loosely-typed node object to a SelectionItem.
  * Reads id, name, type (strings) and x, y, width->w, height->h (numbers).
@@ -351,10 +359,10 @@ export function toSelectionItem(node: Record<string, unknown>): SelectionItem {
     id: str("id"),
     name: str("name"),
     type: str("type"),
-    x: num("x"),
-    y: num("y"),
-    w: num("width"),
-    h: num("height"),
+    x: round2(num("x")),
+    y: round2(num("y")),
+    w: round2(num("width")),
+    h: round2(num("height")),
   };
 }
 
@@ -492,10 +500,50 @@ export function utf8ByteLength(str: string): number {
   return bytes;
 }
 
-/** JSON.stringify replacer: base64-encodes a Uint8Array or ArrayBuffer in place. */
+/**
+ * True for a Figma node or style: a non-plain object (class instance) with a
+ * string `id`, a string `type` and a boolean `removed`. A plain object the user
+ * built never matches. A cross-realm VariableAlias has no `removed`.
+ * Throws when a property read throws (a removed node); the caller handles it.
+ */
+function isFigmaNode(val: unknown): val is { id: string; name?: unknown; type: string } {
+  if (val === null || typeof val !== "object") return false;
+  const proto = Object.getPrototypeOf(val);
+  if (proto === Object.prototype || proto === null) return false;
+  const rec = val as Record<string, unknown>;
+  return (
+    typeof rec.id === "string" && typeof rec.type === "string" && typeof rec.removed === "boolean"
+  );
+}
+
+/**
+ * JSON.stringify replacer. Base64-encodes a Uint8Array or ArrayBuffer,
+ * reduces a Figma node to {id, name, type} (a removed node, whose reads
+ * throw, to {id, removed: true}), and rounds non-integer numbers to 4
+ * decimal places. Rule: round(n * 1e4) / 1e4; -0 serialises as 0 in JSON.
+ */
 function replaceBinary(_key: string, val: unknown): unknown {
   if (val instanceof Uint8Array) return encodeBase64(val);
   if (val instanceof ArrayBuffer) return encodeBase64(new Uint8Array(val));
+  if (typeof val === "number") {
+    return Number.isFinite(val) && !Number.isInteger(val) ? Math.round(val * 1e4) / 1e4 : val;
+  }
+  if (val !== null && typeof val === "object") {
+    try {
+      if (isFigmaNode(val)) {
+        return { id: val.id, name: typeof val.name === "string" ? val.name : "", type: val.type };
+      }
+    } catch (err) {
+      let id: unknown;
+      try {
+        id = (val as { id?: unknown }).id;
+      } catch {
+        throw err;
+      }
+      if (typeof id !== "string") throw err;
+      return { id, removed: true };
+    }
+  }
   return val;
 }
 

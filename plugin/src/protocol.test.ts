@@ -172,6 +172,95 @@ describe("buildStarted", () => {
   });
 });
 
+describe("safeResult node reduction and rounding", () => {
+  class FakeNode {
+    id = "1:2";
+    name = "Card";
+    type = "FRAME";
+    removed = false;
+    width = 100;
+    children = [1, 2, 3];
+  }
+
+  test("a Figma node becomes {id, name, type}", () => {
+    expect(safeResult(new FakeNode())).toEqual({ id: "1:2", name: "Card", type: "FRAME" });
+  });
+
+  test("an array of nodes becomes an array of reduced nodes", () => {
+    expect(safeResult([new FakeNode(), new FakeNode()])).toEqual([
+      { id: "1:2", name: "Card", type: "FRAME" },
+      { id: "1:2", name: "Card", type: "FRAME" },
+    ]);
+  });
+
+  test("a node nested in a plain object is reduced", () => {
+    expect(safeResult({ a: { n: new FakeNode() } })).toEqual({
+      a: { n: { id: "1:2", name: "Card", type: "FRAME" } },
+    });
+  });
+
+  test("a plain object with id and type stays intact", () => {
+    const plain = { id: "1:2", type: "FRAME", w: 10 };
+    expect(safeResult(plain)).toEqual(plain);
+  });
+
+  test("a node whose reads throw becomes {id, removed: true}", () => {
+    class Removed {
+      id = "9:9";
+      get type(): string {
+        throw new Error("node removed");
+      }
+    }
+    expect(safeResult({ keep: 1, gone: new Removed() })).toEqual({
+      keep: 1,
+      gone: { id: "9:9", removed: true },
+    });
+  });
+
+  test("a non-node with a throwing getter falls back as before", () => {
+    class Bad {
+      get id(): string {
+        throw new Error("boom");
+      }
+    }
+    expect(typeof safeResult(new Bad())).toBe("string");
+  });
+
+  test("a class instance without a boolean removed passes unchanged", () => {
+    class Alias {
+      type = "VARIABLE_ALIAS";
+      id = "VariableID:1:2";
+    }
+    expect(safeResult(new Alias())).toEqual({ type: "VARIABLE_ALIAS", id: "VariableID:1:2" });
+  });
+
+  test("non-integer numbers round to 4 decimal places", () => {
+    expect(safeResult(100.00000762939453)).toBe(100);
+    expect(safeResult({ v: 0.123456789 })).toEqual({ v: 0.1235 });
+  });
+
+  test("integers and NaN are unchanged", () => {
+    expect(safeResult(7)).toBe(7);
+    expect(safeResult(NaN)).toBe(null);
+    expect(safeResult(new Uint8Array([1, 2, 3]))).toBe("AQID");
+  });
+});
+
+describe("toSelectionItem rounding", () => {
+  test("rounds x, y, w, h to 2 decimal places", () => {
+    const item = toSelectionItem({
+      x: 1.23456,
+      y: 2.005,
+      width: 100.00000762939453,
+      height: 9.999,
+    });
+    expect(item.x).toBe(1.23);
+    expect(item.w).toBe(100);
+    expect(item.h).toBe(10);
+    expect(item.y).toBe(2.01);
+  });
+});
+
 describe("safeResult", () => {
   test("a plain object round-trips through JSON", () => {
     const input = { a: 1, b: "hello", c: true };
@@ -398,15 +487,15 @@ describe("backoffDelayMs", () => {
     }
   });
 
-  test("caps at 30000ms for attempt 6 and beyond", () => {
-    // 500 * 2^6 = 32000 > 30000, so attempt 6 must be capped
-    expect(backoffDelayMs(6)).toBe(30000);
-    expect(backoffDelayMs(100)).toBe(30000);
+  test("caps at 2000ms for attempt 3 and beyond", () => {
+    // 500 * 2^3 = 4000 > 2000, so attempt 3 must be capped
+    expect(backoffDelayMs(3)).toBe(2000);
+    expect(backoffDelayMs(100)).toBe(2000);
   });
 
-  test("never exceeds the 30000ms cap", () => {
+  test("never exceeds the 2000ms cap", () => {
     for (let i = 0; i <= 50; i++) {
-      expect(backoffDelayMs(i)).toBeLessThanOrEqual(30000);
+      expect(backoffDelayMs(i)).toBeLessThanOrEqual(2000);
     }
   });
 });

@@ -13,6 +13,7 @@ import {
   handleExecute,
   handleGetSelection,
   handleScreenshot,
+  mapStackToUserLine,
 } from "./code";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +68,76 @@ describe("handleExecute", () => {
     expect(typeof result.error).toBe("string");
     expect(result.error).toContain("oops");
     expect(result.requestId).toBe(2);
+  });
+
+  test("reports the right user line and appends that source line", async () => {
+    const code = "const a = 1;\nconst b = 2;\n    throw new Error('bad'); // here\nconst c = 3;";
+    const result = await handleExecute(mockFigma, mockTf, { type: "EXECUTE", requestId: 20, code });
+    expect(result.error).toContain("(line 3, column ");
+    expect(result.error).toContain("\n> throw new Error('bad'); // here");
+  });
+
+  test("caps the appended source line at 120 chars", async () => {
+    const code = `const a = 1;\nthrow new Error('bad'); // ${"x".repeat(200)}`;
+    const result = await handleExecute(mockFigma, mockTf, { type: "EXECUTE", requestId: 25, code });
+    const srcLine = (result.error ?? "").split("\n> ")[1]?.split("\n")[0] ?? "";
+    expect(srcLine.startsWith("throw new Error('bad');")).toBe(true);
+    expect(srcLine.length).toBe(123);
+  });
+
+  test("a throw inside a tf helper never shows a wrong user line", async () => {
+    const tf = {
+      boom() {
+        throw new Error("helper failed");
+      },
+    } as unknown as ReturnType<import("./helpers").createTf>;
+    const code = "const a = 1;\nconst b = 2;\nconst c = 3;\ntf.boom();\nconst d = 4;";
+    const result = await handleExecute(mockFigma, tf, { type: "EXECUTE", requestId: 26, code });
+    const err = result.error ?? "";
+    const m = err.match(/\(line (\d+),/);
+    if (m) {
+      expect(err).toContain(`\n> ${code.split("\n")[Number(m[1]) - 1]}`);
+      expect(m[1]).toBe("4");
+    } else {
+      expect(err).not.toContain("\n> ");
+    }
+  });
+
+  test("adds a hint for an unloaded font error", async () => {
+    const code = `throw new Error('Cannot write to node with unloaded font "Inter"');`;
+    const result = await handleExecute(mockFigma, mockTf, { type: "EXECUTE", requestId: 21, code });
+    expect(result.error).toContain("Hint: call await figma.loadFontAsync");
+  });
+
+  test("no sync-API hint for a getNodeByIdAsync error", async () => {
+    const code = `throw new Error('getNodeByIdAsync failed');`;
+    const result = await handleExecute(mockFigma, mockTf, { type: "EXECUTE", requestId: 27, code });
+    expect(result.error).not.toContain("Hint:");
+  });
+
+  test("adds a hint when a lookup returns null", async () => {
+    const code = `const n = null;\nreturn n.name;`;
+    const result = await handleExecute(mockFigma, mockTf, { type: "EXECUTE", requestId: 22, code });
+    expect(result.error).toContain("Hint: a lookup returned null");
+  });
+
+  test("adds a hint for a missing tf helper", async () => {
+    const code = `tf.nope();`;
+    const result = await handleExecute(mockFigma, {} as never, {
+      type: "EXECUTE",
+      requestId: 23,
+      code,
+    });
+    expect(result.error).toContain("tf-api.md");
+  });
+
+  test("adds no hint for an unrelated error", async () => {
+    const result = await handleExecute(mockFigma, mockTf, {
+      type: "EXECUTE",
+      requestId: 24,
+      code: "throw new Error('oops');",
+    });
+    expect(result.error).not.toContain("Hint:");
   });
 
   test("returns an error message for code that throws a non-Error value and does not reject", async () => {
@@ -248,6 +319,120 @@ describe("handleScreenshot", () => {
     const msg = { type: "SCREENSHOT" as const, requestId: 10, scale: 999 };
     await handleScreenshot(mockFigma, msg);
     expect(usedScale).toBe(4);
+  });
+
+  const scaleFor = async (
+    w: number,
+    h: number,
+    extra: { scale?: number; maxDim?: number },
+  ): Promise<number | undefined> => {
+    let used: number | undefined;
+    const node = {
+      id: "1:9",
+      width: w,
+      height: h,
+      async exportAsync(settings: { constraint: { value: number } }) {
+        used = settings.constraint.value;
+        return new Uint8Array([]);
+      },
+    };
+    const fig = {
+      currentPage: { selection: [node] },
+      base64Encode: () => "",
+    } as unknown as PluginAPI;
+    await handleScreenshot(fig, { type: "SCREENSHOT" as const, requestId: 50, ...extra });
+    return used;
+  };
+
+  test("maxDim caps the scale on a large node", async () => {
+    expect(await scaleFor(4000, 2000, { scale: 2, maxDim: 1000 })).toBe(0.25);
+  });
+
+  test("maxDim does not change a small node", async () => {
+    expect(await scaleFor(100, 50, { scale: 2, maxDim: 1000 })).toBe(2);
+  });
+
+  test("absent maxDim leaves the scale unchanged", async () => {
+    expect(await scaleFor(4000, 2000, { scale: 2 })).toBe(2);
+  });
+
+  const scaleForNode = async (
+    node: Record<string, unknown>,
+    extra: { scale?: number; maxDim?: number },
+  ): Promise<number | undefined> => {
+    let used: number | undefined;
+    const n = Object.defineProperties(
+      {
+        async exportAsync(settings: { constraint: { value: number } }) {
+          used = settings.constraint.value;
+          return new Uint8Array([]);
+        },
+      },
+      Object.getOwnPropertyDescriptors(node),
+    );
+    const fig = {
+      currentPage: { selection: [n] },
+      base64Encode: () => "",
+    } as unknown as PluginAPI;
+    await handleScreenshot(fig, { type: "SCREENSHOT" as const, requestId: 51, ...extra });
+    return used;
+  };
+
+  test("maxDim prefers absoluteRenderBounds over width and height", async () => {
+    const node = {
+      width: 100,
+      height: 100,
+      absoluteRenderBounds: { x: 0, y: 0, width: 400, height: 200 },
+    };
+    expect(await scaleForNode(node, { maxDim: 100 })).toBe(0.25);
+  });
+
+  test("maxDim on a page uses the union of its children bounds", async () => {
+    const page = {
+      type: "PAGE",
+      children: [
+        { absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 } },
+        { absoluteBoundingBox: { x: 900, y: 0, width: 100, height: 50 } },
+      ],
+    };
+    expect(await scaleForNode(page, { maxDim: 500 })).toBe(0.5);
+  });
+
+  test("maxDim on a zero-size node skips the cap", async () => {
+    expect(await scaleForNode({ width: 0, height: 0 }, { scale: 2, maxDim: 100 })).toBe(2);
+  });
+
+  test("maxDim with absent bounds skips the cap", async () => {
+    expect(await scaleForNode({}, { scale: 2, maxDim: 100 })).toBe(2);
+    expect(await scaleForNode({ type: "PAGE", children: [] }, { maxDim: 100 })).toBe(1);
+  });
+
+  test("a throwing bounds getter still screenshots, with and without maxDim", async () => {
+    const node = {
+      type: "PAGE",
+      get children(): unknown[] {
+        throw new Error("page not loaded");
+      },
+    };
+    expect(await scaleForNode(node, { scale: 2, maxDim: 100 })).toBe(2);
+    expect(await scaleForNode(node, { scale: 2 })).toBe(2);
+  });
+
+  test("a page uses absoluteBoundingBox, not render bounds, for children", async () => {
+    const page = {
+      type: "PAGE",
+      children: [
+        {
+          absoluteBoundingBox: { x: 0, y: 0, width: 200, height: 100 },
+          absoluteRenderBounds: { x: 0, y: 0, width: 800, height: 400 },
+        },
+      ],
+    };
+    expect(await scaleForNode(page, { maxDim: 100 })).toBe(0.5);
+  });
+
+  test("maxDim never drops the scale below 0.01", async () => {
+    expect(await scaleFor(100000, 100000, { maxDim: 10 })).toBe(0.01);
   });
 
   test("clamps an under-range scale to the documented minimum (0.1)", async () => {
@@ -581,5 +766,38 @@ describe("createDispatcher", () => {
       ["STARTED", 2],
       ["RESULT", 2],
     ]);
+  });
+});
+
+/** Normalised prefix of a frame, as calibrate stores it. */
+function parseFrameForTest(frame: string): string {
+  return frame.replace(/:\d+:\d+\)?$/, "").replace(/eval at .*?\), /, "");
+}
+
+describe("mapStackToUserLine", () => {
+  const cal = { prefix: "at eval (<anonymous>", offset: 3 };
+
+  test("skips a foreign first frame and uses the calibrated frame", () => {
+    const stack = ["Error: x", "at helper (code.js:5:9)", "at eval (<anonymous>:7:4)"];
+    expect(mapStackToUserLine(stack, cal, 10)).toEqual({ line: 4, column: 4 });
+  });
+
+  test("matches V8 frames whose host call sites differ", () => {
+    const probe = parseFrameForTest(
+      "    at eval (eval at calibrate (code.js:90:20), <anonymous>:5:7)",
+    );
+    const stack = ["Error: x", "    at eval (eval at run (code.js:180:24), <anonymous>:9:3)"];
+    expect(mapStackToUserLine(stack, { prefix: probe, offset: 3 }, 10)).toEqual({
+      line: 6,
+      column: 3,
+    });
+  });
+
+  test("gives no position when only a foreign frame exists", () => {
+    expect(mapStackToUserLine(["Error: x", "at helper (code.js:5:9)"], cal, 10)).toBeNull();
+  });
+
+  test("gives no position when the mapped line is out of range", () => {
+    expect(mapStackToUserLine(["at eval (<anonymous>:99:1)"], cal, 10)).toBeNull();
   });
 });

@@ -118,7 +118,7 @@ The plugin dispatches on a `{type}` field in each message:
 | `STARTED` | plugin to daemon | Sent the moment a queued job is dequeued and begins running (not when the frame arrives); lets a later timeout or disconnect be reported as "not_started" (safe to retry) or "started_unknown" (may have run) instead of always warning of a possible duplicate mutation |
 | `EXECUTE` | daemon to plugin | Run arbitrary Figma Plugin API JS; queued. Carries `timeoutMs`: the plugin must stop waiting and reply `ok:false` at that point; the daemon itself waits `timeoutMs + 1000ms` |
 | `GET_SELECTION` | daemon to plugin | Return compact selection info; queued. Carries `timeoutMs`, raced the same way as `EXECUTE` |
-| `SCREENSHOT` | daemon to plugin | Export PNG; queued. Carries `timeoutMs`, raced the same way as `EXECUTE` |
+| `SCREENSHOT` | daemon to plugin | Export PNG; queued. Carries `timeoutMs`, raced the same way as `EXECUTE`. An optional `maxDim` (px, longest edge) makes the plugin cap its export scale, so the daemon rarely decodes or resizes |
 
 This dispatch table is hybrid-ready. A community-safe command vocabulary is additive: add new types without reworking the existing structure.
 
