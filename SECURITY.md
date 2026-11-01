@@ -31,10 +31,32 @@ and what is a bug.
 - **The WebSocket port accepts only a null or missing `Origin`.** The Figma
   plugin UI runs in a sandboxed iframe, which reports a null origin, so the
   real plugin still connects. Any other `Origin` is rejected at the upgrade.
-- **The WebSocket upgrade also requires a pairing token.** Origin checking
-  alone cannot tell the real Figma plugin UI apart from a sandboxed
-  `<iframe>` on a malicious web page: both report Origin `null`. See
-  "Pairing token" below.
+- **The WebSocket upgrade also requires proof of the pairing token.** Origin
+  checking alone cannot tell the real Figma plugin UI apart from a sandboxed
+  `<iframe>` on a malicious web page: both report Origin `null`. The plugin
+  connects with a nonce, so the token never goes on the wire. See "Pairing
+  token" below.
+- **Clients verify the daemon before they send the token.** `GET /health`
+  signs a client nonce. The CLI, the stdio proxy (before every job) and the
+  menu bar check the proof first. A foreign listener on the port makes them
+  exit non-zero with a clear message, and they never send it the token.
+- **The daemon limits connections.** It holds at most 64 HTTP and 32 WS
+  connections. It closes an idle connection (30 s HTTP, 10 s WS before the
+  upgrade). At most 8 WS handshakes may be pending, each for 5 s at most.
+  `/control` checks the token before it reads the body.
+- **The daemon refuses an unsafe bridge path at start.** A symlinked or
+  foreign-owned bridge dir, `inbox/`, `outbox/`, `token` or `figma-plugin/`,
+  a `token` with group or other bits, or an unset `HOME` stops the start.
+  Under launchd the refusal exits 0, so launchd does not restart it.
+- **The file-bridge rejects hostile inbox entries.** Job reads use
+  `O_NOFOLLOW|O_NONBLOCK`. A FIFO or a symlink is rejected. Jobs are capped
+  at 16 MiB and ids at 200 bytes. Results and PNGs are mode `0600`. The
+  daemon creates `.tmp` files with `O_EXCL`, and the 24 h prune touches only
+  daemon-named files.
+- **The app bundle and launchd paths are checked.** The daemon trusts
+  `turbofig.app` only when the user or root owns it, and never overwrites a
+  foreign one. It calls system binaries by absolute path. The dev build
+  writes `dist/ui.html` with mode `0600`, because it embeds the token.
 - **`POST /job` and `POST /mcp` require the pairing token, like `POST
   /control`.** A caller must send `Authorization: Bearer <pairing token>`.
   This closes the gap that an earlier version of this file documented as
@@ -58,10 +80,41 @@ and what is a bug.
   A custom `TURBOFIG_BRIDGE_DIR` folder keeps whatever mode it already has;
   only its `inbox/` and `outbox/` are created and corrected to `0700`.
 
+## Residual risks
+
+These risks remain. They are known and accepted.
+
+- **A relay is possible without channel binding.** If the plugin points at an
+  attacker's port while the real daemon runs on another port, the attacker
+  can relay the handshake to the real daemon. The proofs do not bind to the
+  connection.
+- **Same-user processes are out of scope.** A process that runs as you can
+  read `~/.turbofig/token` and call the daemon.
+- **The legacy same-user path uses `lsof`.** A client hands off to an older
+  daemon that has no proof support after an `lsof` uid check. This trusts any
+  listener that runs as the same user.
+- **A sub-millisecond race exists.** An attacker that takes the port after
+  the proof check and before a job on a new connection can receive that job.
+  This needs a same-user process or a port swap in that window.
+- **Idle keep-alive slots can fill.** A local process can hold the 64 HTTP or
+  32 WS slots until the idle timers close them, and so delay other clients.
+- **`allowedDomains: ["*"]` stays.** Figma rejects a wildcard port, so
+  allow-all is the only value that covers a configurable daemon port.
+- **MCP curl users must run `turbofig status` first.** A raw `curl` with the
+  bearer token does not verify the daemon. `turbofig status` does.
+- **Release binaries are unsigned.** See "Data handling" below.
+- **The release workflow has `contents: write`.** We accept this because
+  only the owner can open same-repo pull requests.
+- **Use a fine-grained token for the tap.** Make `HOMEBREW_TAP_TOKEN` a
+  fine-grained PAT scoped to the tap repository only.
+
 ## Pairing token
 
-The WebSocket port (18847) requires a `token` query parameter on the upgrade
-request, matching `~/.turbofig/token`. This closes a gap Origin checking
+The WebSocket port (18847) needs proof of the pairing token on the upgrade:
+the plugin connects with `?nonce=`, the daemon sends `CHALLENGE` (an HMAC
+proof), the plugin verifies it and answers `AUTH`. A legacy `?token=` upgrade
+from an old plugin is still accepted. The token matches `~/.turbofig/token`.
+This closes a gap Origin checking
 alone leaves open: a sandboxed `<iframe>` on any web page reports Origin
 `null`, the same value the real Figma plugin UI reports, so a malicious page
 could otherwise open the socket and receive the AI's jobs.
@@ -88,17 +141,18 @@ could otherwise open the socket and receive the AI's jobs.
   leaves the daemon stopped even with autostart on (`turbofig autostart
   on`), so the `turbofig start` step is always required to finish the
   rotation.
-- **Known limit on a shared Mac:** if more than one local account runs
-  turbofig, whichever account's daemon binds the ports first holds the
-  pairing token for that session. turbofig is designed for a single-user
-  Mac, not a Mac shared between several accounts.
+- **Shared Mac:** each account has its own token. A second account's daemon
+  that holds a port cannot read your token. Your clients verify the
+  `/health` proof before they send the token, so they refuse that daemon and
+  exit non-zero. The plugin never sends its token. Another account can still
+  block your port. turbofig is designed for a single-user Mac.
 
 ## Data handling
 
 - **turbofig makes no outbound network calls of its own.** The daemon only
   serves `127.0.0.1`; it never calls out to any remote service.
 - **The plugin's manifest allows it to reach any domain
-  (`networkAccess.allowedDomains: ["*"]`).** This is deliberate: Figma
+  (`networkAccess.allowedDomains: ["*"]`).** See "Residual risks". This is deliberate: Figma
   rejects a wildcard port, so allow-all is the only value that covers a
   user-configurable daemon port (see `DECISIONS.md` #23). The real limit is
   that JS run through `turbofig_execute` could use this to make a network
@@ -129,7 +183,8 @@ could otherwise open the socket and receive the AI's jobs.
 
 `/health` (same HTTP port as `/mcp`, 18846) always answers, with no token
 needed, but its payload depends on one. Without a valid pairing token it
-returns only `version` and `uptimeSeconds`. With a valid token it also
+returns only `version` and `uptimeSeconds`. A client nonce in
+`X-Turbofig-Nonce` gets an `X-Turbofig-Proof` header back. With a valid token it also
 returns the connected files' names, keys, plugin versions, and the daemon's
 `pid`. It never includes the pairing token itself, and it is subject to the
 same Origin and `Host` checks as every other route on this port (above), so

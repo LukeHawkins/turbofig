@@ -8,6 +8,57 @@ recorded under Unreleased.
 
 ## [Unreleased] - 0.1.0
 
+### Added
+
+- Challenge handshake on the plugin WebSocket: the plugin connects with
+  `?nonce=`, the daemon sends `CHALLENGE`, the plugin answers `AUTH`. The
+  token never goes on the wire. A legacy `?token=` still works.
+- `GET /health` signs a client nonce (`X-Turbofig-Nonce`,
+  `X-Turbofig-Proof`). The CLI, the stdio proxy and the menu bar verify the
+  proof before they send the token.
+- Connection caps (HTTP 64, WS 32), idle timers, and at most 8 pending
+  handshakes (503 beyond that).
+- File-bridge error codes `invalid_job` and `io_error`. The daemon writes
+  `tf-api.md` to the bridge dir on start.
+- Modules `daemon_auth`, `daemon_client`, `listener` and `secure_fs`.
+
+### Changed
+
+- The WebSocket plugin reconnect delay caps at 2 s.
+- Connect prompt v2: a one-call shell recipe and a 0.02 s poll.
+- `turbofig_status` omits zero, null and false fields. `turbofig_execute`
+  with no result returns `{"ok":true}`. Returned nodes reduce to
+  `{id,name,type}`. Float noise is rounded. Errors carry the source line and
+  a hint. Unknown `tf` options throw.
+- Screenshot files have shorter names. The plugin exports at the `maxDim`
+  cap.
+- A foreign listener now makes the CLI, the proxy and the menu bar exit
+  non-zero. An older same-user daemon is still handed off.
+- `tools/list` text is shorter (1066 to 658 bytes).
+
+### Security
+
+- The daemon refuses a symlinked or foreign-owned bridge dir, inbox, outbox,
+  token or plugin dir, a token readable by others, and an unset `HOME`. Under
+  launchd a refusal exits 0.
+- The file-bridge reads jobs with `O_NOFOLLOW|O_NONBLOCK`, rejects FIFOs and
+  symlinks, caps jobs at 16 MiB and ids at 200 bytes, writes results and PNGs
+  with mode 0600, and prunes only daemon-named files.
+- The daemon trusts an app bundle only when the user or root owns it, never
+  overwrites a foreign `turbofig.app`, and calls system binaries by absolute
+  path. The dev `dist/ui.html` is mode 0600.
+- `/control` checks the token before it reads the body. Client reads are
+  capped. The daemon raises `RLIMIT_NOFILE` at start.
+- `SECURITY.md` lists the residual risks.
+
+### Performance
+
+- Screenshot on a 3840x2160 node: 222 to 91 ms (CatmullRom resize, fast PNG
+  encode, `maxDim` sent to the plugin).
+- A `turbofig_status` file entry: 261 to 117 bytes.
+- The file-bridge skill and agents guide shrank (6.2 to 2.6 KB and 4.5 to
+  2.0 KB). `tf-api.md` shrank from 13.7 to 8.1 KB.
+
 ## [0.1.0] - 2026-10-07
 
 ### Added
