@@ -353,6 +353,11 @@ pub async fn serve_ws(
     let router = axum::Router::new()
         .route("/", axum::routing::get(ws_handler))
         .with_state(state);
+    let listener = crate::listener::LimitedListener::new(
+        listener,
+        crate::listener::WS_MAX_CONNECTIONS,
+        crate::listener::WS_IDLE_TIMEOUT,
+    );
     axum::serve(listener, router).await
 }
 

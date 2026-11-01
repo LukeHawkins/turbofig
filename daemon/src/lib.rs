@@ -37,6 +37,7 @@ mod control;
 mod daemon_auth;
 mod embedded;
 mod image;
+mod listener;
 mod mcp;
 mod ops;
 mod plugin_call;

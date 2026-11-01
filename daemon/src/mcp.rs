@@ -402,8 +402,28 @@ async fn reject_bad_host(
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
-) -> impl axum::response::IntoResponse {
-    if !crate::token::bearer_token_matches(&headers, state.token()) {
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut resp = health_body(&state, &headers).into_response();
+    // A valid nonce gets a proof that only the token holder can compute, so a
+    // client can check this is the real daemon before it sends the token.
+    if let Some(nonce) = headers
+        .get(crate::daemon_auth::NONCE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|n| crate::daemon_auth::valid_nonce(n))
+    {
+        let sig =
+            crate::daemon_auth::proof(state.token(), crate::daemon_auth::LABEL_HTTP_DAEMON, nonce);
+        if let Ok(value) = axum::http::HeaderValue::from_str(&sig) {
+            resp.headers_mut()
+                .insert(crate::daemon_auth::PROOF_HEADER, value);
+        }
+    }
+    resp
+}
+
+fn health_body(state: &AppState, headers: &axum::http::HeaderMap) -> axum::Json<serde_json::Value> {
+    if !crate::token::bearer_token_matches(headers, state.token()) {
         return axum::Json(serde_json::json!({
             "version": reported_version(),
             "uptimeSeconds": state.uptime_seconds(),
@@ -568,12 +588,16 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
         LocalSessionManager::default().into(),
         config,
     );
-    // /job and /mcp require the pairing token; /health, /control, / and the
-    // fallback do not go through this layer. `route_layer` applies the
+    // /job, /control and /mcp require the pairing token, checked before any
+    // body is read; /health, / and the fallback do not go through this layer. `route_layer` applies the
     // middleware only to the routes already added to this sub-router, so a
     // later `.merge()` into the full router never widens its reach.
     let protected = axum::Router::new()
         .route("/job", axum::routing::post(job_handler))
+        .route(
+            "/control",
+            axum::routing::post(crate::control::control_handler),
+        )
         .nest_service("/mcp", service)
         .route_layer(axum::middleware::from_fn_with_state(
             health_state.clone(),
@@ -583,10 +607,6 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
         .route("/", axum::routing::get(help_handler))
         .route("/health", axum::routing::get(health_handler))
-        .route(
-            "/control",
-            axum::routing::post(crate::control::control_handler),
-        )
         .merge(protected)
         .fallback(help_handler)
         .with_state(health_state)
@@ -606,7 +626,15 @@ pub async fn serve_with_state(
     listener: tokio::net::TcpListener,
     state: Arc<AppState>,
 ) -> std::io::Result<()> {
-    axum::serve(listener, build_router(state)).await
+    let listener = crate::listener::LimitedListener::new(
+        listener,
+        crate::listener::HTTP_MAX_CONNECTIONS,
+        crate::listener::HTTP_IDLE_TIMEOUT,
+    );
+    let app = build_router(state)
+        .layer(axum::middleware::from_fn(crate::listener::track_inflight))
+        .into_make_service_with_connect_info::<crate::listener::ConnInfo>();
+    axum::serve(listener, app).await
 }
 
 #[cfg(test)]
@@ -841,6 +869,34 @@ mod tests {
 
         let resp = router.oneshot(req).await.expect("router must respond");
         assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// A bad Host or Origin must get 403 and no proof, even with a valid nonce.
+    #[tokio::test]
+    async fn health_does_not_sign_for_a_bad_host_or_origin() {
+        for (host, origin) in [
+            ("evil.example", None),
+            ("127.0.0.1", Some("https://evil.example")),
+        ] {
+            let state = Arc::new(AppState::new());
+            let mut builder = axum::http::Request::builder()
+                .method("GET")
+                .uri("/health")
+                .header(axum::http::header::HOST, host)
+                .header(crate::daemon_auth::NONCE_HEADER, TEST_NONCE);
+            if let Some(o) = origin {
+                builder = builder.header(axum::http::header::ORIGIN, o);
+            }
+            let req = builder
+                .body(axum::body::Body::empty())
+                .expect("build request");
+            let resp = build_router(state).oneshot(req).await.expect("respond");
+            assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+            assert!(resp
+                .headers()
+                .get(crate::daemon_auth::PROOF_HEADER)
+                .is_none());
+        }
     }
 
     fn bytes_contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -1352,6 +1408,98 @@ mod tests {
             .expect("read body");
         let value: Value = serde_json::from_slice(&bytes).expect("valid JSON body");
         (status, value)
+    }
+
+    const TEST_NONCE: &str = "00112233445566778899aabbccddeeff";
+
+    /// GET `uri` with an optional nonce header and return the response.
+    async fn get_with_nonce(
+        state: Arc<AppState>,
+        uri: &str,
+        nonce: Option<&str>,
+    ) -> axum::response::Response {
+        let mut builder = axum::http::Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header(axum::http::header::HOST, "127.0.0.1");
+        if let Some(n) = nonce {
+            builder = builder.header(crate::daemon_auth::NONCE_HEADER, n);
+        }
+        let req = builder
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        build_router(state).oneshot(req).await.expect("respond")
+    }
+
+    #[tokio::test]
+    async fn health_signs_a_valid_nonce_without_a_bearer_token() {
+        let state = Arc::new(AppState::new());
+        let token = state.token().to_owned();
+        let resp = get_with_nonce(state, "/health", Some(TEST_NONCE)).await;
+        let got = resp
+            .headers()
+            .get(crate::daemon_auth::PROOF_HEADER)
+            .expect("proof header")
+            .to_str()
+            .expect("ascii")
+            .to_owned();
+        let want =
+            crate::daemon_auth::proof(&token, crate::daemon_auth::LABEL_HTTP_DAEMON, TEST_NONCE);
+        assert_eq!(got, want);
+    }
+
+    #[tokio::test]
+    async fn health_does_not_sign_a_bad_or_absent_nonce() {
+        for nonce in [
+            None,
+            Some("short"),
+            Some("zz112233445566778899aabbccddeeff"),
+        ] {
+            let state = Arc::new(AppState::new());
+            let resp = get_with_nonce(state, "/health", nonce).await;
+            assert_eq!(resp.status(), axum::http::StatusCode::OK);
+            assert!(resp
+                .headers()
+                .get(crate::daemon_auth::PROOF_HEADER)
+                .is_none());
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let v: Value = serde_json::from_slice(&bytes).expect("json");
+            assert!(v.get("version").is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn only_health_signs_a_nonce() {
+        for uri in ["/", "/nope"] {
+            let state = Arc::new(AppState::new());
+            let resp = get_with_nonce(state, uri, Some(TEST_NONCE)).await;
+            assert!(resp
+                .headers()
+                .get(crate::daemon_auth::PROOF_HEADER)
+                .is_none());
+        }
+    }
+
+    /// A body over axum's default limit must still get 401, not 413: the
+    /// token check runs before the handler reads the body.
+    #[tokio::test]
+    async fn control_endpoint_checks_the_token_before_reading_a_huge_body() {
+        let state = Arc::new(AppState::new());
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/control")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .body(axum::body::Body::from(vec![b'a'; 3 * 1024 * 1024]))
+            .expect("build request");
+        let resp = build_router(state).oneshot(req).await.expect("respond");
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let v: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(v["error"], json!("missing or invalid bearer token"));
     }
 
     #[tokio::test]
