@@ -42,7 +42,7 @@ and what is a bug.
   exit non-zero with a clear message, and they never send it the token.
 - **The daemon limits connections.** It holds at most 64 HTTP and 32 WS
   connections. It closes an idle connection (30 s HTTP, 10 s WS before the
-  upgrade). At most 8 WS handshakes may be pending, each for 5 s at most.
+  upgrade). At most 8 WS handshakes may be pending, each for 2 s at most; a new one closes the oldest.
   `/control` checks the token before it reads the body.
 - **The daemon refuses an unsafe bridge path at start.** A symlinked or
   foreign-owned bridge dir, `inbox/`, `outbox/`, `token` or `figma-plugin/`,
@@ -54,7 +54,7 @@ and what is a bug.
   real folder, owned by the user, with the `.turbofig-outbox` marker.
 - **The file-bridge rejects hostile inbox entries.** Job reads use
   `O_NOFOLLOW|O_NONBLOCK`. A FIFO or a symlink is rejected. Jobs are capped
-  at 16 MiB and ids at 200 bytes. Results and PNGs are mode `0600`. The
+  at 30 MiB and ids at 200 bytes. Results and PNGs are mode `0600`. The
   daemon creates `.tmp` files with `O_EXCL`, and the 24 h prune touches only
   daemon-named files.
 - **The app bundle and launchd paths are checked.** The daemon trusts
@@ -88,15 +88,15 @@ and what is a bug.
 
 These risks remain. They are known and accepted.
 
-- **A relay is possible without channel binding.** If the plugin points at an
-  attacker's port while the real daemon runs on another port, the attacker
-  can relay the handshake to the real daemon. The proofs do not bind to the
-  connection.
+- **A relay across ports is blocked.** Both daemon proofs name the port the
+  daemon is bound to, and each client checks it against the port it connected
+  to. A relay on the same port is not possible: the attacker cannot hold the
+  port the daemon has bound.
 - **Same-user processes are out of scope.** A process that runs as you can
   read `~/.turbofig/token` and call the daemon.
-- **The legacy same-user path uses `lsof`.** A client hands off to an older
-  daemon that has no proof support after an `lsof` uid check. This trusts any
-  listener that runs as the same user.
+- **The legacy same-user path uses `lsof`.** A client restarts an older
+  daemon that has no proof support after an `lsof` uid check. It sends that
+  listener only the stop or restart control call, never a job.
 - **A sub-millisecond race exists.** An attacker that takes the port after
   the proof check and before a job on a new connection can receive that job.
   This needs a same-user process or a port swap in that window.

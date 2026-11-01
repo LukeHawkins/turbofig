@@ -17,7 +17,7 @@ recorded under Unreleased.
   `X-Turbofig-Proof`). The CLI, the stdio proxy and the menu bar verify the
   proof before they send the token.
 - Connection caps (HTTP 64, WS 32), idle timers, and at most 8 pending
-  handshakes (503 beyond that).
+  handshakes (the oldest is closed when all 8 are taken).
 - File-bridge error codes `invalid_job` and `io_error`. The daemon writes
   `tf-api.md` to the bridge dir on start.
 - Modules `daemon_auth`, `daemon_client`, `listener` and `secure_fs`.
@@ -42,7 +42,7 @@ recorded under Unreleased.
   token or plugin dir, a token readable by others, and an unset `HOME`. Under
   launchd a refusal exits 0.
 - The file-bridge reads jobs with `O_NOFOLLOW|O_NONBLOCK`, rejects FIFOs and
-  symlinks, caps jobs at 16 MiB and ids at 200 bytes, writes results and PNGs
+  symlinks, caps jobs at 30 MiB and ids at 200 bytes, writes results and PNGs
   with mode 0600, and prunes only daemon-named files.
 - The daemon trusts an app bundle only when the user or root owns it, never
   overwrites a foreign `turbofig.app`, and calls system binaries by absolute
