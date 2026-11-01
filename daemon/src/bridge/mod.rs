@@ -35,7 +35,8 @@ pub(crate) mod job;
 const MAX_ID_BYTES: usize = 200;
 
 /// Largest job file the bridge reads. A larger file gets an error result.
-const MAX_JOB_BYTES: u64 = 16 * 1024 * 1024;
+/// Just under the 32 MiB WebSocket frame cap, so every job that fits a frame still runs.
+const MAX_JOB_BYTES: u64 = 30 * 1024 * 1024;
 
 use crate::state::AppState;
 use job::Job;

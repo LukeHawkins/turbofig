@@ -1042,7 +1042,7 @@ async fn test_bridge_skips_fifo_and_symlink_inbox_entries() {
     assert!(secret.exists());
 }
 
-/// A job over 16 MiB gets an error result and is never parsed.
+/// A job over 30 MiB gets an error result and is never parsed.
 #[tokio::test]
 async fn test_bridge_rejects_oversized_job() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1050,7 +1050,7 @@ async fn test_bridge_rejects_oversized_job() {
     std::fs::create_dir_all(&inbox).expect("inbox");
     let big = format!(
         r#"{{"op":"status","pad":"{}"}}"#,
-        "a".repeat(17 * 1024 * 1024)
+        "a".repeat(31 * 1024 * 1024)
     );
     std::fs::write(inbox.join("big.json"), big).expect("write big");
     spawn_bridge(
