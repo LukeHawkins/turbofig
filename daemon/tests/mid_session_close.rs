@@ -358,7 +358,7 @@ async fn test_paired_session_returns_error_after_plugin_closes() {
     assert!(fk1_gone, "fk1 must deregister after socket close");
 
     // Second call: no fileKey. The session is paired to fk1, which is gone.
-    // Expect a prompt ok:false with "not connected" in the error.
+    // Expect a prompt ok:false with the no-plugin code (no plugin is left).
     let start = std::time::Instant::now();
     let second = call_execute(&client, &token, &base_url, &session_id, None).await;
     let elapsed = start.elapsed();
@@ -368,12 +368,10 @@ async fn test_paired_session_returns_error_after_plugin_closes() {
         serde_json::json!(false),
         "second call after fk1 close must return ok:false, got: {second}"
     );
-    let error_str = second["error"]
-        .as_str()
-        .expect("error field must be a string");
-    assert!(
-        error_str.contains("not connected"),
-        "error must contain 'not connected', got: {error_str}"
+    assert_eq!(
+        second["code"],
+        serde_json::json!("plugin_disconnected"),
+        "with no plugin left the code must be plugin_disconnected, got: {second}"
     );
     // The call must return well under the 5-second request timeout.
     assert!(
