@@ -58,5 +58,5 @@ Errors: `{ "ok": false, "code": "...", "error": "..." }`. Act on `code`:
 - `plugin_disconnected`, `file_not_connected`: ask the user to open the plugin.
 - `busy`: wait `retryAfterMs`, then retry unchanged.
 - `result_too_large`: the reply exceeded 16 MiB. Shape the request or use screenshot file mode.
-- `invalid_job`: the job file is wrong (bad op, bad field, malformed JSON, too large, id too long). Fix the job. Do not resend it unchanged.
+- `invalid_job`: the job file is wrong (bad op, bad field, malformed JSON, too large, id too long). An id over 200 bytes is rejected, and the reply then uses the first 100 bytes of the id as its name. Fix the job. Do not resend it unchanged.
 - `io_error`: the daemon could not read the job file. Retry later.
