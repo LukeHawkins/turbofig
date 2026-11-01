@@ -176,7 +176,7 @@ async fn run_bridge_loop(
         // Coalesce a burst of events into one scan.
         while rx.try_recv().is_ok() {}
         if is_backstop {
-            prune_old_outbox(outbox).await;
+            prune_outbox_if_safe(outbox).await;
         }
         scan_and_service(
             inbox,
@@ -193,6 +193,45 @@ async fn run_bridge_loop(
 /// Convert a `notify` error into an `io::Error` so `serve_bridge` can use `?`.
 fn watcher_io_error(e: notify::Error) -> std::io::Error {
     std::io::Error::other(format!("bridge watcher: {e}"))
+}
+
+/// Pure check for the prune guard. The outbox must be a real folder (not a
+/// symlink), owned by `euid`, and hold the daemon's marker file.
+fn outbox_prune_allowed(
+    is_symlink: bool,
+    is_dir: bool,
+    owner_uid: u32,
+    euid: u32,
+    marked: bool,
+) -> bool {
+    !is_symlink && is_dir && owner_uid == euid && marked
+}
+
+/// Runs `prune_old_outbox` only when `outbox_prune_allowed` says so. The
+/// check runs before every prune, because the folder can change after
+/// startup. An outbox with no marker was not made by the daemon: it may hold
+/// user files, so it is never pruned (one log line).
+async fn prune_outbox_if_safe(outbox: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Ok(meta) = tokio::fs::symlink_metadata(outbox).await else {
+        return;
+    };
+    let marked = tokio::fs::symlink_metadata(outbox.join(crate::secure_fs::OUTBOX_MARKER))
+        .await
+        .is_ok_and(|m| m.is_file());
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    let ft = meta.file_type();
+    if outbox_prune_allowed(ft.is_symlink(), ft.is_dir(), meta.uid(), euid, marked) {
+        prune_old_outbox(outbox).await;
+    } else if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "turbofig bridge: not pruning {}: it is not a daemon-made folder owned by this user (no {} marker, a symlink, or a foreign owner)",
+            outbox.display(),
+            crate::secure_fs::OUTBOX_MARKER
+        );
+    }
 }
 
 /// Delete outbox entries (results and file-mode screenshot PNGs) older than
@@ -323,7 +362,7 @@ async fn scan_and_service(
                     if id.len() > MAX_ID_BYTES {
                         // The error name could equal a real in-flight id:
                         // leave the entry and retry on a later scan.
-                        let short = short_id(id);
+                        let short = too_long_reply_id(id);
                         if in_flight
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -387,6 +426,14 @@ async fn scan_and_service(
                         first_seen.remove(&key);
                         let reason =
                             format!("job file is {len} bytes, over the {MAX_JOB_BYTES} byte limit");
+                        reject_entry(&path, &key, job_id.as_deref(), reason, outbox, given_up)
+                            .await;
+                        continue;
+                    }
+                    Err(ReadError::ForeignOwner(uid)) => {
+                        first_seen.remove(&key);
+                        let reason = format!("job file is owned by uid {uid}, not by this user");
+                        eprintln!("turbofig bridge: {reason}: {path:?}");
                         reject_entry(&path, &key, job_id.as_deref(), reason, outbox, given_up)
                             .await;
                         continue;
@@ -746,6 +793,7 @@ fn io_error_result(error: &str) -> serde_json::Value {
 /// Why a job file could not be read.
 enum ReadError {
     TooLarge(u64),
+    ForeignOwner(u32),
     Io(std::io::Error),
 }
 
@@ -760,8 +808,15 @@ async fn read_job_file(path: &Path) -> Result<Vec<u8>, ReadError> {
         .unwrap_or_else(|e| Err(ReadError::Io(std::io::Error::other(e))))
 }
 
+/// Some(owner) when a job file belongs to another account. Only this user
+/// may queue a job, so the bridge never runs such a file.
+fn foreign_job_owner(owner_uid: u32, euid: u32) -> Option<u32> {
+    (owner_uid != euid).then_some(owner_uid)
+}
+
 fn read_job_file_blocking(path: &Path) -> Result<Vec<u8>, ReadError> {
     use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -770,6 +825,11 @@ fn read_job_file_blocking(path: &Path) -> Result<Vec<u8>, ReadError> {
     let meta = file.metadata().map_err(ReadError::Io)?;
     if !meta.is_file() {
         return Err(ReadError::Io(std::io::Error::other("not a regular file")));
+    }
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if let Some(uid) = foreign_job_owner(meta.uid(), euid) {
+        return Err(ReadError::ForeignOwner(uid));
     }
     if meta.len() > MAX_JOB_BYTES {
         return Err(ReadError::TooLarge(meta.len()));
@@ -813,8 +873,14 @@ async fn reject_entry(
     given_up.insert(key.to_owned());
 }
 
-/// First 100 bytes of an over-long id (cut on a char boundary): a name safe
-/// to use for the error result.
+/// Reply id for an over-long job id: `<first 100 bytes>.idtoolong`. The
+/// suffix keeps the reply from overwriting the result of another job whose
+/// id equals the first 100 bytes. The prune still removes `<it>.json`.
+fn too_long_reply_id(id: &str) -> String {
+    format!("{}.idtoolong", short_id(id))
+}
+
+/// First 100 bytes of an over-long id (cut on a char boundary).
 fn short_id(id: &str) -> String {
     let mut end = 100.min(id.len());
     while !id.is_char_boundary(end) {
@@ -1303,6 +1369,52 @@ mod tests {
         for n in owned {
             assert!(!out.join(n).exists(), "{n} must be pruned");
         }
+    }
+
+    #[test]
+    fn prune_guard_needs_a_real_owned_marked_outbox() {
+        assert!(outbox_prune_allowed(false, true, 5, 5, true));
+        assert!(!outbox_prune_allowed(true, true, 5, 5, true));
+        assert!(!outbox_prune_allowed(false, false, 5, 5, true));
+        assert!(!outbox_prune_allowed(false, true, 4, 5, true));
+        assert!(!outbox_prune_allowed(false, true, 5, 5, false));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prune_if_safe_skips_unmarked_and_symlinked_outboxes() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let out = tmp.path().join("outbox");
+        std::fs::create_dir_all(&out).expect("outbox");
+        std::fs::write(out.join("package.json"), b"x").expect("write");
+        age_file(&out.join("package.json"));
+        prune_outbox_if_safe(&out).await;
+        assert!(out.join("package.json").exists(), "no marker: no prune");
+
+        std::fs::write(out.join(crate::secure_fs::OUTBOX_MARKER), b"").expect("marker");
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&out, &link).expect("symlink");
+        prune_outbox_if_safe(&link).await;
+        assert!(out.join("package.json").exists(), "symlink: no prune");
+
+        prune_outbox_if_safe(&out).await;
+        assert!(!out.join("package.json").exists(), "marked: pruned");
+        assert!(out.join(crate::secure_fs::OUTBOX_MARKER).exists());
+    }
+
+    #[test]
+    fn a_foreign_job_owner_is_detected() {
+        assert_eq!(foreign_job_owner(501, 502), Some(501));
+        assert_eq!(foreign_job_owner(502, 502), None);
+    }
+
+    #[test]
+    fn too_long_reply_id_is_distinct_and_pruned() {
+        let long = format!("{}{}", "b".repeat(100), "c".repeat(140));
+        let reply = too_long_reply_id(&long);
+        assert_eq!(reply, format!("{}.idtoolong", "b".repeat(100)));
+        assert_ne!(reply, "b".repeat(100));
+        assert!(is_daemon_outbox_name(&format!("{reply}.json")));
     }
 
     #[cfg(unix)]

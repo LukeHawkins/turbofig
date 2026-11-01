@@ -1076,7 +1076,7 @@ async fn test_bridge_rejects_overlong_id_without_running() {
         Arc::new(turbofig::AppState::new()),
         tmp.path().to_path_buf(),
     );
-    let r = read_result(&tmp, &"x".repeat(100)).await;
+    let r = read_result(&tmp, &format!("{}.idtoolong", "x".repeat(100))).await;
     assert_eq!(r["ok"], false);
     assert_eq!(r["code"], "invalid_job");
     assert!(r["error"].as_str().unwrap_or("").contains("200"), "{r}");
@@ -1129,7 +1129,7 @@ async fn test_bridge_long_id_colliding_with_inflight_short_id_is_held() {
     std::fs::create_dir_all(&inbox).expect("inbox");
     spawn_bridge(state, tmp.path().to_path_buf());
 
-    let short = "y".repeat(100);
+    let short = format!("{}.idtoolong", "y".repeat(100));
     write_job(
         &tmp,
         &short,
@@ -1174,4 +1174,29 @@ async fn test_bridge_unreadable_job_gets_io_error_code() {
     );
     let r = read_result(&tmp, "noperm").await;
     assert_eq!(r["code"], "io_error", "{r}");
+}
+
+/// A long id's reply never overwrites the finished result of a job whose id
+/// equals the first 100 bytes of the long id.
+#[tokio::test]
+async fn test_bridge_long_id_reply_does_not_overwrite_a_short_id_result() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+    let short = "b".repeat(100);
+    write_job(&tmp, &short, serde_json::json!({"op": "status"})).await;
+    let first = read_result(&tmp, &short).await;
+    assert_eq!(first["ok"], true, "{first}");
+
+    let long = format!("{short}{}", "c".repeat(140));
+    write_job(&tmp, &long, serde_json::json!({"op": "status"})).await;
+    let r = read_result(&tmp, &format!("{short}.idtoolong")).await;
+    assert_eq!(r["code"], "invalid_job", "{r}");
+    let again = read_result(&tmp, &short).await;
+    assert_eq!(
+        again["ok"], true,
+        "the short-id result must survive: {again}"
+    );
 }

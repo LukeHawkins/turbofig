@@ -100,6 +100,92 @@ pub(crate) fn check_existing(path: &Path) -> io::Result<Option<std::fs::Metadata
     Ok(std::fs::symlink_metadata(path).ok())
 }
 
+/// The pure half of the ancestor check. An ancestor of the bridge folder must
+/// belong to this user or to root. It must not be writable by group or other,
+/// unless it has the sticky bit (like `/tmp`): in a writable folder without
+/// the sticky bit, another account can rename the bridge folder and swap in
+/// its own `inbox`.
+pub(crate) fn check_ancestor(path: &Path, owner_uid: u32, mode: u32, euid: u32) -> io::Result<()> {
+    if owner_uid != euid && owner_uid != 0 {
+        return Err(refuse(
+            path,
+            &format!(
+                "it is a parent of the bridge folder and is owned by uid {owner_uid}; \
+                 set TURBOFIG_BRIDGE_DIR to a folder inside a folder you own"
+            ),
+        ));
+    }
+    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+        return Err(refuse(
+            path,
+            &format!(
+                "it is a parent of the bridge folder and other accounts can write to it (mode {:03o}); \
+                 run chmod go-w on it, or set TURBOFIG_BRIDGE_DIR to a folder inside a folder you own",
+                mode & 0o777
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Checks every ancestor of `dir`, from the nearest existing one up to `/`.
+/// The parent is canonicalized (not the leaf), so the leaf symlink check
+/// still applies to `dir` itself. A missing parent is skipped: the walk
+/// starts at the first ancestor that exists.
+#[cfg(unix)]
+pub(crate) fn check_ancestors(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let abs = std::path::absolute(dir)?;
+    let Some(parent) = abs.parent() else {
+        return Ok(());
+    };
+    let mut start = parent;
+    let canon = loop {
+        match std::fs::canonicalize(start) {
+            Ok(c) => break c,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => match start.parent() {
+                Some(p) => start = p,
+                None => return Ok(()),
+            },
+            Err(e) => return Err(e),
+        }
+    };
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    for ancestor in canon.ancestors() {
+        let meta = std::fs::metadata(ancestor)?;
+        check_ancestor(ancestor, meta.uid(), meta.permissions().mode(), euid)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn check_ancestors(_dir: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Name of the marker file the daemon writes into an outbox it owns.
+pub(crate) const OUTBOX_MARKER: &str = ".turbofig-outbox";
+
+/// Writes the outbox marker. The prune runs only in an outbox with a marker.
+#[cfg(unix)]
+fn write_outbox_marker(outbox: &Path) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(outbox.join(OUTBOX_MARKER))
+        .map(|_| ())
+}
+
+#[cfg(not(unix))]
+fn write_outbox_marker(outbox: &Path) -> io::Result<()> {
+    std::fs::File::create(outbox.join(OUTBOX_MARKER)).map(|_| ())
+}
+
 /// Creates `path` (and parents) if missing, then refuses a symlink or a
 /// foreign owner. When `set_mode` is true, sets the mode to 0700 and treats a
 /// failure as fatal. A non-directory at `path` is refused too.
@@ -137,9 +223,17 @@ fn set_owner_only(_path: &Path) -> io::Result<()> {
 pub(crate) fn prepare_bridge_dirs(dir: &Path, own_mode: bool) -> io::Result<(PathBuf, PathBuf)> {
     let inbox = dir.join("inbox");
     let outbox = dir.join("outbox");
+    check_ancestors(dir)?;
     ensure_private_dir(dir, own_mode)?;
     ensure_private_dir(&inbox, true)?;
+    let outbox_is_new = check_existing(&outbox)?.is_none();
     ensure_private_dir(&outbox, true)?;
+    // The marker proves the daemon made this outbox. The default home also
+    // gets it, because older versions created that outbox without a marker.
+    if outbox_is_new || own_mode {
+        write_outbox_marker(&outbox)
+            .map_err(|e| refuse(&outbox, &format!("could not write {OUTBOX_MARKER}: {e}")))?;
+    }
     Ok((inbox, outbox))
 }
 
@@ -283,6 +377,66 @@ mod tests {
         let err = read_token_nofollow(&link).unwrap_err();
         assert!(err.to_string().contains("symlink"), "{err}");
         assert!(is_refusal(&err));
+    }
+
+    #[test]
+    fn check_ancestor_refuses_a_foreign_owner() {
+        let err = check_ancestor(Path::new("/x"), 501, 0o755, 502).unwrap_err();
+        assert!(err.to_string().contains("owned by uid 501"), "{err}");
+        assert!(err.to_string().contains("/x"), "{err}");
+        assert!(check_ancestor(Path::new("/x"), 502, 0o755, 502).is_ok());
+        assert!(check_ancestor(Path::new("/x"), 0, 0o755, 502).is_ok());
+    }
+
+    #[test]
+    fn check_ancestor_refuses_other_writable_unless_sticky() {
+        for mode in [0o777, 0o775, 0o757] {
+            let err = check_ancestor(Path::new("/x"), 502, mode, 502).unwrap_err();
+            assert!(err.to_string().contains("can write"), "{mode:o}: {err}");
+        }
+        assert!(check_ancestor(Path::new("/tmp"), 0, 0o1777, 502).is_ok());
+        assert!(check_ancestor(Path::new("/x"), 502, 0o700, 502).is_ok());
+    }
+
+    #[test]
+    fn default_home_ancestors_pass() {
+        let home = std::env::var("HOME").expect("HOME");
+        check_ancestors(&Path::new(&home).join(".turbofig")).unwrap();
+    }
+
+    #[test]
+    fn an_other_writable_parent_blocks_the_bridge_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let open = tmp.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err = prepare_bridge_dirs(&open.join("bridge"), false).unwrap_err();
+        assert!(
+            err.to_string().contains("other accounts can write"),
+            "{err}"
+        );
+        assert!(is_refusal(&err));
+        assert!(!open.join("bridge").exists());
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        prepare_bridge_dirs(&open.join("bridge"), false).unwrap();
+    }
+
+    #[test]
+    fn marker_is_written_for_a_new_outbox_and_the_default_home_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fresh = tmp.path().join("fresh");
+        prepare_bridge_dirs(&fresh, false).unwrap();
+        assert!(fresh.join("outbox").join(OUTBOX_MARKER).is_file());
+
+        let custom = tmp.path().join("custom");
+        std::fs::create_dir_all(custom.join("outbox")).unwrap();
+        prepare_bridge_dirs(&custom, false).unwrap();
+        assert!(!custom.join("outbox").join(OUTBOX_MARKER).exists());
+
+        let legacy = tmp.path().join("legacy");
+        std::fs::create_dir_all(legacy.join("outbox")).unwrap();
+        prepare_bridge_dirs(&legacy, true).unwrap();
+        assert!(legacy.join("outbox").join(OUTBOX_MARKER).is_file());
     }
 
     #[test]

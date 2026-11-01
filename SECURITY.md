@@ -47,7 +47,11 @@ and what is a bug.
 - **The daemon refuses an unsafe bridge path at start.** A symlinked or
   foreign-owned bridge dir, `inbox/`, `outbox/`, `token` or `figma-plugin/`,
   a `token` with group or other bits, or an unset `HOME` stops the start.
-  Under launchd the refusal exits 0, so launchd does not restart it.
+  Under launchd the refusal exits 0, so launchd does not restart it. Every
+  parent of the bridge dir must belong to the user or root, and must not be
+  group or other writable unless it has the sticky bit. The bridge skips a
+  job file that another user owns. It prunes the outbox only when it is a
+  real folder, owned by the user, with the `.turbofig-outbox` marker.
 - **The file-bridge rejects hostile inbox entries.** Job reads use
   `O_NOFOLLOW|O_NONBLOCK`. A FIFO or a symlink is rejected. Jobs are capped
   at 16 MiB and ids at 200 bytes. Results and PNGs are mode `0600`. The
