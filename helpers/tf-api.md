@@ -11,7 +11,7 @@ Rules:
 - `tf.text` loads fonts only for nodes it creates. To edit EXISTING text, run `await figma.loadFontAsync(node.fontName)` before you set `characters`.
 - tf helpers reject unknown option names. The error lists the valid keys.
 - Do not preload fonts for a few new text nodes.
-- `turbofig_execute` rounds non-integer numbers in results to 4 decimals (selection x/y/w/h to 2). Do not read rounded coordinates as an error.
+- `turbofig_execute` rounds non-integer numbers in results to 4 decimals (selection x/y/w/h to 2). Do not read rounded coordinates as an error. To keep full precision, return the number as a string (`String(n)`).
 - A bad hex colour throws an Error that names the value and the option.
 
 Most used helpers:
