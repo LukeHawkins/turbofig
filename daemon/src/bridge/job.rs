@@ -26,7 +26,7 @@ pub(crate) enum Job {
 impl Job {
     /// Parse a job from the raw JSON value read off disk.
     pub(crate) fn parse(raw: &serde_json::Value) -> Result<Job, String> {
-        serde_json::from_value(raw.clone()).map_err(|e| format!("invalid job: {e}"))
+        Job::deserialize(raw).map_err(|e| format!("invalid job: {e}"))
     }
 }
 

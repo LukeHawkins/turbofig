@@ -952,3 +952,226 @@ async fn test_bridge_get_selection_fields_and_depth_forwarded() {
         "bridge must forward depth to the plugin: {payload}"
     );
 }
+
+// ── hardening tests ───────────────────────────────────────────────────────────
+
+async fn read_result(tmp: &tempfile::TempDir, id: &str) -> serde_json::Value {
+    let p = tmp.path().join("outbox").join(format!("{id}.json"));
+    let contents = poll_file(&p, common::WAIT_DEADLINE_MS).await;
+    serde_json::from_str(&contents).expect("result is JSON")
+}
+
+/// Job-parse errors carry code invalid_job (unknown op, bad field, malformed JSON).
+#[tokio::test]
+async fn test_bridge_parse_errors_carry_invalid_job_code() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+
+    write_job(&tmp, "e1", serde_json::json!({"op": "frobnicate"})).await;
+    assert_eq!(read_result(&tmp, "e1").await["code"], "invalid_job");
+
+    write_job(&tmp, "e2", serde_json::json!({"op": "execute"})).await;
+    assert_eq!(read_result(&tmp, "e2").await["code"], "invalid_job");
+
+    std::fs::write(tmp.path().join("inbox").join("e3.json"), b"{ nope").expect("write");
+    assert_eq!(read_result(&tmp, "e3").await["code"], "invalid_job");
+}
+
+/// The bridge writes tf-api.md into its dir on start, matching the embedded doc.
+#[tokio::test]
+async fn test_bridge_writes_helper_doc_on_start() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+    let doc = tmp.path().join("tf-api.md");
+    let got = poll_file(&doc, common::WAIT_DEADLINE_MS).await;
+    let repo_doc =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../helpers/tf-api.md"))
+            .expect("repo doc");
+    assert_eq!(got, repo_doc);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bridge_results_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+    write_job(&tmp, "perm1", serde_json::json!({"op": "status"})).await;
+    read_result(&tmp, "perm1").await;
+    let mode = std::fs::metadata(tmp.path().join("outbox/perm1.json"))
+        .expect("meta")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+}
+
+/// FIFO and symlink inbox entries are skipped without blocking; later jobs run.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bridge_skips_fifo_and_symlink_inbox_entries() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let inbox = tmp.path().join("inbox");
+    std::fs::create_dir_all(&inbox).expect("inbox");
+    let secret = tmp.path().join("secret.txt");
+    std::fs::write(&secret, br#"{"op":"status"}"#).expect("secret");
+    std::os::unix::fs::symlink(&secret, inbox.join("sym.json")).expect("symlink");
+    let fifo =
+        std::ffi::CString::new(inbox.join("fifo.json").to_str().expect("utf8")).expect("cstring");
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+
+    write_job(&tmp, "after", serde_json::json!({"op": "status"})).await;
+    assert_eq!(read_result(&tmp, "after").await["ok"], true);
+    let sym = read_result(&tmp, "sym").await;
+    assert_eq!(sym["ok"], false, "symlink entry must be rejected, not run");
+    assert_eq!(read_result(&tmp, "fifo").await["ok"], false);
+    assert!(secret.exists());
+}
+
+/// A job over 16 MiB gets an error result and is never parsed.
+#[tokio::test]
+async fn test_bridge_rejects_oversized_job() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let inbox = tmp.path().join("inbox");
+    std::fs::create_dir_all(&inbox).expect("inbox");
+    let big = format!(
+        r#"{{"op":"status","pad":"{}"}}"#,
+        "a".repeat(17 * 1024 * 1024)
+    );
+    std::fs::write(inbox.join("big.json"), big).expect("write big");
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+    let r = read_result(&tmp, "big").await;
+    assert_eq!(r["ok"], false);
+    assert!(r["error"].as_str().unwrap_or("").contains("limit"), "{r}");
+    assert!(!inbox.join("big.json").exists());
+}
+
+/// An id over 200 bytes never runs; the client gets an error under a short name.
+#[tokio::test]
+async fn test_bridge_rejects_overlong_id_without_running() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let inbox = tmp.path().join("inbox");
+    std::fs::create_dir_all(&inbox).expect("inbox");
+    let id = "x".repeat(250);
+    let body = serde_json::json!({"op": "status"});
+    std::fs::write(inbox.join(format!("{id}.json")), body.to_string()).expect("write");
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+    let r = read_result(&tmp, &"x".repeat(100)).await;
+    assert_eq!(r["ok"], false);
+    assert_eq!(r["code"], "invalid_job");
+    assert!(r["error"].as_str().unwrap_or("").contains("200"), "{r}");
+    assert!(!inbox.join(format!("{id}.json")).exists());
+}
+
+/// A malformed duplicate of an in-flight id is left alone until the first
+/// job finishes: it gets no early error result.
+#[tokio::test]
+async fn test_bridge_malformed_duplicate_of_inflight_id_is_held() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+    spawn_mock_plugin(state.clone(), "NEVER_REPLIES", serde_json::json!({})).await;
+    let inbox = tmp.path().join("inbox");
+    std::fs::create_dir_all(&inbox).expect("inbox");
+    spawn_bridge(state, tmp.path().to_path_buf());
+
+    // Execute never gets a reply, so it stays in flight.
+    write_job(
+        &tmp,
+        "dup",
+        serde_json::json!({"op": "execute", "code": "1"}),
+    )
+    .await;
+    wait_until(
+        || !inbox.join("dup.json").exists(),
+        WAIT_DEADLINE_MS,
+        "first job claimed",
+    )
+    .await;
+
+    std::fs::write(inbox.join("dup.json"), b"{ not json").expect("dup");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    assert!(inbox.join("dup.json").exists(), "duplicate must stay held");
+    assert!(
+        !tmp.path().join("outbox/dup.json").exists(),
+        "no result may be written for the held duplicate"
+    );
+}
+
+/// An over-long id whose short error name equals an in-flight id is held, so
+/// it cannot touch the in-flight job's result files.
+#[tokio::test]
+async fn test_bridge_long_id_colliding_with_inflight_short_id_is_held() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+    spawn_mock_plugin(state.clone(), "NEVER_REPLIES", serde_json::json!({})).await;
+    let inbox = tmp.path().join("inbox");
+    std::fs::create_dir_all(&inbox).expect("inbox");
+    spawn_bridge(state, tmp.path().to_path_buf());
+
+    let short = "y".repeat(100);
+    write_job(
+        &tmp,
+        &short,
+        serde_json::json!({"op": "execute", "code": "1"}),
+    )
+    .await;
+    wait_until(
+        || !inbox.join(format!("{short}.json")).exists(),
+        WAIT_DEADLINE_MS,
+        "first job claimed",
+    )
+    .await;
+
+    let long = "y".repeat(250);
+    std::fs::write(inbox.join(format!("{long}.json")), br#"{"op":"status"}"#).expect("long");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    assert!(
+        inbox.join(format!("{long}.json")).exists(),
+        "must stay held"
+    );
+    assert!(!tmp.path().join(format!("outbox/{short}.json")).exists());
+}
+
+/// A read failure at give-up time returns code io_error, not invalid_job.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bridge_unreadable_job_gets_io_error_code() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let inbox = tmp.path().join("inbox");
+    std::fs::create_dir_all(&inbox).expect("inbox");
+    let f = inbox.join("noperm.json");
+    std::fs::write(&f, br#"{"op":"status"}"#).expect("write");
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read(&f).is_ok() {
+        return; // running as root: permissions do not apply
+    }
+    spawn_bridge(
+        Arc::new(turbofig::AppState::new()),
+        tmp.path().to_path_buf(),
+    );
+    let r = read_result(&tmp, "noperm").await;
+    assert_eq!(r["code"], "io_error", "{r}");
+}

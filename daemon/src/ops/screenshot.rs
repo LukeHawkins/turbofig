@@ -225,9 +225,11 @@ async fn write_unique(
             format!("{stem}-{}.png", base36(u128::from(n)))
         };
         let path = dir.join(name);
+        // Mode 0600: a screenshot can show private design content.
         match tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&path)
             .await
         {
@@ -286,6 +288,18 @@ mod tests {
         assert_eq!(b.file_name().and_then(|n| n.to_str()), Some("7-abc-1.png"));
         assert_eq!(std::fs::read(&a).expect("read a"), b"one");
         assert_eq!(std::fs::read(&b).expect("read b"), b"two");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn screenshot_png_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = write_unique(dir.path(), "9-x", b"png")
+            .await
+            .expect("write");
+        let mode = std::fs::metadata(&p).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]

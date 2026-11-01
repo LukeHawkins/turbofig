@@ -30,10 +30,18 @@
 
 pub(crate) mod job;
 
+/// Longest job id (file stem) the bridge accepts. A longer id cannot name a
+/// result file reliably (file names cap near 255 bytes).
+const MAX_ID_BYTES: usize = 200;
+
+/// Largest job file the bridge reads. A larger file gets an error result.
+const MAX_JOB_BYTES: u64 = 16 * 1024 * 1024;
+
 use crate::state::AppState;
 use job::Job;
 use notify::{RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -79,6 +87,9 @@ const OUTBOX_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result<()> {
     let is_default_home = std::env::var("TURBOFIG_BRIDGE_DIR").is_err();
     let (inbox, outbox) = prepare_dirs(&dir, is_default_home).await?;
+    if let Err(e) = write_helper_doc(&dir).await {
+        eprintln!("turbofig bridge: could not write {HELPER_DOC_NAME}: {e}");
+    }
 
     // The watcher callback runs on its own thread. It signals the async loop
     // through an unbounded channel. A signal means "something changed, rescan".
@@ -200,9 +211,20 @@ async fn prune_old_outbox(outbox: &Path) {
         match entries.next_entry().await {
             Ok(Some(entry)) => {
                 let path = entry.path();
+                // entry.metadata() does not follow symlinks (lstat).
                 let Ok(metadata) = entry.metadata().await else {
                     continue;
                 };
+                // Delete only regular files that carry the daemon's own
+                // name patterns. TURBOFIG_BRIDGE_DIR can point at a folder
+                // that holds user files: those must never be pruned.
+                let owned_name = entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(is_daemon_outbox_name);
+                if !metadata.is_file() || !owned_name {
+                    continue;
+                }
                 let age = metadata
                     .modified()
                     .ok()
@@ -293,14 +315,89 @@ async fn scan_and_service(
 
                 let job_id = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
 
-                let contents = match tokio::fs::read_to_string(&path).await {
-                    Ok(s) => s,
+                // An id too long to name a result file can never be answered
+                // under its own name, and the claim would run the job with no
+                // result. Never run it: remove the file and write an error
+                // result under a shortened name (see `short_id`).
+                if let Some(id) = job_id.as_deref() {
+                    if id.len() > MAX_ID_BYTES {
+                        // The error name could equal a real in-flight id:
+                        // leave the entry and retry on a later scan.
+                        let short = short_id(id);
+                        if in_flight
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .contains(&short)
+                        {
+                            continue;
+                        }
+                        first_seen.remove(&key);
+                        let reason = format!("job id is longer than {MAX_ID_BYTES} bytes");
+                        reject_entry(&path, &key, Some(&short), reason, outbox, given_up).await;
+                        continue;
+                    }
+
+                    // A client that reuses an id while the first job with that
+                    // id is still running must never have this scan touch the
+                    // in-flight job's .tmp file or its eventual result. Check
+                    // this before any parse or give-up path, so a malformed
+                    // or invalid duplicate cannot bypass the hold. Leave the
+                    // duplicate in the inbox untouched: it is handled on a
+                    // later scan, once the in-flight id has been removed.
+                    if in_flight
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains(id)
+                    {
+                        continue;
+                    }
+                }
+
+                // Only a regular file is a job. file_type() does not follow
+                // symlinks, so a symlink or a FIFO is skipped without being
+                // opened (a FIFO open would block the bridge forever).
+                match entry.file_type().await {
+                    Ok(ft) if ft.is_file() => {}
+                    Ok(_) => {
+                        first_seen.remove(&key);
+                        let reason = "inbox entry is not a regular file".to_owned();
+                        reject_entry(&path, &key, job_id.as_deref(), reason, outbox, given_up)
+                            .await;
+                        continue;
+                    }
                     Err(e) => {
                         handle_unready(
                             &path,
                             &key,
                             job_id.as_deref(),
                             format!("read failed: {e}"),
+                            UnreadyKind::Io,
+                            outbox,
+                            first_seen,
+                            given_up,
+                        )
+                        .await;
+                        continue;
+                    }
+                }
+
+                let bytes = match read_job_file(&path).await {
+                    Ok(b) => b,
+                    Err(ReadError::TooLarge(len)) => {
+                        first_seen.remove(&key);
+                        let reason =
+                            format!("job file is {len} bytes, over the {MAX_JOB_BYTES} byte limit");
+                        reject_entry(&path, &key, job_id.as_deref(), reason, outbox, given_up)
+                            .await;
+                        continue;
+                    }
+                    Err(ReadError::Io(e)) => {
+                        handle_unready(
+                            &path,
+                            &key,
+                            job_id.as_deref(),
+                            format!("read failed: {e}"),
+                            UnreadyKind::Io,
                             outbox,
                             first_seen,
                             given_up,
@@ -310,7 +407,7 @@ async fn scan_and_service(
                     }
                 };
 
-                let raw: serde_json::Value = match serde_json::from_str(&contents) {
+                let raw: serde_json::Value = match serde_json::from_slice(&bytes) {
                     Ok(v) => v,
                     Err(e) => {
                         handle_unready(
@@ -318,6 +415,7 @@ async fn scan_and_service(
                             &key,
                             job_id.as_deref(),
                             format!("malformed JSON: {e}"),
+                            UnreadyKind::Parse,
                             outbox,
                             first_seen,
                             given_up,
@@ -326,6 +424,7 @@ async fn scan_and_service(
                         continue;
                     }
                 };
+                drop(bytes);
 
                 // The file read and parsed as JSON, so this is not a
                 // half-written file: a schema-invalid Job (a bad field, an
@@ -347,8 +446,7 @@ async fn scan_and_service(
                         }
                         if let Some(id) = job_id.as_deref() {
                             delete_stale_result(outbox, id).await;
-                            let result = serde_json::json!({"ok": false, "error": e});
-                            write_result(outbox, id, result).await;
+                            write_result(outbox, id, invalid_job_result(&e)).await;
                         }
                         continue;
                     }
@@ -365,20 +463,6 @@ async fn scan_and_service(
                     let _ = tokio::fs::remove_file(&path).await;
                     continue;
                 };
-
-                // A client that reuses an id while the first job with that id
-                // is still running must never have this scan touch the
-                // in-flight job's .tmp file or its eventual result. The
-                // simplest race-free answer: leave the duplicate in the
-                // inbox untouched. It is claimed normally on a later scan,
-                // once the in-flight id has been removed below.
-                if in_flight
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains(&job_id)
-                {
-                    continue;
-                }
 
                 // Take the job-counter guard before the claim, not inside the
                 // spawned task: `jobs_in_flight` must count this job for the
@@ -438,6 +522,14 @@ async fn scan_and_service(
     given_up.retain(|k| seen_this_scan.contains(k));
 }
 
+/// Why an inbox entry is unready: an I/O failure (a retry can succeed) or a
+/// malformed file (the client must fix the job).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnreadyKind {
+    Io,
+    Parse,
+}
+
 /// Apply the first-seen/grace/give-up policy to one unready (unreadable or
 /// unparseable) inbox entry.
 #[allow(clippy::too_many_arguments)]
@@ -446,6 +538,7 @@ async fn handle_unready(
     key: &str,
     job_id: Option<&str>,
     reason: String,
+    kind: UnreadyKind,
     outbox: &Path,
     first_seen: &mut HashMap<String, Instant>,
     given_up: &mut HashSet<String>,
@@ -455,7 +548,11 @@ async fn handle_unready(
             first_seen.remove(key);
             match give_up_on(path, job_id, reason).await {
                 GiveUp::WriteError(id, reason) => {
-                    let result = serde_json::json!({"ok": false, "error": reason});
+                    let result = if kind == UnreadyKind::Io {
+                        io_error_result(&reason)
+                    } else {
+                        invalid_job_result(&reason)
+                    };
                     write_result(outbox, &id, result).await;
                 }
                 GiveUp::JustForget => {}
@@ -532,22 +629,225 @@ pub(crate) async fn process_job(
 }
 
 /// Write a result to outbox/<id>.json atomically: write .tmp then rename.
-/// A rename failure removes the leftover .tmp so it does not accumulate.
+/// A stale `.tmp` (or a symlink planted at that name) is unlinked first, and
+/// the new `.tmp` opens with `create_new` (O_EXCL, mode 0600), so the write
+/// never goes through a symlink. A failure removes the leftover .tmp.
+/// The whole sequence runs in one blocking-pool task (one hop, not five).
 async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
     let out_tmp = outbox.join(format!("{job_id}.json.tmp"));
     let out_final = outbox.join(format!("{job_id}.json"));
+    let bytes = result.to_string().into_bytes();
+    let outcome =
+        tokio::task::spawn_blocking(move || write_result_blocking(&out_tmp, &out_final, &bytes))
+            .await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("turbofig bridge: write failed for {job_id}: {e}"),
+        Err(e) => eprintln!("turbofig bridge: write task failed for {job_id}: {e}"),
+    }
+}
 
-    match tokio::fs::write(&out_tmp, result.to_string()).await {
-        Ok(()) => {
-            if let Err(e) = tokio::fs::rename(&out_tmp, &out_final).await {
-                eprintln!("turbofig bridge: rename failed for {job_id}: {e}");
-                let _ = tokio::fs::remove_file(&out_tmp).await;
+/// Create the `.tmp` with `create_new` and mode 0600. On `AlreadyExists`
+/// (a directory at that name, or a racing writer) unlink and retry once.
+fn create_tmp(out_tmp: &Path) -> std::io::Result<std::fs::File> {
+    let open = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(out_tmp)
+    };
+    match open() {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            remove_any(out_tmp);
+            open()
+        }
+        other => other,
+    }
+}
+
+/// Remove a file, a symlink (the link itself) or an empty directory at `path`.
+fn remove_any(path: &Path) {
+    // remove_file unlinks a symlink itself, never its target. The normal path
+    // is NotFound: no further syscall then.
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            // remove_dir removes an EMPTY directory only. A non-empty one
+            // stays, and the write that follows fails and is logged.
+            if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+                let _ = std::fs::remove_dir(path);
             }
         }
-        Err(e) => {
-            eprintln!("turbofig bridge: write failed for {job_id}: {e}");
+    }
+}
+
+fn write_result_blocking(out_tmp: &Path, out_final: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    remove_any(out_tmp);
+    let mut file = create_tmp(out_tmp)?;
+    let written = file.write_all(bytes).and_then(|()| file.flush());
+    drop(file);
+    let outcome = written.and_then(|()| std::fs::rename(out_tmp, out_final));
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(out_tmp);
+    }
+    outcome
+}
+
+/// File name of the helper doc inside the bridge dir.
+const HELPER_DOC_NAME: &str = "tf-api.md";
+
+/// The helper API doc, embedded so an installed user (no repo checkout) can
+/// read it from the bridge dir.
+const HELPER_DOC: &str = include_str!("../../../helpers/tf-api.md");
+
+/// Write the embedded helper doc to `<dir>/tf-api.md` on every bridge start,
+/// so the copy always matches the daemon version. Atomic: write a `.tmp`
+/// with `create_new` (mode 0600), then rename over the old copy.
+async fn write_helper_doc(dir: &Path) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let tmp = dir.join(format!("{HELPER_DOC_NAME}.tmp"));
+    let dest = dir.join(HELPER_DOC_NAME);
+    let _ = tokio::fs::remove_file(&tmp).await;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .await?;
+    let written = match file.write_all(HELPER_DOC.as_bytes()).await {
+        Ok(()) => file.flush().await,
+        Err(e) => Err(e),
+    };
+    drop(file);
+    let result = match written {
+        Ok(()) => tokio::fs::rename(&tmp, &dest).await,
+        Err(e) => Err(e),
+    };
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result
+}
+
+/// Error result for a job file the bridge rejects before it runs.
+fn invalid_job_result(error: &str) -> serde_json::Value {
+    serde_json::json!({"ok": false, "error": error, "code": "invalid_job"})
+}
+
+/// Error result for an I/O failure on a job file (EMFILE, EACCES): a retry
+/// can succeed, unlike `invalid_job`.
+fn io_error_result(error: &str) -> serde_json::Value {
+    serde_json::json!({"ok": false, "error": error, "code": "io_error"})
+}
+
+/// Why a job file could not be read.
+enum ReadError {
+    TooLarge(u64),
+    Io(std::io::Error),
+}
+
+/// Read a job file in one blocking-pool task: open with O_NOFOLLOW and
+/// O_NONBLOCK (a FIFO swapped in after the file-type check then cannot block
+/// the open; regular files ignore the flag), check the size of the open
+/// handle against `MAX_JOB_BYTES`, then read.
+async fn read_job_file(path: &Path) -> Result<Vec<u8>, ReadError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || read_job_file_blocking(&path))
+        .await
+        .unwrap_or_else(|e| Err(ReadError::Io(std::io::Error::other(e))))
+}
+
+fn read_job_file_blocking(path: &Path) -> Result<Vec<u8>, ReadError> {
+    use std::io::Read;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(ReadError::Io)?;
+    let meta = file.metadata().map_err(ReadError::Io)?;
+    if !meta.is_file() {
+        return Err(ReadError::Io(std::io::Error::other("not a regular file")));
+    }
+    if meta.len() > MAX_JOB_BYTES {
+        return Err(ReadError::TooLarge(meta.len()));
+    }
+    let mut buf = Vec::with_capacity(meta.len() as usize);
+    // The cap also bounds a file that grows after the size check.
+    (&mut file)
+        .take(MAX_JOB_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(ReadError::Io)?;
+    if buf.len() as u64 > MAX_JOB_BYTES {
+        return Err(ReadError::TooLarge(buf.len() as u64));
+    }
+    Ok(buf)
+}
+
+/// Remove a rejected inbox entry without opening it, write one error result
+/// when there is an id, and record the entry so it is never examined again.
+async fn reject_entry(
+    path: &Path,
+    key: &str,
+    id: Option<&str>,
+    reason: String,
+    outbox: &Path,
+    given_up: &mut HashSet<String>,
+) {
+    // remove_file unlinks a symlink or FIFO itself. A real directory needs
+    // remove_dir_all.
+    if tokio::fs::remove_file(path).await.is_err() {
+        let is_real_dir = tokio::fs::symlink_metadata(path)
+            .await
+            .is_ok_and(|m| m.is_dir());
+        if is_real_dir {
+            let _ = tokio::fs::remove_dir_all(path).await;
         }
     }
+    match id {
+        Some(id) => write_result(outbox, id, invalid_job_result(&reason)).await,
+        None => eprintln!("turbofig bridge: rejected inbox entry: {reason}"),
+    }
+    given_up.insert(key.to_owned());
+}
+
+/// First 100 bytes of an over-long id (cut on a char boundary): a name safe
+/// to use for the error result.
+fn short_id(id: &str) -> String {
+    let mut end = 100.min(id.len());
+    while !id.is_char_boundary(end) {
+        end -= 1;
+    }
+    id[..end].to_owned()
+}
+
+/// True for a name the daemon itself writes into the outbox: `<id>.json`,
+/// `<id>.json.tmp`, or a screenshot `<requestId>-<base36>[-<base36>].png`.
+fn is_daemon_outbox_name(name: &str) -> bool {
+    let base36 = |p: &str| {
+        !p.is_empty()
+            && p.bytes()
+                .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+    };
+    if let Some(stem) = name
+        .strip_suffix(".json.tmp")
+        .or_else(|| name.strip_suffix(".json"))
+    {
+        return !stem.is_empty();
+    }
+    if let Some(stem) = name.strip_suffix(".png") {
+        let parts: Vec<&str> = stem.split('-').collect();
+        // <requestId: u64>-<base36 millis, 8 to 9 chars>[-<base36 suffix, 1 to 2 chars>]
+        let len_ok = |p: &str, lo: usize, hi: usize| (lo..=hi).contains(&p.len()) && base36(p);
+        return (parts.len() == 2 || parts.len() == 3)
+            && parts[0].parse::<u64>().is_ok()
+            && parts[0].bytes().all(|b| b.is_ascii_digit())
+            && len_ok(parts[1], 8, 9)
+            && parts.get(2).is_none_or(|p| len_ok(p, 1, 2));
+    }
+    false
 }
 
 #[cfg(test)]
@@ -946,5 +1246,151 @@ mod tests {
             "a fresh file must survive pruning"
         );
         assert!(!old_path.exists(), "a stale file must be pruned");
+    }
+
+    #[test]
+    fn outbox_name_patterns_match_only_daemon_files() {
+        assert!(is_daemon_outbox_name("job1.json"));
+        assert!(is_daemon_outbox_name("job1.json.tmp"));
+        assert!(is_daemon_outbox_name("12-lx3k9a0z.png"));
+        assert!(is_daemon_outbox_name("12-lx3k9a0z-1.png"));
+        assert!(!is_daemon_outbox_name("thesis.docx"));
+        assert!(!is_daemon_outbox_name("photo.png"));
+        assert!(!is_daemon_outbox_name("my-photo.png"));
+        assert!(!is_daemon_outbox_name(".json"));
+        assert!(!is_daemon_outbox_name("notes.txt"));
+        assert!(!is_daemon_outbox_name("2024-10-31.png"));
+        assert!(!is_daemon_outbox_name("2024-photo.png"));
+    }
+
+    #[cfg(unix)]
+    fn age_file(path: &Path) {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open for age");
+        f.set_modified(SystemTime::now() - Duration::from_secs(48 * 3600))
+            .expect("set mtime");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prune_deletes_only_old_daemon_owned_regular_files() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let out = tmp.path().join("outbox");
+        std::fs::create_dir_all(&out).expect("outbox");
+        let out = out.as_path();
+        let owned = ["a.json", "a.json.tmp", "5-abcdefgh.png"];
+        for n in owned.iter().chain(["thesis.docx"].iter()) {
+            std::fs::write(out.join(n), b"x").expect("write");
+            age_file(&out.join(n));
+        }
+        std::fs::write(out.join("fresh.json"), b"x").expect("write fresh");
+        // An old symlink with a daemon name must not be followed or removed.
+        let target = tmp.path().join("target.txt");
+        std::fs::write(&target, b"x").expect("target");
+        std::os::unix::fs::symlink(&target, out.join("link.json")).expect("symlink");
+
+        prune_old_outbox(out).await;
+
+        assert!(
+            out.join("thesis.docx").exists(),
+            "foreign file must survive"
+        );
+        assert!(out.join("fresh.json").exists(), "fresh file must survive");
+        assert!(out.join("link.json").exists(), "symlink must survive");
+        assert!(target.exists());
+        for n in owned {
+            assert!(!out.join(n).exists(), "{n} must be pruned");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_result_never_writes_through_a_planted_symlink() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let outbox = tmp.path().join("outbox");
+        std::fs::create_dir_all(&outbox).expect("outbox");
+        let victim = tmp.path().join("victim.txt");
+        std::fs::write(&victim, b"original").expect("victim");
+        std::os::unix::fs::symlink(&victim, outbox.join("j1.json.tmp")).expect("symlink");
+
+        write_result(&outbox, "j1", serde_json::json!({"ok": true})).await;
+
+        assert_eq!(std::fs::read(&victim).expect("read"), b"original");
+        let result = std::fs::read_to_string(outbox.join("j1.json")).expect("result");
+        assert!(result.contains("\"ok\":true"));
+        assert_eq!(mode_bits(&outbox.join("j1.json")), 0o600);
+    }
+
+    #[test]
+    fn short_id_cuts_on_a_char_boundary() {
+        let id = "\u{e9}".repeat(120);
+        let short = short_id(&id);
+        assert!(short.len() <= 100 && !short.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn helper_doc_is_written_owner_only_and_overwrites_old_copy() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(tmp.path().join("tf-api.md"), b"old version").expect("old");
+
+        write_helper_doc(tmp.path()).await.expect("write doc");
+
+        let doc = tmp.path().join("tf-api.md");
+        assert_eq!(std::fs::read_to_string(&doc).expect("read"), HELPER_DOC);
+        assert_eq!(mode_bits(&doc), 0o600);
+        assert!(!tmp.path().join("tf-api.md.tmp").exists());
+    }
+
+    #[test]
+    fn outbox_name_pattern_rejects_names_the_daemon_never_writes() {
+        assert!(is_daemon_outbox_name("12-lx3k9a0z.png"));
+        assert!(is_daemon_outbox_name("12-lx3k9a0z-1.png"));
+        assert!(!is_daemon_outbox_name("2024-10-31.png"));
+        assert!(!is_daemon_outbox_name("2024-photo.png"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_result_recovers_from_a_directory_at_the_tmp_name() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let outbox = tmp.path().join("outbox");
+        std::fs::create_dir_all(outbox.join("j2.json.tmp")).expect("empty dir at tmp");
+
+        write_result(&outbox, "j2", serde_json::json!({"ok": true})).await;
+
+        assert!(outbox.join("j2.json").is_file(), "result must be written");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_result_never_deletes_a_non_empty_directory_at_the_tmp_name() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let outbox = tmp.path().join("outbox");
+        std::fs::create_dir_all(outbox.join("j3.json.tmp")).expect("dir at tmp");
+        std::fs::write(outbox.join("j3.json.tmp").join("f"), b"x").expect("file in dir");
+
+        write_result(&outbox, "j3", serde_json::json!({"ok": true})).await;
+
+        assert!(
+            outbox.join("j3.json.tmp").join("f").is_file(),
+            "must survive"
+        );
+        assert!(!outbox.join("j3.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_job_file_does_not_block_on_a_fifo() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let fifo = tmp.path().join("f.json");
+        let c = std::ffi::CString::new(fifo.to_str().expect("utf8")).expect("cstring");
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let r = tokio::time::timeout(Duration::from_secs(5), read_job_file(&fifo))
+            .await
+            .expect("open of a FIFO must not block");
+        assert!(r.is_err());
     }
 }

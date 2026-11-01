@@ -21,6 +21,8 @@ With file tools only: write `inbox/<id>.json` in one operation, then read `outbo
 
 The bridge folder is `~/.turbofig`. `TURBOFIG_BRIDGE_DIR` overrides it.
 
+The daemon writes the `tf.*` helper reference to `<bridge>/tf-api.md` on every start. Read it there.
+
 **The id must be unique per job.** Never reuse an id while a job with that id may still run. The daemon holds a duplicate in the inbox until the first job ends.
 
 ## Rules
@@ -56,3 +58,5 @@ Errors: `{ "ok": false, "code": "...", "error": "..." }`. Act on `code`:
 - `plugin_disconnected`, `file_not_connected`: ask the user to open the plugin.
 - `busy`: wait `retryAfterMs`, then retry unchanged.
 - `result_too_large`: the reply exceeded 16 MiB. Shape the request or use screenshot file mode.
+- `invalid_job`: the job file is wrong (bad op, bad field, malformed JSON, too large, id too long). Fix the job. Do not resend it unchanged.
+- `io_error`: the daemon could not read the job file. Retry later.
