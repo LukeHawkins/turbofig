@@ -383,6 +383,11 @@ async fn reject_bad_host(
     next.run(req).await
 }
 
+/// The TCP port the HTTP listener is bound to. `serve_with_state` adds it as a
+/// request extension; `/health` signs it into its proof.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundPort(pub u16);
+
 /// `GET /health` response shape. Never includes the pairing token: only
 /// `version`, `uptimeSeconds`, and, when the caller is authenticated, the
 /// connected-files list (itself built by `AppState::named_connections_json`,
@@ -401,19 +406,27 @@ async fn reject_bad_host(
 /// only the detail that is gated.
 async fn health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    bound: Option<axum::Extension<BoundPort>>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let mut resp = health_body(&state, &headers).into_response();
     // A valid nonce gets a proof that only the token holder can compute, so a
     // client can check this is the real daemon before it sends the token.
-    if let Some(nonce) = headers
-        .get(crate::daemon_auth::NONCE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .filter(|n| crate::daemon_auth::valid_nonce(n))
-    {
-        let sig =
-            crate::daemon_auth::proof(state.token(), crate::daemon_auth::LABEL_HTTP_DAEMON, nonce);
+    // The proof names the port this daemon is bound to, so a relay on another
+    // port cannot reuse it. With no bound port known, no proof is signed.
+    if let (Some(nonce), Some(axum::Extension(BoundPort(port)))) = (
+        headers
+            .get(crate::daemon_auth::NONCE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .filter(|n| crate::daemon_auth::valid_nonce(n)),
+        bound,
+    ) {
+        let sig = crate::daemon_auth::proof(
+            state.token(),
+            crate::daemon_auth::LABEL_HTTP_DAEMON,
+            &format!("{nonce}:{port}"),
+        );
         if let Ok(value) = axum::http::HeaderValue::from_str(&sig) {
             resp.headers_mut()
                 .insert(crate::daemon_auth::PROOF_HEADER, value);
@@ -626,12 +639,14 @@ pub async fn serve_with_state(
     listener: tokio::net::TcpListener,
     state: Arc<AppState>,
 ) -> std::io::Result<()> {
+    let port = listener.local_addr()?.port();
     let listener = crate::listener::LimitedListener::new(
         listener,
         crate::listener::HTTP_MAX_CONNECTIONS,
         crate::listener::HTTP_IDLE_TIMEOUT,
     );
     let app = build_router(state)
+        .layer(axum::Extension(BoundPort(port)))
         .layer(axum::middleware::from_fn(crate::listener::track_inflight))
         .into_make_service_with_connect_info::<crate::listener::ConnInfo>();
     axum::serve(listener, app).await
@@ -1428,8 +1443,14 @@ mod tests {
         let req = builder
             .body(axum::body::Body::empty())
             .expect("build request");
-        build_router(state).oneshot(req).await.expect("respond")
+        build_router(state)
+            .layer(axum::Extension(BoundPort(TEST_PORT)))
+            .oneshot(req)
+            .await
+            .expect("respond")
     }
+
+    const TEST_PORT: u16 = 18846;
 
     #[tokio::test]
     async fn health_signs_a_valid_nonce_without_a_bearer_token() {
@@ -1443,9 +1464,18 @@ mod tests {
             .to_str()
             .expect("ascii")
             .to_owned();
-        let want =
-            crate::daemon_auth::proof(&token, crate::daemon_auth::LABEL_HTTP_DAEMON, TEST_NONCE);
+        let want = crate::daemon_auth::proof(
+            &token,
+            crate::daemon_auth::LABEL_HTTP_DAEMON,
+            &format!("{TEST_NONCE}:{TEST_PORT}"),
+        );
         assert_eq!(got, want);
+        let other = crate::daemon_auth::proof(
+            &token,
+            crate::daemon_auth::LABEL_HTTP_DAEMON,
+            &format!("{TEST_NONCE}:{}", TEST_PORT + 1),
+        );
+        assert_ne!(got, other);
     }
 
     #[tokio::test]

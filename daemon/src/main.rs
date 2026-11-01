@@ -94,7 +94,24 @@ async fn ensure_verified_daemon(
         }
         std::process::exit(1);
     };
-    let first = turbofig::daemon_client::verify_daemon_in_home(mcp_port, home).await;
+    let mut first = turbofig::daemon_client::verify_allowing_legacy_in_home(mcp_port, home)
+        .await
+        .map(|(health, kind)| {
+            (
+                health,
+                kind == turbofig::daemon_client::Listener::LegacySameUser,
+            )
+        });
+    // An older same-user daemon is restarted, then a VERIFIED one must answer.
+    if matches!(first, Ok((_, true))) {
+        if let Err(e) = turbofig::proxy::hand_off_legacy_daemon(mcp_port, home).await {
+            fail(e);
+        }
+        first = turbofig::daemon_client::verify_daemon_in_home(mcp_port, home)
+            .await
+            .map(|h| (h, false));
+    }
+    let first = first.map(|(h, _)| h);
     match startup_step(first) {
         Startup::Running(health) => (health, true),
         Startup::Start => {

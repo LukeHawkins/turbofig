@@ -157,18 +157,9 @@ pub fn parse_lsof_uid(output: &str) -> Option<u32> {
 }
 
 /// How long `lsof` may run before the lookup gives up (and reads as Foreign).
-const LSOF_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// How long a "same-user older daemon" answer is reused for one port. It
-/// saves an `lsof` per proxy job and per menu-bar poll. Any other answer
-/// for that port clears it.
-const LEGACY_CACHE_TTL: Duration = Duration::from_secs(30);
-
-fn legacy_cache() -> &'static std::sync::Mutex<std::collections::HashMap<u16, Instant>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u16, Instant>>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(Default::default)
-}
+/// A cold `lsof` can take about 2 s, so the limit is 5 s: an older
+/// same-user daemon must not read as Foreign because `lsof` was slow.
+const LSOF_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Runs `cmd` and returns its stdout, or `None` on a spawn error, a failed
 /// exit or a timeout. The child is killed when the timeout drops it.
@@ -203,12 +194,6 @@ async fn listener_uid(port: u16) -> Option<u32> {
     parse_lsof_uid(&run_with_timeout(cmd, LSOF_TIMEOUT).await?)
 }
 
-fn clear_legacy_cache(port: u16) {
-    if let Ok(mut c) = legacy_cache().lock() {
-        c.remove(&port);
-    }
-}
-
 fn port_of(base_url: &str) -> u16 {
     base_url
         .trim_end_matches('/')
@@ -231,23 +216,60 @@ pub async fn verify_daemon(base_url: &str, token: &str) -> Result<serde_json::Va
 
 /// `verify_daemon` through the caller's `client`. A caller that then sends
 /// the token through the same client reuses the verified keep-alive
-/// connection, so the token cannot go to a different listener.
+/// connection, so the token cannot go to a different listener. Only a
+/// listener that proves it holds the token passes.
 pub async fn verify_with_client(
     client: &reqwest::Client,
     base_url: &str,
     token: &str,
 ) -> Result<serde_json::Value, VerifyError> {
-    verify_with_lookup(client, base_url, token, listener_uid).await
+    verify_with_lookup(client, base_url, token, false, listener_uid)
+        .await
+        .map(|(body, _)| body)
+}
+
+/// Like `verify_with_client`, but a same-user listener with no valid proof
+/// (an older turbofig daemon) also passes, and the result says which kind
+/// answered. Only the upgrade handoff may use this, and only to ask an old
+/// daemon to stop or restart. The token never goes to such a listener for
+/// anything else, and it is never trusted for a job.
+pub async fn verify_allowing_legacy(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+) -> Result<(serde_json::Value, Listener), VerifyError> {
+    verify_with_lookup(client, base_url, token, true, listener_uid).await
+}
+
+/// `verify_allowing_legacy` for the daemon on `port`, token read from `home`.
+pub async fn verify_allowing_legacy_in_home(
+    port: u16,
+    home: &Path,
+) -> Result<(serde_json::Value, Listener), VerifyError> {
+    let url = base_url(port);
+    let client = build_client(Some(crate::spawn::ADMIN_CLIENT_TIMEOUT))
+        .map_err(|_| VerifyError::Unreachable)?;
+    match crate::token::read_token_file(home).await {
+        Some(token) => verify_allowing_legacy(&client, &url, &token).await,
+        None => match verify_with_client(&client, &url, "").await {
+            Err(VerifyError::Unreachable) => Err(VerifyError::Unreachable),
+            _ => Err(VerifyError::NoToken {
+                addr: addr_of(&url),
+            }),
+        },
+    }
 }
 
 async fn verify_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
     client: &reqwest::Client,
     base_url: &str,
     token: &str,
+    allow_legacy: bool,
     lookup: impl Fn(u16) -> Fut,
-) -> Result<serde_json::Value, VerifyError> {
+) -> Result<(serde_json::Value, Listener), VerifyError> {
     let addr = addr_of(base_url);
     let unverified = || VerifyError::Unverified { addr: addr.clone() };
+    let port = port_of(base_url);
     let nonce = new_nonce();
     let resp = match client
         .get(format!("{}/health", base_url.trim_end_matches('/')))
@@ -257,57 +279,43 @@ async fn verify_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
         .await
     {
         Ok(r) => r,
-        Err(e) if e.is_connect() => {
-            clear_legacy_cache(port_of(base_url));
-            return Err(VerifyError::Unreachable);
-        }
+        Err(e) if e.is_connect() => return Err(VerifyError::Unreachable),
         // Connected, then no valid answer: a listener that is not the daemon.
         Err(_) => return Err(unverified()),
     };
     if !resp.status().is_success() {
         return Err(unverified());
     }
+    // The proof names the port this client connected to, so a proof from a
+    // daemon on another port does not verify here.
+    let signed = format!("{nonce}:{port}");
     let proof_ok = resp
         .headers()
         .get(PROOF_HEADER)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|p| verify(token, LABEL_HTTP_DAEMON, &nonce, p));
+        .is_some_and(|p| verify(token, LABEL_HTTP_DAEMON, &signed, p));
+    let mut listener = Listener::Verified;
     if !proof_ok {
-        let port = port_of(base_url);
-        let cached = legacy_cache()
-            .lock()
-            .ok()
-            .and_then(|c| c.get(&port).copied())
-            .is_some_and(|t| t.elapsed() < LEGACY_CACHE_TTL);
-        let listener = if cached {
-            Listener::LegacySameUser
-        } else {
-            // SAFETY: `geteuid` takes no arguments and cannot fail.
-            let my_uid = unsafe { libc::geteuid() };
-            classify_listener(false, lookup(port).await, my_uid)
-        };
-        match listener {
-            Listener::LegacySameUser => {
-                if let Ok(mut c) = legacy_cache().lock() {
-                    c.entry(port).or_insert_with(Instant::now);
-                }
-                static LOGGED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    eprintln!("turbofig: an older turbofig daemon is running");
-                }
-            }
-            _ => {
-                clear_legacy_cache(port);
-                return Err(unverified());
-            }
+        // No cache: every unproven answer is classified again, so a process
+        // that binds right after an old daemon exits is never taken for it.
+        if !allow_legacy {
+            return Err(unverified());
         }
-    } else {
-        clear_legacy_cache(port_of(base_url));
+        // SAFETY: `geteuid` takes no arguments and cannot fail.
+        let my_uid = unsafe { libc::geteuid() };
+        listener = classify_listener(false, lookup(port).await, my_uid);
+        if listener != Listener::LegacySameUser {
+            return Err(unverified());
+        }
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("turbofig: an older turbofig daemon is running");
+        }
     }
-    read_json_capped(resp, HEALTH_BODY_CAP)
+    let body = read_json_capped(resp, HEALTH_BODY_CAP)
         .await
-        .ok_or_else(unverified)
+        .ok_or_else(unverified)?;
+    Ok((body, listener))
 }
 
 /// `verify_daemon` for the daemon on `port`, with the token read from `home`.
@@ -365,10 +373,21 @@ pub async fn send_control(
     token: &str,
     action: &str,
 ) -> Result<reqwest::StatusCode, ClientError> {
+    send_control_with_lookup(port, token, action, listener_uid).await
+}
+
+async fn send_control_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
+    port: u16,
+    token: &str,
+    action: &str,
+    lookup: impl Fn(u16) -> Fut,
+) -> Result<reqwest::StatusCode, ClientError> {
     let url = base_url(port);
     let client =
         build_client(Some(crate::spawn::ADMIN_CLIENT_TIMEOUT)).map_err(ClientError::Http)?;
-    verify_with_client(&client, &url, token)
+    // An older same-user daemon may be asked to stop or restart: that is the
+    // upgrade handoff. Nothing else sends the token to such a listener.
+    verify_with_lookup(&client, &url, token, true, lookup)
         .await
         .map_err(ClientError::Verify)?;
     let resp = client
@@ -446,6 +465,14 @@ pub(crate) mod test_mock {
     pub(crate) const TOKEN: &str =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
+    /// Writes `TOKEN` as `<home>/token` with mode 0600, as the daemon does.
+    pub(crate) fn write_token(home: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = home.join("token");
+        std::fs::write(&path, TOKEN).expect("token");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
+
     #[derive(Clone, Copy)]
     pub(crate) enum Mode {
         /// Signs the nonce with `TOKEN`.
@@ -477,6 +504,8 @@ pub(crate) mod test_mock {
         let s = seen.clone();
         let mode_cell = Arc::new(Mutex::new(mode));
         let m = mode_cell.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
         let handler = move |headers: HeaderMap| {
             let s = s.clone();
             let m = m.clone();
@@ -509,7 +538,12 @@ pub(crate) mod test_mock {
                 if let Some(t) = token {
                     out.insert(
                         PROOF_HEADER,
-                        HeaderValue::from_str(&proof(&t, LABEL_HTTP_DAEMON, &nonce)).unwrap(),
+                        HeaderValue::from_str(&proof(
+                            &t,
+                            LABEL_HTTP_DAEMON,
+                            &format!("{nonce}:{port}"),
+                        ))
+                        .unwrap(),
                     );
                 }
                 (out, body)
@@ -519,8 +553,6 @@ pub(crate) mod test_mock {
             .route("/health", axum::routing::get(handler.clone()))
             .route("/control", axum::routing::post(handler.clone()))
             .route("/job", axum::routing::post(handler));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
@@ -633,9 +665,7 @@ mod tests {
     async fn wait_for_verified_daemon_reports_a_foreign_listener_by_port() {
         let (port, _seen) = mock(Mode::NoProof).await;
         let home = tempfile::tempdir().unwrap();
-        tokio::fs::write(home.path().join("token"), TOKEN)
-            .await
-            .unwrap();
+        test_mock::write_token(home.path());
         let err = wait_for_verified_daemon(port, home.path(), Duration::from_millis(150))
             .await
             .unwrap_err();
@@ -684,26 +714,110 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_same_user_listener_without_proof_is_a_legacy_daemon() {
+    async fn a_same_user_listener_without_proof_passes_only_when_legacy_is_allowed() {
         let (port, _seen) = mock(Mode::NoProof).await;
         let client = build_client(Some(Duration::from_secs(2))).unwrap();
         let my_uid = unsafe { libc::geteuid() };
-        // Foreign answers first: they must not leave a cached legacy result.
+        let url = base_url(port);
         for other in [Some(my_uid + 1), None] {
-            let err = verify_with_lookup(&client, &base_url(port), TOKEN, |_| async move { other })
+            let err = verify_with_lookup(&client, &url, TOKEN, true, |_| async move { other })
                 .await
                 .unwrap_err();
             assert!(matches!(err, VerifyError::Unverified { .. }));
             assert!(err.to_string().contains("pkill -x turbofig"));
         }
-        let ok = verify_with_lookup(
+        let strict =
+            verify_with_lookup(&client, &url, TOKEN, false, |_| async move { Some(my_uid) }).await;
+        assert!(matches!(strict, Err(VerifyError::Unverified { .. })));
+        let (body, kind) =
+            verify_with_lookup(&client, &url, TOKEN, true, |_| async move { Some(my_uid) })
+                .await
+                .expect("legacy is allowed");
+        assert_eq!(body["version"], "9.9.9");
+        assert_eq!(kind, Listener::LegacySameUser);
+    }
+
+    #[tokio::test]
+    async fn the_legacy_answer_is_not_cached() {
+        let (port, _seen) = mock(Mode::NoProof).await;
+        let client = build_client(Some(Duration::from_secs(2))).unwrap();
+        let my_uid = unsafe { libc::geteuid() };
+        let url = base_url(port);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        for _ in 0..3 {
+            let r = verify_with_lookup(&client, &url, TOKEN, true, |_| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move { Some(my_uid) }
+            })
+            .await;
+            assert!(r.is_ok());
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+        // The same listener, now owned by another user, gets nothing.
+        let r = verify_with_lookup(
             &client,
-            &base_url(port),
+            &url,
             TOKEN,
-            |_| async move { Some(my_uid) },
+            true,
+            |_| async move { Some(my_uid + 1) },
         )
         .await;
-        assert_eq!(ok.expect("legacy is allowed")["version"], "9.9.9");
+        assert!(matches!(r, Err(VerifyError::Unverified { .. })));
+    }
+
+    #[test]
+    fn the_http_proof_is_bound_to_the_port() {
+        let token = "a".repeat(64);
+        let nonce = "00112233445566778899aabbccddeeff";
+        let want = "0aaf85667ef86027a4b34aa47ca306793f2a43d041325b92698d719121b77b35";
+        assert_eq!(
+            crate::daemon_auth::proof(&token, LABEL_HTTP_DAEMON, &format!("{nonce}:18846")),
+            want
+        );
+        assert!(verify(
+            &token,
+            LABEL_HTTP_DAEMON,
+            &format!("{nonce}:18846"),
+            want
+        ));
+        assert!(!verify(
+            &token,
+            LABEL_HTTP_DAEMON,
+            &format!("{nonce}:18847"),
+            want
+        ));
+        assert!(!verify(&token, LABEL_HTTP_DAEMON, nonce, want));
+    }
+
+    #[tokio::test]
+    async fn a_legacy_listener_gets_control_but_not_a_job_or_full_health() {
+        let (port, seen) = mock(Mode::NoProof).await;
+        let my_uid = unsafe { libc::geteuid() };
+        // Full health and the strict check refuse it and send no token.
+        assert!(verified_full_health(port, TOKEN).await.is_err());
+        let client = build_client(Some(Duration::from_secs(2))).unwrap();
+        assert!(verify_with_client(&client, &base_url(port), TOKEN)
+            .await
+            .is_err());
+        assert!(seen.lock().unwrap().auth.is_empty());
+        // send_control reaches it: the upgrade handoff.
+        let status =
+            send_control_with_lookup(port, TOKEN, "restart", |_| async move { Some(my_uid) })
+                .await
+                .expect("legacy control allowed");
+        assert!(status.is_success());
+        assert_eq!(seen.lock().unwrap().auth, vec![format!("Bearer {TOKEN}")]);
+        // A foreign owner is still refused.
+        let before = seen.lock().unwrap().auth.len();
+        assert!(send_control_with_lookup(
+            port,
+            TOKEN,
+            "restart",
+            |_| async move { Some(my_uid + 1) }
+        )
+        .await
+        .is_err());
+        assert_eq!(seen.lock().unwrap().auth.len(), before);
     }
 
     #[tokio::test]
@@ -720,22 +834,5 @@ mod tests {
         echo.arg("u501");
         let out = run_with_timeout(echo, Duration::from_secs(2)).await;
         assert_eq!(out.as_deref().map(str::trim), Some("u501"));
-    }
-
-    #[tokio::test]
-    async fn a_legacy_answer_is_cached_so_lsof_runs_once() {
-        let (port, _seen) = mock(Mode::NoProof).await;
-        let client = build_client(Some(Duration::from_secs(2))).unwrap();
-        let my_uid = unsafe { libc::geteuid() };
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-        for _ in 0..3 {
-            let r = verify_with_lookup(&client, &base_url(port), TOKEN, |_| {
-                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                async move { Some(my_uid) }
-            })
-            .await;
-            assert!(r.is_ok());
-        }
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

@@ -27,7 +27,92 @@ const MAX_FILE_KEY_BYTES: usize = 256;
 /// How long a nonce client may take to answer CHALLENGE with AUTH.
 /// Maximum number of upgraded sockets that may wait for AUTH at once.
 pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
-const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Per-listener context: the bound WS port and the pending handshakes.
+/// When all slots are taken, the oldest pending handshake is closed, so an
+/// unauthenticated client cannot keep the real plugin out.
+pub(crate) struct WsContext {
+    port: u16,
+    next_id: std::sync::atomic::AtomicU64,
+    pending: std::sync::Mutex<std::collections::VecDeque<(u64, tokio::sync::oneshot::Sender<()>)>>,
+}
+
+/// One pending handshake: its permit, its registry entry and its close signal.
+struct PendingSlot {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    ctx: Arc<WsContext>,
+    id: u64,
+    kill: tokio::sync::oneshot::Receiver<()>,
+}
+
+impl PendingSlot {
+    fn new(permit: tokio::sync::OwnedSemaphorePermit, ctx: Arc<WsContext>) -> Self {
+        let (id, kill) = ctx.register();
+        Self {
+            _permit: permit,
+            ctx,
+            id,
+            kill,
+        }
+    }
+}
+
+impl Drop for PendingSlot {
+    /// Runs also when axum drops the upgrade callback after a failed upgrade.
+    fn drop(&mut self) {
+        self.ctx.remove(self.id);
+    }
+}
+
+impl WsContext {
+    pub(crate) fn new(port: u16) -> Arc<Self> {
+        Arc::new(Self {
+            port,
+            next_id: std::sync::atomic::AtomicU64::new(0),
+            pending: std::sync::Mutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    fn register(&self) -> (u64, tokio::sync::oneshot::Receiver<()>) {
+        let id = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back((id, tx));
+        (id, rx)
+    }
+
+    fn remove(&self, id: u64) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(i, _)| *i != id);
+    }
+
+    /// Signal the oldest pending handshake to close.
+    fn evict_oldest(&self) {
+        loop {
+            let oldest = self
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front();
+            // Skip dead entries: their receiver is gone already.
+            match oldest {
+                Some((_, tx)) => {
+                    if tx.send(()).is_ok() {
+                        return;
+                    }
+                }
+                None => return,
+            }
+        }
+    }
+}
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
 /// Returns a JSON string with `type`, `version`, `mcpPort`, and `bridgeHome`
@@ -219,19 +304,22 @@ fn origin_headers_allowed(headers: &axum::http::HeaderMap) -> bool {
 }
 
 /// Run the challenge handshake on a fresh socket. Returns true when the
-/// plugin proved the token within `timeout`. Sends CHALLENGE first, then
+/// plugin proved the token within `timeout`. The CHALLENGE proof covers the
+/// nonce and the bound WS `port`, so a squatter on another port cannot relay it.
+/// Sends CHALLENGE first, then
 /// accepts only one AUTH text frame. Anything else returns false.
 async fn challenge_handshake(
     socket: &mut WebSocket,
     token: &str,
     nonce_p: &str,
+    port: u16,
     timeout: Duration,
 ) -> bool {
     let nonce_d = daemon_auth::new_nonce();
     let challenge = json!({
         "type": "CHALLENGE",
         "nonce": nonce_d,
-        "proof": daemon_auth::proof(token, LABEL_WS_DAEMON, nonce_p),
+        "proof": daemon_auth::proof(token, LABEL_WS_DAEMON, &format!("{nonce_p}:{port}")),
     })
     .to_string();
     if socket.send(Message::Text(challenge.into())).await.is_err() {
@@ -259,11 +347,15 @@ async fn handle_challenge_socket(
     state: Arc<AppState>,
     nonce_p: String,
     timeout: Duration,
-    permit: tokio::sync::OwnedSemaphorePermit,
+    mut slot: PendingSlot,
 ) {
-    let ok = challenge_handshake(&mut socket, state.token(), &nonce_p, timeout).await;
+    let port = slot.ctx.port;
+    let ok = tokio::select! {
+        ok = challenge_handshake(&mut socket, state.token(), &nonce_p, port, timeout) => ok,
+        _ = &mut slot.kill => false,
+    };
     // Release the pending slot as soon as AUTH succeeds, fails or times out.
-    drop(permit);
+    drop(slot);
     if !ok {
         // Drop the socket: closes it with no detail.
         return;
@@ -285,17 +377,19 @@ async fn ws_handler(
     headers: axum::http::HeaderMap,
     Query(auth): Query<WsAuthQuery>,
     State(state): State<Arc<AppState>>,
+    axum::Extension(ctx): axum::Extension<Arc<WsContext>>,
 ) -> axum::response::Response {
-    upgrade(ws, headers, auth, state, AUTH_TIMEOUT)
+    upgrade(ws, headers, auth, state, AUTH_TIMEOUT, ctx).await
 }
 
 /// Shared upgrade logic. `auth_timeout` is a parameter so tests can shorten it.
-fn upgrade(
+async fn upgrade(
     ws: WebSocketUpgrade,
     headers: axum::http::HeaderMap,
     auth: WsAuthQuery,
     state: Arc<AppState>,
     auth_timeout: Duration,
+    ctx: Arc<WsContext>,
 ) -> axum::response::Response {
     if !origin_headers_allowed(&headers) {
         return (axum::http::StatusCode::FORBIDDEN, "origin not allowed").into_response();
@@ -321,15 +415,27 @@ fn upgrade(
     }
     match auth.nonce {
         Some(nonce) if daemon_auth::valid_nonce(&nonce) => {
-            let Ok(permit) = state.pending_handshakes.clone().try_acquire_owned() else {
-                return (
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    "too many pending handshakes",
-                )
-                    .into_response();
+            let permit = match state.pending_handshakes.clone().try_acquire_owned() {
+                Ok(p) => p,
+                Err(_) => {
+                    // All slots taken: close the oldest pending handshake.
+                    ctx.evict_oldest();
+                    let wait = state.pending_handshakes.clone().acquire_owned();
+                    match tokio::time::timeout(Duration::from_secs(1), wait).await {
+                        Ok(Ok(p)) => p,
+                        _ => {
+                            return (
+                                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                                "too many pending handshakes",
+                            )
+                                .into_response();
+                        }
+                    }
+                }
             };
+            let slot = PendingSlot::new(permit, ctx);
             ws.on_upgrade(move |socket| {
-                handle_challenge_socket(socket, state, nonce, auth_timeout, permit)
+                handle_challenge_socket(socket, state, nonce, auth_timeout, slot)
             })
             .into_response()
         }
@@ -350,8 +456,10 @@ pub async fn serve_ws(
     listener: tokio::net::TcpListener,
     state: Arc<AppState>,
 ) -> std::io::Result<()> {
+    let ctx = WsContext::new(listener.local_addr()?.port());
     let router = axum::Router::new()
         .route("/", axum::routing::get(ws_handler))
+        .layer(axum::Extension(ctx))
         .with_state(state);
     let listener = crate::listener::LimitedListener::new(
         listener,
@@ -545,11 +653,13 @@ mod tests {
     async fn serve_with_timeout(state: Arc<AppState>, timeout: Duration) -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let ctx = WsContext::new(port);
         let handler = move |ws: WebSocketUpgrade,
                             headers: axum::http::HeaderMap,
                             Query(auth): Query<WsAuthQuery>,
-                            State(st): State<Arc<AppState>>| async move {
-            upgrade(ws, headers, auth, st, timeout)
+                            State(st): State<Arc<AppState>>| {
+            let ctx = ctx.clone();
+            async move { upgrade(ws, headers, auth, st, timeout, ctx).await }
         };
         let router = axum::Router::new()
             .route("/", axum::routing::get(handler))
@@ -591,7 +701,7 @@ mod tests {
         let nonce_d = ch["nonce"].as_str().unwrap();
         assert_eq!(
             ch["proof"],
-            daemon_auth::proof(state.token(), LABEL_WS_DAEMON, NONCE_P)
+            daemon_auth::proof(state.token(), LABEL_WS_DAEMON, &format!("{NONCE_P}:{port}"))
         );
         let auth = json!({
             "type": "AUTH",
@@ -675,29 +785,62 @@ mod tests {
         ws
     }
 
-    fn status_503(e: tokio_tungstenite::tungstenite::Error) -> bool {
-        matches!(e, tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == 503)
-    }
-
     #[tokio::test]
-    async fn ninth_pending_handshake_gets_503_and_a_permit_frees_after_timeout() {
+    async fn a_full_pending_set_evicts_the_oldest_and_admits_a_new_handshake() {
         let state = Arc::new(AppState::new());
-        let port = serve_with_timeout(state.clone(), Duration::from_millis(600)).await;
+        let port = serve_with_timeout(state.clone(), Duration::from_secs(30)).await;
         let mut held = Vec::new();
         for _ in 0..MAX_PENDING_HANDSHAKES {
             held.push(pending_client(port).await);
         }
-        let err =
-            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/?nonce={NONCE_P}"))
+        // The new handshake succeeds although all slots were taken.
+        let mut real = pending_client(port).await;
+        // The oldest pending socket is closed.
+        let mut oldest = held.remove(0);
+        let end = tokio::time::timeout(Duration::from_secs(2), oldest.next())
+            .await
+            .expect("the oldest must close");
+        assert!(matches!(end, None | Some(Err(_)) | Some(Ok(Tt::Close(_)))));
+        // The newest is still pending, not closed.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), real.next())
                 .await
-                .expect_err("ninth handshake must be refused");
-        assert!(status_503(err));
+                .is_err()
+        );
         // The legacy token path is not limited by the cap.
         let legacy = format!("ws://127.0.0.1:{port}/?token={}", state.token());
         assert!(tokio_tungstenite::connect_async(legacy).await.is_ok());
-        // After the AUTH timeout the permits free up.
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        let _again = pending_client(port).await;
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_slot_leaves_no_entry_and_dead_entries_are_skipped() {
+        let sem = Arc::new(tokio::sync::Semaphore::new(4));
+        let ctx = WsContext::new(1);
+        // Failed upgrades: the slot drops without running the callback.
+        for _ in 0..50 {
+            let p = sem.clone().acquire_owned().await.unwrap();
+            drop(PendingSlot::new(p, ctx.clone()));
+        }
+        assert!(ctx.pending.lock().unwrap().is_empty());
+        // A dead entry (receiver gone, entry left) must not absorb an eviction.
+        let (_dead_id, dead_rx) = ctx.register();
+        drop(dead_rx);
+        let (_live_id, mut live_rx) = ctx.register();
+        ctx.evict_oldest();
+        assert!(live_rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_permit_frees_after_the_auth_timeout() {
+        let state = Arc::new(AppState::new());
+        let port = serve_with_timeout(state.clone(), Duration::from_millis(300)).await;
+        let held = pending_client(port).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(
+            state.pending_handshakes.available_permits(),
+            MAX_PENDING_HANDSHAKES
+        );
         drop(held);
     }
 }

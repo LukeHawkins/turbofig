@@ -43,15 +43,15 @@ describe("hmacSha256", () => {
 });
 
 describe("shared cross-check vectors with the Rust daemon", () => {
-  test("http-daemon", () => {
-    expect(hmacSha256Hex(TOKEN, `turbofig-http-daemon:${NONCE}`)).toBe(
-      "aa58167f217dd78d0b1c2056735f63935ce9c9249175603ce936f19340be7eaa",
+  test("http-daemon, bound to port 18846", () => {
+    expect(hmacSha256Hex(TOKEN, `turbofig-http-daemon:${NONCE}:18846`)).toBe(
+      "0aaf85667ef86027a4b34aa47ca306793f2a43d041325b92698d719121b77b35",
     );
   });
 
-  test("ws-daemon", () => {
-    expect(hmacSha256Hex(TOKEN, `turbofig-ws-daemon:${NONCE}`)).toBe(
-      "d70d29b0eb2b2eb28afaed71877cec191003d9b684d8fa66bd471581872e79fe",
+  test("ws-daemon, bound to port 18847", () => {
+    expect(hmacSha256Hex(TOKEN, `turbofig-ws-daemon:${NONCE}:18847`)).toBe(
+      "5b72a3c171af02ca4487efa9391d74c82c8d2db1dad0f7211ac6ca677978a3d6",
     );
   });
 

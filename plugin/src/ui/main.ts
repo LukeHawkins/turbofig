@@ -16,11 +16,13 @@ import {
   formatLogEntry,
   formatSession,
   generateNonce,
+  hasPairingToken,
   healthAfterClose,
   INITIAL_LINK_HEALTH,
   isRequestType,
   type LinkHealth,
   mainMessageAction,
+  NO_TOKEN_LABEL,
   parsePort,
   portMessageAction,
   screenSize,
@@ -277,9 +279,19 @@ function connect(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  /* A build with no real token (the public placeholder) must never open a socket. */
+  if (!hasPairingToken(__TURBOFIG_PAIRING_TOKEN__)) {
+    if (connStatusEl) {
+      connStatusEl.textContent = NO_TOKEN_LABEL;
+      connStatusEl.className = "error";
+    }
+    return;
+  }
   setConnStatus("attempt");
   const nonce = generateNonce((bytes) => crypto.getRandomValues(bytes));
-  const socket = new WebSocket(buildSocketUrl(currentPort, nonce));
+  /* The daemon's proof names this port: verify against the port connected to. */
+  const port = currentPort;
+  const socket = new WebSocket(buildSocketUrl(port, nonce));
   ws = socket;
   /* The socket carries no job until the daemon proves it knows the token. */
   verified = false;
@@ -317,7 +329,7 @@ function connect(): void {
       return;
     }
     if (isChallengeFrame(candidate)) sawChallenge = true;
-    const decision = decideFrame(verified, candidate, nonce, __TURBOFIG_PAIRING_TOKEN__);
+    const decision = decideFrame(verified, candidate, nonce, __TURBOFIG_PAIRING_TOKEN__, port);
     if (decision.action === "close") {
       failVerification();
       return;

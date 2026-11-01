@@ -166,6 +166,19 @@ export function generateNonce(random: (bytes: Uint8Array) => Uint8Array): string
   return toHex(random(new Uint8Array(16)));
 }
 
+/** Status text shown when the plugin build carries no real pairing token. */
+export const NO_TOKEN_LABEL =
+  "plugin has no pairing token: restart turbofig, then reopen the plugin";
+
+/**
+ * True when `token` looks like a real pairing token (64 lowercase hex chars).
+ * The public placeholder fails this, so a build that still carries it never
+ * opens a socket: anyone can compute an HMAC under a known placeholder.
+ */
+export function hasPairingToken(token: string): boolean {
+  return /^[0-9a-f]{64}$/.test(token);
+}
+
 /** Status text shown when the daemon fails the challenge handshake. */
 export const VERIFY_FAILED_LABEL = "daemon failed verification";
 
@@ -173,17 +186,23 @@ export type ChallengeResult = { ok: true; auth: { type: "AUTH"; proof: string } 
 
 /**
  * Verifies the first daemon frame. The frame must be a CHALLENGE whose proof
- * equals HMAC-SHA256(token, "turbofig-ws-daemon:" + nonceP) and whose nonce
+ * equals HMAC-SHA256(token, "turbofig-ws-daemon:" + nonceP + ":" + port),
+ * where `port` is the port the plugin connected to, and whose nonce
  * is 32-128 hex chars. On success returns the AUTH frame to send back.
  * Any other frame, or a bad proof, returns `{ ok: false }`.
  */
-export function handleChallenge(frame: unknown, nonceP: string, token: string): ChallengeResult {
+export function handleChallenge(
+  frame: unknown,
+  nonceP: string,
+  token: string,
+  port: number,
+): ChallengeResult {
   if (typeof frame !== "object" || frame === null) return { ok: false };
   const f = frame as Record<string, unknown>;
   if (f.type !== "CHALLENGE") return { ok: false };
   if (typeof f.nonce !== "string" || !/^[0-9a-f]{32,128}$/.test(f.nonce)) return { ok: false };
   if (typeof f.proof !== "string") return { ok: false };
-  const expected = hmacSha256Hex(token, `turbofig-ws-daemon:${nonceP}`);
+  const expected = hmacSha256Hex(token, `turbofig-ws-daemon:${nonceP}:${port}`);
   if (!constantTimeEqual(f.proof, expected)) return { ok: false };
   return {
     ok: true,
@@ -209,9 +228,10 @@ export function decideFrame(
   frame: unknown,
   nonceP: string,
   token: string,
+  port: number,
 ): FrameDecision {
   if (!verified) {
-    const r = handleChallenge(frame, nonceP, token);
+    const r = handleChallenge(frame, nonceP, token, port);
     return r.ok ? { action: "auth", auth: r.auth } : { action: "close" };
   }
   if (

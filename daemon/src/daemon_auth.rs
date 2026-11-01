@@ -23,7 +23,9 @@ pub(crate) const PROOF_HEADER: &str = "x-turbofig-proof";
 
 /// Label for the HTTP daemon proof (`X-Turbofig-Proof`).
 pub(crate) const LABEL_HTTP_DAEMON: &str = "turbofig-http-daemon:";
-/// Label for the daemon's proof in the WebSocket `CHALLENGE` frame.
+/// Label for the daemon's proof in the WebSocket `CHALLENGE` frame. The proof
+/// message is `nonce + ":" + <daemon WS port>`, so a listener on another port
+/// cannot relay the handshake.
 pub(crate) const LABEL_WS_DAEMON: &str = "turbofig-ws-daemon:";
 /// Label for the plugin's proof in the WebSocket `AUTH` frame.
 pub(crate) const LABEL_WS_PLUGIN: &str = "turbofig-ws-plugin:";
@@ -133,6 +135,19 @@ mod tests {
         assert_eq!(
             proof(TOKEN, LABEL_WS_PLUGIN, NONCE),
             "ccee347e4ca98ab0341bfb3b391044a3c10cb9fd3b7a0763709abab5042e6fa3"
+        );
+    }
+
+    /// The WS CHALLENGE proof also names the daemon's bound port.
+    #[test]
+    fn ws_challenge_proof_with_port_matches_the_cross_check_vector() {
+        assert_eq!(
+            proof(
+                &"a".repeat(64),
+                LABEL_WS_DAEMON,
+                "00112233445566778899aabbccddeeff:18847"
+            ),
+            "5b72a3c171af02ca4487efa9391d74c82c8d2db1dad0f7211ac6ca677978a3d6"
         );
     }
 

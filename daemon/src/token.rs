@@ -69,8 +69,12 @@ pub(crate) fn bearer_token_matches(headers: &HeaderMap, expected: &str) -> bool 
 /// every CLI command that needs to attach `Authorization: Bearer <token>` to
 /// a request against the real daemon (`main.rs`, `proxy.rs`).
 pub async fn read_token_file(home: &Path) -> Option<String> {
-    tokio::fs::read_to_string(home.join("token"))
+    // `O_NOFOLLOW` plus an owner and mode check on the open handle: a token
+    // planted in a shared folder, or a symlink to one, is refused.
+    let path = home.join("token");
+    tokio::task::spawn_blocking(move || crate::secure_fs::read_token_nofollow(&path))
         .await
+        .ok()?
         .ok()
         .map(|s| s.trim().to_owned())
 }
@@ -276,6 +280,28 @@ mod tests {
         ensure_token(tmp.path()).expect("ensure_token");
         let read = read_token_file(tmp.path()).await.expect("token file read");
         assert_eq!(read.len(), TOKEN_BYTES * 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_token_file_refuses_a_symlink_and_a_loose_mode() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("planted");
+        std::fs::write(&real, "a".repeat(64)).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let home = tmp.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        symlink(&real, home.join("token")).unwrap();
+        assert_eq!(read_token_file(&home).await, None);
+        std::fs::remove_file(home.join("token")).unwrap();
+        std::fs::write(home.join("token"), "a".repeat(64)).unwrap();
+        std::fs::set_permissions(home.join("token"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert_eq!(read_token_file(&home).await, None);
+        std::fs::set_permissions(home.join("token"), std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        assert_eq!(read_token_file(&home).await, Some("a".repeat(64)));
     }
 
     #[test]

@@ -371,7 +371,13 @@ pub async fn run_menu_bar_app() {
     }
 
     // The daemon is trusted only after it proves it holds the pairing token.
-    match crate::daemon_client::verify_daemon_in_home(mcp_port, &home).await {
+    match crate::daemon_client::verify_allowing_legacy_in_home(mcp_port, &home).await {
+        Ok((_, crate::daemon_client::Listener::LegacySameUser)) => {
+            if let Err(e) = crate::proxy::hand_off_legacy_daemon(mcp_port, &home).await {
+                eprintln!("turbofig: {e}");
+                std::process::exit(1);
+            }
+        }
         Ok(_) => {}
         Err(crate::daemon_client::VerifyError::Unreachable) => {
             let turbofig_binary = match std::env::current_exe() {
@@ -813,10 +819,10 @@ mod tests {
     /// so no relaunch, and it must never see the token.
     #[tokio::test]
     async fn an_unverified_listener_yields_no_health_and_no_version() {
-        use crate::daemon_client::test_mock::{mock, Mode, TOKEN};
+        use crate::daemon_client::test_mock::{mock, Mode};
         let (port, seen) = mock(Mode::NoProof).await;
         let home = tempfile::tempdir().expect("tempdir");
-        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        crate::daemon_client::test_mock::write_token(home.path());
         let health = verified_health(port, home.path()).await;
         assert!(health.is_none());
         assert_eq!(version_to_accept(health.as_ref()), None);
@@ -825,10 +831,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_verified_daemon_yields_its_version() {
-        use crate::daemon_client::test_mock::{mock, Mode, TOKEN};
+        use crate::daemon_client::test_mock::{mock, Mode};
         let (port, _seen) = mock(Mode::Sign).await;
         let home = tempfile::tempdir().expect("tempdir");
-        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        crate::daemon_client::test_mock::write_token(home.path());
         let health = verified_health(port, home.path()).await;
         assert_eq!(version_to_accept(health.as_ref()), Some("9.9.9".to_owned()));
     }

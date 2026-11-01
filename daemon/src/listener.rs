@@ -11,7 +11,10 @@
 //!   header attacks and idle keep-alive connections. The timer stops when the
 //!   server sends a `101` response, so the plugin WebSocket stays open once
 //!   upgraded.
-//! - The timer does not run while a request is in flight. A tool call can run
+//! - A fixed header deadline. The first byte of a request starts it. Only the
+//!   end of the header block (`\r\n\r\n`) clears it. Reads do not extend it.
+//!   A client that sends one byte at a time cannot hold a slot.
+//! - The idle timer does not run while a request is in flight. A tool call can run
 //!   for minutes with no bytes in either direction. `track_inflight` counts
 //!   the requests of each connection, and the connection shares the count.
 
@@ -44,6 +47,14 @@ pub(crate) const HTTP_IDLE_TIMEOUT: Duration = if cfg!(test) {
 /// Idle limit on the WebSocket port, before the upgrade.
 pub(crate) const WS_IDLE_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_millis(600)
+} else {
+    Duration::from_secs(10)
+};
+
+/// Time for a client to send a complete header block, from its first byte.
+/// Tests use a short limit.
+pub(crate) const HEADER_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(500)
 } else {
     Duration::from_secs(10)
 };
@@ -129,6 +140,10 @@ impl Listener for LimitedListener {
                 Instant::now() + self.idle_timeout,
             ))),
             idle_timeout: self.idle_timeout,
+            header_deadline: None,
+            awaiting_request: true,
+            tail: [0; 3],
+            upgraded: false,
         };
         (
             io,
@@ -156,14 +171,54 @@ pub(crate) struct LimitedIo {
     /// `Some` until the server sends a `101` response.
     deadline: Option<Pin<Box<Sleep>>>,
     idle_timeout: Duration,
+    /// `Some` from the first byte of a request until its header block ends.
+    header_deadline: Option<Pin<Box<Sleep>>>,
+    /// True at connection start and after a response write. Only then can
+    /// a read be the first byte of a new request. Body bytes never are.
+    awaiting_request: bool,
+    /// The last 3 bytes read, to find `\r\n\r\n` across reads.
+    tail: [u8; 3],
+    /// True after a `101` response.
+    upgraded: bool,
 }
 
 impl LimitedIo {
+    /// Track the header block of the request in `data`, just read.
+    fn track_header(&mut self, data: &[u8]) {
+        if data.is_empty() || self.upgraded {
+            return;
+        }
+        if self.header_deadline.is_none() {
+            if !self.awaiting_request || self.inflight.load(Ordering::SeqCst) > 0 {
+                // A body of a request, not a new request.
+                return;
+            }
+            self.awaiting_request = false;
+            self.tail = [0; 3];
+            self.header_deadline = Some(Box::pin(tokio::time::sleep_until(
+                Instant::now() + HEADER_TIMEOUT,
+            )));
+        }
+        let mut seen = Vec::with_capacity(3 + data.len());
+        seen.extend_from_slice(&self.tail);
+        seen.extend_from_slice(data);
+        if seen.windows(4).any(|w| w == b"\r\n\r\n") {
+            self.header_deadline = None;
+        }
+        let keep = seen.len().saturating_sub(3);
+        self.tail.copy_from_slice(&seen[keep..]);
+    }
+
     /// Count a write as activity. A `101` response ends the timer for good.
     fn after_write(&mut self, written: usize, data: &[u8]) {
         if written > 0 && data.starts_with(b"HTTP/1.1 101") {
             self.deadline = None;
+            self.header_deadline = None;
+            self.upgraded = true;
         } else {
+            if written > 0 && self.inflight.load(Ordering::SeqCst) == 0 {
+                self.awaiting_request = true;
+            }
             self.reset_timer();
         }
     }
@@ -187,6 +242,8 @@ impl AsyncRead for LimitedIo {
         if busy {
             // A request is in flight: no limit. Start a fresh deadline.
             this.reset_timer();
+            // The request runs: no header deadline.
+            this.header_deadline = None;
         }
         if let Some(deadline) = this.deadline.as_mut() {
             if deadline.as_mut().poll(cx).is_ready() {
@@ -196,9 +253,19 @@ impl AsyncRead for LimitedIo {
                 )));
             }
         }
+        if let Some(deadline) = this.header_deadline.as_mut() {
+            if deadline.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "request header not complete in time",
+                )));
+            }
+        }
+        let before = buf.filled().len();
         let res = Pin::new(&mut this.stream).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = res {
             this.reset_timer();
+            this.track_header(&buf.filled()[before..]);
         }
         res
     }
@@ -261,6 +328,17 @@ mod tests {
             .route("/sse", axum::routing::get(sse_like))
             .route("/ws", axum::routing::get(ws_echo))
             .route("/slow", axum::routing::get(slow))
+            .route(
+                "/slowpost",
+                axum::routing::post(|body: String| async move {
+                    tokio::time::sleep(Duration::from_millis(900)).await;
+                    body
+                }),
+            )
+            .route(
+                "/body",
+                axum::routing::post(|body: String| async move { body }),
+            )
             .layer(axum::middleware::from_fn(track_inflight))
             .into_make_service_with_connect_info::<ConnInfo>();
         tokio::spawn(async move {
@@ -392,6 +470,124 @@ mod tests {
             .starts_with("HTTP/1.1 200"));
         // The request is done. The idle limit applies again.
         assert!(closed_within(&mut s, Duration::from_secs(3)).await);
+    }
+
+    #[tokio::test]
+    async fn a_trickle_sender_is_closed_at_the_header_deadline() {
+        // The idle limit is long and every byte resets it. Only the fixed
+        // header deadline can close this connection.
+        let addr = start(2, Duration::from_secs(5)).await;
+        let mut s = TcpStream::connect(addr).await.expect("connect");
+        let start = Instant::now();
+        let mut closed = false;
+        for b in b"GET / HTTP/1.1\r\nX-A: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".iter() {
+            if s.write_all(&[*b]).await.is_err() {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            if start.elapsed() > Duration::from_secs(3) {
+                break;
+            }
+        }
+        assert!(closed || closed_within(&mut s, Duration::from_secs(1)).await);
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn a_slow_body_after_complete_headers_is_not_cut() {
+        let addr = start(2, Duration::from_secs(5)).await;
+        let mut s = TcpStream::connect(addr).await.expect("connect");
+        s.write_all(b"POST /body HTTP/1.1\r\nHost: x\r\nContent-Length: 8\r\n\r\n")
+            .await
+            .expect("write");
+        // 8 bytes over about 1.2 s, more than twice the header deadline.
+        for b in b"abcdefgh" {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            s.write_all(&[*b]).await.expect("body byte");
+        }
+        let mut buf = [0u8; 512];
+        let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
+            .await
+            .expect("response")
+            .expect("read");
+        let text = std::str::from_utf8(&buf[..n]).expect("utf8");
+        assert!(text.starts_with("HTTP/1.1 200"), "{text}");
+        assert!(text.ends_with("abcdefgh"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_long_post_survives_the_header_deadline_and_keep_alive_uses_the_idle_limit() {
+        let addr = start(2, Duration::from_millis(1800)).await;
+        let mut s = TcpStream::connect(addr).await.expect("connect");
+        s.write_all(b"POST /slowpost HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\n")
+            .await
+            .expect("write");
+        // The body arrives in a later read than the head.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        s.write_all(b"{}").await.expect("body");
+        let mut buf = [0u8; 512];
+        let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
+            .await
+            .expect("response")
+            .expect("read");
+        assert!(std::str::from_utf8(&buf[..n])
+            .expect("utf8")
+            .starts_with("HTTP/1.1 200"));
+        // Idle keep-alive: open past the 500 ms header limit, closed at the idle limit.
+        assert!(!closed_within(&mut s, Duration::from_millis(900)).await);
+        assert!(closed_within(&mut s, Duration::from_secs(3)).await);
+    }
+
+    /// A `LimitedIo` on a loopback socket, to test the header tracking directly.
+    async fn bare_io() -> LimitedIo {
+        let tcp = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = tcp.local_addr().expect("addr");
+        let (client, _) = tokio::join!(TcpStream::connect(addr), tcp.accept());
+        let sem = Arc::new(Semaphore::new(1));
+        LimitedIo {
+            stream: client.expect("connect"),
+            _permit: sem.acquire_owned().await.expect("permit"),
+            inflight: Arc::new(AtomicUsize::new(0)),
+            deadline: None,
+            idle_timeout: Duration::from_secs(5),
+            header_deadline: None,
+            awaiting_request: true,
+            tail: [0; 3],
+            upgraded: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn body_bytes_read_before_the_handler_runs_start_no_header_deadline() {
+        let mut io = bare_io().await;
+        // The read ends exactly at the end of the head: the deadline clears.
+        io.track_header(b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\n");
+        assert!(io.header_deadline.is_none());
+        // The body is read while the handler has not started (inflight is 0).
+        io.track_header(b"{}");
+        assert!(io.header_deadline.is_none());
+        // After a response write, the next byte starts the deadline.
+        io.after_write(1, b"HTTP/1.1 200");
+        io.track_header(b"G");
+        assert!(io.header_deadline.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_header_deadline_restarts_for_the_next_request() {
+        let addr = start(2, Duration::from_secs(5)).await;
+        let mut s = TcpStream::connect(addr).await.expect("connect");
+        let mut buf = [0u8; 256];
+        for _ in 0..3 {
+            s.write_all(REQ).await.expect("write");
+            let n = s.read(&mut buf).await.expect("read");
+            assert!(n > 0);
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        // Total time is above one deadline, yet each request was prompt.
+        // A trickle on the next request is cut.
+        s.write_all(b"GET").await.expect("write");
+        assert!(closed_within(&mut s, Duration::from_secs(2)).await);
     }
 
     #[tokio::test]

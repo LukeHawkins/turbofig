@@ -86,7 +86,10 @@ async fn challenge_proof_matches_the_token_and_nonce() {
     let mut ws = connect_nonce(port).await;
     let ch = next_json(&mut ws).await;
     assert_eq!(ch["type"], "CHALLENGE");
-    assert_eq!(ch["proof"], proof(state.token(), LABEL_WS_DAEMON, NONCE_P));
+    assert_eq!(
+        ch["proof"],
+        proof(state.token(), LABEL_WS_DAEMON, &format!("{NONCE_P}:{port}"))
+    );
     assert!(ch["nonce"].as_str().unwrap().len() >= 32);
 }
 
@@ -237,4 +240,21 @@ async fn a_long_file_key_is_not_registered() {
         "the 256 byte key to register",
     )
     .await;
+}
+
+#[tokio::test]
+async fn a_full_pending_set_does_not_keep_the_real_plugin_out() {
+    let (state, port) = start().await;
+    let mut stale = Vec::new();
+    for _ in 0..8 {
+        let mut ws = connect_nonce(port).await;
+        let _ = next_json(&mut ws).await;
+        stale.push(ws);
+    }
+    let mut real = connect_nonce(port).await;
+    authenticate(&mut real, state.token()).await;
+    let info = serde_json::json!({"type": "FILE_INFO", "fileKey": "fk", "name": "Doc"});
+    real.send(Tt::Text(info.to_string())).await.unwrap();
+    assert_eq!(next_json(&mut real).await["type"], "WELCOME");
+    assert!(closes(&mut stale[0]).await);
 }

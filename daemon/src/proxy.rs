@@ -171,22 +171,28 @@ async fn do_bootstrap(
 
     // Only a daemon that proves it holds the pairing token is trusted. The
     // token goes to nothing else (see `daemon_client`).
-    let health = match crate::daemon_client::verify_daemon_in_home(mcp_port, &home).await {
-        Ok(h) => h,
-        Err(crate::daemon_client::VerifyError::Unreachable) => {
-            eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
-            crate::spawn::spawn_detached_daemon(&turbofig_binary, &home)
-                .map_err(|e| format!("turbofig mcp: could not start the daemon: {e}"))?;
-            crate::daemon_client::wait_for_verified_daemon(
-                mcp_port,
-                &home,
-                crate::spawn::HEALTH_DEADLINE,
-            )
-            .await
-            .map_err(|e| format!("turbofig mcp: {e}"))?
-        }
-        Err(e) => return Err(format!("turbofig mcp: {e}")),
-    };
+    // An older same-user daemon (no proof support) is allowed here only to be
+    // handed off: it gets a stop/restart request and nothing else. No job and
+    // no full `/health` goes to it, and the proxy waits for a verified daemon.
+    let (health, listener) =
+        match crate::daemon_client::verify_allowing_legacy_in_home(mcp_port, &home).await {
+            Ok(found) => found,
+            Err(crate::daemon_client::VerifyError::Unreachable) => {
+                eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
+                crate::spawn::spawn_detached_daemon(&turbofig_binary, &home)
+                    .map_err(|e| format!("turbofig mcp: could not start the daemon: {e}"))?;
+                let health = crate::daemon_client::wait_for_verified_daemon(
+                    mcp_port,
+                    &home,
+                    crate::spawn::HEALTH_DEADLINE,
+                )
+                .await
+                .map_err(|e| format!("turbofig mcp: {e}"))?;
+                (health, crate::daemon_client::Listener::Verified)
+            }
+            Err(e) => return Err(format!("turbofig mcp: {e}")),
+        };
+    let legacy = listener == crate::daemon_client::Listener::LegacySameUser;
 
     // The daemon is verified, so its token file is on disk and the daemon
     // proved it holds that token.
@@ -200,20 +206,43 @@ async fn do_bootstrap(
     // again before it sends the token. A failure here (the daemon went away
     // in between) just means "assume unsupervised", the same conservative
     // default `restart_for_upgrade` already falls back to.
-    let daemon_supervised = crate::daemon_client::verified_full_health(mcp_port, &token)
+    // An older daemon is unproven: it gets no full `/health`, so assume it is
+    // unsupervised.
+    let daemon_supervised = if legacy {
+        false
+    } else {
+        crate::daemon_client::verified_full_health(mcp_port, &token)
+            .await
+            .ok()
+            .and_then(|h| h.get("supervised").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false)
+    };
+    if legacy_needs_handoff(legacy) {
+        // An unproven same-user daemon is always handed off, whatever its
+        // version: only a verified daemon may run a job.
+        hand_off_legacy_daemon(mcp_port, &home).await?;
+    } else {
+        handle_version_handoff(
+            &health_client,
+            mcp_port,
+            &home,
+            &turbofig_binary,
+            &daemon_version,
+            daemon_supervised,
+        )
+        .await?;
+    }
+    if legacy {
+        // No job runs until a VERIFIED daemon answers. The handoff above
+        // already waits for one when it restarted the old daemon.
+        crate::daemon_client::wait_for_verified_daemon(
+            mcp_port,
+            &home,
+            crate::spawn::HEALTH_DEADLINE,
+        )
         .await
-        .ok()
-        .and_then(|h| h.get("supervised").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false);
-    handle_version_handoff(
-        &health_client,
-        mcp_port,
-        &home,
-        &turbofig_binary,
-        &daemon_version,
-        daemon_supervised,
-    )
-    .await?;
+        .map_err(|e| format!("turbofig mcp: {e}"))?;
+    }
 
     Ok(Bootstrapped {
         job_client,
@@ -486,6 +515,24 @@ impl ProxyHandler {
     }
 }
 
+/// True when the daemon must be handed off regardless of its version.
+fn legacy_needs_handoff(legacy: bool) -> bool {
+    legacy
+}
+
+/// Restarts an older same-user daemon (no proof support) through the
+/// allowed `send_control` path, then waits for a VERIFIED daemon. Shared by
+/// the proxy, the menu bar and `turbofig start`. No `/job` and no full
+/// `/health` goes to the old daemon.
+pub async fn hand_off_legacy_daemon(mcp_port: u16, home: &Path) -> Result<(), String> {
+    eprintln!("turbofig: an older turbofig daemon is running; restarting it");
+    let binary = std::env::current_exe()
+        .map_err(|e| format!("failed to determine the running binary's path: {e}"))?;
+    let client = crate::spawn::build_admin_client()
+        .map_err(|e| format!("could not build the HTTP client: {e}"))?;
+    restart_for_upgrade(&client, mcp_port, home, &binary, false).await
+}
+
 /// Compares `daemon_version` against this proxy's own version, once, at
 /// startup, and restarts the daemon if it is older. Never restarts a daemon
 /// that is newer or the same version: an agent session started before a
@@ -684,6 +731,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_legacy_listener_is_always_handed_off() {
+        // Equal, higher and unknown versions are all handed off when legacy.
+        assert!(legacy_needs_handoff(true));
+        assert!(!legacy_needs_handoff(false));
+    }
+
+    #[test]
     fn compare_versions_orders_older_and_newer_correctly() {
         assert_eq!(compare_versions("0.1.0", "0.2.0"), Some(Ordering::Less));
         assert_eq!(compare_versions("0.2.0", "0.1.0"), Some(Ordering::Greater));
@@ -762,7 +816,7 @@ mod client_trust_tests {
         for mode in [Mode::NoProof, Mode::WrongProof] {
             let (port, seen) = mock(mode).await;
             let home = tempfile::tempdir().expect("tempdir");
-            std::fs::write(home.path().join("token"), TOKEN).expect("token");
+            crate::daemon_client::test_mock::write_token(home.path());
             let value = handler(port, home.path()).run_job(status_job()).await;
             assert_eq!(value["ok"], false);
             let err = value["error"].as_str().expect("error text");
@@ -779,7 +833,7 @@ mod client_trust_tests {
     async fn a_verified_daemon_receives_the_token_and_runs_the_job() {
         let (port, seen) = mock(Mode::Sign).await;
         let home = tempfile::tempdir().expect("tempdir");
-        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        crate::daemon_client::test_mock::write_token(home.path());
         let value = handler(port, home.path()).run_job(status_job()).await;
         assert_eq!(value["ok"], true, "{value}");
         let g = seen.lock().unwrap();
@@ -794,7 +848,7 @@ mod client_trust_tests {
         use crate::daemon_client::test_mock::mock_switch;
         let (port, seen, mode) = mock_switch(Mode::Sign).await;
         let home = tempfile::tempdir().expect("tempdir");
-        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        crate::daemon_client::test_mock::write_token(home.path());
         let h = handler(port, home.path());
         let first = h.run_job(status_job()).await;
         assert_eq!(first["ok"], true, "{first}");
