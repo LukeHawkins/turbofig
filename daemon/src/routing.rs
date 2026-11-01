@@ -108,6 +108,11 @@ pub(crate) fn resolve_route(
             state.session_remove(sid);
         }
         let available: Vec<String> = named.into_iter().map(|(_, _, fk2, _, _)| fk2).collect();
+        // No plugin at all is one state with one code, whether or not a
+        // fileKey was requested.
+        if available.is_empty() {
+            return Err(RouteError::NoPlugin);
+        }
         return Err(RouteError::NotFound(fk.clone(), available));
     }
 
@@ -151,6 +156,19 @@ mod tests {
             route_error_to_json(RouteError::Draining)["code"],
             json!("draining")
         );
+    }
+
+    #[test]
+    fn resolve_route_explicit_key_with_no_plugin_returns_no_plugin() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        assert!(matches!(
+            resolve_route(&state, None, Some("fk1")),
+            Err(RouteError::NoPlugin)
+        ));
+        assert!(matches!(
+            resolve_route(&state, Some("sess"), Some("fk1")),
+            Err(RouteError::NoPlugin)
+        ));
     }
 
     #[test]

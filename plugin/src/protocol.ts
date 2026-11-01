@@ -415,12 +415,12 @@ export function serializeNode(
         typeof val === "string"
       ) {
         // Primitives are always JSON-safe; copy directly.
-        result[field] = val;
+        result[field] = typeof val === "number" ? round4(val) : val;
       } else {
         // Object or array: verify JSON-safety before copying.
         // Non-cloneable proxies and circular references are caught and dropped.
         try {
-          result[field] = JSON.parse(JSON.stringify(val));
+          result[field] = JSON.parse(JSON.stringify(val, roundReplacer));
         } catch {
           // Not JSON-safe: skip silently.
         }
@@ -522,12 +522,18 @@ function isFigmaNode(val: unknown): val is { id: string; name?: unknown; type: s
  * throw, to {id, removed: true}), and rounds non-integer numbers to 4
  * decimal places. Rule: round(n * 1e4) / 1e4; -0 serialises as 0 in JSON.
  */
+function round4(n: number): number {
+  return Number.isFinite(n) && !Number.isInteger(n) ? Math.round(n * 1e4) / 1e4 : n;
+}
+
+function roundReplacer(_key: string, val: unknown): unknown {
+  return typeof val === "number" ? round4(val) : val;
+}
+
 function replaceBinary(_key: string, val: unknown): unknown {
   if (val instanceof Uint8Array) return encodeBase64(val);
   if (val instanceof ArrayBuffer) return encodeBase64(new Uint8Array(val));
-  if (typeof val === "number") {
-    return Number.isFinite(val) && !Number.isInteger(val) ? Math.round(val * 1e4) / 1e4 : val;
-  }
+  if (typeof val === "number") return round4(val);
   if (val !== null && typeof val === "object") {
     try {
       if (isFigmaNode(val)) {

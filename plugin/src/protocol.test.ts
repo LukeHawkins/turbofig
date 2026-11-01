@@ -531,6 +531,20 @@ describe("serializeNode", () => {
     height: 50,
   };
 
+  test("extra fields and children round numbers to 4 decimal places", () => {
+    const node = {
+      ...baseNode,
+      opacity: 0.9568627450980391,
+      fills: [{ type: "SOLID", color: { r: 0.9568627450980391, g: 1, b: 0.12345678 } }],
+      children: [{ ...baseNode, id: "1:2", cornerRadius: 7.12345678 }],
+    };
+    const result = serializeNode(node, ["opacity", "fills", "cornerRadius"], 1);
+    expect(result.opacity).toBe(0.9569);
+    expect(result.fills).toEqual([{ type: "SOLID", color: { r: 0.9569, g: 1, b: 0.1235 } }]);
+    const child = (result.children as Record<string, unknown>[])[0];
+    expect(child.cornerRadius).toBe(7.1235);
+  });
+
   test("base shape equals the seven fields with no fields/depth", () => {
     const result = serializeNode(baseNode, undefined, 0);
     expect(result.id).toBe("1:1");
