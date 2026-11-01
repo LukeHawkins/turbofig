@@ -470,7 +470,16 @@ pub async fn fetch_health_with_token(
     mcp_port: u16,
     token: &str,
 ) -> Option<Value> {
-    turbofig::spawn::fetch_health_with_token(client, mcp_port, Some(token)).await
+    let resp = client
+        .get(format!("http://127.0.0.1:{mcp_port}/health"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<Value>().await.ok()
 }
 
 /// Polls `GET /health` until it answers with a success status, or panics

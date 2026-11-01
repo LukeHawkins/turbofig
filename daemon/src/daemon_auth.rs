@@ -12,9 +12,6 @@
 //! Each use has its own label, so a proof made for one step can never be
 //! replayed in another step.
 
-// TODO(handshake): remove once the HTTP and WebSocket handshakes use every item.
-#![allow(dead_code)]
-
 use sha2::{Digest, Sha256};
 
 use crate::token::constant_time_eq;

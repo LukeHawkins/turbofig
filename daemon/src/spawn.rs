@@ -34,6 +34,7 @@ pub const ADMIN_CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 pub fn build_admin_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(ADMIN_CLIENT_TIMEOUT)
         .timeout(ADMIN_CLIENT_TIMEOUT)
         .build()
@@ -48,6 +49,7 @@ pub fn build_admin_client() -> Result<reqwest::Client, reqwest::Error> {
 pub fn build_job_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(ADMIN_CLIENT_TIMEOUT)
         .build()
 }
@@ -284,34 +286,18 @@ fn detach_into_own_session(cmd: &mut Command) {
 fn detach_into_own_session(_cmd: &mut Command) {}
 
 /// Returns `GET /health`'s parsed JSON body, or `None` for any failure
-/// (connection refused, timeout, a non-success status, an unparseable
-/// body). All of those mean the same thing to a caller of this function:
-/// not currently answerable, never worth telling apart.
+/// (connection refused, timeout, a non-success status, an unparseable or
+/// oversize body). The read stops at 64 KiB, so a foreign listener cannot
+/// exhaust memory. This is a liveness check only: it does not prove the
+/// listener is the daemon, and it never sends the token. Use
+/// `daemon_client::verify_daemon` before trusting an answer.
 pub async fn fetch_health(client: &reqwest::Client, mcp_port: u16) -> Option<serde_json::Value> {
-    fetch_health_with_token(client, mcp_port, None).await
-}
-
-/// Same as `fetch_health`, but attaches `Authorization: Bearer <token>` when
-/// `token` is `Some`, so the response is `/health`'s full payload (connected
-/// files, pid) rather than the reduced one an unauthenticated caller gets.
-/// Use this only where a caller actually needs that detail (the bare
-/// `turbofig` first-run/status text, `turbofig status`), not for a plain
-/// liveness check.
-pub async fn fetch_health_with_token(
-    client: &reqwest::Client,
-    mcp_port: u16,
-    token: Option<&str>,
-) -> Option<serde_json::Value> {
     let url = format!("http://127.0.0.1:{mcp_port}/health");
-    let mut req = client.get(&url);
-    if let Some(t) = token {
-        req = req.bearer_auth(t);
-    }
-    let resp = req.send().await.ok()?;
+    let resp = client.get(&url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
-    resp.json::<serde_json::Value>().await.ok()
+    crate::daemon_client::read_json_capped(resp, crate::daemon_client::HEALTH_BODY_CAP).await
 }
 
 /// Polls `GET /health` on `127.0.0.1:<mcp_port>` until it answers with a
@@ -467,29 +453,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_health_with_token_returns_the_full_payload_and_fetch_health_does_not() {
-        let state = std::sync::Arc::new(crate::state::AppState::with_timeout(
-            Duration::from_millis(100),
-        ));
-        let token = state.token().to_owned();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind ephemeral port");
-        let port = listener.local_addr().expect("local addr").port();
-        tokio::spawn(async move {
-            let _ = crate::mcp::serve_with_state(listener, state).await;
-        });
-
+    async fn fetch_health_refuses_an_oversize_body() {
+        use crate::daemon_client::test_mock::{mock, Mode};
+        let (port, _seen) = mock(Mode::Huge).await;
         let client = reqwest::Client::new();
-        let reduced = fetch_health(&client, port).await.expect("reduced health");
-        assert!(reduced.get("connectedFiles").is_none());
-        assert!(reduced.get("pid").is_none());
-
-        let full = fetch_health_with_token(&client, port, Some(&token))
-            .await
-            .expect("full health");
-        assert_eq!(full["connectedFiles"], serde_json::json!([]));
-        assert_eq!(full["pid"], serde_json::json!(std::process::id()));
+        assert!(fetch_health(&client, port).await.is_none());
     }
 
     #[tokio::test]

@@ -23,6 +23,7 @@ pub mod agent_prompt;
 #[cfg(target_os = "macos")]
 pub mod app_bundle;
 pub mod cli;
+pub mod daemon_client;
 pub mod first_run;
 pub mod launchd;
 #[cfg(target_os = "macos")]

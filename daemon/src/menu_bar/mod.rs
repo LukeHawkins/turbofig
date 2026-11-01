@@ -182,13 +182,10 @@ impl DaemonStopper for RealDaemonStopper {
             let Some(token) = crate::read_token_file(&self.home).await else {
                 return false;
             };
-            self.client
-                .post(format!("http://127.0.0.1:{}/control", self.mcp_port))
-                .bearer_auth(&token)
-                .json(&serde_json::json!({"action": "stop"}))
-                .send()
+            // `send_control` verifies the daemon before it sends the token.
+            crate::daemon_client::send_control(self.mcp_port, &token, "stop")
                 .await
-                .map(|r| r.status().is_success())
+                .map(|status| status.is_success())
                 .unwrap_or(false)
         })
     }
@@ -373,41 +370,39 @@ pub async fn run_menu_bar_app() {
         }
     }
 
-    let client = match crate::spawn::build_admin_client() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("turbofig: could not build the HTTP client: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if crate::spawn::fetch_health(&client, mcp_port)
-        .await
-        .is_none()
-    {
-        let turbofig_binary = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("turbofig: failed to determine the running binary's path: {e}");
+    // The daemon is trusted only after it proves it holds the pairing token.
+    match crate::daemon_client::verify_daemon_in_home(mcp_port, &home).await {
+        Ok(_) => {}
+        Err(crate::daemon_client::VerifyError::Unreachable) => {
+            let turbofig_binary = match std::env::current_exe() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("turbofig: failed to determine the running binary's path: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = crate::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
+                eprintln!("turbofig: could not start the daemon: {e}");
                 std::process::exit(1);
             }
-        };
-        if let Err(e) = crate::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
-            eprintln!("turbofig: could not start the daemon: {e}");
-            std::process::exit(1);
+            if let Err(e) = crate::daemon_client::wait_for_verified_daemon(
+                mcp_port,
+                &home,
+                crate::spawn::HEALTH_DEADLINE,
+            )
+            .await
+            {
+                eprintln!("turbofig: {e}");
+                std::process::exit(1);
+            }
         }
-        if let Err(e) = crate::spawn::wait_for_health(&client, mcp_port).await {
+        Err(e) => {
             eprintln!("turbofig: {e}");
             std::process::exit(1);
         }
     }
 
-    let initial_health = crate::spawn::fetch_health_with_token(
-        &client,
-        mcp_port,
-        read_token(&home).await.as_deref(),
-    )
-    .await;
+    let initial_health = verified_health(mcp_port, &home).await;
     let initial_state = build_menu_state(
         initial_health.as_ref(),
         &home.display().to_string(),
@@ -464,15 +459,8 @@ pub async fn run_menu_bar_app() {
                 return;
             }
         };
-        let client = match crate::spawn::build_admin_client() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
         loop {
-            let health = rt.block_on(async {
-                let token = read_token(&poll_home).await;
-                crate::spawn::fetch_health_with_token(&client, mcp_port, token.as_deref()).await
-            });
+            let health = rt.block_on(verified_health(mcp_port, &poll_home));
             if poll_proxy.send_event(UserEvent::Health(health)).is_err() {
                 return; // the event loop is gone; stop polling.
             }
@@ -543,11 +531,7 @@ pub async fn run_menu_bar_app() {
                 if let Some(icon) = icon::icon_for_state(new_state.icon_state) {
                     let _ = tray.set_icon_templated(Some(icon));
                 }
-                let daemon_version = health
-                    .as_ref()
-                    .and_then(|h| h.get("version"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned);
+                let daemon_version = version_to_accept(health.as_ref());
                 if let Ok(mut guard) = current_state.lock() {
                     *guard = new_state;
                 }
@@ -656,6 +640,26 @@ fn close_window_if_match(
 /// same way.
 async fn read_token(home: &Path) -> Option<String> {
     crate::read_token_file(home).await
+}
+
+/// The full `/health` payload, or `None` when the daemon is not reachable or
+/// not verified. The token goes only to a verified daemon, so a foreign
+/// listener on the port gets nothing and its version is never accepted.
+async fn verified_health(mcp_port: u16, home: &Path) -> Option<serde_json::Value> {
+    let token = read_token(home).await?;
+    crate::daemon_client::verified_full_health(mcp_port, &token)
+        .await
+        .ok()
+}
+
+/// The daemon version the app may act on (the self-update relaunch). Only a
+/// payload from a verified daemon reaches this: `verified_health` returns
+/// `None` for anything else, and `None` yields no version.
+fn version_to_accept(health: Option<&serde_json::Value>) -> Option<String> {
+    health
+        .and_then(|h| h.get("version"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
 }
 
 /// Stops the daemon and confirms it is gone, then exits. Shared by "Quit
@@ -791,5 +795,41 @@ mod tests {
         assert!(restarted);
         assert!(slept.get() >= Duration::from_millis(30));
         drop(held_lock);
+    }
+
+    #[test]
+    fn version_to_accept_reads_the_version_of_a_verified_payload() {
+        let health = serde_json::json!({"version": "9.9.9"});
+        assert_eq!(version_to_accept(Some(&health)), Some("9.9.9".to_owned()));
+    }
+
+    #[test]
+    fn version_to_accept_is_none_without_a_verified_payload() {
+        assert_eq!(version_to_accept(None), None);
+        assert_eq!(version_to_accept(Some(&serde_json::json!({}))), None);
+    }
+
+    /// A foreign listener that reports a newer version must yield no health,
+    /// so no relaunch, and it must never see the token.
+    #[tokio::test]
+    async fn an_unverified_listener_yields_no_health_and_no_version() {
+        use crate::daemon_client::test_mock::{mock, Mode, TOKEN};
+        let (port, seen) = mock(Mode::NoProof).await;
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        let health = verified_health(port, home.path()).await;
+        assert!(health.is_none());
+        assert_eq!(version_to_accept(health.as_ref()), None);
+        assert!(seen.lock().unwrap().auth.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_verified_daemon_yields_its_version() {
+        use crate::daemon_client::test_mock::{mock, Mode, TOKEN};
+        let (port, _seen) = mock(Mode::Sign).await;
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        let health = verified_health(port, home.path()).await;
+        assert_eq!(version_to_accept(health.as_ref()), Some("9.9.9".to_owned()));
     }
 }

@@ -76,6 +76,125 @@ fn health_version(health: &serde_json::Value) -> &str {
         .unwrap_or("unknown")
 }
 
+/// Makes sure a VERIFIED daemon runs on `mcp_port`, starting one if nothing
+/// listens. Returns its `/health` body and whether it was already running.
+/// A listener that is not the daemon is never "running": this prints the
+/// error, which names the port, and exits 1. Exits 1 on any start failure.
+async fn ensure_verified_daemon(
+    context: &str,
+    mcp_port: u16,
+    home: &Path,
+    log_hint: bool,
+) -> (serde_json::Value, bool) {
+    let log_path = home.join("daemon.log");
+    let fail = |msg: String| -> ! {
+        eprintln!("{context}: {msg}");
+        if log_hint {
+            eprintln!("{context}: see {} for details", log_path.display());
+        }
+        std::process::exit(1);
+    };
+    let first = turbofig::daemon_client::verify_daemon_in_home(mcp_port, home).await;
+    match startup_step(first) {
+        Startup::Running(health) => (health, true),
+        Startup::Start => {
+            let turbofig_binary = match std::env::current_exe() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{context}: failed to determine the running binary's path: {e}");
+                    std::process::exit(1);
+                }
+            };
+            if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, home) {
+                fail(format!("could not start the daemon: {e}"));
+            }
+            match turbofig::daemon_client::wait_for_verified_daemon(
+                mcp_port,
+                home,
+                turbofig::spawn::HEALTH_DEADLINE,
+            )
+            .await
+            {
+                Ok(health) => (health, false),
+                Err(e) => fail(e),
+            }
+        }
+        Startup::Fail(msg) => {
+            eprintln!("{context}: {msg}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// What `ensure_verified_daemon` does after its first check.
+#[derive(Debug, PartialEq)]
+enum Startup {
+    /// A verified daemon runs.
+    Running(serde_json::Value),
+    /// Nothing listens: start a daemon.
+    Start,
+    /// Something else holds the port: print this and exit 1.
+    Fail(String),
+}
+
+/// Only a verified daemon counts as running. A listener that is not the
+/// daemon is a failure, never a reason to start a second daemon.
+fn startup_step(first: Result<serde_json::Value, turbofig::daemon_client::VerifyError>) -> Startup {
+    use turbofig::daemon_client::VerifyError;
+    match first {
+        Ok(health) => Startup::Running(health),
+        Err(VerifyError::Unreachable) => Startup::Start,
+        Err(e) => Startup::Fail(e.to_string()),
+    }
+}
+
+/// Raises the open-file soft limit to the hard limit, so many plugin
+/// connections cannot run the daemon out of descriptors. On macOS, a hard
+/// limit of "infinity" is capped at `OPEN_MAX` (10240), the most
+/// `setrlimit` accepts there. Logs and goes on if it cannot.
+fn raise_nofile_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `lim` is a valid, writable `rlimit` for the whole call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        eprintln!(
+            "turbofig daemon: could not read the open-file limit: {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+    let target = nofile_target(lim.rlim_cur, lim.rlim_max);
+    if target <= lim.rlim_cur {
+        return;
+    }
+    let new = libc::rlimit {
+        rlim_cur: target,
+        rlim_max: lim.rlim_max,
+    };
+    // SAFETY: `new` is a valid `rlimit` for the whole call.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &new) } != 0 {
+        eprintln!(
+            "turbofig daemon: could not raise the open-file limit to {target}: {}",
+            std::io::Error::last_os_error()
+        );
+    } else {
+        println!(
+            "turbofig open-file limit raised from {} to {target}",
+            lim.rlim_cur
+        );
+    }
+}
+
+/// The soft limit to ask for: the hard limit, capped at 10240 on macOS when
+/// the hard limit is infinity (or larger than the kernel accepts).
+fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
+    #[cfg(target_os = "macos")]
+    let hard = hard.min(10240);
+    hard.max(soft)
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -270,8 +389,9 @@ async fn cmd_autostart_on(headless: bool) {
             if let Some(w) = stop_warning {
                 eprintln!(
                     "turbofig autostart: warning: could not stop the already-running daemon first: {w}. \
-                     launchd's own daemon will exit at once when it finds this one already healthy on \
-                     the port, and the old daemon stays in charge, unsupervised."
+                     launchd's own daemon exits 0 at once when it finds a verified or older turbofig \
+                     daemon on the port, so the old daemon stays in charge, unsupervised. If the \
+                     listener is not a turbofig daemon, launchd's daemon exits 1 and launchd retries."
                 );
             }
             println!("{}", autostart_on_message(&outcome.plist_path));
@@ -435,31 +555,7 @@ async fn cmd_run() {
     let mcp_port = turbofig::port_from_env();
     let ws_port = turbofig::ws_port_from_env();
     let home = turbofig::bridge_dir_from_env();
-    let client = build_http_client("turbofig");
-    let log_path = home.join("daemon.log");
-
-    if turbofig::spawn::fetch_health(&client, mcp_port)
-        .await
-        .is_none()
-    {
-        let turbofig_binary = match std::env::current_exe() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("turbofig: failed to determine the running binary's path: {e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
-            eprintln!("turbofig: could not start the daemon: {e}");
-            eprintln!("turbofig: see {} for details", log_path.display());
-            std::process::exit(1);
-        }
-        if let Err(e) = turbofig::spawn::wait_for_health(&client, mcp_port).await {
-            eprintln!("turbofig: {e}");
-            eprintln!("turbofig: see {} for details", log_path.display());
-            std::process::exit(1);
-        }
-    }
+    ensure_verified_daemon("turbofig", mcp_port, &home, true).await;
 
     // On macOS, the app (its tray icon and About window) is now the
     // onboarding surface: install/refresh turbofig.app, open it, and point
@@ -475,8 +571,12 @@ async fn cmd_run() {
     // payload; the token is already on disk by now (the daemon writes it
     // before either listener binds).
     let token = turbofig::read_token_file(&home).await;
-    let health =
-        turbofig::spawn::fetch_health_with_token(&client, mcp_port, token.as_deref()).await;
+    let health = match token.as_deref() {
+        Some(t) => turbofig::daemon_client::verified_full_health(mcp_port, t)
+            .await
+            .ok(),
+        None => None,
+    };
     let version = health
         .as_ref()
         .map(|h| health_version(h).to_owned())
@@ -720,37 +820,16 @@ async fn cmd_start() {
     let mcp_port = turbofig::port_from_env();
     let ws_port = turbofig::ws_port_from_env();
     let home = turbofig::bridge_dir_from_env();
-    let client = build_http_client("turbofig start");
-
-    if let Some(health) = turbofig::spawn::fetch_health(&client, mcp_port).await {
+    let (health, was_running) =
+        ensure_verified_daemon("turbofig start", mcp_port, &home, false).await;
+    if was_running {
         println!(
             "{}",
             already_running_message(health_version(&health), mcp_port)
         );
         return;
     }
-
-    let turbofig_binary = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("turbofig start: failed to determine the running binary's path: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if let Err(e) = turbofig::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
-        eprintln!("turbofig start: could not start the daemon: {e}");
-        std::process::exit(1);
-    }
-    if let Err(e) = turbofig::spawn::wait_for_health(&client, mcp_port).await {
-        eprintln!("turbofig start: {e}");
-        std::process::exit(1);
-    }
-
-    let version = match turbofig::spawn::fetch_health(&client, mcp_port).await {
-        Some(h) => health_version(&h).to_owned(),
-        None => "unknown".to_owned(),
-    };
+    let version = health_version(&health).to_owned();
     println!("{}", started_message(&version, mcp_port, ws_port));
 }
 
@@ -798,48 +877,35 @@ async fn stop_running_daemon(
     mcp_port: u16,
     home: &std::path::Path,
 ) -> Result<bool, String> {
+    use turbofig::daemon_client::{ClientError, VerifyError};
+    // The token goes only to a daemon that proves it holds the token. A
+    // listener that is not the daemon is an error, never "nothing running".
+    let foreign = foreign_stop_message;
     let Some(token) = turbofig::read_token_file(home).await else {
-        return if turbofig::spawn::fetch_health(client, mcp_port)
-            .await
-            .is_some()
-        {
-            Err(turbofig::cli::token_trouble_stop_message().to_owned())
-        } else {
-            Ok(false)
+        return match turbofig::daemon_client::verify_daemon_in_home(mcp_port, home).await {
+            Err(VerifyError::Unreachable) => Ok(false),
+            _ => Err(turbofig::cli::token_trouble_stop_message().to_owned()),
         };
     };
 
-    let resp = client
-        .post(format!("http://127.0.0.1:{mcp_port}/control"))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({"action": "stop"}))
-        .send()
-        .await;
-    match resp {
-        Ok(r) if r.status().is_success() => {}
-        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => {
-            return Err(turbofig::cli::token_trouble_stop_message().to_owned());
-        }
-        Ok(r) => {
-            return Err(format!(
-                "the daemon refused the stop request ({})",
-                r.status()
-            ))
-        }
-        Err(_) => {
-            // Nothing answered: usually a stale token file from a daemon
-            // that is already gone, but confirm against /health rather than
-            // assuming, so a daemon that is up but unreachable only on
-            // /control (should not normally happen) is never misreported.
-            return if turbofig::spawn::fetch_health(client, mcp_port)
-                .await
-                .is_some()
-            {
-                Err(turbofig::cli::token_trouble_stop_message().to_owned())
-            } else {
-                Ok(false)
+    let sent = turbofig::daemon_client::send_control(mcp_port, &token, "stop").await;
+    let sent = match sent {
+        Ok(status) => Ok(status),
+        Err(ClientError::Verify(e)) => Err(e),
+        Err(ClientError::Http(_)) => {
+            // The request failed after the daemon was verified. Check again,
+            // so a daemon that is up is never reported as "nothing running".
+            return match turbofig::daemon_client::verify_daemon_in_home(mcp_port, home).await {
+                Err(VerifyError::Unreachable) => Ok(false),
+                Err(e) => Err(foreign(&e)),
+                Ok(_) => Err(turbofig::cli::token_trouble_stop_message().to_owned()),
             };
         }
+    };
+    match stop_step(sent) {
+        StopStep::Stopped => {}
+        StopStep::NothingRunning => return Ok(false),
+        StopStep::Fail(msg) => return Err(msg),
     }
 
     if !turbofig::spawn::wait_for_unreachable(client, mcp_port, STOP_UNREACHABLE_DEADLINE).await {
@@ -848,6 +914,40 @@ async fn stop_running_daemon(
         ));
     }
     Ok(true)
+}
+
+/// The error `stop` prints for a listener that is not the daemon.
+fn foreign_stop_message(e: &turbofig::daemon_client::VerifyError) -> String {
+    format!(
+        "{e}. If it is your daemon, the token file changed. {}",
+        turbofig::cli::token_trouble_stop_message()
+    )
+}
+
+/// What `stop` does with the result of its verified `/control` request.
+#[derive(Debug, PartialEq)]
+enum StopStep {
+    /// The daemon accepted the stop: wait for it to go away.
+    Stopped,
+    /// Nothing listens: stop is a no-op success.
+    NothingRunning,
+    /// Print this and exit 1.
+    Fail(String),
+}
+
+/// An unverified listener is a failure and never gets the token. Only an
+/// unreachable port means "nothing running".
+fn stop_step(sent: Result<reqwest::StatusCode, turbofig::daemon_client::VerifyError>) -> StopStep {
+    use turbofig::daemon_client::VerifyError;
+    match sent {
+        Ok(status) if status.is_success() => StopStep::Stopped,
+        Ok(status) if status == reqwest::StatusCode::UNAUTHORIZED => {
+            StopStep::Fail(turbofig::cli::token_trouble_stop_message().to_owned())
+        }
+        Ok(status) => StopStep::Fail(format!("the daemon refused the stop request ({status})")),
+        Err(VerifyError::Unreachable) => StopStep::NothingRunning,
+        Err(e) => StopStep::Fail(foreign_stop_message(&e)),
+    }
 }
 
 /// Runs `turbofig mcp`: the stdio MCP proxy. Never prints to stdout itself
@@ -873,38 +973,67 @@ async fn cmd_mcp() {
 async fn cmd_status() {
     let mcp_port = turbofig::port_from_env();
     let home = turbofig::bridge_dir_from_env();
-    let url = format!("http://127.0.0.1:{mcp_port}/health");
-    let client = build_http_client("turbofig status");
+    use turbofig::daemon_client::{ClientError, VerifyError};
     // Needs /health's full, authenticated payload to show connected files.
-    let mut req = client.get(&url);
-    if let Some(token) = turbofig::read_token_file(&home).await {
-        req = req.bearer_auth(token);
-    }
-    match req.send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
-            Ok(body) => print!("{}", format_health(&body)),
-            Err(e) => {
-                eprintln!("turbofig status: could not parse the daemon's /health response: {e}");
-                std::process::exit(1);
-            }
-        },
-        Ok(resp) => {
-            eprintln!("turbofig status: daemon responded with {}", resp.status());
+    // The token goes only to a verified daemon.
+    let result = match turbofig::read_token_file(&home).await {
+        Some(token) => turbofig::daemon_client::verified_full_health(mcp_port, &token).await,
+        None => Err(ClientError::Verify(
+            match turbofig::daemon_client::verify_daemon_in_home(mcp_port, &home).await {
+                Err(e) => e,
+                Ok(_) => VerifyError::Unreachable,
+            },
+        )),
+    };
+    match result {
+        Ok(body) => print!("{}", format_health(&body)),
+        Err(ClientError::Verify(VerifyError::Unreachable)) => {
+            println!("{}", status_unreachable_message(mcp_port));
             std::process::exit(1);
         }
-        Err(_) => {
-            println!("{}", status_unreachable_message(mcp_port));
+        Err(e) => {
+            eprintln!("turbofig status: {e}");
             std::process::exit(1);
         }
     }
 }
 
-/// Returns `/health`'s body from an already-running daemon on `mcp_port`,
-/// or `None` if none is reachable. Builds its own short-lived client: called
-/// before `run_daemon` has any other state to reuse one from.
-async fn already_running_health(mcp_port: u16) -> Option<serde_json::Value> {
-    let client = turbofig::spawn::build_admin_client().ok()?;
-    turbofig::spawn::fetch_health(&client, mcp_port).await
+/// The `serve` startup check: is a VERIFIED daemon already on `mcp_port`?
+/// Only a daemon that proves it holds the token counts as running. Called
+/// before `run_daemon` has any other state to reuse.
+async fn serve_startup_check(mcp_port: u16, home: &Path) -> turbofig::daemon_client::ServeCheck {
+    let result = turbofig::daemon_client::verify_daemon_in_home(mcp_port, home).await;
+    turbofig::daemon_client::serve_check(&result)
+}
+
+/// Acts on a `serve` startup check that found a listener: prints the
+/// message and exits. A verified daemon gives `already_running_exit_code`.
+/// A listener that is not the daemon always gives exit 1, so launchd
+/// `KeepAlive` retries instead of treating it as success. Returns for
+/// `Proceed`.
+fn exit_for_serve_check(check: &turbofig::daemon_client::ServeCheck, mcp_port: u16) {
+    if let Some((msg, code)) = serve_check_exit(check, mcp_port, already_running_exit_code()) {
+        eprintln!("{msg}");
+        std::process::exit(code);
+    }
+}
+
+/// The message and exit code for a `serve` startup check, or `None` to go
+/// on. `running_code` is the exit code for a verified daemon. An unverified
+/// listener always gives 1, whatever `running_code` is.
+fn serve_check_exit(
+    check: &turbofig::daemon_client::ServeCheck,
+    mcp_port: u16,
+    running_code: i32,
+) -> Option<(String, i32)> {
+    use turbofig::daemon_client::ServeCheck;
+    match check {
+        ServeCheck::Proceed => None,
+        ServeCheck::AlreadyRunning(version) => {
+            Some((already_running_message(version, mcp_port), running_code))
+        }
+        ServeCheck::Foreign(msg) => Some((format!("turbofig daemon: {msg}"), 1)),
+    }
 }
 
 /// Exit code `serve` uses when it finds a daemon already running on this
@@ -956,13 +1085,8 @@ async fn run_daemon() {
     // Check before any other side effect (reading the token, binding a
     // port): a second `turbofig serve` while one is already healthy on this
     // port must exit at once with a clear message, not silently fail later.
-    if let Some(health) = already_running_health(mcp_port).await {
-        eprintln!(
-            "{}",
-            already_running_message(health_version(&health), mcp_port)
-        );
-        std::process::exit(already_running_exit_code());
-    }
+    exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
+    raise_nofile_limit();
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
     let ws_addr = format!("127.0.0.1:{ws_port}");
@@ -976,13 +1100,7 @@ async fn run_daemon() {
             // once more so this path reports the same clear message instead
             // of a raw "Address already in use".
             if e.kind() == std::io::ErrorKind::AddrInUse {
-                if let Some(health) = already_running_health(mcp_port).await {
-                    eprintln!(
-                        "{}",
-                        already_running_message(health_version(&health), mcp_port)
-                    );
-                    std::process::exit(already_running_exit_code());
-                }
+                exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
             }
             eprintln!("turbofig daemon: failed to bind MCP port {mcp_addr}: {e}");
             std::process::exit(1);
@@ -992,23 +1110,9 @@ async fn run_daemon() {
     let ws_listener = match tokio::net::TcpListener::bind(&ws_addr).await {
         Ok(l) => l,
         Err(e) => {
-            // Same race as the MCP bind above (two `serve`s launched within
-            // the same instant, e.g. a proxy or app spawn racing a daemon
-            // that is already up): if the WS port is taken because a healthy
-            // daemon already holds it, exit quietly with one clear line
-            // instead of logging "failed to bind" as an error. Without this,
-            // a losing `serve` logged the raw bind failure twice (once per
-            // port) even though losing a race here is the expected, healthy
-            // outcome, not a real startup failure.
-            if e.kind() == std::io::ErrorKind::AddrInUse {
-                if let Some(health) = already_running_health(mcp_port).await {
-                    eprintln!(
-                        "{}",
-                        already_running_message(health_version(&health), mcp_port)
-                    );
-                    std::process::exit(already_running_exit_code());
-                }
-            }
+            // The MCP port is already bound by this process, so no other
+            // daemon can run: the WS port is taken by something else. Report
+            // the WS port itself, not the MCP port.
             eprintln!("turbofig daemon: failed to bind WS port {ws_addr}: {e}");
             std::process::exit(1);
         }
@@ -1233,4 +1337,104 @@ fn stable_path_for_running_binary() -> PathBuf {
         .canonicalize()
         .unwrap_or_else(|_| current_exe.clone());
     turbofig::launchd::stable_binary_path(&canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nofile_target_raises_the_soft_limit_to_the_hard_limit() {
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(nofile_target(1024, 65536), 65536);
+        #[cfg(target_os = "macos")]
+        assert_eq!(nofile_target(256, 4096), 4096);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn nofile_target_caps_an_infinite_hard_limit_on_macos() {
+        assert_eq!(nofile_target(256, libc::rlim_t::MAX), 10240);
+        assert_eq!(nofile_target(256, libc::RLIM_INFINITY), 10240);
+    }
+
+    #[test]
+    fn nofile_target_never_lowers_the_soft_limit() {
+        assert!(nofile_target(20000, 20000) >= 20000);
+    }
+
+    #[test]
+    fn raise_nofile_limit_does_not_lower_the_limit() {
+        let get = || {
+            let mut l = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) };
+            l.rlim_cur
+        };
+        let before = get();
+        raise_nofile_limit();
+        assert!(get() >= before);
+    }
+
+    #[test]
+    fn serve_check_exit_codes() {
+        use turbofig::daemon_client::ServeCheck;
+        assert_eq!(serve_check_exit(&ServeCheck::Proceed, 1, 0), None);
+        let (msg, code) =
+            serve_check_exit(&ServeCheck::AlreadyRunning("1.2.3".into()), 18846, 0).unwrap();
+        assert_eq!(code, 0);
+        assert!(msg.contains("already running"));
+        let (_, code) =
+            serve_check_exit(&ServeCheck::AlreadyRunning("1.2.3".into()), 18846, 1).unwrap();
+        assert_eq!(code, 1);
+        // A foreign listener exits 1 even when "already running" would exit 0.
+        let (msg, code) = serve_check_exit(
+            &ServeCheck::Foreign("not your turbofig daemon".into()),
+            1,
+            0,
+        )
+        .unwrap();
+        assert_eq!(code, 1);
+        assert!(msg.contains("not your turbofig daemon"));
+    }
+
+    #[test]
+    fn startup_step_counts_only_a_verified_daemon_as_running() {
+        use turbofig::daemon_client::VerifyError;
+        let health = serde_json::json!({"version": "1.0.0"});
+        assert_eq!(startup_step(Ok(health.clone())), Startup::Running(health));
+        assert_eq!(startup_step(Err(VerifyError::Unreachable)), Startup::Start);
+        let foreign = startup_step(Err(VerifyError::Unverified {
+            addr: "127.0.0.1:18846".into(),
+        }));
+        assert!(matches!(foreign, Startup::Fail(m) if m.contains("127.0.0.1:18846")));
+        assert!(matches!(
+            startup_step(Err(VerifyError::NoToken { addr: "x".into() })),
+            Startup::Fail(_)
+        ));
+    }
+
+    #[test]
+    fn stop_step_never_calls_a_foreign_listener_nothing_running() {
+        use turbofig::daemon_client::VerifyError;
+        assert_eq!(
+            stop_step(Ok(reqwest::StatusCode::ACCEPTED)),
+            StopStep::Stopped
+        );
+        assert_eq!(
+            stop_step(Err(VerifyError::Unreachable)),
+            StopStep::NothingRunning
+        );
+        let step = stop_step(Err(VerifyError::Unverified {
+            addr: "127.0.0.1:18846".into(),
+        }));
+        assert!(matches!(&step, StopStep::Fail(m)
+            if m.contains("127.0.0.1:18846") && m.contains("not your turbofig daemon")));
+        assert!(matches!(
+            stop_step(Ok(reqwest::StatusCode::UNAUTHORIZED)),
+            StopStep::Fail(_)
+        ));
+    }
 }

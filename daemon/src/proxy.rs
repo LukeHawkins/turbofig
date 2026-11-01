@@ -113,12 +113,26 @@ pub async fn run(mcp_port: u16, home: PathBuf, turbofig_binary: PathBuf) -> Resu
     Ok(())
 }
 
+/// Why `post_job` failed: the daemon check, or the HTTP call.
+#[derive(Debug)]
+enum PostError {
+    Verify(crate::daemon_client::VerifyError),
+    Http(reqwest::Error),
+}
+
+impl std::fmt::Display for PostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PostError::Verify(e) => e.fmt(f),
+            PostError::Http(e) => e.fmt(f),
+        }
+    }
+}
+
 /// Everything a tool call needs that can only be known once a daemon is
 /// confirmed reachable: the two HTTP clients (see `run`'s old doc comment,
 /// now on `do_bootstrap`, for why there are two) and the pairing token.
 struct Bootstrapped {
-    /// Bounds `/health` and `/control` calls to `ADMIN_CLIENT_TIMEOUT` total.
-    health_client: reqwest::Client,
     /// Bounds only the connect phase of `/job` calls the same way; no
     /// overall timeout, since a real job can legitimately run far longer.
     job_client: reqwest::Client,
@@ -155,54 +169,53 @@ async fn do_bootstrap(
     let job_client = crate::spawn::build_job_client()
         .map_err(|e| format!("turbofig mcp: could not build the HTTP client: {e}"))?;
 
-    let health = match crate::spawn::fetch_health(&health_client, mcp_port).await {
-        Some(h) => h,
-        None => {
+    // Only a daemon that proves it holds the pairing token is trusted. The
+    // token goes to nothing else (see `daemon_client`).
+    let health = match crate::daemon_client::verify_daemon_in_home(mcp_port, &home).await {
+        Ok(h) => h,
+        Err(crate::daemon_client::VerifyError::Unreachable) => {
             eprintln!("turbofig mcp: no daemon reachable on port {mcp_port}; starting one");
             crate::spawn::spawn_detached_daemon(&turbofig_binary, &home)
                 .map_err(|e| format!("turbofig mcp: could not start the daemon: {e}"))?;
-            crate::spawn::wait_for_health(&health_client, mcp_port)
-                .await
-                .map_err(|e| format!("turbofig mcp: {e}"))?;
-            crate::spawn::fetch_health(&health_client, mcp_port)
-                .await
-                .ok_or_else(|| {
-                    "turbofig mcp: the daemon answered /health once but not again".to_owned()
-                })?
+            crate::daemon_client::wait_for_verified_daemon(
+                mcp_port,
+                &home,
+                crate::spawn::HEALTH_DEADLINE,
+            )
+            .await
+            .map_err(|e| format!("turbofig mcp: {e}"))?
         }
+        Err(e) => return Err(format!("turbofig mcp: {e}")),
     };
 
-    // The daemon's own startup always writes the token before its listeners
-    // bind (token.rs's ensure_token runs first in run_daemon), so by the time
-    // /health answered above, the token file is already there to read.
+    // The daemon is verified, so its token file is on disk and the daemon
+    // proved it holds that token.
     let token = crate::token::read_token_file(&home).await.ok_or_else(|| {
         "turbofig mcp: could not read the pairing token to authenticate /job calls".to_owned()
     })?;
 
-    let daemon_version = health["version"].as_str().unwrap_or_default();
+    let daemon_version = health["version"].as_str().unwrap_or_default().to_owned();
     // `supervised` is only on the authenticated payload (see
-    // `mcp::health_handler`'s doc comment), and the `health` fetched above
-    // is unauthenticated (the token is not read yet at that point): fetch it
-    // again, now that the token is available. A failure here (the daemon
-    // went away in between) just means "assume unsupervised", the same
-    // conservative default `restart_for_upgrade` already falls back to.
-    let daemon_supervised =
-        crate::spawn::fetch_health_with_token(&health_client, mcp_port, Some(&token))
-            .await
-            .and_then(|h| h.get("supervised").and_then(serde_json::Value::as_bool))
-            .unwrap_or(false);
+    // `mcp::health_handler`'s doc comment). `verified_full_health` verifies
+    // again before it sends the token. A failure here (the daemon went away
+    // in between) just means "assume unsupervised", the same conservative
+    // default `restart_for_upgrade` already falls back to.
+    let daemon_supervised = crate::daemon_client::verified_full_health(mcp_port, &token)
+        .await
+        .ok()
+        .and_then(|h| h.get("supervised").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
     handle_version_handoff(
         &health_client,
         mcp_port,
         &home,
         &turbofig_binary,
-        daemon_version,
+        &daemon_version,
         daemon_supervised,
     )
     .await?;
 
     Ok(Bootstrapped {
-        health_client,
         job_client,
         token: tokio::sync::RwLock::new(token),
     })
@@ -311,31 +324,65 @@ impl ProxyHandler {
         };
         match self.post_job(bootstrapped, &job).await {
             Ok(value) => value,
-            Err(e) if e.is_connect() => {
+            Err(PostError::Verify(crate::daemon_client::VerifyError::Unreachable)) => {
                 eprintln!("turbofig mcp: lost the daemon connection; starting it again once");
-                if let Err(restart_err) = self.restart_daemon(bootstrapped).await {
-                    return serde_json::json!({
-                        "ok": false,
-                        "error": format!(
-                            "the daemon was unreachable and could not be restarted: {restart_err}"
-                        )
-                    });
-                }
-                match self.post_job(bootstrapped, &job).await {
-                    Ok(value) => value,
-                    Err(e2) => serde_json::json!({
-                        "ok": false,
-                        "error": format!(
-                            "the daemon restarted but this job still failed: {e2}"
-                        )
-                    }),
-                }
+                self.restart_and_retry(bootstrapped, &job).await
             }
-            Err(e) => serde_json::json!({
+            Err(PostError::Verify(e)) => serde_json::json!({"ok": false, "error": e.to_string()}),
+            Err(PostError::Http(e)) if e.is_connect() => {
+                eprintln!("turbofig mcp: lost the daemon connection; starting it again once");
+                self.restart_and_retry(bootstrapped, &job).await
+            }
+            Err(PostError::Http(e)) => serde_json::json!({
                 "ok": false,
                 "error": format!(
                     "could not get the daemon's response; the job may already have run: {e}"
                 )
+            }),
+        }
+    }
+
+    /// Verifies the daemon through the job client, right before a send. The
+    /// check reuses the pooled keep-alive connection that the send then
+    /// uses, so the token cannot reach a process that took the port after
+    /// the daemon died. A rotated token file is picked up on a failed check.
+    async fn verify_before_send(
+        &self,
+        bootstrapped: &Bootstrapped,
+    ) -> Result<(), crate::daemon_client::VerifyError> {
+        let url = crate::daemon_client::base_url(self.mcp_port);
+        let token = bootstrapped.token.read().await.clone();
+        let first =
+            crate::daemon_client::verify_with_client(&bootstrapped.job_client, &url, &token).await;
+        let Err(crate::daemon_client::VerifyError::Unverified { .. }) = first else {
+            return first.map(|_| ());
+        };
+        match crate::token::read_token_file(&self.home).await {
+            Some(fresh) if fresh != token => {
+                crate::daemon_client::verify_with_client(&bootstrapped.job_client, &url, &fresh)
+                    .await?;
+                *bootstrapped.token.write().await = fresh;
+                Ok(())
+            }
+            _ => first.map(|_| ()),
+        }
+    }
+
+    /// Starts the daemon again (verified), then runs the job once more.
+    async fn restart_and_retry(&self, bootstrapped: &Bootstrapped, job: &Job) -> serde_json::Value {
+        if let Err(restart_err) = self.restart_daemon().await {
+            return serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "the daemon was unreachable and could not be restarted: {restart_err}"
+                )
+            });
+        }
+        match self.post_job(bootstrapped, job).await {
+            Ok(value) => value,
+            Err(e2) => serde_json::json!({
+                "ok": false,
+                "error": format!("the daemon restarted but this job still failed: {e2}")
             }),
         }
     }
@@ -356,17 +403,36 @@ impl ProxyHandler {
         &self,
         bootstrapped: &Bootstrapped,
         job: &Job,
-    ) -> Result<serde_json::Value, reqwest::Error> {
+    ) -> Result<serde_json::Value, PostError> {
+        self.verify_before_send(bootstrapped)
+            .await
+            .map_err(PostError::Verify)?;
         let token = bootstrapped.token.read().await.clone();
-        let (status, value) = self.send_job(bootstrapped, &token, job).await?;
+        let (status, value) = self
+            .send_job(bootstrapped, &token, job)
+            .await
+            .map_err(PostError::Http)?;
         if status != reqwest::StatusCode::UNAUTHORIZED {
             return Ok(value);
         }
         let Some(fresh_token) = crate::token::read_token_file(&self.home).await else {
             return Ok(value);
         };
+        // The fresh token goes only to a daemon that proves it holds it.
+        if let Err(e) = crate::daemon_client::verify_with_client(
+            &bootstrapped.job_client,
+            &crate::daemon_client::base_url(self.mcp_port),
+            &fresh_token,
+        )
+        .await
+        {
+            return Ok(serde_json::json!({"ok": false, "error": e.to_string()}));
+        }
         *bootstrapped.token.write().await = fresh_token.clone();
-        let (_status, value) = self.send_job(bootstrapped, &fresh_token, job).await?;
+        let (_status, value) = self
+            .send_job(bootstrapped, &fresh_token, job)
+            .await
+            .map_err(PostError::Http)?;
         Ok(value)
     }
 
@@ -390,15 +456,33 @@ impl ProxyHandler {
             .send()
             .await?;
         let status = resp.status();
-        let value = resp.json::<serde_json::Value>().await?;
+        // A hostile listener cannot exhaust memory: the read stops at the cap.
+        let value = match crate::daemon_client::read_json_capped(
+            resp,
+            crate::daemon_client::RESULT_BODY_CAP,
+        )
+        .await
+        {
+            Some(v) => v,
+            None => serde_json::json!({
+                "ok": false,
+                "error": "the daemon's response was too large or not valid JSON"
+            }),
+        };
         Ok((status, value))
     }
 
     /// Starts the daemon again and waits for it to become healthy.
-    async fn restart_daemon(&self, bootstrapped: &Bootstrapped) -> Result<(), String> {
+    async fn restart_daemon(&self) -> Result<(), String> {
         crate::spawn::spawn_detached_daemon(&self.turbofig_binary, &self.home)
             .map_err(|e| format!("could not start the daemon: {e}"))?;
-        crate::spawn::wait_for_health(&bootstrapped.health_client, self.mcp_port).await
+        crate::daemon_client::wait_for_verified_daemon(
+            self.mcp_port,
+            &self.home,
+            crate::spawn::HEALTH_DEADLINE,
+        )
+        .await?;
+        Ok(())
     }
 }
 
@@ -473,20 +557,17 @@ async fn restart_for_upgrade(
         return Ok(());
     };
 
-    let control_url = format!("http://127.0.0.1:{mcp_port}/control");
-    match health_client
-        .post(&control_url)
-        .bearer_auth(&token)
-        .json(&serde_json::json!({"action": "restart"}))
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {}
-        Ok(resp) => {
+    // `send_control` verifies the daemon before it sends the token.
+    match crate::daemon_client::send_control(mcp_port, &token, "restart").await {
+        Ok(status) if status.is_success() => {}
+        Ok(status) => {
             eprintln!(
-                "turbofig mcp: the daemon refused the restart request ({}); leaving it running",
-                resp.status()
+                "turbofig mcp: the daemon refused the restart request ({status}); leaving it running"
             );
+            return Ok(());
+        }
+        Err(crate::daemon_client::ClientError::Verify(e)) => {
+            eprintln!("turbofig mcp: {e}; the restart request was not sent");
             return Ok(());
         }
         Err(e) => {
@@ -509,13 +590,9 @@ async fn restart_for_upgrade(
     // (see `must_spawn_after_restart`'s doc comment for why that race was a
     // problem).
     let launchd_relaunch_answered = daemon_was_supervised
-        && crate::spawn::wait_for_health_with_deadline(
-            health_client,
-            mcp_port,
-            SUPERVISED_RELAUNCH_WAIT,
-        )
-        .await
-        .is_ok();
+        && crate::daemon_client::wait_for_verified_daemon(mcp_port, home, SUPERVISED_RELAUNCH_WAIT)
+            .await
+            .is_ok();
 
     if must_spawn_after_restart(daemon_was_supervised, launchd_relaunch_answered) {
         if daemon_was_supervised {
@@ -530,7 +607,9 @@ async fn restart_for_upgrade(
         }
     }
 
-    crate::spawn::wait_for_health(health_client, mcp_port).await
+    crate::daemon_client::wait_for_verified_daemon(mcp_port, home, crate::spawn::HEALTH_DEADLINE)
+        .await
+        .map(|_| ())
 }
 
 /// True when `restart_for_upgrade` must spawn a new daemon itself, after the
@@ -652,6 +731,87 @@ mod tests {
         assert!(
             must_spawn_after_restart(true, false),
             "supervised but nothing answered within the wait: must fall back to spawning"
+        );
+    }
+}
+
+#[cfg(test)]
+mod client_trust_tests {
+    use super::*;
+    use crate::daemon_client::test_mock::{mock, Mode, TOKEN};
+    use crate::mcp::FileTargetParams;
+
+    fn handler(port: u16, home: &Path) -> ProxyHandler {
+        ProxyHandler {
+            mcp_port: port,
+            turbofig_binary: PathBuf::from("/nonexistent/turbofig"),
+            home: home.to_path_buf(),
+            session_id: "test-session".to_owned(),
+            bootstrap: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    fn status_job() -> Job {
+        Job::Status(FileTargetParams { file_key: None })
+    }
+
+    /// A listener that fails the proof gets no token, and the job error
+    /// names the port.
+    #[tokio::test]
+    async fn an_unverified_listener_never_receives_the_token() {
+        for mode in [Mode::NoProof, Mode::WrongProof] {
+            let (port, seen) = mock(mode).await;
+            let home = tempfile::tempdir().expect("tempdir");
+            std::fs::write(home.path().join("token"), TOKEN).expect("token");
+            let value = handler(port, home.path()).run_job(status_job()).await;
+            assert_eq!(value["ok"], false);
+            let err = value["error"].as_str().expect("error text");
+            assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
+            assert!(err.contains("not your turbofig daemon"), "{err}");
+            let g = seen.lock().unwrap();
+            assert!(g.requests >= 1);
+            assert!(g.auth.is_empty(), "token leaked: {:?}", g.auth);
+        }
+    }
+
+    /// A verified daemon gets the token, and the job result comes back.
+    #[tokio::test]
+    async fn a_verified_daemon_receives_the_token_and_runs_the_job() {
+        let (port, seen) = mock(Mode::Sign).await;
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        let value = handler(port, home.path()).run_job(status_job()).await;
+        assert_eq!(value["ok"], true, "{value}");
+        let g = seen.lock().unwrap();
+        assert!(!g.auth.is_empty());
+        assert!(g.auth.iter().all(|a| a == &format!("Bearer {TOKEN}")));
+    }
+
+    /// The daemon is replaced by a listener that cannot prove itself between
+    /// two jobs. The second job must never send the token to it.
+    #[tokio::test]
+    async fn a_listener_that_replaces_the_daemon_between_jobs_gets_no_token() {
+        use crate::daemon_client::test_mock::mock_switch;
+        let (port, seen, mode) = mock_switch(Mode::Sign).await;
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(home.path().join("token"), TOKEN).expect("token");
+        let h = handler(port, home.path());
+        let first = h.run_job(status_job()).await;
+        assert_eq!(first["ok"], true, "{first}");
+        let auth_after_first = seen.lock().unwrap().auth.len();
+        assert!(auth_after_first > 0);
+
+        *mode.lock().unwrap() = Mode::NoProof;
+        let second = h.run_job(status_job()).await;
+        assert_eq!(second["ok"], false);
+        assert!(second["error"]
+            .as_str()
+            .unwrap()
+            .contains("not your turbofig daemon"));
+        assert_eq!(
+            seen.lock().unwrap().auth.len(),
+            auth_after_first,
+            "the second job sent Authorization to an unverified listener"
         );
     }
 }
