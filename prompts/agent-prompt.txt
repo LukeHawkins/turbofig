@@ -8,4 +8,4 @@ EOF
 mv $B/inbox/$I.json.tmp $B/inbox/$I.json; O=$B/outbox/$I.json; for i in $(seq 1750); do [ -s $O ] && break; sleep 0.02; done; cat $O
 File tools only: write {{BRIDGE_DIR}}/inbox/<unique-id>.json, then read the same name in outbox/. If it is missing, read it one more time.
 Errors: busy: wait retryAfterMs, resend with a new id. not_started: retry. started_unknown: check the file first. plugin_disconnected or file_not_connected: ask the user to open the plugin.
-If no result appears and you have a shell, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS): http://127.0.0.1:{{MCP_PORT}}/mcp, header `Authorization: Bearer $(cat {{BRIDGE_DIR}}/token)`. Call initialize first, keep the Mcp-Session-Id header. Tools: turbofig_*.
+If no result appears and you have a shell, run `turbofig start` once, then retry. MCP fallback (curl only, not web-fetch or HTTPS; first run `turbofig status`, which checks the daemon is yours): http://127.0.0.1:{{MCP_PORT}}/mcp, header `Authorization: Bearer $(cat {{BRIDGE_DIR}}/token)`. Call initialize first, keep the Mcp-Session-Id header. Tools: turbofig_*.

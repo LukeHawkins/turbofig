@@ -37,7 +37,8 @@ a snippet to paste into a global `CLAUDE.md`.
 **Advanced: MCP over HTTP.** The daemon also serves streamable HTTP MCP
 directly at `http://127.0.0.1:18846/mcp`. Point any MCP client that
 supports streamable HTTP at that URL if it cannot start its own stdio
-server process. This path requires the pairing token as a Bearer auth
+server process. Run `turbofig status` first: it checks that the process on the port
+is your own daemon before you send the token. This path requires the pairing token as a Bearer auth
 header:
 
 ```bash
