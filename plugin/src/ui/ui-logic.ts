@@ -3,6 +3,8 @@
  * No DOM, no WebSocket. All functions are testable in isolation.
  */
 
+import { constantTimeEqual, hmacSha256Hex, toHex } from "./hmac";
+
 /** Connection state values. */
 export type ConnState = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -150,14 +152,110 @@ export function parsePort(input: string): number | null {
 }
 
 /**
- * Returns the WebSocket URL for the given port and pairing token.
+ * Returns the WebSocket URL for the given port and client nonce.
  * Always connects to 127.0.0.1, which is the address the daemon binds.
- * The daemon rejects the upgrade with 401 when the `token` query parameter
- * is missing or wrong (see daemon/src/ws.rs), so every connect and
- * reconnect, including after a PORT switch, must carry it.
+ * The pairing token never goes in the URL: the daemon proves it knows the
+ * token in a CHALLENGE frame (see `handleChallenge`).
  */
-export function wsUrlForPort(port: number, token: string): string {
-  return `ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`;
+export function buildSocketUrl(port: number, nonce: string): string {
+  return `ws://127.0.0.1:${port}/?nonce=${nonce}`;
+}
+
+/** Returns a fresh client nonce: 16 random bytes as 32 lowercase hex chars. */
+export function generateNonce(random: (bytes: Uint8Array) => Uint8Array): string {
+  return toHex(random(new Uint8Array(16)));
+}
+
+/** Status text shown when the daemon fails the challenge handshake. */
+export const VERIFY_FAILED_LABEL = "daemon failed verification";
+
+export type ChallengeResult = { ok: true; auth: { type: "AUTH"; proof: string } } | { ok: false };
+
+/**
+ * Verifies the first daemon frame. The frame must be a CHALLENGE whose proof
+ * equals HMAC-SHA256(token, "turbofig-ws-daemon:" + nonceP) and whose nonce
+ * is 32-128 hex chars. On success returns the AUTH frame to send back.
+ * Any other frame, or a bad proof, returns `{ ok: false }`.
+ */
+export function handleChallenge(frame: unknown, nonceP: string, token: string): ChallengeResult {
+  if (typeof frame !== "object" || frame === null) return { ok: false };
+  const f = frame as Record<string, unknown>;
+  if (f.type !== "CHALLENGE") return { ok: false };
+  if (typeof f.nonce !== "string" || !/^[0-9a-f]{32,128}$/.test(f.nonce)) return { ok: false };
+  if (typeof f.proof !== "string") return { ok: false };
+  const expected = hmacSha256Hex(token, `turbofig-ws-daemon:${nonceP}`);
+  if (!constantTimeEqual(f.proof, expected)) return { ok: false };
+  return {
+    ok: true,
+    auth: { type: "AUTH", proof: hmacSha256Hex(token, `turbofig-ws-plugin:${f.nonce}`) },
+  };
+}
+
+/** What the UI does with one daemon frame. */
+export type FrameDecision =
+  | { action: "close" }
+  | { action: "auth"; auth: { type: "AUTH"; proof: string } }
+  | { action: "relay" }
+  | { action: "ignore" };
+
+/**
+ * Decides what to do with a parsed daemon frame.
+ * Before verification only a valid CHALLENGE is accepted ("auth"); anything
+ * else means "close". After verification a second CHALLENGE is "ignore" and
+ * every other frame is "relay".
+ */
+export function decideFrame(
+  verified: boolean,
+  frame: unknown,
+  nonceP: string,
+  token: string,
+): FrameDecision {
+  if (!verified) {
+    const r = handleChallenge(frame, nonceP, token);
+    return r.ok ? { action: "auth", auth: r.auth } : { action: "close" };
+  }
+  if (
+    typeof frame === "object" &&
+    frame !== null &&
+    (frame as { type?: unknown }).type === "CHALLENGE"
+  ) {
+    return { action: "ignore" };
+  }
+  return { action: "relay" };
+}
+
+/** Status text for a daemon that never sends a CHALLENGE (older daemon, or nothing there). */
+export const DAEMON_OLD_LABEL = "daemon unreachable or older than the plugin: update turbofig";
+
+/** Closes in a row with no CHALLENGE before the old-daemon text shows. */
+export const NO_CHALLENGE_LIMIT = 3;
+
+/** Handshake health across reconnects. */
+export interface LinkHealth {
+  /** Consecutive closes where no CHALLENGE frame arrived. */
+  misses: number;
+  /** True after a failed verification, until a connection verifies. */
+  failed: boolean;
+}
+
+export const INITIAL_LINK_HEALTH: LinkHealth = { misses: 0, failed: false };
+
+/** Returns the new health after a socket closes. */
+export function healthAfterClose(
+  h: LinkHealth,
+  outcome: { sawChallenge: boolean; failedVerification: boolean },
+): LinkHealth {
+  return {
+    misses: outcome.sawChallenge ? 0 : h.misses + 1,
+    failed: h.failed || outcome.failedVerification,
+  };
+}
+
+/** Returns the sticky status text to show instead of the normal label, or null. */
+export function statusOverride(h: LinkHealth): string | null {
+  if (h.failed) return VERIFY_FAILED_LABEL;
+  if (h.misses >= NO_CHALLENGE_LIMIT) return DAEMON_OLD_LABEL;
+  return null;
 }
 
 /** The file-bridge home shown in the connect prompt when the daemon has not yet reported one. */

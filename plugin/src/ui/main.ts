@@ -8,18 +8,24 @@ import type { FileInfoMessage } from "../protocol";
 import { backoffDelayMs, isDaemonMessage } from "../protocol";
 import {
   appendLog,
+  buildSocketUrl,
   connStateFromEvent,
   daemonMessageAction,
+  decideFrame,
   fillAgentPrompt,
   formatLogEntry,
   formatSession,
+  generateNonce,
+  healthAfterClose,
+  INITIAL_LINK_HEALTH,
   isRequestType,
+  type LinkHealth,
   mainMessageAction,
   parsePort,
   portMessageAction,
   screenSize,
   staleWarning,
-  wsUrlForPort,
+  statusOverride,
 } from "./ui-logic";
 
 /** Build-time constant injected by build-ui.ts via Bun.build define. */
@@ -93,10 +99,14 @@ const CONN_LABELS: Record<string, string> = {
 };
 
 /** Updates the connection status element from a WS lifecycle event. */
+/** Handshake health across reconnects (sticky status text). */
+let linkHealth: LinkHealth = INITIAL_LINK_HEALTH;
+
 function setConnStatus(event: "open" | "close" | "error" | "attempt"): void {
   const { state } = connStateFromEvent(event, attempt);
   if (connStatusEl) {
-    connStatusEl.textContent = CONN_LABELS[state] ?? state;
+    const override = event === "open" ? null : statusOverride(linkHealth);
+    connStatusEl.textContent = override ?? CONN_LABELS[state] ?? state;
     connStatusEl.className = state;
   }
 }
@@ -249,6 +259,17 @@ portFieldEl.onchange = () => {
   parent.postMessage({ pluginMessage: { type: "SET_PORT", port: parsed } }, "*");
 };
 
+function isChallengeFrame(frame: unknown): boolean {
+  return (
+    typeof frame === "object" &&
+    frame !== null &&
+    (frame as { type?: unknown }).type === "CHALLENGE"
+  );
+}
+
+/** True once the current socket passed the daemon challenge. */
+let verified = false;
+
 /** Opens a WebSocket and registers lifecycle handlers. */
 function connect(): void {
   /* Cancel any pending reconnect so a stale timer cannot open a second socket. */
@@ -257,19 +278,28 @@ function connect(): void {
     reconnectTimer = null;
   }
   setConnStatus("attempt");
-  const socket = new WebSocket(wsUrlForPort(currentPort, __TURBOFIG_PAIRING_TOKEN__));
+  const nonce = generateNonce((bytes) => crypto.getRandomValues(bytes));
+  const socket = new WebSocket(buildSocketUrl(currentPort, nonce));
   ws = socket;
+  /* The socket carries no job until the daemon proves it knows the token. */
+  verified = false;
+  let failed = false;
+  let sawChallenge = false;
+
+  /* Close the socket, run nothing, and show the failure after the normal backoff. */
+  const failVerification = (): void => {
+    failed = true;
+    socket.onmessage = null;
+    socket.close();
+  };
 
   socket.onopen = () => {
-    attempt = 0;
-    setConnStatus("open");
-    /* Re-identify the file to the daemon on every successful connect. */
-    if (latestFileInfo) {
-      socket.send(JSON.stringify(latestFileInfo));
-    }
+    /* Wait for the CHALLENGE. Status and FILE_INFO follow verification. */
   };
 
   socket.onclose = () => {
+    if (ws === socket) verified = false;
+    linkHealth = healthAfterClose(linkHealth, { sawChallenge, failedVerification: failed });
     scheduleReconnect();
   };
 
@@ -283,6 +313,26 @@ function connect(): void {
     try {
       candidate = JSON.parse(event.data as string);
     } catch {
+      if (!verified) failVerification();
+      return;
+    }
+    if (isChallengeFrame(candidate)) sawChallenge = true;
+    const decision = decideFrame(verified, candidate, nonce, __TURBOFIG_PAIRING_TOKEN__);
+    if (decision.action === "close") {
+      failVerification();
+      return;
+    }
+    if (decision.action === "ignore") return;
+    if (decision.action === "auth") {
+      socket.send(JSON.stringify(decision.auth));
+      verified = true;
+      attempt = 0;
+      linkHealth = INITIAL_LINK_HEALTH;
+      setConnStatus("open");
+      /* Re-identify the file to the daemon on every successful connect. */
+      if (latestFileInfo) {
+        socket.send(JSON.stringify(latestFileInfo));
+      }
       return;
     }
     // A JSON `null`, a number, or a malformed payload would otherwise throw
@@ -368,13 +418,13 @@ window.onmessage = (event: MessageEvent) => {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
     /* If already connected, send FILE_INFO now so it reaches the daemon. */
-    if (ws && ws.readyState === 1 /* OPEN */) {
+    if (ws && verified && ws.readyState === 1 /* OPEN */) {
       ws.send(JSON.stringify(m));
     }
     return;
   }
   /* Relay RESULT and all other main-thread messages over the WS. */
-  if (ws && ws.readyState === 1 /* OPEN */) {
+  if (ws && verified && ws.readyState === 1 /* OPEN */) {
     ws.send(JSON.stringify(m));
   }
 };

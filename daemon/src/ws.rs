@@ -1,6 +1,8 @@
 //! The plugin WebSocket server: one connection per open Figma file.
 
 use crate::config::{bridge_dir_display, port_from_env};
+use crate::daemon_auth::{self, LABEL_WS_DAEMON, LABEL_WS_PLUGIN};
+use crate::mcp::host_allowed;
 use crate::state::AppState;
 use crate::token::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket};
@@ -20,6 +22,12 @@ const PONG_TIMEOUT: Duration = Duration::from_secs(45);
 /// Matches the plugin's own 16 MiB RESULT cap with headroom, and bounds how
 /// much memory one misbehaving or malicious connection can force us to hold.
 const MAX_WS_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+/// Maximum length (in bytes) of a `fileKey` in FILE_INFO. Longer frames are dropped.
+const MAX_FILE_KEY_BYTES: usize = 256;
+/// How long a nonce client may take to answer CHALLENGE with AUTH.
+/// Maximum number of upgraded sockets that may wait for AUTH at once.
+pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
+const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
 /// Returns a JSON string with `type`, `version`, `mcpPort`, and `bridgeHome`
@@ -128,6 +136,9 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
+            if file_key.len() > MAX_FILE_KEY_BYTES {
+                return;
+            }
             let name = json
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -166,13 +177,16 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
     }
 }
 
-/// Query parameters accepted on the WS upgrade. Only `token` is read; any
+/// Query parameters accepted on the WS upgrade. Only `token` and `nonce` are read; any
 /// other parameter is ignored rather than rejected, so a future addition
 /// never breaks an older plugin's URL.
 #[derive(serde::Deserialize)]
 struct WsAuthQuery {
     #[serde(default)]
     token: Option<String>,
+    /// Plugin nonce for the challenge handshake (used when `token` is absent).
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 /// Returns true when `candidate` matches `expected` in constant time.
@@ -196,6 +210,68 @@ fn ws_origin_allowed(origin: Option<&axum::http::HeaderValue>) -> bool {
     }
 }
 
+/// Returns true when the request carries at most one Origin header and that
+/// one passes `ws_origin_allowed`. A second Origin header is always refused.
+fn origin_headers_allowed(headers: &axum::http::HeaderMap) -> bool {
+    let mut all = headers.get_all(axum::http::header::ORIGIN).iter();
+    let first = all.next();
+    all.next().is_none() && ws_origin_allowed(first)
+}
+
+/// Run the challenge handshake on a fresh socket. Returns true when the
+/// plugin proved the token within `timeout`. Sends CHALLENGE first, then
+/// accepts only one AUTH text frame. Anything else returns false.
+async fn challenge_handshake(
+    socket: &mut WebSocket,
+    token: &str,
+    nonce_p: &str,
+    timeout: Duration,
+) -> bool {
+    let nonce_d = daemon_auth::new_nonce();
+    let challenge = json!({
+        "type": "CHALLENGE",
+        "nonce": nonce_d,
+        "proof": daemon_auth::proof(token, LABEL_WS_DAEMON, nonce_p),
+    })
+    .to_string();
+    if socket.send(Message::Text(challenge.into())).await.is_err() {
+        return false;
+    }
+    let Ok(Some(Ok(Message::Text(text)))) = tokio::time::timeout(timeout, socket.recv()).await
+    else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    if json.get("type").and_then(|t| t.as_str()) != Some("AUTH") {
+        return false;
+    }
+    match json.get("proof").and_then(|p| p.as_str()) {
+        Some(p) => daemon_auth::verify(token, LABEL_WS_PLUGIN, &nonce_d, p),
+        None => false,
+    }
+}
+
+/// Upgraded nonce connection: authenticate first, then behave like a token one.
+async fn handle_challenge_socket(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    nonce_p: String,
+    timeout: Duration,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let ok = challenge_handshake(&mut socket, state.token(), &nonce_p, timeout).await;
+    // Release the pending slot as soon as AUTH succeeds, fails or times out.
+    drop(permit);
+    if !ok {
+        // Drop the socket: closes it with no detail.
+        return;
+    }
+    state.mark_plugin_seen();
+    handle_socket(socket, state).await;
+}
+
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
 ///
 /// Rejects the upgrade with 403 when the Origin header is present and is
@@ -210,23 +286,62 @@ async fn ws_handler(
     Query(auth): Query<WsAuthQuery>,
     State(state): State<Arc<AppState>>,
 ) -> axum::response::Response {
-    if !ws_origin_allowed(headers.get(axum::http::header::ORIGIN)) {
+    upgrade(ws, headers, auth, state, AUTH_TIMEOUT)
+}
+
+/// Shared upgrade logic. `auth_timeout` is a parameter so tests can shorten it.
+fn upgrade(
+    ws: WebSocketUpgrade,
+    headers: axum::http::HeaderMap,
+    auth: WsAuthQuery,
+    state: Arc<AppState>,
+    auth_timeout: Duration,
+) -> axum::response::Response {
+    if !origin_headers_allowed(&headers) {
         return (axum::http::StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
-    if !token_allowed(auth.token.as_deref(), state.token()) {
-        return (
-            axum::http::StatusCode::UNAUTHORIZED,
-            "invalid or missing token",
-        )
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok());
+    if !host_allowed(host) {
+        return (axum::http::StatusCode::FORBIDDEN, "host not allowed").into_response();
+    }
+    let ws = ws
+        .max_message_size(MAX_WS_MESSAGE_BYTES)
+        .max_frame_size(MAX_WS_MESSAGE_BYTES);
+    if let Some(token) = auth.token.as_deref() {
+        // Legacy path: the plugin sent the token in the URL.
+        if !token_allowed(Some(token), state.token()) {
+            return unauthorized();
+        }
+        state.mark_plugin_seen();
+        return ws
+            .on_upgrade(move |socket| handle_socket(socket, state))
             .into_response();
     }
-    // A valid token means a real plugin (or file-bridge-equivalent client)
-    // just authenticated: record it so `turbofig` (the bare command) can
-    // tell a genuine first run from a later one. A no-op past the first call.
-    state.mark_plugin_seen();
-    ws.max_message_size(MAX_WS_MESSAGE_BYTES)
-        .max_frame_size(MAX_WS_MESSAGE_BYTES)
-        .on_upgrade(move |socket| handle_socket(socket, state))
+    match auth.nonce {
+        Some(nonce) if daemon_auth::valid_nonce(&nonce) => {
+            let Ok(permit) = state.pending_handshakes.clone().try_acquire_owned() else {
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "too many pending handshakes",
+                )
+                    .into_response();
+            };
+            ws.on_upgrade(move |socket| {
+                handle_challenge_socket(socket, state, nonce, auth_timeout, permit)
+            })
+            .into_response()
+        }
+        _ => unauthorized(),
+    }
+}
+
+fn unauthorized() -> axum::response::Response {
+    (
+        axum::http::StatusCode::UNAUTHORIZED,
+        "invalid or missing token",
+    )
         .into_response()
 }
 
@@ -415,5 +530,169 @@ mod tests {
             !started.load(std::sync::atomic::Ordering::SeqCst),
             "a STARTED from a different connection must not set the started flag"
         );
+    }
+
+    use tokio_tungstenite::tungstenite::Message as Tt;
+
+    const NONCE_P: &str = "00112233445566778899aabbccddeeff";
+
+    /// Serve the real `upgrade` logic with a caller-chosen AUTH timeout.
+    async fn serve_with_timeout(state: Arc<AppState>, timeout: Duration) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handler = move |ws: WebSocketUpgrade,
+                            headers: axum::http::HeaderMap,
+                            Query(auth): Query<WsAuthQuery>,
+                            State(st): State<Arc<AppState>>| async move {
+            upgrade(ws, headers, auth, st, timeout)
+        };
+        let router = axum::Router::new()
+            .route("/", axum::routing::get(handler))
+            .with_state(state);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn auth_timeout_closes_the_socket() {
+        let state = Arc::new(AppState::new());
+        let port = serve_with_timeout(state.clone(), Duration::from_millis(150)).await;
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/?nonce={NONCE_P}"))
+                .await
+                .unwrap();
+        let first = ws.next().await.unwrap().unwrap();
+        assert!(first.to_text().unwrap().contains("CHALLENGE"));
+        // No AUTH is sent. The daemon must close within the deadline.
+        let end = tokio::time::timeout(Duration::from_secs(3), ws.next())
+            .await
+            .expect("socket must close after the AUTH timeout");
+        assert!(!matches!(end, Some(Ok(Tt::Text(_)))));
+        assert!(state.list_connections().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authenticated_nonce_connection_runs_a_job_round_trip() {
+        let state = Arc::new(AppState::new());
+        let port = serve_with_timeout(state.clone(), Duration::from_secs(5)).await;
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/?nonce={NONCE_P}"))
+                .await
+                .unwrap();
+        let ch: Value =
+            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        let nonce_d = ch["nonce"].as_str().unwrap();
+        assert_eq!(
+            ch["proof"],
+            daemon_auth::proof(state.token(), LABEL_WS_DAEMON, NONCE_P)
+        );
+        let auth = json!({
+            "type": "AUTH",
+            "proof": daemon_auth::proof(state.token(), LABEL_WS_PLUGIN, nonce_d),
+        });
+        ws.send(Tt::Text(auth.to_string())).await.unwrap();
+        ws.send(Tt::Text(
+            json!({"type": "FILE_INFO", "fileKey": "fk", "name": "Doc"}).to_string(),
+        ))
+        .await
+        .unwrap();
+        let welcome = ws.next().await.unwrap().unwrap();
+        assert!(welcome.to_text().unwrap().contains("WELCOME"));
+
+        let (conn_id, tx, _, _, _) = state.connections_named().remove(0);
+        let st = state.clone();
+        let call = tokio::spawn(async move {
+            crate::plugin_call::call_plugin(
+                &st,
+                conn_id,
+                &tx,
+                json!({"type": "EXECUTE"}),
+                Duration::from_secs(5),
+            )
+            .await
+        });
+        let job: Value =
+            serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(job["type"], "EXECUTE");
+        let reply = json!({"type": "RESULT", "requestId": job["requestId"], "ok": true});
+        ws.send(Tt::Text(reply.to_string())).await.unwrap();
+        let (_, outcome) = call.await.unwrap();
+        assert!(matches!(outcome, crate::plugin_call::CallOutcome::Reply(_)));
+    }
+
+    #[test]
+    fn origin_headers_allowed_rejects_two_origin_headers() {
+        let mut h = axum::http::HeaderMap::new();
+        h.append(axum::http::header::ORIGIN, "null".parse().unwrap());
+        assert!(origin_headers_allowed(&h));
+        h.append(
+            axum::http::header::ORIGIN,
+            "https://evil.example".parse().unwrap(),
+        );
+        assert!(!origin_headers_allowed(&h));
+    }
+
+    #[test]
+    fn dispatch_drops_file_info_with_an_oversized_file_key() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn_id = state.add_connection(tx.clone());
+        let long = "k".repeat(MAX_FILE_KEY_BYTES + 1);
+        dispatch(
+            &json!({"type": "FILE_INFO", "fileKey": long, "name": "D"}),
+            &state,
+            &tx,
+            conn_id,
+        );
+        assert!(state.connections_named().is_empty());
+        let ok = "k".repeat(MAX_FILE_KEY_BYTES);
+        dispatch(
+            &json!({"type": "FILE_INFO", "fileKey": ok, "name": "D"}),
+            &state,
+            &tx,
+            conn_id,
+        );
+        assert_eq!(state.connections_named().len(), 1);
+    }
+
+    async fn pending_client(
+        port: u16,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/?nonce={NONCE_P}"))
+                .await
+                .unwrap();
+        // Wait for CHALLENGE so the permit is certainly held.
+        ws.next().await.unwrap().unwrap();
+        ws
+    }
+
+    fn status_503(e: tokio_tungstenite::tungstenite::Error) -> bool {
+        matches!(e, tokio_tungstenite::tungstenite::Error::Http(r) if r.status() == 503)
+    }
+
+    #[tokio::test]
+    async fn ninth_pending_handshake_gets_503_and_a_permit_frees_after_timeout() {
+        let state = Arc::new(AppState::new());
+        let port = serve_with_timeout(state.clone(), Duration::from_millis(600)).await;
+        let mut held = Vec::new();
+        for _ in 0..MAX_PENDING_HANDSHAKES {
+            held.push(pending_client(port).await);
+        }
+        let err =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/?nonce={NONCE_P}"))
+                .await
+                .expect_err("ninth handshake must be refused");
+        assert!(status_503(err));
+        // The legacy token path is not limited by the cap.
+        let legacy = format!("ws://127.0.0.1:{port}/?token={}", state.token());
+        assert!(tokio_tungstenite::connect_async(legacy).await.is_ok());
+        // After the AUTH timeout the permits free up.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let _again = pending_client(port).await;
+        drop(held);
     }
 }

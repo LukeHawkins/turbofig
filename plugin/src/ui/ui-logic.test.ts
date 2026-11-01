@@ -3,12 +3,19 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   appendLog,
+  buildSocketUrl,
   type ConnectedFile,
   connStateFromEvent,
+  DAEMON_OLD_LABEL,
   daemonMessageAction,
+  decideFrame,
   fillAgentPrompt,
   formatLogEntry,
   formatSession,
+  generateNonce,
+  handleChallenge,
+  healthAfterClose,
+  INITIAL_LINK_HEALTH,
   isDaemonStale,
   isRequestType,
   mainMessageAction,
@@ -16,7 +23,8 @@ import {
   portMessageAction,
   screenSize,
   staleWarning,
-  wsUrlForPort,
+  statusOverride,
+  VERIFY_FAILED_LABEL,
 } from "./ui-logic";
 
 /**
@@ -333,25 +341,144 @@ describe("parsePort", () => {
   });
 });
 
-describe("wsUrlForPort", () => {
-  test("returns the default daemon URL for port 18847", () => {
-    expect(wsUrlForPort(18847, "tok")).toBe("ws://127.0.0.1:18847?token=tok");
+const TOK = "a".repeat(64);
+const NP = "00112233445566778899aabbccddeeff";
+const ND = "ffeeddccbbaa99887766554433221100";
+const DAEMON_PROOF = "d70d29b0eb2b2eb28afaed71877cec191003d9b684d8fa66bd471581872e79fe";
+
+describe("buildSocketUrl", () => {
+  test("puts the nonce in the URL and no token", () => {
+    const url = buildSocketUrl(18847, NP);
+    expect(url).toBe(`ws://127.0.0.1:18847/?nonce=${NP}`);
+    expect(url).not.toContain("token");
   });
 
-  test("returns a URL for a custom port", () => {
-    expect(wsUrlForPort(8080, "tok")).toBe("ws://127.0.0.1:8080?token=tok");
+  test("uses a custom port", () => {
+    expect(buildSocketUrl(8080, NP)).toBe(`ws://127.0.0.1:8080/?nonce=${NP}`);
+  });
+});
+
+describe("generateNonce", () => {
+  test("returns 32 lowercase hex chars from 16 bytes", () => {
+    const n = generateNonce((b) => b.fill(0xab));
+    expect(n).toBe("ab".repeat(16));
+    expect(n).toMatch(/^[0-9a-f]{32}$/);
   });
 
-  test("returns a URL for port 1", () => {
-    expect(wsUrlForPort(1, "tok")).toBe("ws://127.0.0.1:1?token=tok");
+  test("differs between calls with real randomness", () => {
+    const r = (b: Uint8Array) => crypto.getRandomValues(b);
+    expect(generateNonce(r)).not.toBe(generateNonce(r));
+  });
+});
+
+describe("handleChallenge", () => {
+  const good = { type: "CHALLENGE", nonce: NP, proof: DAEMON_PROOF };
+
+  test("accepts a valid proof and returns the plugin AUTH frame", () => {
+    const r = handleChallenge({ ...good, nonce: NP }, NP, TOK);
+    expect(r).toEqual({
+      ok: true,
+      auth: {
+        type: "AUTH",
+        proof: "ccee347e4ca98ab0341bfb3b391044a3c10cb9fd3b7a0763709abab5042e6fa3",
+      },
+    });
   });
 
-  test("returns a URL for port 65535", () => {
-    expect(wsUrlForPort(65535, "tok")).toBe("ws://127.0.0.1:65535?token=tok");
+  test("rejects a wrong proof", () => {
+    expect(handleChallenge({ ...good, proof: "0".repeat(64) }, NP, TOK).ok).toBe(false);
   });
 
-  test("URL-encodes a token with special characters", () => {
-    expect(wsUrlForPort(18847, "a b&c")).toBe("ws://127.0.0.1:18847?token=a%20b%26c");
+  test("rejects a proof made for a different client nonce", () => {
+    expect(handleChallenge(good, ND, TOK).ok).toBe(false);
+  });
+
+  test("rejects a proof made with a different token", () => {
+    expect(handleChallenge(good, NP, "b".repeat(64)).ok).toBe(false);
+  });
+
+  test("rejects a bad nonce length or charset", () => {
+    expect(handleChallenge({ ...good, nonce: "ab" }, NP, TOK).ok).toBe(false);
+    expect(handleChallenge({ ...good, nonce: "A".repeat(32) }, NP, TOK).ok).toBe(false);
+    expect(handleChallenge({ ...good, nonce: "a".repeat(129) }, NP, TOK).ok).toBe(false);
+    expect(handleChallenge({ ...good, nonce: 5 }, NP, TOK).ok).toBe(false);
+  });
+
+  test("accepts the 128 char nonce limit", () => {
+    expect(handleChallenge({ ...good, nonce: "a".repeat(128) }, NP, TOK).ok).toBe(true);
+  });
+
+  test("rejects a missing or non-string proof", () => {
+    expect(handleChallenge({ type: "CHALLENGE", nonce: NP }, NP, TOK).ok).toBe(false);
+    expect(handleChallenge({ ...good, proof: 1 }, NP, TOK).ok).toBe(false);
+  });
+
+  test("rejects any other frame before a verified challenge", () => {
+    expect(handleChallenge({ type: "WELCOME", version: "1", bridgeHome: "/x" }, NP, TOK).ok).toBe(
+      false,
+    );
+    expect(handleChallenge({ type: "EXECUTE", code: "x" }, NP, TOK).ok).toBe(false);
+    expect(handleChallenge(null, NP, TOK).ok).toBe(false);
+    expect(handleChallenge("CHALLENGE", NP, TOK).ok).toBe(false);
+  });
+});
+
+describe("decideFrame", () => {
+  const good = { type: "CHALLENGE", nonce: ND, proof: DAEMON_PROOF };
+
+  test("closes on any frame before a verified CHALLENGE", () => {
+    expect(decideFrame(false, { type: "WELCOME", version: "1" }, NP, TOK)).toEqual({
+      action: "close",
+    });
+    expect(decideFrame(false, { type: "EXECUTE", code: "x" }, NP, TOK)).toEqual({
+      action: "close",
+    });
+    expect(decideFrame(false, { ...good, proof: "0".repeat(64) }, NP, TOK)).toEqual({
+      action: "close",
+    });
+  });
+
+  test("a valid CHALLENGE yields AUTH", () => {
+    const d = decideFrame(false, good, NP, TOK);
+    expect(d.action).toBe("auth");
+    if (d.action === "auth") expect(d.auth.type).toBe("AUTH");
+  });
+
+  test("relays frames after verification", () => {
+    expect(decideFrame(true, { type: "EXECUTE", code: "x" }, NP, TOK)).toEqual({ action: "relay" });
+    expect(decideFrame(true, { type: "WELCOME" }, NP, TOK)).toEqual({ action: "relay" });
+  });
+
+  test("ignores a second CHALLENGE after verification", () => {
+    expect(decideFrame(true, good, NP, TOK)).toEqual({ action: "ignore" });
+  });
+});
+
+describe("link health", () => {
+  const miss = { sawChallenge: false, failedVerification: false };
+
+  test("shows the old-daemon text after 3 closes with no CHALLENGE", () => {
+    let h = INITIAL_LINK_HEALTH;
+    h = healthAfterClose(h, miss);
+    h = healthAfterClose(h, miss);
+    expect(statusOverride(h)).toBeNull();
+    h = healthAfterClose(h, miss);
+    expect(statusOverride(h)).toBe(DAEMON_OLD_LABEL);
+  });
+
+  test("a CHALLENGE resets the miss counter", () => {
+    let h = healthAfterClose(healthAfterClose(INITIAL_LINK_HEALTH, miss), miss);
+    h = healthAfterClose(h, { sawChallenge: true, failedVerification: false });
+    h = healthAfterClose(h, miss);
+    expect(statusOverride(h)).toBeNull();
+  });
+
+  test("verification failure text is sticky until a connection verifies", () => {
+    let h = healthAfterClose(INITIAL_LINK_HEALTH, { sawChallenge: true, failedVerification: true });
+    expect(statusOverride(h)).toBe(VERIFY_FAILED_LABEL);
+    h = healthAfterClose(h, { sawChallenge: true, failedVerification: false });
+    expect(statusOverride(h)).toBe(VERIFY_FAILED_LABEL);
+    expect(statusOverride(INITIAL_LINK_HEALTH)).toBeNull();
   });
 });
 

@@ -357,7 +357,7 @@ fn host_without_port(host_header: &str) -> &str {
 /// Returns true when the `Host` header names one of `ALLOWED_HOSTS`.
 /// A missing `Host` header is rejected: HTTP/1.1 requires it, and a request
 /// that somehow lacks one gives no host to allow-list against.
-fn host_allowed(host_header: Option<&str>) -> bool {
+pub(crate) fn host_allowed(host_header: Option<&str>) -> bool {
     match host_header {
         Some(h) => ALLOWED_HOSTS.contains(&host_without_port(h)),
         None => false,

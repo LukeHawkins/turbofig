@@ -31,10 +31,27 @@ pub(crate) fn version_mismatch_warning(plugin_version: &str) -> Option<String> {
     Some("reopen the turbofig plugin in Figma".to_owned())
 }
 
-/// Strip control characters and cap length on a plugin-supplied name.
+/// True for the Unicode format characters (category Cf) that can hide or
+/// reorder text: soft hyphen, Arabic letter mark, Mongolian vowel separator,
+/// zero-width and bidi controls, word joiners, and the byte order mark.
+fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+    )
+}
+
+/// Strip control and format characters and cap length on a plugin-supplied name.
 fn sanitize_name(raw: &str) -> String {
     raw.chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_format_char(*c))
         .take(MAX_NAME_LEN)
         .collect()
 }
@@ -196,6 +213,9 @@ pub struct PluginConn {
 
 /// Shared daemon state passed to the MCP HTTP server, the WS server, and the bridge.
 pub struct AppState {
+    /// Permits for WebSocket connections that have upgraded but not yet
+    /// passed AUTH. Bounds how many unauthenticated sockets can exist.
+    pub(crate) pending_handshakes: Arc<tokio::sync::Semaphore>,
     /// Registry of all active WebSocket connections.
     /// One entry per connected plugin. The file_key is empty until FILE_INFO
     /// arrives. Two live connections may hold the same non-empty file_key at
@@ -310,6 +330,9 @@ impl AppState {
         max_inflight: usize,
     ) -> Self {
         Self {
+            pending_handshakes: Arc::new(tokio::sync::Semaphore::new(
+                crate::ws::MAX_PENDING_HANDSHAKES,
+            )),
             connections: Mutex::new(HashMap::new()),
             conn_counter: AtomicU64::new(1),
             sessions: Mutex::new(HashMap::new()),
@@ -1425,5 +1448,11 @@ mod tests {
         let conn_id = state.add_connection(tx);
         state.remove_connection(conn_id);
         assert!(state.last_disconnect_ago_ms().is_some());
+    }
+
+    #[test]
+    fn sanitize_name_strips_format_characters() {
+        let raw = "a\u{202E}b\u{200B}c\u{2066}d\u{2069}e\u{FEFF}f\u{200F}g";
+        assert_eq!(sanitize_name(raw), "abcdefg");
     }
 }
