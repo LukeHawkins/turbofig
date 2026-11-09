@@ -468,6 +468,14 @@ describe("decideFrame", () => {
     expect(decideFrame(true, { type: "WELCOME" }, NP, TOK, PORT)).toEqual({ action: "relay" });
   });
 
+  test("ignores HEARTBEAT after verification and never relays it", () => {
+    expect(decideFrame(true, { type: "HEARTBEAT" }, NP, TOK, PORT)).toEqual({ action: "ignore" });
+  });
+
+  test("closes on HEARTBEAT before verification", () => {
+    expect(decideFrame(false, { type: "HEARTBEAT" }, NP, TOK, PORT)).toEqual({ action: "close" });
+  });
+
   test("ignores a second CHALLENGE after verification", () => {
     expect(decideFrame(true, good, NP, TOK, PORT)).toEqual({ action: "ignore" });
   });

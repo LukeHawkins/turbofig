@@ -63,4 +63,4 @@ pub use plugin_files::{plugin_files_outdated, write_plugin_files};
 pub use secure_fs::{exit_code_for_error, is_refusal, startup_exit_code};
 pub use state::AppState;
 pub use token::{ensure_token, read_token_file};
-pub use ws::serve_ws;
+pub use ws::{serve_ws, serve_ws_with_timings, WsTimings};

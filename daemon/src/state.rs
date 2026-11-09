@@ -57,7 +57,7 @@ fn sanitize_name(raw: &str) -> String {
 }
 
 /// How long a session-to-file pairing may live before it is pruned.
-const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Maximum number of session pairings kept at once. Past this, the oldest
 /// pairings are evicted on the next insert. Unbounded growth here would be a
 /// slow memory leak across a long-running daemon with many MCP sessions.

@@ -38,6 +38,7 @@ semver = "1"
 tokio-tungstenite = "0.24"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["test-util"] }
 
 # The menu-bar app (step 2 of the macOS app bundle). macOS-only: `tray-icon`
 # (with its `muda` menus) and `tao` (the main-thread event loop) both assume

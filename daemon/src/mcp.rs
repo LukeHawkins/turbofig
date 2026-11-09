@@ -17,6 +17,7 @@ use rmcp::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Read the `mcp-session-id` header from the HTTP request parts.
 /// Returns None when the header is absent, is not valid UTF-8, or is empty.
@@ -582,8 +583,28 @@ async fn reject_browser_origin(
 
 use axum::response::IntoResponse;
 
+/// How long an HTTP MCP session may stay idle before rmcp closes it.
+/// rmcp defaults to 300 s, so a client that pauses 5 minutes lost its
+/// session. The value equals the pairing-map TTL, but the two clocks differ:
+/// rmcp counts idle time, while the pairing TTL counts from the last
+/// `session_insert`. A session and its pairing may expire at different times.
+pub(crate) const MCP_SESSION_KEEP_ALIVE: Duration = crate::state::SESSION_TTL;
+
+/// Build the session manager with an idle keep-alive. Other settings keep
+/// the rmcp defaults.
+fn session_manager(keep_alive: Duration) -> LocalSessionManager {
+    let mut manager = LocalSessionManager::default();
+    manager.session_config.keep_alive = Some(keep_alive);
+    manager
+}
+
 /// Build the axum router with the MCP service mounted at /mcp.
 pub fn build_router(state: Arc<AppState>) -> axum::Router {
+    build_router_with_keep_alive(state, MCP_SESSION_KEEP_ALIVE)
+}
+
+/// `build_router` with a caller-chosen MCP session idle limit (used by tests).
+fn build_router_with_keep_alive(state: Arc<AppState>, keep_alive: Duration) -> axum::Router {
     // StreamableHttpServerConfig is #[non_exhaustive], so construct via Default
     // then set fields directly.
     let mut config = StreamableHttpServerConfig::default();
@@ -600,7 +621,7 @@ pub fn build_router(state: Arc<AppState>) -> axum::Router {
     let health_state = state.clone();
     let service = StreamableHttpService::new(
         move || Ok(TurbofigHandler::new(state.clone())),
-        LocalSessionManager::default().into(),
+        session_manager(keep_alive).into(),
         config,
     );
     // /job, /control and /mcp require the pairing token, checked before any
@@ -1362,6 +1383,107 @@ mod tests {
             "serverInfo must carry this crate's version, not rmcp's: {body}"
         );
         assert!(!body.contains("\"name\":\"rmcp\""));
+    }
+
+    /// POST one JSON-RPC body to `/mcp` with the token and an optional session id.
+    async fn post_mcp(
+        router: axum::Router,
+        token: &str,
+        session: Option<&str>,
+        body: Value,
+    ) -> axum::response::Response {
+        let mut builder = axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"));
+        if let Some(sid) = session {
+            builder = builder.header("mcp-session-id", sid);
+        }
+        let req = builder
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("build request");
+        router.oneshot(req).await.expect("router must respond")
+    }
+
+    /// Open a session, then idle `idle` of virtual time, then call `tools/list`.
+    /// Returns true when that follow-up call got a real answer.
+    async fn session_alive_after_idle(keep_alive: Duration, idle: Duration) -> bool {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let token = state.token().to_owned();
+        let router = build_router_with_keep_alive(state, keep_alive);
+        let init = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "clientInfo": {"name": "test-client", "version": "0.1.0"},
+                "capabilities": {}
+            }
+        });
+        let resp = post_mcp(router.clone(), &token, None, init).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let sid = resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("session id header")
+            .to_str()
+            .expect("ascii id")
+            .to_owned();
+        drop(resp);
+        let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        let resp = post_mcp(router.clone(), &token, Some(&sid), note).await;
+        assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+        // Under paused time this sleep auto-advances the clock once every task is idle,
+        // so the worker's own idle timer runs in its natural order.
+        tokio::time::sleep(idle).await;
+        let list = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        let resp = post_mcp(router, &token, Some(&sid), list).await;
+        // A closed session answers 404. A live one answers with a JSON-RPC result.
+        if resp.status() != axum::http::StatusCode::OK {
+            return false;
+        }
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        String::from_utf8_lossy(&bytes).contains("\"result\"")
+    }
+
+    #[test]
+    fn the_mcp_session_keep_alive_is_24_hours() {
+        assert_eq!(MCP_SESSION_KEEP_ALIVE, Duration::from_secs(24 * 60 * 60));
+        assert_eq!(MCP_SESSION_KEEP_ALIVE, crate::state::SESSION_TTL);
+        let manager = session_manager(MCP_SESSION_KEEP_ALIVE);
+        assert_eq!(
+            manager.session_config.keep_alive,
+            Some(Duration::from_secs(24 * 60 * 60))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_mcp_session_survives_an_idle_period_longer_than_the_rmcp_default() {
+        // 301 s is past rmcp's 300 s default and well inside the 24 h limit.
+        assert!(session_alive_after_idle(MCP_SESSION_KEEP_ALIVE, Duration::from_secs(301)).await);
+        // And a 10 hour idle gap also survives.
+        assert!(
+            session_alive_after_idle(MCP_SESSION_KEEP_ALIVE, Duration::from_secs(10 * 3600)).await
+        );
+    }
+
+    #[tokio::test]
+    async fn an_mcp_session_idle_past_a_short_keep_alive_is_closed_in_real_time() {
+        assert!(
+            !session_alive_after_idle(Duration::from_millis(100), Duration::from_millis(400)).await
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_mcp_session_idle_past_a_300_s_keep_alive_is_closed() {
+        // Control: with the rmcp default of 300 s the same idle gap kills the session.
+        assert!(
+            !session_alive_after_idle(Duration::from_secs(300), Duration::from_secs(301)).await
+        );
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@
 
 import type { FileInfoMessage } from "../protocol";
 import { backoffDelayMs, isDaemonMessage } from "../protocol";
+import { createLiveness } from "./liveness";
 import {
   appendLog,
   buildSocketUrl,
@@ -302,6 +303,17 @@ function isChallengeFrame(frame: unknown): boolean {
   );
 }
 
+function isHeartbeatFrame(frame: unknown): boolean {
+  return (
+    typeof frame === "object" &&
+    frame !== null &&
+    (frame as { type?: unknown }).type === "HEARTBEAT"
+  );
+}
+
+/** Drops the current socket and runs its close bookkeeping, with no scheduled retry. */
+let detachCurrent: (() => void) | null = null;
+
 /** True once the current socket passed the daemon challenge. */
 let verified = false;
 
@@ -326,6 +338,7 @@ function connect(): void {
   const port = currentPort;
   const socket = new WebSocket(buildSocketUrl(port, nonce));
   ws = socket;
+  liveness.newSocket();
   /* The socket carries no job until the daemon proves it knows the token. */
   verified = false;
   let failed = false;
@@ -342,13 +355,24 @@ function connect(): void {
     /* Wait for the CHALLENGE. Status and FILE_INFO follow verification. */
   };
 
-  socket.onclose = () => {
+  /* Close bookkeeping shared by onclose and an immediate reconnect. It never schedules a retry. */
+  const finishClose = (): void => {
     if (ws === socket) verified = false;
     /* No result can arrive on a closed socket: end the working state. */
     activeJobs = new Set();
     setWorking();
     linkHealth = healthAfterClose(linkHealth, { sawChallenge, failedVerification: failed });
+  };
+  socket.onclose = () => {
+    finishClose();
     scheduleReconnect();
+  };
+  /* Drop this socket for an immediate reconnect: no second reconnect is scheduled. */
+  detachCurrent = () => {
+    socket.onclose = null;
+    socket.onmessage = null;
+    socket.close();
+    finishClose();
   };
 
   socket.onerror = () => {
@@ -357,9 +381,11 @@ function connect(): void {
 
   /* Forward daemon request messages to the main thread. */
   socket.onmessage = (event: MessageEvent) => {
+    liveness.touch();
     let candidate: unknown;
     try {
       candidate = JSON.parse(event.data as string);
+      if (verified && isHeartbeatFrame(candidate)) liveness.onHeartbeat();
     } catch {
       if (!verified) failVerification();
       return;
@@ -422,6 +448,28 @@ function connect(): void {
     parent.postMessage({ pluginMessage: parsed }, "*");
   };
 }
+
+/* Liveness: reconnect at once when the daemon goes silent or the window wakes with a stale link. */
+const liveness = createLiveness({
+  now: () => Date.now(),
+  readyState: () => (ws ? ws.readyState : null),
+  activeJobs: () => activeJobs.size,
+  backoffPending: () => reconnectTimer !== null,
+  reconnectNow: () => {
+    if (!hasConnectedOnce) return;
+    if (ws) detachCurrent?.();
+    attempt = 0;
+    connect();
+  },
+  setTimer: (fn, ms) => setInterval(fn, ms),
+  clearTimer: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+});
+liveness.start();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") liveness.onWake();
+});
+window.addEventListener("online", () => liveness.onWake());
+window.addEventListener("focus", () => liveness.onWake());
 
 /** Increments the attempt counter and schedules a reconnect after the backoff delay. */
 function scheduleReconnect(): void {

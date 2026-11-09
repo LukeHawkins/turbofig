@@ -221,8 +221,8 @@ export type FrameDecision =
 /**
  * Decides what to do with a parsed daemon frame.
  * Before verification only a valid CHALLENGE is accepted ("auth"); anything
- * else means "close". After verification a second CHALLENGE is "ignore" and
- * every other frame is "relay".
+ * else means "close". After verification a second CHALLENGE and a HEARTBEAT are
+ * "ignore" and every other frame is "relay".
  */
 export function decideFrame(
   verified: boolean,
@@ -239,6 +239,14 @@ export function decideFrame(
     typeof frame === "object" &&
     frame !== null &&
     (frame as { type?: unknown }).type === "CHALLENGE"
+  ) {
+    return { action: "ignore" };
+  }
+  // HEARTBEAT only proves the link is alive. It is never a job.
+  if (
+    typeof frame === "object" &&
+    frame !== null &&
+    (frame as { type?: unknown }).type === "HEARTBEAT"
   ) {
     return { action: "ignore" };
   }

@@ -923,3 +923,9 @@ describe("ResizeMessage", () => {
     expect(isInboundMessage(msg)).toBe(true);
   });
 });
+
+describe("isDaemonMessage: HEARTBEAT branch", () => {
+  test("accepts HEARTBEAT", () => {
+    expect(isDaemonMessage({ type: "HEARTBEAT" })).toBe(true);
+  });
+});

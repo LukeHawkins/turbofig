@@ -18,6 +18,36 @@ use tokio::sync::mpsc;
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// How long a connection may go without a pong before it is dropped as stale.
 const PONG_TIMEOUT: Duration = Duration::from_secs(45);
+/// Interval between HEARTBEAT text frames sent to each authenticated plugin.
+/// A browser answers protocol pings by itself, so plugin JavaScript cannot
+/// see them. This text frame lets the plugin detect a dead link.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Liveness timings for one WebSocket listener. Tests shorten them.
+#[derive(Debug, Clone, Copy)]
+pub struct WsTimings {
+    /// Interval between protocol pings.
+    pub ping_interval: Duration,
+    /// Longest gap without a pong before the connection is dropped.
+    pub pong_timeout: Duration,
+    /// Interval between HEARTBEAT text frames.
+    pub heartbeat_interval: Duration,
+}
+
+impl Default for WsTimings {
+    fn default() -> Self {
+        Self {
+            ping_interval: PING_INTERVAL,
+            pong_timeout: PONG_TIMEOUT,
+            heartbeat_interval: HEARTBEAT_INTERVAL,
+        }
+    }
+}
+
+/// The HEARTBEAT frame. An older plugin drops an unknown frame type.
+pub(crate) fn heartbeat_message() -> String {
+    json!({ "type": "HEARTBEAT" }).to_string()
+}
 /// Maximum size (in bytes) of one WebSocket message or frame.
 /// Matches the plugin's own 16 MiB RESULT cap with headroom, and bounds how
 /// much memory one misbehaving or malicious connection can force us to hold.
@@ -34,6 +64,7 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 /// unauthenticated client cannot keep the real plugin out.
 pub(crate) struct WsContext {
     port: u16,
+    timings: WsTimings,
     next_id: std::sync::atomic::AtomicU64,
     pending: std::sync::Mutex<std::collections::VecDeque<(u64, tokio::sync::oneshot::Sender<()>)>>,
 }
@@ -66,9 +97,15 @@ impl Drop for PendingSlot {
 }
 
 impl WsContext {
+    #[cfg(test)]
     pub(crate) fn new(port: u16) -> Arc<Self> {
+        Self::with_timings(port, WsTimings::default())
+    }
+
+    pub(crate) fn with_timings(port: u16, timings: WsTimings) -> Arc<Self> {
         Arc::new(Self {
             port,
+            timings,
             next_id: std::sync::atomic::AtomicU64::new(0),
             pending: std::sync::Mutex::new(std::collections::VecDeque::new()),
         })
@@ -131,7 +168,7 @@ pub(crate) fn welcome_message() -> String {
 }
 
 /// Handle an upgraded WebSocket connection from the Figma plugin.
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>, timings: WsTimings) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
     let (ping_tx, mut ping_rx) = mpsc::unbounded_channel::<()>();
@@ -163,22 +200,28 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    let mut ping_interval = tokio::time::interval(timings.ping_interval);
     // The first tick fires immediately; consume it so the first real ping
     // waits a full interval instead of firing the moment the socket opens.
     ping_interval.tick().await;
+    let mut heartbeat_interval = tokio::time::interval(timings.heartbeat_interval);
+    heartbeat_interval.tick().await;
     let mut last_pong = tokio::time::Instant::now();
 
     'read: loop {
         tokio::select! {
             _ = ping_interval.tick() => {
-                if last_pong.elapsed() > PONG_TIMEOUT {
-                    // Stale connection: no pong in PONG_TIMEOUT. Drop it so a
+                if last_pong.elapsed() > timings.pong_timeout {
+                    // Stale connection: no pong in the pong timeout. Drop it so a
                     // half-dead socket does not keep routing calls into a
                     // void until a full request-timeout finally notices.
                     break 'read;
                 }
                 let _ = ping_tx.send(());
+            }
+            _ = heartbeat_interval.tick() => {
+                // Only authenticated connections reach this function.
+                let _ = tx.send(heartbeat_message());
             }
             frame = stream.next() => {
                 match frame {
@@ -350,6 +393,7 @@ async fn handle_challenge_socket(
     mut slot: PendingSlot,
 ) {
     let port = slot.ctx.port;
+    let timings = slot.ctx.timings;
     let ok = tokio::select! {
         ok = challenge_handshake(&mut socket, state.token(), &nonce_p, port, timeout) => ok,
         _ = &mut slot.kill => false,
@@ -361,7 +405,7 @@ async fn handle_challenge_socket(
         return;
     }
     state.mark_plugin_seen();
-    handle_socket(socket, state).await;
+    handle_socket(socket, state, timings).await;
 }
 
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
@@ -410,7 +454,7 @@ async fn upgrade(
         }
         state.mark_plugin_seen();
         return ws
-            .on_upgrade(move |socket| handle_socket(socket, state))
+            .on_upgrade(move |socket| handle_socket(socket, state, ctx.timings))
             .into_response();
     }
     match auth.nonce {
@@ -456,7 +500,16 @@ pub async fn serve_ws(
     listener: tokio::net::TcpListener,
     state: Arc<AppState>,
 ) -> std::io::Result<()> {
-    let ctx = WsContext::new(listener.local_addr()?.port());
+    serve_ws_with_timings(listener, state, WsTimings::default()).await
+}
+
+/// Like `serve_ws`, with caller-chosen liveness timings (used by tests).
+pub async fn serve_ws_with_timings(
+    listener: tokio::net::TcpListener,
+    state: Arc<AppState>,
+    timings: WsTimings,
+) -> std::io::Result<()> {
+    let ctx = WsContext::with_timings(listener.local_addr()?.port(), timings);
     let router = axum::Router::new()
         .route("/", axum::routing::get(ws_handler))
         .layer(axum::Extension(ctx))

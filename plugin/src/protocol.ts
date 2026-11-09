@@ -201,8 +201,14 @@ export interface ResultMessage {
   h?: number;
 }
 
+/** Liveness frame the daemon sends every 15 s. The UI never relays it. */
+export interface HeartbeatMessage {
+  type: "HEARTBEAT";
+}
+
 /** Union of all messages on the daemon <-> plugin WebSocket. */
 export type DaemonMessage =
+  | HeartbeatMessage
   | FileInfoMessage
   | WelcomeMessage
   | StatusMessage
@@ -299,6 +305,8 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
       return typeof msg.requestId === "number";
     case "RESULT":
       return typeof msg.requestId === "number";
+    case "HEARTBEAT":
+      return true;
     default:
       return false;
   }
