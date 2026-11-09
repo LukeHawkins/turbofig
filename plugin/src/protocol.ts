@@ -56,6 +56,24 @@ export interface PromptModeMessage {
 }
 
 /**
+ * Sent by the plugin UI iframe to persist the "Activity log" on/off setting
+ * in clientStorage. Never forwarded over the WebSocket.
+ */
+export interface SetShowLogMessage {
+  type: "SET_SHOW_LOG";
+  show: boolean;
+}
+
+/**
+ * Sent by the plugin main thread to the UI with the stored "Activity log"
+ * setting. Emitted on READY. Never travels over the WebSocket.
+ */
+export interface ShowLogMessage {
+  type: "SHOW_LOG";
+  show: boolean;
+}
+
+/**
  * Sent by the plugin UI iframe to the plugin main thread to resize the panel.
  * The main thread calls figma.ui.resize with the given dimensions.
  * Never forwarded over the WebSocket.
@@ -229,6 +247,7 @@ export type InboundMessage =
   | ScreenshotMessage
   | SetPortMessage
   | SetPromptModeMessage
+  | SetShowLogMessage
   | ResizeMessage
   | ReadyMessage;
 
@@ -272,6 +291,8 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return typeof msg.port === "number";
     case "SET_PROMPT_MODE":
       return msg.mode === "file" || msg.mode === "mcp";
+    case "SET_SHOW_LOG":
+      return typeof msg.show === "boolean";
     case "RESIZE":
       return typeof msg.width === "number" && typeof msg.height === "number";
     case "READY":

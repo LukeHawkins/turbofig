@@ -71,9 +71,12 @@ export function daemonMessageAction(type: string): "welcome" | "relay" {
  * "fileinfo": store and reflect the file identity (FILE_INFO).
  * "relay": forward it over the socket (RESULT and others).
  */
-export function mainMessageAction(type: string): "port" | "promptmode" | "fileinfo" | "relay" {
+export function mainMessageAction(
+  type: string,
+): "port" | "promptmode" | "showlog" | "fileinfo" | "relay" {
   if (type === "PORT") return "port";
   if (type === "PROMPT_MODE") return "promptmode";
+  if (type === "SHOW_LOG") return "showlog";
   if (type === "FILE_INFO") return "fileinfo";
   return "relay";
 }
@@ -349,11 +352,14 @@ export function fillAgentPrompt(
 
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 150). advanced: full settings view (300 x 300).
+ * main: compact status view (300 x 150). advanced: full settings view (300 x 330, or 300 x 220 with the activity log hidden).
  * about: project info view (300 x 375).
  */
-export function screenSize(name: "main" | "advanced" | "about"): { width: number; height: number } {
-  if (name === "advanced") return { width: 300, height: 300 };
+export function screenSize(
+  name: "main" | "advanced" | "about",
+  showLog = true,
+): { width: number; height: number } {
+  if (name === "advanced") return { width: 300, height: showLog ? 330 : 220 };
   if (name === "about") return { width: 300, height: 375 };
   return { width: 300, height: 150 };
 }
@@ -364,6 +370,16 @@ export type PromptMode = "file" | "mcp";
 /** Returns the stored mode when valid, else the default "file". */
 export function parsePromptMode(x: unknown): PromptMode {
   return x === "mcp" ? "mcp" : "file";
+}
+
+/** Returns the stored log setting when it is a boolean, else the default true. */
+export function parseShowLog(x: unknown): boolean {
+  return x !== false;
+}
+
+/** True when a new entry must be rendered to the log element. */
+export function shouldRenderLog(showLog: boolean): boolean {
+  return showLog;
 }
 
 /**

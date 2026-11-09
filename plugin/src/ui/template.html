@@ -513,6 +513,10 @@
         color: var(--text);
       }
 
+      .log-section[hidden] {
+        display: none;
+      }
+
       .log-entry {
         line-height: 1.6;
       }
@@ -588,8 +592,11 @@
         </div>
       </fieldset>
 
+      <!-- Activity log setting -->
+      <label class="radio-opt" for="show-log"><input id="show-log" type="checkbox" checked />Activity log</label>
+
       <!-- Activity log -->
-      <section class="log-section" aria-label="Activity">
+      <section id="log-section" class="log-section" aria-label="Activity">
         <p class="section-label">Activity</p>
         <div id="activity-log" role="log" aria-live="polite"></div>
       </section>

@@ -27,8 +27,10 @@ import {
   type PromptMode,
   parsePort,
   parsePromptMode,
+  parseShowLog,
   portMessageAction,
   screenSize,
+  shouldRenderLog,
   staleWarning,
   statusOverride,
   trackActiveJobs,
@@ -58,6 +60,11 @@ declare const __AGENT_PROMPT_MCP_TEMPLATE__: string;
 /** Chosen "Copy prompt for" mode. Updated when PROMPT_MODE arrives and on user choice. */
 let promptMode: PromptMode = "file";
 
+/** "Activity log" setting. Updated when SHOW_LOG arrives and on user choice. */
+let showLog = true;
+/** Name of the screen on show now. */
+let currentScreen: "main" | "advanced" | "about" = "main";
+
 /** Request ids of jobs the plugin is running now (STARTED seen, RESULT not yet). */
 let activeJobs: ReadonlySet<number> = new Set();
 
@@ -82,6 +89,8 @@ const portHintEl = document.getElementById("port-hint") as HTMLElement;
 const promptModeEls = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="prompt-mode"]'),
 );
+const showLogEl = document.getElementById("show-log") as HTMLInputElement;
+const logSectionEl = document.getElementById("log-section") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
 const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
 const navMoreBtn = document.getElementById("nav-more") as HTMLButtonElement;
@@ -125,6 +134,16 @@ function showPromptMode(): void {
   for (const el of promptModeEls) el.checked = el.value === promptMode;
 }
 
+/** Shows or hides the activity log section and fits the advanced panel to it. */
+function showLogSetting(): void {
+  if (showLogEl) showLogEl.checked = showLog;
+  if (logSectionEl) logSectionEl.hidden = !showLog;
+  if (currentScreen === "advanced") {
+    const { width, height } = screenSize("advanced", showLog);
+    parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
+  }
+}
+
 /** Updates the connection status element from a WS lifecycle event. */
 /** Handshake health across reconnects (sticky status text). */
 let linkHealth: LinkHealth = INITIAL_LINK_HEALTH;
@@ -165,7 +184,7 @@ function updateSessionDisplay(): void {
  * match the trimmed `activityLog` array.
  */
 function appendActivityLogEntry(entry: string): void {
-  if (!activityLogEl) return;
+  if (!activityLogEl || !shouldRenderLog(showLog)) return;
   const row = document.createElement("div");
   row.className = "log-entry";
   row.textContent = entry;
@@ -218,7 +237,8 @@ function showScreen(name: "main" | "advanced" | "about"): void {
   });
   const target = document.getElementById(`screen-${name}`);
   if (target) target.classList.add("active");
-  const { width, height } = screenSize(name);
+  currentScreen = name;
+  const { width, height } = screenSize(name, showLog);
   parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
 }
 
@@ -259,6 +279,15 @@ for (const el of promptModeEls) {
     if (!el.checked) return;
     promptMode = parsePromptMode(el.value);
     parent.postMessage({ pluginMessage: { type: "SET_PROMPT_MODE", mode: promptMode } }, "*");
+  });
+}
+
+/* Persist the activity log setting through the main thread. */
+if (showLogEl) {
+  showLogEl.addEventListener("change", () => {
+    showLog = showLogEl.checked;
+    showLogSetting();
+    parent.postMessage({ pluginMessage: { type: "SET_SHOW_LOG", show: showLog } }, "*");
   });
 }
 
@@ -513,6 +542,11 @@ window.onmessage = (event: MessageEvent) => {
   if (action === "promptmode") {
     promptMode = parsePromptMode(m.mode);
     showPromptMode();
+    return;
+  }
+  if (action === "showlog") {
+    showLog = parseShowLog(m.show);
+    showLogSetting();
     return;
   }
   if (action === "fileinfo") {

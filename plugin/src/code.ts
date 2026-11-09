@@ -426,6 +426,20 @@ async function emitStoredPromptMode(figma: PluginAPI, post: (msg: unknown) => vo
   post({ type: "PROMPT_MODE", mode: stored === "mcp" ? "mcp" : "file" });
 }
 
+/** clientStorage key for the "Activity log" on/off setting. */
+const SHOW_LOG_KEY = "turbofig:showLog";
+
+/** Reads the stored log setting (true by default) and posts it via the given sink. */
+async function emitStoredShowLog(figma: PluginAPI, post: (msg: unknown) => void): Promise<void> {
+  let stored: unknown;
+  try {
+    stored = await figma.clientStorage.getAsync(SHOW_LOG_KEY);
+  } catch {
+    stored = undefined;
+  }
+  post({ type: "SHOW_LOG", show: stored !== false });
+}
+
 /**
  * Builds a ResultMessage for a job that expired while still waiting in the
  * queue: it never ran, so a retry is unconditionally safe.
@@ -535,6 +549,7 @@ export function createDispatcher(
         emitFileInfo(figma, post);
         void emitStoredPort(figma, post);
         void emitStoredPromptMode(figma, post);
+        void emitStoredShowLog(figma, post);
         break;
       case "STATUS":
         post(buildResult(msg, figma.fileKey ?? "", figma.root.name));
@@ -565,6 +580,12 @@ export function createDispatcher(
       case "SET_PROMPT_MODE":
         /* Persist the mode; the UI already shows it, so no reply is needed. */
         figma.clientStorage.setAsync(PROMPT_MODE_KEY, msg.mode).catch(() => {
+          // Persisting failed; the choice still holds for this session.
+        });
+        break;
+      case "SET_SHOW_LOG":
+        /* Persist the setting; the UI already shows it, so no reply is needed. */
+        figma.clientStorage.setAsync(SHOW_LOG_KEY, msg.show).catch(() => {
           // Persisting failed; the choice still holds for this session.
         });
         break;

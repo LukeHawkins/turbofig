@@ -803,6 +803,13 @@ describe("isInboundMessage", () => {
     expect(isInboundMessage({ type: "SET_PORT", port: 18847 })).toBe(true);
   });
 
+  test("accepts SET_SHOW_LOG only with a boolean show", () => {
+    expect(isInboundMessage({ type: "SET_SHOW_LOG", show: true })).toBe(true);
+    expect(isInboundMessage({ type: "SET_SHOW_LOG", show: false })).toBe(true);
+    expect(isInboundMessage({ type: "SET_SHOW_LOG", show: "no" })).toBe(false);
+    expect(isInboundMessage({ type: "SET_SHOW_LOG" })).toBe(false);
+  });
+
   test("accepts SET_PROMPT_MODE only with mode file or mcp", () => {
     expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "file" })).toBe(true);
     expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "mcp" })).toBe(true);

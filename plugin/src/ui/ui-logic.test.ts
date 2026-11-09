@@ -23,8 +23,10 @@ import {
   NO_TOKEN_LABEL,
   parsePort,
   parsePromptMode,
+  parseShowLog,
   portMessageAction,
   screenSize,
+  shouldRenderLog,
   staleWarning,
   statusOverride,
   trackActiveJobs,
@@ -156,10 +158,11 @@ describe("screenSize", () => {
     expect(height).toBe(150);
   });
 
-  test("advanced screen returns 300x300", () => {
-    const { width, height } = screenSize("advanced");
-    expect(width).toBe(300);
-    expect(height).toBe(300);
+  test("advanced screen returns 300x330, or 300x220 with the log hidden", () => {
+    expect(screenSize("advanced")).toEqual({ width: 300, height: 330 });
+    expect(screenSize("advanced", true)).toEqual({ width: 300, height: 330 });
+    expect(screenSize("advanced", false)).toEqual({ width: 300, height: 220 });
+    expect(screenSize("main", false).height).toBe(150);
   });
 
   test("main and advanced return different heights", () => {
@@ -767,5 +770,23 @@ describe("hasPairingToken", () => {
 
   test("the label tells the user what to do", () => {
     expect(NO_TOKEN_LABEL).toContain("restart turbofig");
+  });
+});
+
+describe("show log setting", () => {
+  test("parseShowLog defaults to true and only false hides", () => {
+    expect(parseShowLog(false)).toBe(false);
+    expect(parseShowLog(true)).toBe(true);
+    expect(parseShowLog(undefined)).toBe(true);
+    expect(parseShowLog("false")).toBe(true);
+  });
+
+  test("shouldRenderLog follows the setting", () => {
+    expect(shouldRenderLog(true)).toBe(true);
+    expect(shouldRenderLog(false)).toBe(false);
+  });
+
+  test("mainMessageAction routes SHOW_LOG", () => {
+    expect(mainMessageAction("SHOW_LOG")).toBe("showlog");
   });
 });

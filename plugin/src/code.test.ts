@@ -671,6 +671,37 @@ describe("createDispatcher", () => {
     expect(saved).toEqual([["turbofig:promptMode", "mcp"]]);
   });
 
+  test("READY also replies SHOW_LOG: true by default, false when stored false", async () => {
+    const settle = () => new Promise((r) => setTimeout(r, 10));
+    const a: { type: string; show?: boolean }[] = [];
+    createDispatcher(makeMockFigma(), (m) => a.push(m as { type: string }))({ type: "READY" });
+    await settle();
+    expect(a.find((m) => m.type === "SHOW_LOG")?.show).toBe(true);
+
+    const b: { type: string; show?: boolean }[] = [];
+    const figma = makeMockFigma({
+      clientStorage: { getAsync: async () => false, setAsync: async () => {} },
+    });
+    createDispatcher(figma, (m) => b.push(m as { type: string }))({ type: "READY" });
+    await settle();
+    expect(b.find((m) => m.type === "SHOW_LOG")?.show).toBe(false);
+  });
+
+  test("SET_SHOW_LOG persists the setting under turbofig:showLog", async () => {
+    const saved: [string, unknown][] = [];
+    const figma = makeMockFigma({
+      clientStorage: {
+        getAsync: async () => undefined,
+        setAsync: async (k: string, v: unknown) => {
+          saved.push([k, v]);
+        },
+      },
+    });
+    createDispatcher(figma, () => {})({ type: "SET_SHOW_LOG", show: false });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(saved).toEqual([["turbofig:showLog", false]]);
+  });
+
   test("STATUS bypasses the queue and replies immediately, even behind a slow EXECUTE", async () => {
     const posted: { type?: string; requestId?: number }[] = [];
     const dispatch = createDispatcher(makeMockFigma(), (m) =>
