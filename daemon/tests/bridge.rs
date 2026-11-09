@@ -1200,3 +1200,43 @@ async fn test_bridge_long_id_reply_does_not_overwrite_a_short_id_result() {
         "the short-id result must survive: {again}"
     );
 }
+
+/// A job renamed into the inbox is answered by the watcher event, not by the
+/// 500 ms backstop poll. Ten renamed jobs in a row must each be answered well
+/// inside one backstop interval.
+#[tokio::test]
+async fn test_bridge_renamed_job_is_answered_by_the_event_not_the_backstop() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_secs(5)));
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+    let inbox = tmp.path().join("inbox");
+    let outbox = tmp.path().join("outbox");
+    // The bridge creates both dirs at startup. Wait for them.
+    wait_until(
+        || inbox.is_dir() && outbox.is_dir(),
+        WAIT_DEADLINE_MS,
+        "bridge dirs",
+    )
+    .await;
+    // Let the watcher attach before the first job.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    for n in 0..10 {
+        let tmp_job = inbox.join(format!("fast{n}.json.tmp"));
+        tokio::fs::write(&tmp_job, r#"{"op":"status"}"#)
+            .await
+            .expect("write tmp job");
+        let started = std::time::Instant::now();
+        tokio::fs::rename(&tmp_job, inbox.join(format!("fast{n}.json")))
+            .await
+            .expect("rename job");
+        let result = outbox.join(format!("fast{n}.json"));
+        while !result.exists() {
+            assert!(
+                started.elapsed() < Duration::from_millis(450),
+                "job {n} was not answered inside one backstop interval"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+}
