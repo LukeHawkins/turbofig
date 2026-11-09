@@ -12,7 +12,11 @@ recorded under Unreleased.
 
 - Challenge handshake on the plugin WebSocket: the plugin connects with
   `?nonce=`, the daemon sends `CHALLENGE`, the plugin answers `AUTH`. The
-  token never goes on the wire. A legacy `?token=` still works.
+  token never goes on the wire.
+- Settings row "MCP over HTTP" (default on). When it is off, `/mcp` returns
+  404 with `{"ok":false,"code":"mcp_http_off",...}`. `/job`, `/health`,
+  `/control` and `turbofig mcp` keep working. The setting is the marker file
+  `<home>/mcp-http-off` (mode 0600; present means off).
 - `GET /health` signs a client nonce (`X-Turbofig-Nonce`,
   `X-Turbofig-Proof`). The CLI, the stdio proxy and the menu bar verify the
   proof before they send the token.
@@ -180,6 +184,10 @@ recorded under Unreleased.
   the user having to quit and reopen it by hand.
 
 ### Removed
+
+- The legacy `?token=` WebSocket upgrade. A `?token=` upgrade now gets 401.
+  Old 0.1.0 plugins must be reopened in Figma after you upgrade. The daemon
+  rewrites the plugin files on start.
 
 - The built-in taste-profile feature (`impeccable` / `editorial` /
   `minimal` profiles, `SET_PROFILE`, `tf.taste` injection,

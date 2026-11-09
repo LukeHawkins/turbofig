@@ -168,7 +168,19 @@ async fn invalid_or_missing_nonce_gets_401() {
 }
 
 #[tokio::test]
-async fn legacy_token_with_a_wrong_value_still_gets_401() {
+async fn legacy_token_with_the_correct_value_gets_401() {
+    let (state, port) = start().await;
+    let err = connect_async(format!("ws://127.0.0.1:{port}/?token={}", state.token()))
+        .await
+        .expect_err("must be refused");
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(r) => assert_eq!(r.status(), 401),
+        e => panic!("unexpected error {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn legacy_token_with_a_wrong_value_gets_401() {
     let (_state, port) = start().await;
     let err = connect_async(format!(
         "ws://127.0.0.1:{port}/?token=wrong&nonce={NONCE_P}"
@@ -181,8 +193,8 @@ async fn legacy_token_with_a_wrong_value_still_gets_401() {
     }
 }
 
-async fn status_of(port: u16, token: &str, edit: impl FnOnce(&mut http::Request<()>)) -> u16 {
-    let mut req = format!("ws://127.0.0.1:{port}/?token={token}")
+async fn status_of(port: u16, edit: impl FnOnce(&mut http::Request<()>)) -> u16 {
+    let mut req = format!("ws://127.0.0.1:{port}/?nonce={NONCE_P}")
         .into_client_request()
         .unwrap();
     edit(&mut req);
@@ -195,27 +207,27 @@ async fn status_of(port: u16, token: &str, edit: impl FnOnce(&mut http::Request<
 
 #[tokio::test]
 async fn host_allow_list_applies_to_the_upgrade() {
-    let (state, port) = start().await;
-    let bad = status_of(port, state.token(), |r| {
+    let (_state, port) = start().await;
+    let bad = status_of(port, |r| {
         r.headers_mut()
             .insert("host", "attacker.example".parse().unwrap());
     })
     .await;
     assert_eq!(bad, 403);
-    assert_eq!(status_of(port, state.token(), |_| {}).await, 101);
+    assert_eq!(status_of(port, |_| {}).await, 101);
 }
 
 #[tokio::test]
 async fn two_origin_headers_are_refused() {
-    let (state, port) = start().await;
-    let two = status_of(port, state.token(), |r| {
+    let (_state, port) = start().await;
+    let two = status_of(port, |r| {
         r.headers_mut().append("origin", "null".parse().unwrap());
         r.headers_mut()
             .append("origin", "https://evil.example".parse().unwrap());
     })
     .await;
     assert_eq!(two, 403);
-    let one = status_of(port, state.token(), |r| {
+    let one = status_of(port, |r| {
         r.headers_mut().append("origin", "null".parse().unwrap());
     })
     .await;
@@ -225,10 +237,7 @@ async fn two_origin_headers_are_refused() {
 #[tokio::test]
 async fn a_long_file_key_is_not_registered() {
     let (state, port) = start().await;
-    let mut ws = connect_async(format!("ws://127.0.0.1:{port}/?token={}", state.token()))
-        .await
-        .unwrap()
-        .0;
+    let mut ws = common::connect_plugin(port, state.token()).await;
     let long = "k".repeat(257);
     let info = serde_json::json!({"type": "FILE_INFO", "fileKey": long, "name": "Doc"});
     ws.send(Tt::Text(info.to_string())).await.unwrap();

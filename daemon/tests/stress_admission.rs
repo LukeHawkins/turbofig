@@ -23,11 +23,13 @@
 //!   4. No timeout, disconnect, or idempotency-risk response is ever seen:
 //!      every response is either a clean success or `busy`.
 
+mod common;
+
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+use tokio_tungstenite::tungstenite::Message as TtMessage;
 
 /// How long the fake plugin takes to "run" each job before replying. Models
 /// a real Figma job (font load, node creation) that takes a noticeable
@@ -74,9 +76,7 @@ async fn start_ws_stack() -> (u16, Arc<turbofig::AppState>) {
 /// frame. This models the real plugin's single-threaded FIFO queue well
 /// enough to reproduce queue starvation under concurrent load.
 async fn connect_serial_fake_plugin(ws_port: u16, state: &Arc<turbofig::AppState>, file_key: &str) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
-        .await
-        .expect("fake plugin connect");
+    let mut ws = common::connect_plugin(ws_port, state.token()).await;
 
     let fi = serde_json::json!({"type": "FILE_INFO", "fileKey": file_key, "name": file_key});
     ws.send(TtMessage::Text(fi.to_string()))

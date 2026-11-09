@@ -11,6 +11,7 @@
 use super::activate::activate_app_and_focus;
 use super::settings_state::{parse_action_link, SettingsAction};
 use super::{clipboard_for_app, opener_for_app};
+use crate::plugin_files::McpHttpState;
 use std::path::PathBuf;
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
@@ -65,23 +66,38 @@ fn start_at_login_checked() -> bool {
     crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env())
 }
 
-/// Renders the page: the version, and the "Start at login" row as plain
-/// state text plus the one link that flips it (there is no JS to drive a
-/// live checkbox).
-fn render_settings_html(version: &str, start_at_login_on: bool) -> String {
+/// Reads "MCP over HTTP" (default on) from the marker in the turbofig home.
+fn mcp_http_checked(home: &std::path::Path) -> McpHttpState {
+    crate::plugin_files::mcp_http_state(home)
+}
+
+/// Renders the page: the version, and the "Start at login" and "MCP over
+/// HTTP" rows, each as plain state text plus the one link that flips it
+/// (there is no JS to drive a live checkbox).
+fn render_settings_html(version: &str, start_at_login_on: bool, mcp: &McpHttpState) -> String {
     let (state_text, toggle_action, toggle_label) = if start_at_login_on {
         ("On", "start-at-login-off", "Turn off")
     } else {
         ("Off", "start-at-login-on", "Turn on")
     };
+    let (mcp_text, mcp_action, mcp_label) = match mcp {
+        McpHttpState::On => ("On", "mcp-http-off", "Turn off"),
+        McpHttpState::Off => ("Off", "mcp-http-on", "Turn on"),
+        // The marker is odd: /mcp is closed. "Turn on" tries to fix it and
+        // logs the reason when it cannot.
+        McpHttpState::Unknown(_) => ("unknown (see log)", "mcp-http-on", "Turn on"),
+    };
     SETTINGS_HTML_TEMPLATE
         .replace("__VERSION__", version)
+        .replace("__MCP_HTTP_STATE__", mcp_text)
+        .replace("__MCP_HTTP_TOGGLE_ACTION__", mcp_action)
+        .replace("__MCP_HTTP_TOGGLE_LABEL__", mcp_label)
         .replace("__START_AT_LOGIN_STATE__", state_text)
         .replace("__START_AT_LOGIN_TOGGLE_ACTION__", toggle_action)
         .replace("__START_AT_LOGIN_TOGGLE_LABEL__", toggle_label)
 }
 
-/// Builds the Settings window: a 360x220, non-resizable, titled "turbofig
+/// Builds the Settings window: a 360x260, non-resizable, titled "turbofig
 /// settings" window hosting a webview over the rendered page. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
@@ -91,17 +107,18 @@ pub fn create_settings_window<T: 'static>(
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig settings")
-        .with_inner_size(LogicalSize::new(360.0, 220.0))
+        .with_inner_size(LogicalSize::new(360.0, 260.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;
 
-    let navigation_ctx = ctx;
+    let navigation_ctx = ctx.clone();
 
     let webview = WebViewBuilder::new()
         .with_html(render_settings_html(
             env!("CARGO_PKG_VERSION"),
             start_at_login_checked(),
+            &mcp_http_checked(&ctx.home),
         ))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |url: String| navigation_is_allowed(&url, &navigation_ctx))
@@ -129,6 +146,13 @@ fn dispatch_settings_action(action: SettingsAction, ctx: &SettingsWindowContext)
             }
             (ctx.reload)();
         }
+        SettingsAction::McpHttpOn | SettingsAction::McpHttpOff => {
+            let on = action == SettingsAction::McpHttpOn;
+            if let Err(e) = crate::plugin_files::set_mcp_http_enabled(&ctx.home, on) {
+                eprintln!("turbofig: MCP over HTTP -> {on} failed: {e}");
+            }
+            (ctx.reload)();
+        }
         SettingsAction::CopyPath => {
             let manifest_path = ctx.home.join("figma-plugin").join("manifest.json");
             clipboard_for_app().copy(&manifest_path.display().to_string());
@@ -151,4 +175,32 @@ fn navigation_is_allowed(url: &str, ctx: &SettingsWindowContext) -> bool {
         dispatch_settings_action(action, ctx);
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_mcp_http_row_renders_both_states_and_leaves_no_placeholder() {
+        let on = render_settings_html("1.2.3", false, &McpHttpState::On);
+        assert!(on.contains("MCP over HTTP: On"));
+        assert!(on.contains("turbofig-action://mcp-http-off"));
+        let off = render_settings_html("1.2.3", true, &McpHttpState::Off);
+        assert!(off.contains("MCP over HTTP: Off"));
+        assert!(off.contains("turbofig-action://mcp-http-on"));
+        let unknown = render_settings_html("1.2.3", true, &McpHttpState::Unknown("x".into()));
+        assert!(unknown.contains("MCP over HTTP: unknown (see log)"));
+        for html in [on, off, unknown] {
+            assert!(!html.contains("__"));
+        }
+    }
+
+    #[test]
+    fn mcp_http_checked_follows_the_marker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert_eq!(mcp_http_checked(tmp.path()), McpHttpState::On);
+        crate::plugin_files::set_mcp_http_enabled(tmp.path(), false).expect("off");
+        assert_eq!(mcp_http_checked(tmp.path()), McpHttpState::Off);
+    }
 }

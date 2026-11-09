@@ -669,6 +669,64 @@ impl Drop for DaemonGuard {
     }
 }
 
+/// Client type returned by `connect_plugin`.
+pub type PluginWs =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Independent HMAC-SHA256 hex proof (does not reuse the daemon code).
+fn hmac_proof(token: &str, label: &str, msg: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut k = [0u8; 64];
+    k[..token.len().min(64)].copy_from_slice(&token.as_bytes()[..token.len().min(64)]);
+    let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+    let inner = Sha256::new()
+        .chain_update(&ipad)
+        .chain_update(label.as_bytes())
+        .chain_update(msg.as_bytes())
+        .finalize();
+    let out = Sha256::new()
+        .chain_update(&opad)
+        .chain_update(inner)
+        .finalize();
+    out.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Connect a mock plugin to the WS `port` with the nonce handshake: send
+/// `?nonce=`, verify the daemon's CHALLENGE proof (bound to `port`), then
+/// answer `AUTH`. Returns the authenticated socket, ready for `FILE_INFO`.
+pub async fn connect_plugin(port: u16, token: impl AsRef<str>) -> PluginWs {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as Tt;
+    let token = token.as_ref();
+    let nonce_p = "00112233445566778899aabbccddeeff";
+    let (mut ws, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/?nonce={nonce_p}"))
+            .await
+            .expect("mock plugin WS connect failed");
+    let frame = ws
+        .next()
+        .await
+        .expect("CHALLENGE frame")
+        .expect("CHALLENGE ok");
+    let Tt::Text(text) = frame else {
+        panic!("expected a CHALLENGE text frame, got {frame:?}");
+    };
+    let ch: Value = serde_json::from_str(&text).expect("CHALLENGE json");
+    assert_eq!(ch["type"], "CHALLENGE");
+    assert_eq!(
+        ch["proof"],
+        hmac_proof(token, "turbofig-ws-daemon:", &format!("{nonce_p}:{port}")),
+        "daemon proof must be bound to the token, nonce and port"
+    );
+    let nonce_d = ch["nonce"].as_str().expect("daemon nonce").to_owned();
+    let auth = json!({"type": "AUTH", "proof": hmac_proof(token, "turbofig-ws-plugin:", &nonce_d)});
+    ws.send(Tt::Text(auth.to_string()))
+        .await
+        .expect("send AUTH");
+    ws
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

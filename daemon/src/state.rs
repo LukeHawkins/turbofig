@@ -285,6 +285,9 @@ pub struct AppState {
     /// an in-process test building an `AppState` directly never writes to a
     /// real `~/.turbofig` on a successful plugin WS authentication.
     plugin_seen_path: Option<std::path::PathBuf>,
+    /// The turbofig home that holds the `mcp-http-off` marker. Set only by
+    /// `new_with_token`. `None` means "MCP over HTTP" is always on.
+    home: Option<std::path::PathBuf>,
     /// Per-connection EXECUTE/SCREENSHOT admission-control lanes. See `Lane`
     /// and `try_admit`.
     lanes: Mutex<HashMap<u64, Lane>>,
@@ -346,6 +349,7 @@ impl AppState {
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             job_counter: Arc::new(AtomicUsize::new(0)),
             plugin_seen_path,
+            home: None,
             lanes: Mutex::new(HashMap::new()),
             max_inflight,
             last_disconnect: Mutex::new(None),
@@ -396,13 +400,24 @@ impl AppState {
     /// `plugin_seen_path`, so a test building an `AppState` directly never
     /// writes that marker to a real home directory.
     pub fn new_with_token(token: String, home: &std::path::Path) -> Self {
-        Self::build(
+        let mut state = Self::build(
             request_timeout_from_env(),
             Some(bridge_dir_from_env().join("outbox")),
             token,
             Some(home.join("plugin-seen")),
             max_inflight_from_env(),
-        )
+        );
+        state.home = Some(home.to_path_buf());
+        state
+    }
+
+    /// True when `/mcp` may serve (the "MCP over HTTP" setting, default on).
+    /// Reads the `mcp-http-off` marker in the home on every call. A state
+    /// with no home (every constructor but `new_with_token`) is always on.
+    pub(crate) fn mcp_http_enabled(&self) -> bool {
+        self.home
+            .as_deref()
+            .is_none_or(crate::plugin_files::mcp_http_enabled)
     }
 
     /// Return a clone of the screenshot output directory, if configured.

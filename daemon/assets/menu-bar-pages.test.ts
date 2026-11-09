@@ -29,6 +29,8 @@ const ALLOWED_ABOUT_ACTIONS = ["copy-path", "show-plugin-folder", "copy-agent-pr
 const ALLOWED_SETTINGS_ACTIONS = [
   "start-at-login-on",
   "start-at-login-off",
+  "mcp-http-on",
+  "mcp-http-off",
   "copy-path",
   "show-plugin-folder",
 ];
@@ -105,7 +107,10 @@ describe("settings.html", () => {
   const rendered = SETTINGS_HTML_TEMPLATE.replace("__VERSION__", "1.2.3")
     .replace("__START_AT_LOGIN_STATE__", "On")
     .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
-    .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off");
+    .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off")
+    .replace("__MCP_HTTP_STATE__", "On")
+    .replace("__MCP_HTTP_TOGGLE_ACTION__", "mcp-http-off")
+    .replace("__MCP_HTTP_TOGGLE_LABEL__", "Turn off");
   const { document } = loadPage(rendered);
 
   it("has no script tag and no inline on* handler", () => {
@@ -130,6 +135,11 @@ describe("settings.html", () => {
     expect(document.body.textContent).toContain("Start at login: On");
     expect(document.querySelector("a[href='turbofig-action://start-at-login-off']")).not.toBeNull();
   });
+
+  it("renders the MCP over HTTP row with its toggle link", () => {
+    expect(document.body.textContent).toContain("MCP over HTTP: On");
+    expect(document.querySelector("a[href='turbofig-action://mcp-http-off']")).not.toBeNull();
+  });
 });
 
 describe("both pages", () => {
@@ -140,7 +150,11 @@ describe("both pages", () => {
     const settingsRendered = SETTINGS_HTML_TEMPLATE.replace("__VERSION__", "1.2.3")
       .replace("__START_AT_LOGIN_STATE__", "On")
       .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
-      .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off");
+      .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off")
+      .replace("__MCP_HTTP_STATE__", "On")
+      .replace("__MCP_HTTP_TOGGLE_ACTION__", "mcp-http-off")
+      .replace("__MCP_HTTP_TOGGLE_LABEL__", "Turn off");
+    expect(settingsRendered).not.toContain("__MCP_HTTP");
     expect(settingsRendered).not.toContain("__START_AT_LOGIN");
     expect(settingsRendered).not.toContain("__VERSION__");
   });

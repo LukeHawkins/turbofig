@@ -116,8 +116,8 @@ These risks remain. They are known and accepted.
 
 The WebSocket port (18847) needs proof of the pairing token on the upgrade:
 the plugin connects with `?nonce=`, the daemon sends `CHALLENGE` (an HMAC
-proof), the plugin verifies it and answers `AUTH`. A legacy `?token=` upgrade
-from an old plugin is still accepted. The token matches `~/.turbofig/token`.
+proof), the plugin verifies it and answers `AUTH`. A `?token=` upgrade gets
+401: the old URL-token path is removed. The token matches `~/.turbofig/token`.
 This closes a gap Origin checking
 alone leaves open: a sandboxed `<iframe>` on any web page reports Origin
 `null`, the same value the real Figma plugin UI reports, so a malicious page
@@ -205,6 +205,15 @@ pairing token as a Bearer auth header: a request without the correct token
 is rejected with 401 before it can run a job, call a tool, or stop or
 restart the daemon.
 
+The Settings window has an "MCP over HTTP" switch (default on). When it is
+off, `POST`, `GET` and `DELETE` on `/mcp` return 404 with a short JSON body
+(`code: mcp_http_off`), after the token check. The switch is the marker file
+`<home>/mcp-http-off`, created with mode 0600 and removed to turn it on. It
+applies to new requests: an open SSE stream stays open, and a client that
+reconnects gets 404. A marker that is not a regular file owned by you counts
+as off, and Settings shows "unknown (see log)".
+`/job`, `/health` and `/control` are not affected.
+
 Report a finding that breaks one of these guarantees (for example, a port
 that becomes reachable from the network, an `Origin` check that can be
 bypassed, or a file-bridge directory with loose permissions). A report that
@@ -246,7 +255,8 @@ follow the same rules below unless noted otherwise.
   `copy_mcp_json`, `open_docs`, and `page_ready`, rejecting anything else
   (including a reasonable-looking payload like `{"op":"quit"}` or an
   unknown command) with no action taken. The Settings page sends 1 of its
-  own 6: `start_at_login_on`, `start_at_login_off`, `copy_manifest_path`,
+  own 8: `start_at_login_on`, `start_at_login_off`, `mcp-http-on`,
+  `mcp-http-off`, `copy_manifest_path`,
   `open_plugin_folder`, `open_log`, `page_ready`
   (`settings_state::parse_ipc_command`, the same reject-anything-else
   rule). Neither handler ever evaluates or interprets the raw message as

@@ -13,10 +13,12 @@
 //! `call_execute` therefore reads body chunks until it has parsed one
 //! complete `data:` line, then drops the stream.
 
+mod common;
+
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+use tokio_tungstenite::tungstenite::Message as TtMessage;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -69,9 +71,7 @@ async fn connect_mock_plugin(
     file_key: &str,
     reply_tag: &'static str,
 ) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
-        .await
-        .expect("mock plugin connect");
+    let mut ws = common::connect_plugin(ws_port, state.token()).await;
 
     let fi = serde_json::json!({
         "type": "FILE_INFO",

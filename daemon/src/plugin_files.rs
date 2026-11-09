@@ -170,6 +170,110 @@ pub fn mark_plugin_seen(home: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
+/// Marker file in the turbofig home. Its presence turns "MCP over HTTP" off.
+pub(crate) const MCP_HTTP_OFF_FILE: &str = "mcp-http-off";
+
+/// The state of the "MCP over HTTP" setting, read from the marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum McpHttpState {
+    /// No marker (the default).
+    On,
+    /// A regular marker file owned by this user.
+    Off,
+    /// The marker is something else (symlink, directory, foreign owner) or
+    /// could not be read. The reason is for the log and the Settings window.
+    Unknown(String),
+}
+
+/// Reads the setting with one `lstat`: cheap enough for every `/mcp` request.
+/// Only `NotFound` means on. Only a regular file owned by this user means
+/// off. Anything else is `Unknown`.
+pub(crate) fn mcp_http_state(home: &Path) -> McpHttpState {
+    let path = home.join(MCP_HTTP_OFF_FILE);
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return McpHttpState::On,
+        Err(e) => return McpHttpState::Unknown(format!("cannot read {}: {e}", path.display())),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: `geteuid` has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.uid() != euid {
+            return McpHttpState::Unknown(format!(
+                "{} is owned by uid {}, not by this user",
+                path.display(),
+                meta.uid()
+            ));
+        }
+    }
+    if !meta.file_type().is_file() {
+        return McpHttpState::Unknown(format!(
+            "{} is not a regular file (symlink or directory); delete it",
+            path.display()
+        ));
+    }
+    McpHttpState::Off
+}
+
+/// True when `/mcp` may serve. An `Unknown` marker counts as OFF (fail
+/// closed: `/mcp` is a capability, so an odd marker must not open it). The
+/// reason goes to stderr.
+pub(crate) fn mcp_http_enabled(home: &Path) -> bool {
+    match mcp_http_state(home) {
+        McpHttpState::On => true,
+        McpHttpState::Off => false,
+        McpHttpState::Unknown(why) => {
+            eprintln!("turbofig: MCP over HTTP treated as off: {why}");
+            false
+        }
+    }
+}
+
+/// Turns "MCP over HTTP" on (remove the marker) or off (write it, mode 0600).
+/// A no-op when the state already matches. Refuses to touch a marker that is
+/// not a regular file owned by this user. The home goes through
+/// `secure_fs::ensure_private_dir`.
+pub(crate) fn set_mcp_http_enabled(home: &Path, enabled: bool) -> io::Result<()> {
+    crate::secure_fs::ensure_private_dir(home, false)?;
+    let path = home.join(MCP_HTTP_OFF_FILE);
+    match (mcp_http_state(home), enabled) {
+        (McpHttpState::Unknown(why), _) => {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, why));
+        }
+        (McpHttpState::On, true) | (McpHttpState::Off, false) => return Ok(()),
+        (McpHttpState::Off, true) => return std::fs::remove_file(&path),
+        (McpHttpState::On, false) => {}
+    }
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp_path = PathBuf::from(tmp_name);
+    // A stale or planted `.tmp` is removed (a symlink is unlinked, never
+    // followed), then the file is created fresh.
+    match std::fs::remove_file(&tmp_path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        let mut file = opts.open(&tmp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(b"off\n")?;
+    }
+    std::fs::rename(&tmp_path, &path)
+}
+
 /// Sets `path` (a file or directory) to mode 0700 and masks group/world bits
 /// for a file; see `bridge::set_owner_only` for the same reasoning applied to
 /// the file-bridge's inbox/outbox. A failure here is not swallowed, unlike
@@ -336,6 +440,84 @@ mod tests {
             plugin_files_outdated(tmp.path(), "tok"),
             "a leftover root-level ui.html must count as outdated"
         );
+    }
+
+    #[test]
+    fn mcp_http_is_on_by_default_and_the_marker_toggles_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(mcp_http_enabled(tmp.path()));
+        assert_eq!(mcp_http_state(tmp.path()), McpHttpState::On);
+        set_mcp_http_enabled(tmp.path(), false).expect("turn off");
+        assert!(!mcp_http_enabled(tmp.path()));
+        assert_eq!(mcp_http_state(tmp.path()), McpHttpState::Off);
+        set_mcp_http_enabled(tmp.path(), false).expect("turn off twice");
+        set_mcp_http_enabled(tmp.path(), true).expect("turn on");
+        assert!(mcp_http_enabled(tmp.path()));
+        set_mcp_http_enabled(tmp.path(), true).expect("turn on twice");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mcp_http_off_marker_has_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        set_mcp_http_enabled(tmp.path(), false).expect("turn off");
+        let mode = std::fs::metadata(tmp.path().join(MCP_HTTP_OFF_FILE))
+            .expect("stat marker")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_tmp_is_not_followed() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("victim");
+        std::fs::write(&target, "keep me").expect("write victim");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let tmp_marker = tmp.path().join(format!("{MCP_HTTP_OFF_FILE}.tmp"));
+        std::os::unix::fs::symlink(&target, &tmp_marker).expect("symlink");
+        set_mcp_http_enabled(tmp.path(), false).expect("turn off");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "the symlink target must not be chmodded");
+        assert_eq!(mcp_http_state(tmp.path()), McpHttpState::Off);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_marker_is_unknown_fails_closed_and_is_not_changed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("elsewhere");
+        std::fs::write(&target, "x").expect("write");
+        let marker = tmp.path().join(MCP_HTTP_OFF_FILE);
+        std::os::unix::fs::symlink(&target, &marker).expect("symlink");
+        assert!(matches!(
+            mcp_http_state(tmp.path()),
+            McpHttpState::Unknown(_)
+        ));
+        assert!(!mcp_http_enabled(tmp.path()));
+        assert!(set_mcp_http_enabled(tmp.path(), true).is_err());
+        assert!(set_mcp_http_enabled(tmp.path(), false).is_err());
+        assert!(std::fs::symlink_metadata(&marker)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn a_directory_marker_is_unknown_fails_closed_and_errors_on_toggle() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tmp.path().join(MCP_HTTP_OFF_FILE)).expect("mkdir");
+        assert!(matches!(
+            mcp_http_state(tmp.path()),
+            McpHttpState::Unknown(_)
+        ));
+        assert!(!mcp_http_enabled(tmp.path()));
+        assert!(set_mcp_http_enabled(tmp.path(), true).is_err());
     }
 
     #[test]

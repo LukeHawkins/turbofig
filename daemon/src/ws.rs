@@ -4,7 +4,6 @@ use crate::config::{bridge_dir_display, port_from_env};
 use crate::daemon_auth::{self, LABEL_WS_DAEMON, LABEL_WS_PLUGIN};
 use crate::mcp::host_allowed;
 use crate::state::AppState;
-use crate::token::constant_time_eq;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -305,26 +304,15 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
     }
 }
 
-/// Query parameters accepted on the WS upgrade. Only `token` and `nonce` are read; any
-/// other parameter is ignored rather than rejected, so a future addition
-/// never breaks an older plugin's URL.
+/// Query parameters read on the WS upgrade. Any other parameter is ignored.
+/// A `token` parameter (the removed 0.1.0 plugin auth) is refused with 401.
 #[derive(serde::Deserialize)]
 struct WsAuthQuery {
     #[serde(default)]
     token: Option<String>,
-    /// Plugin nonce for the challenge handshake (used when `token` is absent).
+    /// Plugin nonce for the challenge handshake.
     #[serde(default)]
     nonce: Option<String>,
-}
-
-/// Returns true when `candidate` matches `expected` in constant time.
-/// A missing `candidate` (no `token` query parameter at all) is rejected
-/// without comparison: there is nothing to compare, not a same-length miss.
-fn token_allowed(candidate: Option<&str>, expected: &str) -> bool {
-    match candidate {
-        Some(c) => constant_time_eq(c, expected),
-        None => false,
-    }
 }
 
 /// Returns true when `origin` is acceptable for the plugin WebSocket.
@@ -384,7 +372,7 @@ async fn challenge_handshake(
     }
 }
 
-/// Upgraded nonce connection: authenticate first, then behave like a token one.
+/// Upgraded nonce connection: authenticate first, then serve the plugin.
 async fn handle_challenge_socket(
     mut socket: WebSocket,
     state: Arc<AppState>,
@@ -412,8 +400,9 @@ async fn handle_challenge_socket(
 ///
 /// Rejects the upgrade with 403 when the Origin header is present and is
 /// neither absent nor "null" (the MCP spec's Origin-validation requirement).
-/// Then rejects with 401 when the `token` query parameter is missing or does
-/// not match the daemon's pairing token: Origin alone cannot tell the real
+/// Then rejects with 401 unless the request carries a valid `nonce` and no
+/// `token` parameter. The plugin then proves the pairing token in the
+/// CHALLENGE/AUTH handshake: Origin alone cannot tell the real
 /// Figma plugin UI apart from a sandboxed `<iframe>` on a malicious web page,
 /// since both report Origin `null` (see `token.rs`).
 async fn ws_handler(
@@ -447,15 +436,9 @@ async fn upgrade(
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
-    if let Some(token) = auth.token.as_deref() {
-        // Legacy path: the plugin sent the token in the URL.
-        if !token_allowed(Some(token), state.token()) {
-            return unauthorized();
-        }
-        state.mark_plugin_seen();
-        return ws
-            .on_upgrade(move |socket| handle_socket(socket, state, ctx.timings))
-            .into_response();
+    if auth.token.is_some() {
+        // Old plugins sent the token in the URL. That path is removed.
+        return unauthorized();
     }
     match auth.nonce {
         Some(nonce) if daemon_auth::valid_nonce(&nonce) => {
@@ -559,27 +542,6 @@ mod tests {
         assert!(ws_origin_allowed(Some(
             &axum::http::HeaderValue::from_static("null")
         )));
-    }
-
-    #[test]
-    fn token_allowed_accepts_a_matching_token() {
-        assert!(token_allowed(Some("abc123"), "abc123"));
-    }
-
-    #[test]
-    fn token_allowed_rejects_a_wrong_token() {
-        assert!(!token_allowed(Some("wrong"), "abc123"));
-    }
-
-    #[test]
-    fn token_allowed_rejects_a_missing_token() {
-        assert!(!token_allowed(None, "abc123"));
-    }
-
-    #[test]
-    fn token_allowed_rejects_a_token_of_the_wrong_length() {
-        assert!(!token_allowed(Some("abc12"), "abc123"));
-        assert!(!token_allowed(Some("abc1234"), "abc123"));
     }
 
     #[test]
@@ -860,9 +822,12 @@ mod tests {
                 .await
                 .is_err()
         );
-        // The legacy token path is not limited by the cap.
+        // The removed legacy token path gets 401, cap or not.
         let legacy = format!("ws://127.0.0.1:{port}/?token={}", state.token());
-        assert!(tokio_tungstenite::connect_async(legacy).await.is_ok());
+        match tokio_tungstenite::connect_async(legacy).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status(), 401),
+            other => panic!("expected 401, got {other:?}"),
+        }
         drop(held);
     }
 

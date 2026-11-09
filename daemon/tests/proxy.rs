@@ -19,7 +19,7 @@ use common::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
-use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+use tokio_tungstenite::tungstenite::Message as TtMessage;
 
 // ── HTTP MCP tools/list, for comparison against the stdio one (test a) ──────
 
@@ -532,9 +532,7 @@ async fn an_in_flight_request_killed_mid_call_is_never_retried() {
     // A mock plugin that never replies to EXECUTE: once it forwards the
     // request, the job stays in flight from the daemon's point of view for
     // as long as the daemon itself is alive.
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
-        .await
-        .expect("mock plugin connect");
+    let mut plugin_ws = common::connect_plugin(ws_port, &token).await;
     plugin_ws
         .send(TtMessage::Text(
             json!({"type": "FILE_INFO", "fileKey": "silent-file", "name": "Silent File"})
@@ -614,9 +612,7 @@ async fn an_in_flight_request_killed_mid_call_is_never_retried() {
 /// request it receives, echoing the fileKey back so a caller can tell which
 /// plugin actually answered.
 async fn spawn_replying_plugin(ws_port: u16, token: &str, file_key: &'static str) {
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
-        .await
-        .expect("mock plugin connect");
+    let mut plugin_ws = common::connect_plugin(ws_port, &token).await;
     plugin_ws
         .send(TtMessage::Text(
             json!({"type": "FILE_INFO", "fileKey": file_key, "name": file_key}).to_string(),

@@ -22,7 +22,7 @@ use common::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
-use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+use tokio_tungstenite::tungstenite::Message as TtMessage;
 
 /// Clearly older than any real build of this crate (which is pre-1.0 today,
 /// and will never retroactively become 0.0.x again).
@@ -234,9 +234,7 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
     // A mock plugin that deliberately sits on an EXECUTE request for a while
     // before replying, so the job stays in flight across the restart's drain.
     const JOB_DELAY: Duration = Duration::from_millis(1500);
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
-        .await
-        .expect("mock plugin connect");
+    let mut plugin_ws = common::connect_plugin(ws_port, &token).await;
     plugin_ws
         .send(TtMessage::Text(
             json!({"type": "FILE_INFO", "fileKey": "slow-file", "name": "Slow File"}).to_string(),
@@ -345,9 +343,7 @@ async fn initialize_answers_well_before_a_slow_version_handoff_drain_finishes() 
     // what the test actually proves.
     const JOB_DELAY: Duration = Duration::from_secs(8);
     const INITIALIZE_BUDGET: Duration = Duration::from_secs(3);
-    let (mut plugin_ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={token}"))
-        .await
-        .expect("mock plugin connect");
+    let mut plugin_ws = common::connect_plugin(ws_port, &token).await;
     plugin_ws
         .send(TtMessage::Text(
             json!({"type": "FILE_INFO", "fileKey": "slow-file", "name": "Slow File"}).to_string(),

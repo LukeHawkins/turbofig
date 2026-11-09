@@ -479,6 +479,28 @@ async fn require_bearer_token(
     next.run(req).await
 }
 
+/// Answers `/mcp` with 404 and a short JSON body while "MCP over HTTP" is
+/// off in Settings. Runs after the bearer check, so an unauthenticated caller
+/// learns nothing. `/job`, `/health` and `/control` never pass through here.
+async fn mcp_http_gate(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if !state.mcp_http_enabled() {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "code": "mcp_http_off",
+                "error": "MCP over HTTP is turned off in turbofig Settings. Use the file-bridge or `turbofig mcp`.",
+            })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
 /// The version `/health` reports.
 ///
 /// Always the real build version (`CARGO_PKG_VERSION`), with one escape
@@ -634,7 +656,14 @@ fn build_router_with_keep_alive(state: Arc<AppState>, keep_alive: Duration) -> a
             "/control",
             axum::routing::post(crate::control::control_handler),
         )
-        .nest_service("/mcp", service)
+        .merge(
+            axum::Router::new()
+                .nest_service("/mcp", service)
+                .route_layer(axum::middleware::from_fn_with_state(
+                    health_state.clone(),
+                    mcp_http_gate,
+                )),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             health_state.clone(),
             require_bearer_token,
@@ -1406,6 +1435,98 @@ mod tests {
             .body(axum::body::Body::from(body.to_string()))
             .expect("build request");
         router.oneshot(req).await.expect("router must respond")
+    }
+
+    /// A state whose home holds (or lacks) the `mcp-http-off` marker.
+    fn state_with_mcp_http(enabled: bool) -> (Arc<AppState>, tempfile::TempDir) {
+        let home = tempfile::tempdir().expect("tempdir");
+        crate::plugin_files::set_mcp_http_enabled(home.path(), enabled).expect("set marker");
+        let state = Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
+        (state, home)
+    }
+
+    fn mcp_init_body() -> Value {
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-03-26","capabilities":{},
+            "clientInfo":{"name":"t","version":"0"}}})
+    }
+
+    #[tokio::test]
+    async fn mcp_returns_404_json_when_mcp_http_is_off() {
+        let (state, _home) = state_with_mcp_http(false);
+        let token = state.token().to_owned();
+        let router = build_router(state);
+        for method in ["POST", "GET", "DELETE"] {
+            let req = axum::http::Request::builder()
+                .method(method)
+                .uri("/mcp")
+                .header(axum::http::header::HOST, "127.0.0.1")
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .expect("build request");
+            let resp = router.clone().oneshot(req).await.expect("respond");
+            assert_eq!(resp.status(), 404, "{method}");
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let v: Value = serde_json::from_slice(&bytes).expect("json");
+            assert_eq!(v["ok"], false);
+            assert_eq!(v["code"], "mcp_http_off");
+            assert_eq!(
+                v["error"],
+                "MCP over HTTP is turned off in turbofig Settings. Use the file-bridge or `turbofig mcp`."
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_works_when_mcp_http_is_on() {
+        let (state, _home) = state_with_mcp_http(true);
+        let token = state.token().to_owned();
+        let resp = post_mcp(build_router(state), &token, None, mcp_init_body()).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn mcp_http_off_applies_to_the_next_request_and_back_on() {
+        let (state, home) = state_with_mcp_http(true);
+        let token = state.token().to_owned();
+        let router = build_router(state);
+        crate::plugin_files::set_mcp_http_enabled(home.path(), false).expect("off");
+        let resp = post_mcp(router.clone(), &token, None, mcp_init_body()).await;
+        assert_eq!(resp.status(), 404);
+        crate::plugin_files::set_mcp_http_enabled(home.path(), true).expect("on");
+        let resp = post_mcp(router, &token, None, mcp_init_body()).await;
+        assert_eq!(resp.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn mcp_http_off_without_a_token_is_still_401() {
+        let (state, _home) = state_with_mcp_http(false);
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let resp = build_router(state).oneshot(req).await.expect("respond");
+        assert_eq!(resp.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn job_and_health_are_unaffected_when_mcp_http_is_off() {
+        let (state, _home) = state_with_mcp_http(false);
+        let token = state.token().to_owned();
+        let router = build_router(state);
+        let (status, body) = post_job(router.clone(), &token, json!({"op": "status"})).await;
+        assert_ne!(status, 404, "/job must not be gated: {body}");
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .header(axum::http::header::HOST, "127.0.0.1")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+        let resp = router.oneshot(req).await.expect("respond");
+        assert_eq!(resp.status(), 200);
     }
 
     /// Open a session, then idle `idle` of virtual time, then call `tools/list`.

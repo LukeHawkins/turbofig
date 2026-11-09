@@ -9,10 +9,12 @@
 //! No fixed port numbers are used. Synchronisation waits on observable state,
 //! not on bare fixed sleeps.
 
+mod common;
+
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite::Message as TtMessage};
+use tokio_tungstenite::tungstenite::Message as TtMessage;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,9 +49,7 @@ async fn connect_mock_plugin(
     file_key: &str,
     reply_tag: &'static str,
 ) {
-    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
-        .await
-        .expect("mock plugin connect");
+    let mut ws = common::connect_plugin(ws_port, state.token()).await;
 
     let fi = serde_json::json!({
         "type": "FILE_INFO",
@@ -228,10 +228,7 @@ async fn test_fk2_survives_fk1_close() {
     connect_mock_plugin(ws_port, &state, "fk2", "fk2-reply").await;
 
     // Connect fk1 as a raw socket so we can close it deliberately.
-    let (mut fk1_ws, _) =
-        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
-            .await
-            .expect("fk1 connect");
+    let mut fk1_ws = common::connect_plugin(ws_port, state.token()).await;
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({
@@ -300,10 +297,7 @@ async fn test_timeout_isolation_two_connections() {
     });
 
     // Connect fk1 as a silent plugin. It registers but never sends EXECUTE replies.
-    let (mut fk1_ws, _) =
-        connect_async(format!("ws://127.0.0.1:{ws_port}/?token={}", state.token()))
-            .await
-            .expect("fk1 connect");
+    let mut fk1_ws = common::connect_plugin(ws_port, state.token()).await;
     fk1_ws
         .send(TtMessage::Text(
             serde_json::json!({"type": "FILE_INFO", "fileKey": "fk1", "name": "fk1"}).to_string(),
