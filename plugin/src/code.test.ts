@@ -640,6 +640,37 @@ describe("createDispatcher", () => {
     expect((posted[1] as { type: string }).type).toBe("PORT");
   });
 
+  test("READY also replies PROMPT_MODE: file by default, mcp when stored", async () => {
+    const settle = () => new Promise((r) => setTimeout(r, 10));
+    const a: { type: string; mode?: string }[] = [];
+    createDispatcher(makeMockFigma(), (m) => a.push(m as { type: string }))({ type: "READY" });
+    await settle();
+    expect(a.find((m) => m.type === "PROMPT_MODE")?.mode).toBe("file");
+
+    const b: { type: string; mode?: string }[] = [];
+    const figma = makeMockFigma({
+      clientStorage: { getAsync: async () => "mcp", setAsync: async () => {} },
+    });
+    createDispatcher(figma, (m) => b.push(m as { type: string }))({ type: "READY" });
+    await settle();
+    expect(b.find((m) => m.type === "PROMPT_MODE")?.mode).toBe("mcp");
+  });
+
+  test("SET_PROMPT_MODE persists the mode under turbofig:promptMode", async () => {
+    const saved: [string, unknown][] = [];
+    const figma = makeMockFigma({
+      clientStorage: {
+        getAsync: async () => undefined,
+        setAsync: async (k: string, v: unknown) => {
+          saved.push([k, v]);
+        },
+      },
+    });
+    createDispatcher(figma, () => {})({ type: "SET_PROMPT_MODE", mode: "mcp" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(saved).toEqual([["turbofig:promptMode", "mcp"]]);
+  });
+
   test("STATUS bypasses the queue and replies immediately, even behind a slow EXECUTE", async () => {
     const posted: { type?: string; requestId?: number }[] = [];
     const dispatch = createDispatcher(makeMockFigma(), (m) =>

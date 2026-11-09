@@ -803,6 +803,13 @@ describe("isInboundMessage", () => {
     expect(isInboundMessage({ type: "SET_PORT", port: 18847 })).toBe(true);
   });
 
+  test("accepts SET_PROMPT_MODE only with mode file or mcp", () => {
+    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "file" })).toBe(true);
+    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "mcp" })).toBe(true);
+    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "x" })).toBe(false);
+    expect(isInboundMessage({ type: "SET_PROMPT_MODE" })).toBe(false);
+  });
+
   test("rejects SET_PORT missing port", () => {
     expect(isInboundMessage({ type: "SET_PORT" })).toBe(false);
   });

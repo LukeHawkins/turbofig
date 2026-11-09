@@ -245,6 +245,25 @@
         background: var(--c-offline);
       }
 
+      /* === WORKING INDICATOR ============================================= */
+      /* Luke: tune the look here. JS toggles body.working while a job runs
+         (STARTED seen, RESULT not yet). Effect: the status dot pulses.
+         Theme colours only, no layout shift (opacity/transform on the dot).
+         Reduced motion: no animation, the dot becomes a solid ring instead. */
+      body.working #conn-status.connected::before {
+        animation: tf-working 1.1s ease-in-out infinite;
+      }
+      @keyframes tf-working {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.35; transform: scale(1.5); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        body.working #conn-status.connected::before {
+          animation: none;
+          box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--c-connected);
+        }
+      }
+
       /* === STALE WARNING ================================================= */
       /* Hidden by default; shown when daemon and plugin versions differ. */
       .stale-banner {
@@ -413,6 +432,34 @@
         opacity: 1;
       }
 
+      .radio-group {
+        margin: 0;
+        padding: 0;
+        border: none;
+        min-width: 0;
+      }
+      .radio-group legend {
+        padding: 0;
+        margin-bottom: var(--sp-1);
+      }
+      .radio-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-1) var(--sp-3);
+      }
+      .radio-opt {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+        font-size: 14px;
+        color: var(--text);
+        cursor: pointer;
+      }
+      .radio-opt input {
+        margin: 0;
+        accent-color: var(--bg-brand);
+      }
+
       .controls-row {
         display: flex;
         gap: var(--sp-3);
@@ -531,6 +578,15 @@
           <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
         </section>
       </div>
+
+      <!-- Prompt mode: which template the copy-prompt button builds. -->
+      <fieldset class="control-section radio-group">
+        <legend class="control-label">Copy prompt for</legend>
+        <div class="radio-row">
+          <label class="radio-opt"><input type="radio" name="prompt-mode" value="file" checked />File bridge (default)</label>
+          <label class="radio-opt"><input type="radio" name="prompt-mode" value="mcp" />MCP</label>
+        </div>
+      </fieldset>
 
       <!-- Activity log -->
       <section class="log-section" aria-label="Activity">

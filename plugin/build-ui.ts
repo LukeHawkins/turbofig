@@ -67,6 +67,12 @@ const pairingToken = readLocalToken();
  */
 const agentPromptTemplate = readFileSync(join(scriptDir, "../prompts/agent-prompt.txt"), "utf8");
 
+/** The MCP variant of the connect prompt, chosen by the "Copy prompt for" setting. */
+const agentPromptMcpTemplate = readFileSync(
+  join(scriptDir, "../prompts/agent-prompt-mcp.txt"),
+  "utf8",
+);
+
 /**
  * Stable comment markers wrapped around the token literal in the bundled
  * output. A local build (see `readLocalToken` above) can embed a real token
@@ -96,6 +102,7 @@ const result = await Bun.build({
     __PLUGIN_VERSION__: JSON.stringify(pluginVersion),
     __TURBOFIG_PAIRING_TOKEN__: JSON.stringify(pairingToken),
     __AGENT_PROMPT_TEMPLATE__: JSON.stringify(agentPromptTemplate),
+    __AGENT_PROMPT_MCP_TEMPLATE__: JSON.stringify(agentPromptMcpTemplate),
   },
 });
 

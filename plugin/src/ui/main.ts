@@ -23,11 +23,14 @@ import {
   type LinkHealth,
   mainMessageAction,
   NO_TOKEN_LABEL,
+  type PromptMode,
   parsePort,
+  parsePromptMode,
   portMessageAction,
   screenSize,
   staleWarning,
   statusOverride,
+  trackActiveJobs,
 } from "./ui-logic";
 
 /** Build-time constant injected by build-ui.ts via Bun.build define. */
@@ -48,6 +51,14 @@ declare const __TURBOFIG_PAIRING_TOKEN__: string;
  * can never drift apart. See `fillAgentPrompt` in `ui-logic.ts`.
  */
 declare const __AGENT_PROMPT_TEMPLATE__: string;
+/** Build-time constant: the MCP variant (`prompts/agent-prompt-mcp.txt`). */
+declare const __AGENT_PROMPT_MCP_TEMPLATE__: string;
+
+/** Chosen "Copy prompt for" mode. Updated when PROMPT_MODE arrives and on user choice. */
+let promptMode: PromptMode = "file";
+
+/** Request ids of jobs the plugin is running now (STARTED seen, RESULT not yet). */
+let activeJobs: ReadonlySet<number> = new Set();
 
 /** Active daemon port. Updated when PORT arrives from the main thread. */
 let currentPort = 18847;
@@ -67,6 +78,9 @@ const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
 const activityLogEl = document.getElementById("activity-log") as HTMLElement;
 const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
+const promptModeEls = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="prompt-mode"]'),
+);
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
 const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
 const navMoreBtn = document.getElementById("nav-more") as HTMLButtonElement;
@@ -99,6 +113,16 @@ const CONN_LABELS: Record<string, string> = {
   connecting: "Connecting...",
   reconnecting: "Reconnecting...",
 };
+
+/** Marks the status dot as working while at least 1 job runs. CSS block: "WORKING INDICATOR". */
+function setWorking(): void {
+  document.body.classList.toggle("working", activeJobs.size > 0);
+}
+
+/** Checks the radio that matches the prompt mode. */
+function showPromptMode(): void {
+  for (const el of promptModeEls) el.checked = el.value === promptMode;
+}
 
 /** Updates the connection status element from a WS lifecycle event. */
 /** Handshake health across reconnects (sticky status text). */
@@ -217,7 +241,7 @@ if (copyConnectBtn) {
     if (copyConnectBtn.classList.contains("copied")) return;
     if (!latestFileInfo?.fileKey) return;
     const prompt = fillAgentPrompt(
-      __AGENT_PROMPT_TEMPLATE__,
+      promptMode === "mcp" ? __AGENT_PROMPT_MCP_TEMPLATE__ : __AGENT_PROMPT_TEMPLATE__,
       [{ fileKey: latestFileInfo.fileKey, name: latestFileInfo.name }],
       daemonBridgeHome,
       daemonMcpPort,
@@ -225,6 +249,15 @@ if (copyConnectBtn) {
     if (clipboardCopy(prompt)) {
       setCopiedFeedback(copyConnectBtn);
     }
+  });
+}
+
+/* Persist the chosen prompt mode through the main thread. */
+for (const el of promptModeEls) {
+  el.addEventListener("change", () => {
+    if (!el.checked) return;
+    promptMode = parsePromptMode(el.value);
+    parent.postMessage({ pluginMessage: { type: "SET_PROMPT_MODE", mode: promptMode } }, "*");
   });
 }
 
@@ -311,6 +344,9 @@ function connect(): void {
 
   socket.onclose = () => {
     if (ws === socket) verified = false;
+    /* No result can arrive on a closed socket: end the working state. */
+    activeJobs = new Set();
+    setWorking();
     linkHealth = healthAfterClose(linkHealth, { sawChallenge, failedVerification: failed });
     scheduleReconnect();
   };
@@ -426,6 +462,11 @@ window.onmessage = (event: MessageEvent) => {
     }
     return;
   }
+  if (action === "promptmode") {
+    promptMode = parsePromptMode(m.mode);
+    showPromptMode();
+    return;
+  }
   if (action === "fileinfo") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
@@ -434,6 +475,12 @@ window.onmessage = (event: MessageEvent) => {
       ws.send(JSON.stringify(m));
     }
     return;
+  }
+  /* Count running jobs from STARTED and RESULT for the working indicator. */
+  const nextJobs = trackActiveJobs(activeJobs, m.type, m.requestId);
+  if (nextJobs !== activeJobs) {
+    activeJobs = nextJobs;
+    setWorking();
   }
   /* Relay RESULT and all other main-thread messages over the WS. */
   if (ws && verified && ws.readyState === 1 /* OPEN */) {

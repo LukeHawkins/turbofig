@@ -37,6 +37,25 @@ export interface PortMessage {
 }
 
 /**
+ * Sent by the plugin UI iframe to persist the chosen "Copy prompt for" mode
+ * ("file" or "mcp") in clientStorage. Never forwarded over the WebSocket.
+ */
+export interface SetPromptModeMessage {
+  type: "SET_PROMPT_MODE";
+  mode: "file" | "mcp";
+}
+
+/**
+ * Sent by the plugin main thread to the UI with the stored prompt mode.
+ * Emitted on READY and after each accepted SET_PROMPT_MODE. Never travels
+ * over the WebSocket.
+ */
+export interface PromptModeMessage {
+  type: "PROMPT_MODE";
+  mode: "file" | "mcp";
+}
+
+/**
  * Sent by the plugin UI iframe to the plugin main thread to resize the panel.
  * The main thread calls figma.ui.resize with the given dimensions.
  * Never forwarded over the WebSocket.
@@ -203,6 +222,7 @@ export type InboundMessage =
   | GetSelectionMessage
   | ScreenshotMessage
   | SetPortMessage
+  | SetPromptModeMessage
   | ResizeMessage
   | ReadyMessage;
 
@@ -244,6 +264,8 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       );
     case "SET_PORT":
       return typeof msg.port === "number";
+    case "SET_PROMPT_MODE":
+      return msg.mode === "file" || msg.mode === "mcp";
     case "RESIZE":
       return typeof msg.width === "number" && typeof msg.height === "number";
     case "READY":

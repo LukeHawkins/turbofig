@@ -412,6 +412,20 @@ async function emitStoredPort(figma: PluginAPI, post: (msg: unknown) => void): P
   post({ type: "PORT", port });
 }
 
+/** clientStorage key for the "Copy prompt for" mode. */
+const PROMPT_MODE_KEY = "turbofig:promptMode";
+
+/** Reads the stored prompt mode ("file" by default) and posts it via the given sink. */
+async function emitStoredPromptMode(figma: PluginAPI, post: (msg: unknown) => void): Promise<void> {
+  let stored: unknown;
+  try {
+    stored = await figma.clientStorage.getAsync(PROMPT_MODE_KEY);
+  } catch {
+    stored = undefined;
+  }
+  post({ type: "PROMPT_MODE", mode: stored === "mcp" ? "mcp" : "file" });
+}
+
 /**
  * Builds a ResultMessage for a job that expired while still waiting in the
  * queue: it never ran, so a retry is unconditionally safe.
@@ -520,6 +534,7 @@ export function createDispatcher(
            the stored port so neither message can be missed by a late listener. */
         emitFileInfo(figma, post);
         void emitStoredPort(figma, post);
+        void emitStoredPromptMode(figma, post);
         break;
       case "STATUS":
         post(buildResult(msg, figma.fileKey ?? "", figma.root.name));
@@ -546,6 +561,12 @@ export function createDispatcher(
             // Persisting the port failed (e.g. clientStorage quota/unavailable);
             // the UI keeps its current port and the user can retry.
           });
+        break;
+      case "SET_PROMPT_MODE":
+        /* Persist the mode; the UI already shows it, so no reply is needed. */
+        figma.clientStorage.setAsync(PROMPT_MODE_KEY, msg.mode).catch(() => {
+          // Persisting failed; the choice still holds for this session.
+        });
         break;
       case "RESIZE":
         /* Resize the plugin panel to the dimensions requested by the UI. */

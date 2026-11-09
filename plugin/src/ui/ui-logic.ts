@@ -71,8 +71,9 @@ export function daemonMessageAction(type: string): "welcome" | "relay" {
  * "fileinfo": store and reflect the file identity (FILE_INFO).
  * "relay": forward it over the socket (RESULT and others).
  */
-export function mainMessageAction(type: string): "port" | "fileinfo" | "relay" {
+export function mainMessageAction(type: string): "port" | "promptmode" | "fileinfo" | "relay" {
   if (type === "PORT") return "port";
+  if (type === "PROMPT_MODE") return "promptmode";
   if (type === "FILE_INFO") return "fileinfo";
   return "relay";
 }
@@ -340,11 +341,41 @@ export function fillAgentPrompt(
 
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 150). advanced: full settings view (300 x 240).
+ * main: compact status view (300 x 150). advanced: full settings view (300 x 300).
  * about: project info view (300 x 375).
  */
 export function screenSize(name: "main" | "advanced" | "about"): { width: number; height: number } {
-  if (name === "advanced") return { width: 300, height: 240 };
+  if (name === "advanced") return { width: 300, height: 300 };
   if (name === "about") return { width: 300, height: 375 };
   return { width: 300, height: 150 };
+}
+
+/** Which connect prompt the copy button builds. */
+export type PromptMode = "file" | "mcp";
+
+/** Returns the stored mode when valid, else the default "file". */
+export function parsePromptMode(x: unknown): PromptMode {
+  return x === "mcp" ? "mcp" : "file";
+}
+
+/**
+ * Updates the set of running job ids from a relayed main-thread message.
+ * STARTED adds its requestId, RESULT removes it. Other messages change
+ * nothing. Tracking ids (not a bare counter) keeps the count right when a
+ * job expires in the queue: it sends RESULT but never STARTED.
+ * Returns the same set when nothing changed.
+ */
+export function trackActiveJobs(
+  active: ReadonlySet<number>,
+  type: unknown,
+  requestId: unknown,
+): ReadonlySet<number> {
+  if (typeof requestId !== "number") return active;
+  if (type === "STARTED" && !active.has(requestId)) return new Set(active).add(requestId);
+  if (type === "RESULT" && active.has(requestId)) {
+    const next = new Set(active);
+    next.delete(requestId);
+    return next;
+  }
+  return active;
 }
