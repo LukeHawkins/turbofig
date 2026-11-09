@@ -133,7 +133,7 @@ root.appendChild(hero);
 await tf.loadFonts([{ family: "Inter", style: "Bold" }, { family: "Inter", style: "Regular" }]);
 hero.appendChild(await tf.text({ text: "The always-on Figma design agent", size: 56, family: "Inter", style: "Bold", color: "#111111" }));
 hero.appendChild(await tf.text({
-  text: "Blazing fast, token-light, never re-pair a plugin.\nBuild real Figma work from a brief in seconds.",
+  text: "Blazing fast, token-light, never re-pair a plugin.\\nBuild real Figma work from a brief in seconds.",
   size: 20,
   color: "#555555",
   width: 760,
@@ -531,7 +531,7 @@ const s15 = tf.slide({ fill: "#0F1820" });
 deckFrame.appendChild(s15);
 tf.append(s15,
   await tf.text({ text: "Case Study: Marketing Page", size: 48, family: "Inter", style: "Bold", color: "#FFFFFF" }),
-  await tf.text({ text: "Five execute calls. Nav, hero, feature grid, footer.\nFull numbers: see the published bench report.", size: 22, color: "#AAAAAA", width: 1400 }),
+  await tf.text({ text: "Five execute calls. Nav, hero, feature grid, footer.\\nFull numbers: see the published bench report.", size: 22, color: "#AAAAAA", width: 1400 }),
 );
 
 // Slide 16: case study B.
@@ -539,7 +539,7 @@ const s16 = tf.slide({ fill: "#0F1820" });
 deckFrame.appendChild(s16);
 tf.append(s16,
   await tf.text({ text: "Case Study: 20-Slide Deck", size: 48, family: "Inter", style: "Bold", color: "#FFFFFF" }),
-  await tf.text({ text: "Three batched execute calls. 20 slides, varied layouts.\nFull numbers: see the published bench report.", size: 22, color: "#AAAAAA", width: 1400 }),
+  await tf.text({ text: "Three batched execute calls. 20 slides, varied layouts.\\nFull numbers: see the published bench report.", size: 22, color: "#AAAAAA", width: 1400 }),
 );
 
 // Slide 17: roadmap.
