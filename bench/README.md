@@ -1,5 +1,7 @@
 # turbofig Benchmark
 
+turbofig is a free, open-source Figma plugin and bridge that lets AI agents design in Figma Desktop on macOS. It works through plain files, with no MCP server, no Figma token and no paid seat.
+
 An exact reproduction guide for comparing turbofig against `figma-console-mcp`.
 Every number this harness reports is either an exact wire byte count or a real
 Claude Code token count. Nothing here is estimated or invented: see

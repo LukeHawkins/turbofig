@@ -1,5 +1,7 @@
 # turbofig plugin
 
+turbofig is a free, open-source Figma plugin and bridge that lets AI agents design in Figma Desktop on macOS. It works through plain files, with no MCP server, no Figma token and no paid seat.
+
 The Figma-side half of turbofig. Thin by design: the UI iframe holds the
 WebSocket to the daemon, the main thread runs the Figma Plugin API. See
 `../ARCHITECTURE.md` for the full picture and `../CLAUDE.md` for the project hub.

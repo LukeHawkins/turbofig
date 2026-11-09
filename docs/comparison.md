@@ -1,5 +1,7 @@
 # Figma AI bridges compared: turbofig vs figma-console-mcp vs Figma's MCP server
 
+turbofig is a free, open-source Figma plugin and bridge that lets AI agents design in Figma Desktop on macOS. It works through plain files, with no MCP server, no Figma token and no paid seat.
+
 How turbofig, a file bridge with an optional MCP mode, compares with two
 Figma MCP servers: figma-console-mcp (NPX and Cloud Mode) and Figma for
 Agents, Figma's own. Tool size, speed, cost, limits and setup.

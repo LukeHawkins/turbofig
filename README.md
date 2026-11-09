@@ -5,34 +5,40 @@
     <img alt="turbofig: free Figma bridge for Claude Code, Cursor, Codex and Copilot, no MCP server needed" src="docs/wordmark-light.png" height="80">
   </picture>
 
-  <p><strong>Let AI drive Figma. Instant, lightweight, free.</strong><br>
-  <sub>No paid Figma seat. No quota. No Figma token. Free and open source, for macOS.</sub></p>
+  <h1>Let AI design in Figma for you</h1>
+  <p><sub>Free for Claude Code, Cursor, Codex and Copilot. No paid seat, no Figma token, no MCP server.</sub></p>
 
   [![CI](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml/badge.svg)](https://github.com/LukeHawkins/turbofig/actions/workflows/ci.yml)
   [![Release](https://img.shields.io/github/v/release/LukeHawkins/turbofig)](https://github.com/LukeHawkins/turbofig/releases)
   [![License: MIT](https://img.shields.io/github/license/LukeHawkins/turbofig)](LICENSE)
-  [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#)
+  [![Last commit](https://img.shields.io/github/last-commit/LukeHawkins/turbofig)](https://github.com/LukeHawkins/turbofig/commits/main)
+  [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](#get-started)
 </div>
 
-<!-- DEMO VIDEO: replace with a GitHub user-attachments video URL. Drag the .mp4 into the README in GitHub's web editor to get one. Optional caption below it, only if true: <sub>Real speed, not sped up.</sub> -->
+<!-- DEMO VIDEO (planned): a short designer demo, a written brief becoming a Figma page, as a video or GIF. Replace this comment with a GitHub user-attachments video URL. Drag the .mp4 into the README in GitHub's web editor to get one. Optional caption below it, only if true: <sub>Real speed, not sped up.</sub> -->
 
 ---
 
-turbofig is a free, open-source **Figma bridge for AI agents** on macOS.
-It talks to your agent through plain files, so it needs no MCP server (an
-MCP mode is there if you prefer). Ask Claude Code, Cursor, Codex or
-Copilot for real Figma work in plain English, and watch it build in the
-file you have open.
+turbofig is a free, open-source Figma plugin and bridge that lets AI agents design in Figma Desktop on macOS. It works through plain files, with no MCP server, no Figma token and no paid seat.
+
+**Designers and creative technologists:** ask Claude Code, Cursor, Codex or
+Copilot to design in Figma in plain English. Get a landing page, a slide
+deck or a component library from a written brief, built in the file you
+have open. Works on a free Figma Starter team (tested 2026-10-10). An MCP
+mode is there if you prefer.
+
+Install in 2 Terminal lines, no coding needed. See [Get started](#get-started).
 
 - **Fast, start to finish.** Ready the moment your AI starts and already
   connected, so your first request lands in your file in seconds. Nothing
   to start, nothing to reconnect, no approval stops in the middle of a
-  job. In a side-by-side design session, it finished in half the
-  time.
+  job. In a side-by-side design session, it finished in half the time (one run, see
+  [Benchmark](#benchmark)).
 - **Far lighter on tokens.** The same design session used 2.8× fewer
-  tokens. Each screenshot costs about 3× fewer, and your AI learns 4
-  actions instead of 121. Less of your AI plan goes on overhead, so long
-  sessions go further.
+  tokens. Each screenshot costs 2.7× fewer, and your AI learns 4
+  actions instead of the 121 in figma-console-mcp (NPX mode). Tokens are
+  the units your AI plan counts. Less of your plan goes on overhead, so
+  long sessions go further.
 - **Free to use.** No paid Figma seat, no monthly quota.
 
 <sub>See [how turbofig compares](#how-turbofig-compares) and [the benchmark](#benchmark).</sub>
@@ -54,7 +60,7 @@ file you have open.
 - **No approval clicks, if your setup asks for them.** Some setups ask you
   to approve every tool call, or block adding MCP servers. turbofig talks
   to your AI through plain files, so it avoids both and a long job can
-  run without you. See [docs/reliability.md](docs/reliability.md).
+  run without you. See [why long jobs never stop for approval](docs/reliability.md).
 
 ## Why I made it
 
@@ -72,14 +78,15 @@ worrying about the cost.
 
 ## What you can ask it
 
+- Build a first mockup from a written brief.
+- Lay out a slide deck or a storyboard from a text outline.
 - Build a pricing page frame from my existing components.
+- Make a dark-mode variant of this frame.
 - Resize one master frame into a full set of ad and social formats.
 - Swap copy across dozens of frames and keep every text style intact.
-- Rename or restyle hundreds of layers to match a naming rule.
 - Create a set of button components with size and state variants.
 - Update a text style or a color variable everywhere it is used.
-- Make a dark-mode variant of this frame.
-- Lay out a slide deck or a storyboard from a text outline.
+- Rename or restyle hundreds of layers to match a naming rule.
 - Generate a grid of frames from a CSV or JSON list.
 - Match a coded component's spacing, colors and type in Figma so design
   and code agree.
@@ -87,14 +94,14 @@ worrying about the cost.
 turbofig can run any script a Figma plugin could run, so variables,
 components, component sets and styles all work. Scriptable too: any process that
 can write a job file to the bridge folder can drive turbofig, not only a
-chat agent.
+chat agent. Creative technologists: see [the 4 tools and `turbofig_execute` examples](docs/tools.md).
 
 ## Get started
 
 Takes a few minutes, most of it waiting for Homebrew.
 
-You need an AI agent that can work with files on your Mac, such as Claude
-Code, Cursor or Copilot CLI.
+You need an AI agent that can work with files on your Mac (for example
+Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
 
 1. **Install.** New to the terminal? No coding needed: open the Terminal
    app, paste these 2 lines, and press Return after each. Need Homebrew
@@ -105,8 +112,8 @@ Code, Cursor or Copilot CLI.
    turbofig
    ```
 
-   This installs and opens `turbofig.app` and starts it in the background.
-   A tf icon appears in your menu bar. Click it and choose **About
+   The first command installs turbofig. The second command opens
+   `turbofig.app` and starts it in the background. A tf icon appears in your menu bar. Click it and choose **About
    turbofig…** to get started.
 
    <p align="center">
@@ -129,8 +136,16 @@ Code, Cursor or Copilot CLI.
    same prompt. Chat apps that run in a browser cannot reach your Mac, so
    they cannot use turbofig.
 
-**Prefer MCP (how apps like Claude Code plug in extra tools)?** Claude
-Code: `claude mcp add turbofig -- turbofig mcp`. See
+4. **Verify.** In the Terminal, run `turbofig status`. It prints
+   `turbofig daemon: version X, up Ns`, then `- <file name> (<file key>)
+   plugin X` for each connected Figma file. If it prints `No Figma file
+   connected.`, run the plugin in your file.
+
+<sub>Coding agent? Steps 2 and 3 need GUI clicks, so stop and ask the user
+to do them. Use the prompt in [docs/agents.md](docs/agents.md).</sub>
+
+**Prefer MCP? (developers)** MCP is a standard way for AI apps to add
+tools. Claude Code: `claude mcp add turbofig -- turbofig mcp`. See
 [docs/mcp-clients.md](docs/mcp-clients.md) for this and other MCP clients.
 
 ## How turbofig compares
@@ -151,10 +166,10 @@ Code: `claude mcp add turbofig -- turbofig mcp`. See
 | Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
 
 **Bottom line:** if you work in Figma Desktop, turbofig is the only option
-here that needs no MCP server, no token and no extra setup. It gives your
+in this table that needs no MCP server, no token and no extra setup. It gives your
 AI full scripting power with the lightest load, for free.
 
-<sub>Measured: one run each, same prompts and model; time spent recovering from tool failures is left out on both sides; the cost gap is smaller than the token gap because both re-read a similar fixed context on every call; see [Benchmark](#benchmark). est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer; Figma for Agents measured through Copilot CLI. Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
+<sub>Measured: one run each, same prompts and model; time spent recovering from tool failures is left out on both sides; the cost gap is smaller than the token gap because both re-read a similar fixed context on every call; see [Benchmark](#benchmark). est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer (`o200k_base`), used as a proxy for Claude's; Figma for Agents measured through Copilot CLI. Facts checked 2026-10-07 (Figma for Agents: 2026-10-08). Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 ## Benchmark
 
@@ -171,7 +186,7 @@ tool. Every turbofig result was read back from Figma and matched the spec.
   against 375K) and about a third less in billed cost, and finished in
   2.9 minutes against 5.9. Time spent recovering from tool failures is
   left out on both sides.
-- **Why.** Each figma-console-mcp screenshot cost about 3× more and stayed
+- **Why.** Each figma-console-mcp screenshot cost 2.7× more and stayed
   in the conversation, so every later call re-read it. It also needed
   more steps: 24 AI calls against 17.
 - **Small jobs without screenshots.** Both cost about the same: the same
@@ -187,33 +202,66 @@ private because they contain unrelated personal context.
 
 ## FAQ
 
-### How do I connect Claude Code to Figma?
+### How do I get Claude Code or Cursor to design in Figma, with no Figma token?
 
 Install turbofig, import the plugin into Figma Desktop once, then paste
-the copy-prompt into Claude Code. It drives Figma through plain files, with
-no MCP setup. Prefer MCP? Run `claude mcp add turbofig -- turbofig mcp`.
-See [Get started](#get-started).
+the copy-prompt into your agent. It drives Figma through plain files, with
+no Figma token and no MCP setup. Then ask in plain English, for example
+for a landing page from a written brief. Prefer MCP? Run
+`claude mcp add turbofig -- turbofig mcp`. See [Get started](#get-started)
+and [docs/agents.md](docs/agents.md).
 
-### Is there a free alternative to Figma's own MCP server?
+### Can I generate Figma designs with AI for free?
 
-Yes. Figma's MCP server needs a paid Full seat to edit, and View or Collab
-seats get 20 read calls a month, on every plan. turbofig needs no paid
-seat, has no quota and needs no MCP server. In MCP mode, its tool list is
-about 30× smaller. See
+Yes. turbofig is free and open source, and it needs no paid Figma seat. It
+works on a free Figma Starter team (tested 2026-10-10). Figma's free-plan limit of 3
+pages per file still applies. You still pay for your own AI agent plan. See
+[how it compares](#how-turbofig-compares).
+
+### How do I automate repetitive Figma work with AI?
+
+Ask your agent to do it in one request. turbofig runs any script a Figma
+plugin could run, so it can rename or restyle many layers, swap copy across
+many frames, or resize one frame into many formats. See
+[What you can ask it](#what-you-can-ask-it).
+
+### Do I need to know how to code?
+
+No coding needed. You run 2 lines in the Terminal to install. After that,
+you ask your AI agent in plain words.
+
+### Is it safe for my Figma files?
+
+turbofig runs on your Mac. The plugin edits only the files where you run it.
+It connects to the daemon with a pairing token that stays on your Mac. A
+script cannot read other files on your Mac. See [SECURITY.md](SECURITY.md).
+
+### Is there a free alternative to Figma's MCP server?
+
+Yes. turbofig needs no MCP server. Figma's MCP server needs a paid Full seat
+to edit. turbofig needs no paid seat and has no quota. In MCP mode, its tool
+list is about 54× smaller (about 680 against about 36,600 tokens, against
+figma-console-mcp in NPX mode). See [docs/comparison.md](docs/comparison.md).
+
+### Does Figma's MCP server have a rate limit?
+
+Yes, for read tools. View or Collab seats get 20 read calls a month, on every
+plan. Full or Dev seats get 200 to 600 read calls a day, by plan. Write tools
+are exempt. Limits checked 2026-10-08. See
 [docs/comparison.md](docs/comparison.md).
 
 ### How is turbofig different from figma-console-mcp?
 
 turbofig gives your AI 4 tools instead of 121, needs no Node.js and no
 Figma access token, and is always running. In a side-by-side design
-session it used 2.8× fewer tokens and finished in half the time. See
-[Benchmark](#benchmark).
+session it used far fewer tokens and finished sooner. See
+[Benchmark](#benchmark) for the numbers.
 
 ### Does it work with Cursor, Codex, Copilot or other agents?
 
 Yes. Any agent that can read and write files on your Mac can use the file
 bridge, and any MCP client can use `turbofig mcp`. See
-[docs/mcp-clients.md](docs/mcp-clients.md) and [docs/agents.md](docs/agents.md).
+[MCP client setup](docs/mcp-clients.md) and [agent prompt](docs/agents.md).
 
 ### Can it edit designs, or only read them?
 
@@ -242,6 +290,15 @@ No. turbofig needs Figma Desktop on macOS.
   sources.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [DECISIONS.md](DECISIONS.md): the module layout, data flow, and the design reasoning.
 - [skills/file-bridge.md](skills/file-bridge.md): the file-bridge protocol.
+- [docs/discoverability](docs/discoverability/README.md): MCP directory listing files and the agent snippet.
+
+## For teams
+
+- MIT license. Everything runs locally: there is no turbofig server.
+- Release binaries are not notarized. The Homebrew formula pins a SHA256
+  checksum, and `brew install` verifies it.
+- To remove it, run `turbofig uninstall` first (see Security below).
+- Read the threat model in [SECURITY.md](SECURITY.md).
 
 ## Security
 
