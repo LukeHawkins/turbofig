@@ -13,4 +13,4 @@ mv $X.tmp $X;O=$B/outbox/$I.json;for i in $(seq 1750);do [ -s $O ]&&break;sleep 
 File tools only: write {{BRIDGE_DIR}}/inbox/<unique-id>.json (e.g. job1.json), read the same name in outbox/; if missing, wait 1 s and read once more.
 Errors, then resend with a new id: busy: wait retryAfterMs. not_started: resend. started_unknown: check the file first. plugin_disconnected, file_not_connected: ask the user to open the plugin.
 No result and you have a shell: `turbofig start` once, then retry.
-MCP fallback (curl only, no web-fetch or HTTPS; with a shell, first run `turbofig status`, it checks the daemon is yours): http://127.0.0.1:{{MCP_PORT}}/mcp, header `Authorization: Bearer $(cat {{BRIDGE_DIR}}/token)`. Send initialize, then notifications/initialized; keep the Mcp-Session-Id header. Tools: turbofig_*.
+Cannot write files? `curl http://127.0.0.1:{{MCP_PORT}}/` (curl, not web-fetch) shows the MCP route.

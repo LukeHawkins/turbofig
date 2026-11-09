@@ -309,10 +309,12 @@ Example: {\"op\":\"execute\",\"fileKey\":\"<key>\",\"code\":\"return figma.root.
 MCP (fallback)
 --------------
 This is plain local HTTP, not HTTPS. Use curl, never a web-fetch tool.
-POST /mcp (streamable-http, legacy session mode); include the mcp-session-id
-header on every request after initialize, and an Authorization: Bearer
-<pairing token> header on every request (read the token from
-~/.turbofig/token). The four tools mirror the ops: turbofig_execute,
+With a shell, run `turbofig status` first: it checks that this port is
+your own daemon, so you never send the token to another process.
+POST /mcp (streamable-http, legacy session mode). Send initialize, then
+notifications/initialized. Include the mcp-session-id header on every
+request after initialize, and an Authorization: Bearer <pairing token>
+header on every request (read the token from ~/.turbofig/token). The four tools mirror the ops: turbofig_execute,
 turbofig_get_selection, turbofig_screenshot, turbofig_status. Each takes an
 optional fileKey.
 
