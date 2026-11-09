@@ -82,7 +82,7 @@ are listed in the Sources section at the end.
 
 | | turbofig | figma-console-mcp (NPX) | figma-console-mcp (Cloud Mode) | Figma for Agents (Figma's MCP server) |
 |---|---|---|---|---|
-| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 680 tokens) | 18% (about 36,600 tokens) | 14.5% est. (96 tools, scaled from the measured NPX tokens) | 10.3% (about 20,600 tokens, 41 tools; measured through Copilot CLI, see below) |
+| Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 600 tokens) | 18% (about 36,600 tokens) | 14.5% est. (96 tools, scaled from the measured NPX tokens) | 10.3% (about 20,600 tokens, 41 tools; measured through Copilot CLI, see below) |
 | Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, no local start | Hosted, no local start |
 | Runs any Figma plugin script (advanced work) | **Yes** | Yes | Yes | Partly: no images or custom fonts, 20 KB output per call |
 | Cost | **Free** | Free | Free (no Cloud-specific pricing or limits stated) | Editing needs a paid Full seat; write tools free in beta, later usage-based |
@@ -122,10 +122,11 @@ table.
 
 Dated 2026-10-07. Figma for Agents tool size and rate limits: 2026-10-08.
 
-- **Tool tokens.** turbofig about 680 tokens, figma-console-mcp (NPX) about
-  36,600 tokens, counted with `o200k_base` (`cl100k_base`: 668 and 35,848).
-  That is 0.34% against 18.3% of a 200K-token context. Method and raw
-  data: [bench/results/tool-tokens-20261007-221725.md](../bench/results/tool-tokens-20261007-221725.md).
+- **Tool tokens.** turbofig 597 tokens (680 at the 0.1.0 release), figma-console-mcp
+  (NPX) about 36,600 tokens, counted with `o200k_base` (`cl100k_base` for
+  figma-console-mcp: 35,848). That is 0.30% against 18.3% of a 200K-token
+  context. Method and raw data: [bench/results/tool-tokens-20261007-221725.md](../bench/results/tool-tokens-20261007-221725.md)
+  (release) and [bench/results/offline-ab-20261109.md](../bench/results/offline-ab-20261109.md) (current).
 - **figma-console-mcp Cloud Mode: live `tools/list` not measured, size
   estimated.** The Cloud Mode `/mcp` endpoint
   (`https://figma-console-mcp.southleft.com/mcp`) rejects a placeholder

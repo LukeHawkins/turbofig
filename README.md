@@ -240,7 +240,7 @@ script cannot read other files on your Mac. See [SECURITY.md](SECURITY.md).
 
 Yes. turbofig needs no MCP server. Figma's MCP server needs a paid Full seat
 to edit. turbofig needs no paid seat and has no quota. In MCP mode, its tool
-list is about 54× smaller (about 680 against about 36,600 tokens, against
+list is about 61× smaller (597 against about 36,600 tokens, against
 figma-console-mcp in NPX mode). See [docs/comparison.md](docs/comparison.md).
 
 ### Does Figma's MCP server have a rate limit?
