@@ -263,9 +263,10 @@
       .activity {
         --tf-sq-size: 3.5px;    /* square edge; 4 rows + 3 gaps = 20px = wordmark height */
         --tf-sq-gap: 2px;       /* space between squares and rows */
-        --tf-sq-speed: 1.8s;    /* base sweep cycle; rows and squares vary it */
-        --tf-sq-lag: 0.05s;     /* delay per column: sets band spread */
-        --tf-sq-jitter: 0.35s;  /* max random extra delay per square (abstract feel) */
+        --tf-sq-speed: 2.4s;    /* base sweep cycle; rows and squares vary it */
+        --tf-sq-lag: 0.04s;     /* delay per column: sets band spread */
+        --tf-sq-jitter: 0.2s;   /* max random extra delay per square (abstract feel) */
+        --tf-sq-ease: cubic-bezier(0.37, 0, 0.63, 1); /* smooth sine-like curve */
         --tf-sq-color: var(--text); /* black in light mode, white in dark */
         --tf-sq-track: 0.1;     /* faint track opacity */
         --tf-sq-rest: 0.4;      /* static opacity under reduced motion */
@@ -279,11 +280,11 @@
         -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 var(--tf-sq-fade));
         mask-image: linear-gradient(to right, transparent 0%, #000 var(--tf-sq-fade));
         opacity: 0;
-        transition: opacity 0.5s ease;
+        transition: opacity 0.7s var(--tf-sq-ease);
       }
       .activity.on {
         opacity: 1;
-        transition-duration: 0.3s;
+        transition-duration: 0.45s;
       }
       .activity .row {
         display: flex;
@@ -303,16 +304,18 @@
         border-radius: 0.5px;
         background: var(--tf-sq-color);
         opacity: var(--tf-sq-track);
+        will-change: opacity;
       }
       /* Per square (inline): --i column, --j jitter 0..1, --p peak opacity. */
       .activity.on i,
       .activity.fading i {
-        animation: tf-sq-sweep calc(var(--tf-sq-speed) * var(--tf-row-speed) * (0.85 + var(--j) * 0.3)) ease-in-out infinite;
+        animation: tf-sq-sweep calc(var(--tf-sq-speed) * var(--tf-row-speed) * (0.9 + var(--j) * 0.2)) var(--tf-sq-ease) infinite;
         animation-delay: calc(var(--tf-row-delay) + var(--i) * var(--tf-sq-lag) + var(--j) * var(--tf-sq-jitter));
       }
+      /* Opacity only (no scale: tiny squares snap to whole pixels and look jittery). */
       @keyframes tf-sq-sweep {
-        0%, 40%, 100% { opacity: var(--tf-sq-track); transform: scale(1); }
-        15% { opacity: var(--p); transform: scale(1.1); }
+        0%, 55%, 100% { opacity: var(--tf-sq-track); }
+        22% { opacity: var(--p); }
       }
       @media (prefers-reduced-motion: reduce) {
         .activity.on i,
