@@ -35,6 +35,7 @@ const ALLOWED_SETTINGS_ACTIONS = [
   "show-plugin-folder",
 ];
 const WEBSITE_URL = "https://lukehawkins.eu";
+const GITHUB_URL = "https://github.com/LukeHawkins/turbofig";
 
 /** Loads `html` into a fresh headless window: no `window.ipc` stub needed
  * any more, since there is no script to call it. */
@@ -81,9 +82,9 @@ describe("about.html", () => {
     }
   });
 
-  it("has exactly the 1 allowed external link", () => {
+  it("has exactly the 2 allowed external links: website and GitHub", () => {
     const hrefs = externalHrefs(document).sort();
-    expect(hrefs).toEqual([WEBSITE_URL]);
+    expect(hrefs).toEqual([GITHUB_URL, WEBSITE_URL].sort());
   });
 
   it("renders the version into the footer", () => {

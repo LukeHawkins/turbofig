@@ -20,6 +20,7 @@ mod about_state;
 mod about_window;
 mod activate;
 mod icon;
+mod link_policy;
 mod lock;
 mod quit;
 mod second_instance;

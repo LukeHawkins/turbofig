@@ -9,6 +9,7 @@
 //! crate's test suite calls any function here that builds a real window.
 
 use super::activate::activate_app_and_focus;
+use super::link_policy::{decide_navigation, new_window_target, open_external, NavDecision};
 use super::settings_state::{parse_action_link, SettingsAction};
 use super::{clipboard_for_app, opener_for_app};
 use crate::plugin_files::McpHttpState;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
 use tao::window::{Window, WindowBuilder, WindowId};
-use wry::{WebView, WebViewBuilder};
+use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
 /// The one page template, rendered once at window creation by substituting
 /// the "Start at login" state and the running app's version: there is no
@@ -122,6 +123,12 @@ pub fn create_settings_window<T: 'static>(
         ))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |url: String| navigation_is_allowed(&url, &navigation_ctx))
+        .with_new_window_req_handler(|url, _features| {
+            if let Some(allowed) = new_window_target(&url) {
+                open_external(opener_for_app().as_ref(), allowed);
+            }
+            NewWindowResponse::Deny
+        })
         .build(&window)
         .map_err(|e| format!("could not create the webview: {e}"))?;
 
@@ -168,13 +175,20 @@ fn dispatch_settings_action(action: SettingsAction, ctx: &SettingsWindowContext)
 /// `about:blank` load, and dispatches any known `turbofig-action://` link
 /// (there is no IPC channel any more, and no external link on this page).
 fn navigation_is_allowed(url: &str, ctx: &SettingsWindowContext) -> bool {
-    if url == "about:blank" || url.starts_with("about:") {
-        return true;
+    match decide_navigation(url) {
+        NavDecision::AllowInitialLoad => true,
+        NavDecision::OpenExternal(allowed) => {
+            open_external(opener_for_app().as_ref(), allowed);
+            false
+        }
+        NavDecision::Action => {
+            if let Some(action) = parse_action_link(url) {
+                dispatch_settings_action(action, ctx);
+            }
+            false
+        }
+        NavDecision::Block => false,
     }
-    if let Some(action) = parse_action_link(url) {
-        dispatch_settings_action(action, ctx);
-    }
-    false
 }
 
 #[cfg(test)]
@@ -194,6 +208,12 @@ mod tests {
         for html in [on, off, unknown] {
             assert!(!html.contains("__"));
         }
+    }
+
+    #[test]
+    fn the_settings_page_shows_the_crate_version() {
+        let html = render_settings_html(env!("CARGO_PKG_VERSION"), false, &McpHttpState::On);
+        assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]

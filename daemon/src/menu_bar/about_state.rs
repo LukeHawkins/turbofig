@@ -110,9 +110,10 @@ mod tests {
     /// (the owner's website).
     const ABOUT_HTML: &str = include_str!("../../assets/about/about.html");
     const WEBSITE_HREF: &str = "href=\"https://lukehawkins.eu\"";
+    const GITHUB_HREF: &str = "href=\"https://github.com/LukeHawkins/turbofig\"";
 
     #[test]
-    fn the_about_page_has_no_script_and_only_the_1_allowed_remote_link() {
+    fn the_about_page_has_no_script_and_only_the_2_allowed_remote_links() {
         assert!(
             !ABOUT_HTML.to_lowercase().contains("<script"),
             "the page must have no <script> at all"
@@ -121,7 +122,10 @@ mod tests {
             ABOUT_HTML.contains(WEBSITE_HREF),
             "expected the website link"
         );
-        let without_allowed = ABOUT_HTML.replacen(WEBSITE_HREF, "", 1);
+        assert!(ABOUT_HTML.contains(GITHUB_HREF), "expected the GitHub link");
+        let without_allowed = ABOUT_HTML
+            .replacen(WEBSITE_HREF, "", 1)
+            .replacen(GITHUB_HREF, "", 1);
         assert!(
             !without_allowed.contains("src=\"http"),
             "no src attribute may point at a remote URL"

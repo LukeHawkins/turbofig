@@ -13,21 +13,19 @@
 
 use super::about_state::{parse_action_link, AboutAction};
 use super::activate::activate_app_and_focus;
+use super::link_policy::{decide_navigation, new_window_target, open_external, NavDecision};
 use super::{clipboard_for_app, opener_for_app, MenuState};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
 use tao::window::{Window, WindowBuilder, WindowId};
-use wry::{WebView, WebViewBuilder};
+use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
 /// The one page template. Rendered once, at window creation, by substituting
 /// `__VERSION__` for the running app's version: there is no JS to push a
 /// live update into, so every value the page shows is baked in up front.
 const ABOUT_HTML_TEMPLATE: &str = include_str!("../../assets/about/about.html");
-
-/// The owner's website, the footer link's destination.
-const WEBSITE_URL: &str = "https://lukehawkins.eu";
 
 /// Everything the navigation handler needs, owned by the closure
 /// `create_about_window` builds. Cloned (cheaply: an `Arc`/`PathBuf` each).
@@ -75,8 +73,8 @@ fn render_about_html(version: &str) -> String {
 
 /// Builds the About window: a 420x480, non-resizable, titled "turbofig"
 /// window hosting a webview over the rendered page, wired to a navigation
-/// handler that intercepts every `turbofig-action://` link, opens the 1
-/// allow-listed external link (the owner's website) through
+/// handler that intercepts every `turbofig-action://` link, opens the
+/// allow-listed external links (website, GitHub) through
 /// the `AppOpener` seam, and blocks every other navigation away from the
 /// embedded page. Activates the app and focuses the window once built (see
 /// `AboutWindowHandle::focus`), and enables the Web Inspector in debug
@@ -98,6 +96,12 @@ pub fn create_about_window<T: 'static>(
         .with_html(render_about_html(env!("CARGO_PKG_VERSION")))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |url: String| navigation_is_allowed(&url, &navigation_ctx))
+        .with_new_window_req_handler(|url, _features| {
+            if let Some(allowed) = new_window_target(&url) {
+                open_external(opener_for_app().as_ref(), allowed);
+            }
+            NewWindowResponse::Deny
+        })
         .build(&window)
         .map_err(|e| format!("could not create the webview: {e}"))?;
 
@@ -136,15 +140,30 @@ fn dispatch_about_action(action: AboutAction, ctx: &AboutWindowContext) {
 /// a known action link, runs it and cancels the navigation; blocks
 /// everything else outright.
 fn navigation_is_allowed(url: &str, ctx: &AboutWindowContext) -> bool {
-    if url == "about:blank" || url.starts_with("about:") {
-        return true;
+    match decide_navigation(url) {
+        NavDecision::AllowInitialLoad => true,
+        NavDecision::OpenExternal(allowed) => {
+            open_external(opener_for_app().as_ref(), allowed);
+            false
+        }
+        NavDecision::Action => {
+            if let Some(action) = parse_action_link(url) {
+                dispatch_about_action(action, ctx);
+            }
+            false
+        }
+        NavDecision::Block => false,
     }
-    if url == WEBSITE_URL {
-        opener_for_app().open_url(url);
-        return false;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_about_page_shows_the_crate_version() {
+        let html = render_about_html(env!("CARGO_PKG_VERSION"));
+        assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+        assert!(!html.contains("__VERSION__"));
     }
-    if let Some(action) = parse_action_link(url) {
-        dispatch_about_action(action, ctx);
-    }
-    false
 }

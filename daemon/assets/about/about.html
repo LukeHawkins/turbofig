@@ -216,6 +216,12 @@
         color: var(--text-secondary);
       }
 
+      .links {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3, 12px);
+      }
+
       .link {
         color: var(--text-secondary);
         text-decoration: underline;
@@ -274,7 +280,10 @@
     </div>
 
     <div class="footer">
-      <a class="link" href="https://lukehawkins.eu">lukehawkins.eu</a>
+      <span class="links">
+        <a class="link" href="https://lukehawkins.eu">lukehawkins.eu</a>
+        <a class="link" href="https://github.com/LukeHawkins/turbofig">GitHub</a>
+      </span>
       <span id="version-text">v__VERSION__</span>
     </div>
   </body>
