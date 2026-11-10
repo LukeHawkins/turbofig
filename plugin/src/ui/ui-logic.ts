@@ -403,3 +403,8 @@ export function trackActiveJobs(
   }
   return active;
 }
+
+/** Builds the message that asks the main thread to open an external URL. */
+export function buildOpenUrlMessage(url: string): { type: "OPEN_URL"; url: string } {
+  return { type: "OPEN_URL", url };
+}

@@ -9,6 +9,7 @@ import { backoffDelayMs, isDaemonMessage } from "../protocol";
 import { createLiveness } from "./liveness";
 import {
   appendLog,
+  buildOpenUrlMessage,
   buildSocketUrl,
   connStateFromEvent,
   daemonMessageAction,
@@ -124,9 +125,35 @@ const CONN_LABELS: Record<string, string> = {
   reconnecting: "Reconnecting...",
 };
 
-/** Marks the status dot as working while at least 1 job runs. CSS block: "WORKING INDICATOR". */
+const activityEl = document.getElementById("activity");
+let fadeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** How long the sweep keeps running after the last job, so the fade-out is smooth (ms). */
+const ACTIVITY_FADE_MS = 500;
+
+/** Shows the activity squares while at least 1 job runs. CSS block: "ACTIVITY SQUARES". */
 function setWorking(): void {
-  document.body.classList.toggle("working", activeJobs.size > 0);
+  const working = activeJobs.size > 0;
+  document.body.classList.toggle("working", working);
+  if (!activityEl) return;
+  if (fadeTimer !== undefined) clearTimeout(fadeTimer);
+  fadeTimer = undefined;
+  if (working) {
+    activityEl.classList.remove("fading");
+    activityEl.classList.add("on");
+  } else if (activityEl.classList.contains("on")) {
+    activityEl.classList.remove("on");
+    activityEl.classList.add("fading");
+    fadeTimer = setTimeout(() => activityEl.classList.remove("fading"), ACTIVITY_FADE_MS);
+  }
+}
+
+/* External links: ask the main thread to open them (figma.openExternal).
+   A plain link does nothing in the Figma iframe. */
+for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-open-url]"))) {
+  el.addEventListener("click", () => {
+    parent.postMessage({ pluginMessage: buildOpenUrlMessage(el.dataset.openUrl ?? "") }, "*");
+  });
 }
 
 /** Checks the radio that matches the prompt mode. */

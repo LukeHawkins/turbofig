@@ -15,6 +15,7 @@ import {
   buildSelection,
   buildStarted,
   capResultMessage,
+  isAllowedExternalUrl,
   isInboundMessage,
   safeResult,
   serializeNode,
@@ -588,6 +589,10 @@ export function createDispatcher(
         figma.clientStorage.setAsync(SHOW_LOG_KEY, msg.show).catch(() => {
           // Persisting failed; the choice still holds for this session.
         });
+        break;
+      case "OPEN_URL":
+        /* Open an external link only when it is on the allowlist. */
+        if (isAllowedExternalUrl(msg.url)) figma.openExternal(msg.url);
         break;
       case "RESIZE":
         /* Resize the plugin panel to the dimensions requested by the UI. */

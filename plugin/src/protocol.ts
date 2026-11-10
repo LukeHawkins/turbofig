@@ -85,6 +85,30 @@ export interface ResizeMessage {
 }
 
 /**
+ * The only external URLs the plugin may open. The main thread rejects any
+ * other URL, so a compromised UI cannot send the user to an arbitrary site.
+ */
+export const ALLOWED_EXTERNAL_URLS: readonly string[] = [
+  "https://lukehawkins.eu",
+  "https://github.com/LukeHawkins/turbofig",
+];
+
+/** Returns true when `url` is exactly one of the allow-listed external URLs. */
+export function isAllowedExternalUrl(url: unknown): url is string {
+  return typeof url === "string" && ALLOWED_EXTERNAL_URLS.includes(url);
+}
+
+/**
+ * Sent by the plugin UI iframe to open an external link. A plain link does
+ * nothing in the Figma iframe, so the main thread calls figma.openExternal,
+ * only for an allow-listed URL. Never forwarded over the WebSocket.
+ */
+export interface OpenUrlMessage {
+  type: "OPEN_URL";
+  url: string;
+}
+
+/**
  * Sent by the plugin UI iframe to the plugin main thread once, on load.
  * The main thread replies with FILE_INFO and PORT. This handshake replaces an
  * eager bootstrap send, so the UI never misses either message, and the main
@@ -249,6 +273,7 @@ export type InboundMessage =
   | SetPromptModeMessage
   | SetShowLogMessage
   | ResizeMessage
+  | OpenUrlMessage
   | ReadyMessage;
 
 /** Returns true when `x` is an array whose members are all strings. */
@@ -295,6 +320,8 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return typeof msg.show === "boolean";
     case "RESIZE":
       return typeof msg.width === "number" && typeof msg.height === "number";
+    case "OPEN_URL":
+      return typeof msg.url === "string";
     case "READY":
       return true;
     default:
