@@ -250,26 +250,27 @@
       }
 
       /* === ACTIVITY SQUARES ============================================== */
-      /* Luke: tune the look with the 6 variables below.
-         JS adds .on to #activity while a job runs (STARTED seen, RESULT not
-         yet) and swaps .on for .fading when the last job ends. The sweep
-         keeps running during .fading while the row fades out, so it never
-         cuts hard. Each square lags its left neighbour by --tf-sq-lag, so a
-         bright band (opacity + scale peak) sweeps left to right only.
-         Smaller lag = wider band and a faster sweep across the row.
-         Space is always reserved (opacity only): no layout shift.
-         Reduced motion: no sweep, the squares sit at --tf-sq-rest opacity. */
+      /* Luke: tune the look with the variables below.
+         A 4 x 18 grid of black/white squares (theme text colour) as tall as
+         the wordmark. JS adds .on to #activity while a job runs (STARTED
+         seen, RESULT not yet) and swaps .on for .fading when the last job
+         ends; the sweep keeps running while the grid fades out, so it never
+         cuts hard. In each row, every square lags its left neighbour by
+         --tf-sq-lag, so a bright band sweeps left to right only. Each row has
+         its own speed and start offset (.row:nth-child rules), so the lines
+         drift against each other. Space is always reserved (opacity only):
+         no layout shift. Reduced motion: no sweep, squares at --tf-sq-rest. */
       .activity {
-        --tf-sq-size: 5px;      /* square edge */
-        --tf-sq-gap: 3px;       /* space between squares */
-        --tf-sq-speed: 1.6s;    /* one full sweep cycle */
-        --tf-sq-lag: 0.07s;     /* delay per square: sets band spread */
-        --tf-sq-color: var(--bg-brand);
-        --tf-sq-track: 0.16;    /* faint track opacity */
-        --tf-sq-rest: 0.5;      /* static opacity under reduced motion */
+        --tf-sq-size: 3.5px;    /* square edge; 4 rows + 3 gaps = 20px = wordmark height */
+        --tf-sq-gap: 2px;       /* space between squares and rows */
+        --tf-sq-speed: 1.7s;    /* base sweep cycle; each row scales it */
+        --tf-sq-lag: 0.055s;    /* delay per square: sets band spread */
+        --tf-sq-color: var(--text); /* black in light mode, white in dark */
+        --tf-sq-track: 0.12;    /* faint track opacity */
+        --tf-sq-rest: 0.45;     /* static opacity under reduced motion */
         display: inline-flex;
+        flex-direction: column;
         gap: var(--tf-sq-gap);
-        align-items: center;
         opacity: 0;
         transition: opacity 0.45s ease;
       }
@@ -277,22 +278,31 @@
         opacity: 1;
         transition-duration: 0.25s;
       }
+      .activity .row {
+        display: flex;
+        gap: var(--tf-sq-gap);
+      }
+      /* Each line moves a bit differently: its own speed and start offset. */
+      .activity .row:nth-child(1) { --tf-row-speed: 1;    --tf-row-delay: 0s; }
+      .activity .row:nth-child(2) { --tf-row-speed: 1.18; --tf-row-delay: 0.12s; }
+      .activity .row:nth-child(3) { --tf-row-speed: 0.9;  --tf-row-delay: 0.26s; }
+      .activity .row:nth-child(4) { --tf-row-speed: 1.3;  --tf-row-delay: 0.06s; }
       .activity i {
         display: block;
         width: var(--tf-sq-size);
         height: var(--tf-sq-size);
-        border-radius: 1px;
+        border-radius: 0.5px;
         background: var(--tf-sq-color);
         opacity: var(--tf-sq-track);
       }
       .activity.on i,
       .activity.fading i {
-        animation: tf-sq-sweep var(--tf-sq-speed) ease-in-out infinite;
-        animation-delay: calc(var(--i) * var(--tf-sq-lag));
+        animation: tf-sq-sweep calc(var(--tf-sq-speed) * var(--tf-row-speed)) ease-in-out infinite;
+        animation-delay: calc(var(--tf-row-delay) + var(--i) * var(--tf-sq-lag));
       }
       @keyframes tf-sq-sweep {
-        0%, 34%, 100% { opacity: var(--tf-sq-track); transform: scale(1); }
-        12% { opacity: 1; transform: scale(1.35); }
+        0%, 38%, 100% { opacity: var(--tf-sq-track); transform: scale(1); }
+        14% { opacity: 1; transform: scale(1.12); }
       }
       @media (prefers-reduced-motion: reduce) {
         .activity.on i,
@@ -567,7 +577,7 @@
       <header class="panel-header">
         <span class="wordmark">turbofig</span>
         <span class="header-spacer"></span>
-        <span id="activity" class="activity" aria-hidden="true"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i><i style="--i:9"></i><i style="--i:10"></i><i style="--i:11"></i><i style="--i:12"></i><i style="--i:13"></i></span>
+        <span id="activity" class="activity" aria-hidden="true"><span class="row"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i><i style="--i:9"></i><i style="--i:10"></i><i style="--i:11"></i><i style="--i:12"></i><i style="--i:13"></i><i style="--i:14"></i><i style="--i:15"></i><i style="--i:16"></i><i style="--i:17"></i></span><span class="row"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i><i style="--i:9"></i><i style="--i:10"></i><i style="--i:11"></i><i style="--i:12"></i><i style="--i:13"></i><i style="--i:14"></i><i style="--i:15"></i><i style="--i:16"></i><i style="--i:17"></i></span><span class="row"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i><i style="--i:9"></i><i style="--i:10"></i><i style="--i:11"></i><i style="--i:12"></i><i style="--i:13"></i><i style="--i:14"></i><i style="--i:15"></i><i style="--i:16"></i><i style="--i:17"></i></span><span class="row"><i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i><i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i><i style="--i:8"></i><i style="--i:9"></i><i style="--i:10"></i><i style="--i:11"></i><i style="--i:12"></i><i style="--i:13"></i><i style="--i:14"></i><i style="--i:15"></i><i style="--i:16"></i><i style="--i:17"></i></span></span>
       </header>
 
       <!-- Stale warning: visible only when daemon and plugin versions differ. -->
