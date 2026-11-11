@@ -250,35 +250,32 @@
       }
 
       /* === ACTIVITY SQUARES ============================================== */
-      /* Luke: tune the look with the variables below.
-         A 4 x 18 grid of black/white squares (theme text colour) as tall as
-         the wordmark. JS adds .on to #activity while a job runs (STARTED
-         seen, RESULT not yet) and swaps .on for .fading when the last job
-         ends; the sweep keeps running while the grid fades out, so it never
-         cuts hard. In each row, every square lags its left neighbour by
-         --tf-sq-lag, so a bright band sweeps left to right only. Each row has
-         its own speed and start offset (.row:nth-child rules), so the lines
-         drift against each other. Space is always reserved (opacity only):
-         no layout shift. Reduced motion: no sweep, squares at --tf-sq-rest. */
+      /* Luke: tune the look with the variables below (--tf-sq-* in .activity,
+         --mx-* in the Mix block). A 4 x 30 grid as tall as the wordmark, in
+         the wordmark colour (--text: black on light, white on dark), faded at
+         both edges. JS adds .on to #activity while a job runs and swaps it for
+         .fading when the last job ends, so the grid fades out softly. Mix =
+         3 layers per square, all flowing left to right: ::before = a slow wide
+         breathe wave, ::after = a sparse shimmer band (only squares with --p
+         above 0.5 light up), and the square background = a faint track plus a
+         rare packet flash (squares with --k 1). Each row has its own speed and
+         offset. Opacity only, so nothing snaps. Reduced motion: no motion. */
       .activity {
         --tf-sq-size: 3.5px;    /* square edge; 4 rows + 3 gaps = 20px = wordmark height */
         --tf-sq-gap: 2px;       /* space between squares and rows */
-        --tf-sq-speed: 2.4s;    /* base sweep cycle; rows and squares vary it */
-        --tf-sq-lag: 0.04s;     /* delay per column: sets band spread */
-        --tf-sq-jitter: 0.2s;   /* max random extra delay per square (abstract feel) */
         --tf-sq-ease: cubic-bezier(0.37, 0, 0.63, 1); /* smooth sine-like curve */
         --tf-sq-color: var(--text); /* black in light mode, white in dark */
         --tf-sq-track: 0.1;     /* faint track opacity */
         --tf-sq-rest: 0.4;      /* static opacity under reduced motion */
-        --tf-sq-fade: 55%;      /* how far the left-side fade reaches */
+        --tf-sq-fade: 50%;      /* how far each edge fade reaches (left and mirrored right) */
         flex: 1;                /* fill the space right of the wordmark */
         min-width: 0;
         display: flex;
         flex-direction: column;
         gap: var(--tf-sq-gap);
         overflow: hidden;
-        -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 var(--tf-sq-fade));
-        mask-image: linear-gradient(to right, transparent 0%, #000 var(--tf-sq-fade));
+        -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 var(--tf-sq-fade), #000 calc(100% - var(--tf-sq-fade)), transparent 100%);
+        mask-image: linear-gradient(to right, transparent 0%, #000 var(--tf-sq-fade), #000 calc(100% - var(--tf-sq-fade)), transparent 100%);
         opacity: 0;
         transition: opacity 0.7s var(--tf-sq-ease);
       }
@@ -302,28 +299,58 @@
         width: var(--tf-sq-size);
         height: var(--tf-sq-size);
         border-radius: 0.5px;
+      }
+      /* Mix: breathe (slow wide base wave) + shimmer (smooth band with jitter) + a few random packets.
+         3 layers per square so the effects add up instead of fighting over one opacity:
+         ::before = breathe, ::after = shimmer, the square's own background = track + packets. */
+      .activity {
+        --mx-breathe-speed: 4.6s; --mx-breathe-lag: 0.09s; --mx-breathe-peak: 0.14;
+        --mx-shimmer-speed: 2.6s; --mx-shimmer-lag: 0.04s; --mx-shimmer-jitter: 0.22s;
+        --mx-packet-cycle: 10s;   /* about 1 square in 7 flashes once per cycle */
+        --tf-sq-track: 0.04;
+      }
+      .activity i {
+        position: relative;
+        opacity: 1;
+        background: color-mix(in srgb, var(--tf-sq-color) calc(var(--tf-sq-track) * 100%), transparent);
+      }
+      .activity i::before,
+      .activity i::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
         background: var(--tf-sq-color);
-        opacity: var(--tf-sq-track);
+        opacity: 0;
         will-change: opacity;
       }
-      /* Per square (inline): --i column, --j jitter 0..1, --p peak opacity. */
       .activity.on i,
       .activity.fading i {
-        animation: tf-sq-sweep calc(var(--tf-sq-speed) * var(--tf-row-speed) * (0.9 + var(--j) * 0.2)) var(--tf-sq-ease) infinite;
-        animation-delay: calc(var(--tf-row-delay) + var(--i) * var(--tf-sq-lag) + var(--j) * var(--tf-sq-jitter));
+        animation: mx-packet calc(var(--mx-packet-cycle) + (1 - var(--k)) * 9999s) linear infinite;
+        animation-delay: calc(var(--q) * var(--mx-packet-cycle));
       }
-      /* Opacity only (no scale: tiny squares snap to whole pixels and look jittery). */
-      @keyframes tf-sq-sweep {
-        0%, 55%, 100% { opacity: var(--tf-sq-track); }
-        22% { opacity: var(--p); }
+      .activity.on i::before,
+      .activity.fading i::before {
+        animation: mx-breathe calc(var(--mx-breathe-speed) * var(--tf-row-speed)) var(--tf-sq-ease) infinite;
+        animation-delay: calc(var(--tf-row-delay) + var(--i) * var(--mx-breathe-lag));
+      }
+      .activity.on i::after,
+      .activity.fading i::after {
+        animation: mx-shimmer calc(var(--mx-shimmer-speed) * var(--tf-row-speed) * (0.9 + var(--j) * 0.2)) var(--tf-sq-ease) infinite;
+        animation-delay: calc(var(--tf-row-delay) + var(--i) * var(--mx-shimmer-lag) + var(--j) * var(--mx-shimmer-jitter));
+      }
+      @keyframes mx-breathe { 0%, 100% { opacity: 0; } 50% { opacity: var(--mx-breathe-peak); } }
+      /* Sparse: only squares with --p above 0.5 light up (about half), and briefly. */
+      @keyframes mx-shimmer { 0%, 34%, 100% { opacity: 0; } 14% { opacity: max(0, (var(--p) - 0.5) * 1.8); } }
+      @keyframes mx-packet {
+        0%, 6%, 100% { background: color-mix(in srgb, var(--tf-sq-color) calc(var(--tf-sq-track) * 100%), transparent); }
+        2% { background: var(--tf-sq-color); }
       }
       @media (prefers-reduced-motion: reduce) {
-        .activity.on i,
-        .activity.fading i {
-          animation: none;
-          opacity: calc(var(--tf-sq-rest) * var(--p));
-        }
-        .activity { transition: none; }
+        .activity.on i, .activity.fading i,
+        .activity.on i::before, .activity.fading i::before,
+        .activity.on i::after, .activity.fading i::after { animation: none; }
+        .activity.on i::before, .activity.fading i::before { opacity: calc(var(--tf-sq-rest) * var(--p)); }
       }
 
       /* === STALE WARNING ================================================= */
@@ -589,7 +616,7 @@
     <section id="screen-main" class="screen active">
       <header class="panel-header">
         <span class="wordmark">turbofig</span>
-        <span id="activity" class="activity" aria-hidden="true"><span class="row"><i style="--i:0;--j:0.3;--p:0.55"></i><i style="--i:1;--j:0.84;--p:0.85"></i><i style="--i:2;--j:0.73;--p:0.66"></i><i style="--i:3;--j:0.18;--p:0.63"></i><i style="--i:4;--j:0.23;--p:0.63"></i><i style="--i:5;--j:0.55;--p:0.74"></i><i style="--i:6;--j:0.95;--p:0.64"></i><i style="--i:7;--j:0.59;--p:0.85"></i><i style="--i:8;--j:0.81;--p:0.57"></i><i style="--i:9;--j:0.56;--p:0.72"></i><i style="--i:10;--j:0.21;--p:0.97"></i><i style="--i:11;--j:0.21;--p:0.86"></i><i style="--i:12;--j:0.07;--p:1.0"></i><i style="--i:13;--j:0.93;--p:0.48"></i><i style="--i:14;--j:0.19;--p:0.86"></i><i style="--i:15;--j:0.94;--p:0.81"></i><i style="--i:16;--j:0.48;--p:0.95"></i><i style="--i:17;--j:0.09;--p:0.75"></i><i style="--i:18;--j:0.47;--p:0.5"></i><i style="--i:19;--j:0.78;--p:0.89"></i><i style="--i:20;--j:0.03;--p:0.6"></i><i style="--i:21;--j:0.15;--p:0.57"></i><i style="--i:22;--j:0.81;--p:0.62"></i><i style="--i:23;--j:0.07;--p:0.48"></i><i style="--i:24;--j:0.89;--p:0.78"></i><i style="--i:25;--j:0.83;--p:0.62"></i><i style="--i:26;--j:0.88;--p:0.56"></i><i style="--i:27;--j:0.25;--p:0.8"></i><i style="--i:28;--j:0.38;--p:0.54"></i><i style="--i:29;--j:0.69;--p:0.56"></i></span><span class="row"><i style="--i:0;--j:0.02;--p:0.6"></i><i style="--i:1;--j:0.8;--p:0.63"></i><i style="--i:2;--j:0.19;--p:0.74"></i><i style="--i:3;--j:0.64;--p:0.48"></i><i style="--i:4;--j:0.01;--p:0.82"></i><i style="--i:5;--j:0.97;--p:0.5"></i><i style="--i:6;--j:0.06;--p:0.9"></i><i style="--i:7;--j:0.02;--p:0.98"></i><i style="--i:8;--j:0.52;--p:0.54"></i><i style="--i:9;--j:0.57;--p:0.67"></i><i style="--i:10;--j:0.03;--p:0.93"></i><i style="--i:11;--j:0.56;--p:0.58"></i><i style="--i:12;--j:0.23;--p:0.84"></i><i style="--i:13;--j:0.82;--p:0.7"></i><i style="--i:14;--j:0.03;--p:0.76"></i><i style="--i:15;--j:0.79;--p:0.86"></i><i style="--i:16;--j:0.22;--p:0.58"></i><i style="--i:17;--j:0.32;--p:0.49"></i><i style="--i:18;--j:0.6;--p:0.83"></i><i style="--i:19;--j:0.42;--p:0.77"></i><i style="--i:20;--j:0.81;--p:0.88"></i><i style="--i:21;--j:0.96;--p:0.83"></i><i style="--i:22;--j:0.92;--p:0.86"></i><i style="--i:23;--j:0.61;--p:0.74"></i><i style="--i:24;--j:0.57;--p:0.58"></i><i style="--i:25;--j:0.43;--p:0.93"></i><i style="--i:26;--j:0.19;--p:0.73"></i><i style="--i:27;--j:0.23;--p:0.74"></i><i style="--i:28;--j:0.08;--p:0.62"></i><i style="--i:29;--j:0.69;--p:0.77"></i></span><span class="row"><i style="--i:0;--j:0.94;--p:0.81"></i><i style="--i:1;--j:0.78;--p:0.59"></i><i style="--i:2;--j:0.52;--p:0.58"></i><i style="--i:3;--j:0.81;--p:0.84"></i><i style="--i:4;--j:0.22;--p:0.47"></i><i style="--i:5;--j:0.31;--p:0.87"></i><i style="--i:6;--j:0.69;--p:0.52"></i><i style="--i:7;--j:0.67;--p:0.64"></i><i style="--i:8;--j:0.24;--p:0.66"></i><i style="--i:9;--j:0.51;--p:0.72"></i><i style="--i:10;--j:0.74;--p:0.67"></i><i style="--i:11;--j:0.5;--p:0.93"></i><i style="--i:12;--j:0.46;--p:0.49"></i><i style="--i:13;--j:0.0;--p:0.87"></i><i style="--i:14;--j:0.75;--p:0.88"></i><i style="--i:15;--j:0.76;--p:0.65"></i><i style="--i:16;--j:0.73;--p:0.92"></i><i style="--i:17;--j:0.74;--p:0.89"></i><i style="--i:18;--j:0.81;--p:0.53"></i><i style="--i:19;--j:0.61;--p:0.69"></i><i style="--i:20;--j:0.2;--p:0.68"></i><i style="--i:21;--j:0.54;--p:0.51"></i><i style="--i:22;--j:0.13;--p:0.92"></i><i style="--i:23;--j:0.44;--p:0.82"></i><i style="--i:24;--j:0.75;--p:0.54"></i><i style="--i:25;--j:0.94;--p:0.58"></i><i style="--i:26;--j:0.61;--p:0.56"></i><i style="--i:27;--j:0.96;--p:0.67"></i><i style="--i:28;--j:0.84;--p:0.97"></i><i style="--i:29;--j:0.12;--p:0.94"></i></span><span class="row"><i style="--i:0;--j:0.75;--p:0.91"></i><i style="--i:1;--j:0.12;--p:0.72"></i><i style="--i:2;--j:0.82;--p:0.85"></i><i style="--i:3;--j:0.28;--p:0.91"></i><i style="--i:4;--j:0.2;--p:0.54"></i><i style="--i:5;--j:0.86;--p:0.74"></i><i style="--i:6;--j:0.09;--p:0.7"></i><i style="--i:7;--j:0.73;--p:1.0"></i><i style="--i:8;--j:0.03;--p:0.86"></i><i style="--i:9;--j:0.54;--p:0.98"></i><i style="--i:10;--j:0.32;--p:0.77"></i><i style="--i:11;--j:0.94;--p:0.55"></i><i style="--i:12;--j:0.76;--p:0.8"></i><i style="--i:13;--j:0.64;--p:0.84"></i><i style="--i:14;--j:0.57;--p:0.8"></i><i style="--i:15;--j:0.43;--p:0.55"></i><i style="--i:16;--j:0.53;--p:0.87"></i><i style="--i:17;--j:0.56;--p:0.55"></i><i style="--i:18;--j:0.34;--p:0.55"></i><i style="--i:19;--j:0.91;--p:0.48"></i><i style="--i:20;--j:1.0;--p:0.76"></i><i style="--i:21;--j:0.52;--p:0.66"></i><i style="--i:22;--j:0.56;--p:0.51"></i><i style="--i:23;--j:0.8;--p:0.59"></i><i style="--i:24;--j:0.92;--p:0.6"></i><i style="--i:25;--j:0.35;--p:0.72"></i><i style="--i:26;--j:0.01;--p:0.52"></i><i style="--i:27;--j:0.66;--p:0.95"></i><i style="--i:28;--j:0.39;--p:0.76"></i><i style="--i:29;--j:0.55;--p:0.89"></i></span></span>
+        <span id="activity" class="activity" aria-hidden="true"><span class="row"><i style="--i:0;--j:0.3;--p:0.55;--k:0;--q:0.33"></i><i style="--i:1;--j:0.84;--p:0.85;--k:0;--q:0.82"></i><i style="--i:2;--j:0.73;--p:0.66;--k:1;--q:0.48"></i><i style="--i:3;--j:0.18;--p:0.63;--k:0;--q:0.61"></i><i style="--i:4;--j:0.23;--p:0.63;--k:1;--q:0.63"></i><i style="--i:5;--j:0.55;--p:0.74;--k:0;--q:0.85"></i><i style="--i:6;--j:0.95;--p:0.64;--k:1;--q:0.96"></i><i style="--i:7;--j:0.59;--p:0.85;--k:0;--q:0.81"></i><i style="--i:8;--j:0.81;--p:0.57;--k:0;--q:0.84"></i><i style="--i:9;--j:0.56;--p:0.72;--k:0;--q:0.32"></i><i style="--i:10;--j:0.21;--p:0.97;--k:1;--q:0.78"></i><i style="--i:11;--j:0.21;--p:0.86;--k:0;--q:0.2"></i><i style="--i:12;--j:0.07;--p:1.0;--k:0;--q:0.08"></i><i style="--i:13;--j:0.93;--p:0.48;--k:0;--q:0.56"></i><i style="--i:14;--j:0.19;--p:0.86;--k:0;--q:0.7"></i><i style="--i:15;--j:0.94;--p:0.81;--k:1;--q:0.84"></i><i style="--i:16;--j:0.48;--p:0.95;--k:0;--q:0.74"></i><i style="--i:17;--j:0.09;--p:0.75;--k:0;--q:0.85"></i><i style="--i:18;--j:0.47;--p:0.5;--k:1;--q:0.46"></i><i style="--i:19;--j:0.78;--p:0.89;--k:1;--q:0.78"></i><i style="--i:20;--j:0.03;--p:0.6;--k:0;--q:0.11"></i><i style="--i:21;--j:0.15;--p:0.57;--k:0;--q:0.78"></i><i style="--i:22;--j:0.81;--p:0.62;--k:0;--q:0.12"></i><i style="--i:23;--j:0.07;--p:0.48;--k:0;--q:0.06"></i><i style="--i:24;--j:0.89;--p:0.78;--k:0;--q:0.97"></i><i style="--i:25;--j:0.83;--p:0.62;--k:0;--q:0.95"></i><i style="--i:26;--j:0.88;--p:0.56;--k:0;--q:0.22"></i><i style="--i:27;--j:0.25;--p:0.8;--k:0;--q:0.74"></i><i style="--i:28;--j:0.38;--p:0.54;--k:0;--q:0.38"></i><i style="--i:29;--j:0.69;--p:0.56;--k:0;--q:0.04"></i></span><span class="row"><i style="--i:0;--j:0.02;--p:0.6;--k:0;--q:0.04"></i><i style="--i:1;--j:0.8;--p:0.63;--k:0;--q:0.99"></i><i style="--i:2;--j:0.19;--p:0.74;--k:1;--q:0.99"></i><i style="--i:3;--j:0.64;--p:0.48;--k:0;--q:0.69"></i><i style="--i:4;--j:0.01;--p:0.82;--k:1;--q:0.47"></i><i style="--i:5;--j:0.97;--p:0.5;--k:0;--q:0.1"></i><i style="--i:6;--j:0.06;--p:0.9;--k:0;--q:0.09"></i><i style="--i:7;--j:0.02;--p:0.98;--k:0;--q:0.92"></i><i style="--i:8;--j:0.52;--p:0.54;--k:0;--q:0.75"></i><i style="--i:9;--j:0.57;--p:0.67;--k:0;--q:0.06"></i><i style="--i:10;--j:0.03;--p:0.93;--k:0;--q:0.76"></i><i style="--i:11;--j:0.56;--p:0.58;--k:0;--q:0.03"></i><i style="--i:12;--j:0.23;--p:0.84;--k:1;--q:0.09"></i><i style="--i:13;--j:0.82;--p:0.7;--k:0;--q:0.11"></i><i style="--i:14;--j:0.03;--p:0.76;--k:0;--q:0.48"></i><i style="--i:15;--j:0.79;--p:0.86;--k:0;--q:0.14"></i><i style="--i:16;--j:0.22;--p:0.58;--k:0;--q:0.77"></i><i style="--i:17;--j:0.32;--p:0.49;--k:1;--q:0.16"></i><i style="--i:18;--j:0.6;--p:0.83;--k:1;--q:0.96"></i><i style="--i:19;--j:0.42;--p:0.77;--k:0;--q:0.5"></i><i style="--i:20;--j:0.81;--p:0.88;--k:0;--q:0.98"></i><i style="--i:21;--j:0.96;--p:0.83;--k:0;--q:0.6"></i><i style="--i:22;--j:0.92;--p:0.86;--k:0;--q:0.27"></i><i style="--i:23;--j:0.61;--p:0.74;--k:0;--q:0.1"></i><i style="--i:24;--j:0.57;--p:0.58;--k:0;--q:0.3"></i><i style="--i:25;--j:0.43;--p:0.93;--k:0;--q:0.45"></i><i style="--i:26;--j:0.19;--p:0.73;--k:0;--q:0.59"></i><i style="--i:27;--j:0.23;--p:0.74;--k:1;--q:0.02"></i><i style="--i:28;--j:0.08;--p:0.62;--k:1;--q:0.09"></i><i style="--i:29;--j:0.69;--p:0.77;--k:0;--q:0.51"></i></span><span class="row"><i style="--i:0;--j:0.94;--p:0.81;--k:0;--q:0.78"></i><i style="--i:1;--j:0.78;--p:0.59;--k:0;--q:0.95"></i><i style="--i:2;--j:0.52;--p:0.58;--k:0;--q:0.46"></i><i style="--i:3;--j:0.81;--p:0.84;--k:0;--q:0.7"></i><i style="--i:4;--j:0.22;--p:0.47;--k:0;--q:0.19"></i><i style="--i:5;--j:0.31;--p:0.87;--k:0;--q:0.43"></i><i style="--i:6;--j:0.69;--p:0.52;--k:0;--q:0.86"></i><i style="--i:7;--j:0.67;--p:0.64;--k:0;--q:0.86"></i><i style="--i:8;--j:0.24;--p:0.66;--k:0;--q:0.91"></i><i style="--i:9;--j:0.51;--p:0.72;--k:0;--q:0.97"></i><i style="--i:10;--j:0.74;--p:0.67;--k:0;--q:1.0"></i><i style="--i:11;--j:0.5;--p:0.93;--k:0;--q:0.75"></i><i style="--i:12;--j:0.46;--p:0.49;--k:0;--q:0.52"></i><i style="--i:13;--j:0.0;--p:0.87;--k:0;--q:0.4"></i><i style="--i:14;--j:0.75;--p:0.88;--k:0;--q:0.38"></i><i style="--i:15;--j:0.76;--p:0.65;--k:0;--q:0.56"></i><i style="--i:16;--j:0.73;--p:0.92;--k:0;--q:0.31"></i><i style="--i:17;--j:0.74;--p:0.89;--k:1;--q:0.68"></i><i style="--i:18;--j:0.81;--p:0.53;--k:1;--q:0.36"></i><i style="--i:19;--j:0.61;--p:0.69;--k:0;--q:0.05"></i><i style="--i:20;--j:0.2;--p:0.68;--k:0;--q:0.59"></i><i style="--i:21;--j:0.54;--p:0.51;--k:0;--q:0.68"></i><i style="--i:22;--j:0.13;--p:0.92;--k:1;--q:0.02"></i><i style="--i:23;--j:0.44;--p:0.82;--k:0;--q:0.59"></i><i style="--i:24;--j:0.75;--p:0.54;--k:0;--q:0.82"></i><i style="--i:25;--j:0.94;--p:0.58;--k:0;--q:0.16"></i><i style="--i:26;--j:0.61;--p:0.56;--k:0;--q:0.06"></i><i style="--i:27;--j:0.96;--p:0.67;--k:0;--q:0.62"></i><i style="--i:28;--j:0.84;--p:0.97;--k:0;--q:0.09"></i><i style="--i:29;--j:0.12;--p:0.94;--k:0;--q:0.08"></i></span><span class="row"><i style="--i:0;--j:0.75;--p:0.91;--k:0;--q:0.62"></i><i style="--i:1;--j:0.12;--p:0.72;--k:0;--q:0.05"></i><i style="--i:2;--j:0.82;--p:0.85;--k:0;--q:0.15"></i><i style="--i:3;--j:0.28;--p:0.91;--k:0;--q:0.98"></i><i style="--i:4;--j:0.2;--p:0.54;--k:0;--q:0.08"></i><i style="--i:5;--j:0.86;--p:0.74;--k:1;--q:0.03"></i><i style="--i:6;--j:0.09;--p:0.7;--k:0;--q:0.04"></i><i style="--i:7;--j:0.73;--p:1.0;--k:0;--q:0.81"></i><i style="--i:8;--j:0.03;--p:0.86;--k:0;--q:0.94"></i><i style="--i:9;--j:0.54;--p:0.98;--k:0;--q:0.82"></i><i style="--i:10;--j:0.32;--p:0.77;--k:0;--q:0.67"></i><i style="--i:11;--j:0.94;--p:0.55;--k:1;--q:0.55"></i><i style="--i:12;--j:0.76;--p:0.8;--k:0;--q:0.39"></i><i style="--i:13;--j:0.64;--p:0.84;--k:0;--q:0.18"></i><i style="--i:14;--j:0.57;--p:0.8;--k:0;--q:0.54"></i><i style="--i:15;--j:0.43;--p:0.55;--k:0;--q:0.32"></i><i style="--i:16;--j:0.53;--p:0.87;--k:0;--q:0.19"></i><i style="--i:17;--j:0.56;--p:0.55;--k:0;--q:0.94"></i><i style="--i:18;--j:0.34;--p:0.55;--k:0;--q:0.66"></i><i style="--i:19;--j:0.91;--p:0.48;--k:0;--q:0.2"></i><i style="--i:20;--j:1.0;--p:0.76;--k:0;--q:0.21"></i><i style="--i:21;--j:0.52;--p:0.66;--k:0;--q:0.99"></i><i style="--i:22;--j:0.56;--p:0.51;--k:0;--q:0.67"></i><i style="--i:23;--j:0.8;--p:0.59;--k:0;--q:0.64"></i><i style="--i:24;--j:0.92;--p:0.6;--k:0;--q:0.5"></i><i style="--i:25;--j:0.35;--p:0.72;--k:0;--q:0.21"></i><i style="--i:26;--j:0.01;--p:0.52;--k:0;--q:0.23"></i><i style="--i:27;--j:0.66;--p:0.95;--k:0;--q:0.67"></i><i style="--i:28;--j:0.39;--p:0.76;--k:0;--q:0.53"></i><i style="--i:29;--j:0.55;--p:0.89;--k:0;--q:0.3"></i></span></span>
       </header>
 
       <!-- Stale warning: visible only when daemon and plugin versions differ. -->
