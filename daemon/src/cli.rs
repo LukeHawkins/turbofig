@@ -69,6 +69,18 @@ pub enum Command {
     /// Run a stdio MCP server that forwards every tool call onto the
     /// daemon's `POST /job`, starting the daemon if it is not reachable.
     Mcp,
+    /// Run a Figma job from stdin (JS code, or a job JSON) and print the result.
+    Js {
+        /// Target this Figma file (its fileKey).
+        #[arg(long)]
+        file: Option<String>,
+        /// After an ok result, also screenshot the first node id in it.
+        #[arg(long)]
+        shot: bool,
+        /// Use this bridge folder (wins over TURBOFIG_BRIDGE_DIR and the default).
+        #[arg(long)]
+        dir: Option<String>,
+    },
     /// Assemble (or refresh) the macOS app bundle. Manual-testing surface
     /// for the menu-bar app, built from inside the app bundle itself in a
     /// later step; hidden from `--help`.
