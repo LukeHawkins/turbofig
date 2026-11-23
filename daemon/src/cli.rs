@@ -536,6 +536,7 @@ const PURGE_ENTRIES: &[&str] = &[
     "daemon.log",
     "daemon.log.1",
     "plugin-seen",
+    "daemon.lock",
 ];
 
 /// Deletes the known turbofig entries inside `home`, then removes `home`

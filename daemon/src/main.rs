@@ -1107,7 +1107,19 @@ fn exit_for_startup_error(e: &std::io::Error) -> ! {
 fn take_bridge_lock(bridge_dir: &Path) {
     let own_mode = std::env::var("TURBOFIG_BRIDGE_DIR").is_err();
     match turbofig::lock_bridge_dir(bridge_dir, own_mode, std::time::Duration::from_millis(300)) {
-        Ok(turbofig::LockOutcome::Held) => {}
+        Ok(turbofig::LockOutcome::Held) => {
+            turbofig::write_lock_info(
+                turbofig::request_timeout_from_env()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64,
+            );
+        }
+        Ok(turbofig::LockOutcome::Unsupported) => {
+            eprintln!(
+                "turbofig daemon: the filesystem of {} has no file locks; running without the bridge folder lock",
+                bridge_dir.display()
+            );
+        }
         Ok(turbofig::LockOutcome::Busy) => {
             eprintln!(
                 "turbofig daemon: another turbofig daemon is already using {}",

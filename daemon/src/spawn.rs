@@ -268,13 +268,39 @@ fn detach_into_own_session(cmd: &mut Command) {
     // reported as the child's exit status via Command's normal error path;
     // propagating it from this closure just gives a clearer error than a
     // silent, still-attached child.
+    let fd_limit = inherited_fd_limit();
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
+            // Every fd above stderr that the caller left open (an agent's
+            // pipe, say) would stay open in the daemon for its whole life and
+            // could keep the caller's tool call from ever seeing EOF. Mark
+            // them close-on-exec: exec then closes them, while the pipe std
+            // uses to report an exec failure (already close-on-exec) keeps
+            // working. `fcntl` is async-signal-safe; a closed fd just gives
+            // EBADF, which is ignored.
+            for fd in 3..fd_limit {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
             Ok(())
         });
+    }
+}
+
+/// The first fd number the child does not need to mark close-on-exec: the
+/// soft open-file limit, capped so a huge limit cannot make the child loop
+/// for long. Computed before `fork`.
+#[cfg(unix)]
+fn inherited_fd_limit() -> libc::c_int {
+    const CAP: libc::c_int = 65_536;
+    // SAFETY: `getdtablesize` has no preconditions.
+    let n = unsafe { libc::getdtablesize() };
+    if n <= 3 {
+        256
+    } else {
+        n.min(CAP)
     }
 }
 
@@ -781,5 +807,43 @@ mod tests {
         open_log_nofollow(&path).expect("open");
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_detached_daemon_does_not_leak_an_inherited_fd_to_the_child() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::io::AsRawFd;
+        let tmp = tempfile::tempdir().unwrap();
+        // A non-close-on-exec pipe fd, like an agent's held pipe.
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (rd, wr) = (fds[0], fds[1]);
+        let out = tmp.path().join("fds");
+        let fake = tmp.path().join("fake-turbofig");
+        // The fake daemon lists whether fd `wr` is open (/dev/fd/<n>).
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nif [ -e /dev/fd/{wr} ]; then echo open > {o}; else echo closed > {o}; fi\n",
+                o = out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        spawn_detached_daemon(&fake, tmp.path()).unwrap();
+        for _ in 0..200 {
+            if out.exists() && std::fs::metadata(&out).unwrap().len() > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let got = std::fs::read_to_string(&out).unwrap();
+        unsafe {
+            libc::close(rd);
+            libc::close(wr);
+        }
+        let _ = std::io::stdin().as_raw_fd();
+        assert_eq!(got.trim(), "closed");
     }
 }

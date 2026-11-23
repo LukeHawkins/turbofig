@@ -32,7 +32,29 @@ async fn run_js_env(
     args: &[&str],
     stdin: &str,
 ) -> (std::process::ExitStatus, String, String) {
-    let mut child = Command::new(BIN)
+    run_js_full(None, &[], home, env_bridge, mcp_port, ws_port, args, stdin).await
+}
+
+/// The general form: a working directory and extra env vars as well.
+#[allow(clippy::too_many_arguments)]
+async fn run_js_full(
+    cwd: Option<&Path>,
+    extra_env: &[(&str, &str)],
+    home: &Path,
+    env_bridge: &Path,
+    mcp_port: u16,
+    ws_port: u16,
+    args: &[&str],
+    stdin: &str,
+) -> (std::process::ExitStatus, String, String) {
+    let mut cmd = Command::new(BIN);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .arg("js")
         .args(args)
         .env("HOME", home)
@@ -302,8 +324,13 @@ async fn js_fails_fast_with_daemon_stopped_when_the_daemon_dies_mid_job() {
         .unwrap();
     assert_eq!(status.code(), Some(1), "{stdout}");
     let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line");
-    assert_eq!(v["code"], "daemon_stopped", "{stdout}");
-    assert!(v["error"].as_str().unwrap().contains("status, then retry"));
+    // The daemon had claimed the job (the plugin got EXECUTE): it may have run.
+    assert_eq!(v["code"], "started_unknown", "{stdout}");
+    assert_eq!(v["reason"], "daemon_stopped", "{stdout}");
+    assert!(v["error"]
+        .as_str()
+        .unwrap()
+        .contains("check before resending"));
     assert!(v["outbox"].as_str().unwrap().contains("/outbox/"));
     assert!(elapsed < Duration::from_secs(8), "took {elapsed:?}");
 }
@@ -346,8 +373,202 @@ async fn dir_flag_wins_over_the_env_folder_and_works_with_a_space() {
         "{\"op\":\"status\"}",
     )
     .await;
-    assert_eq!(status.code(), Some(1), "{stdout}");
-    assert!(stderr.contains("symlink"), "{stderr}");
+    assert_eq!(status.code(), Some(1), "{stdout} {stderr}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line");
+    assert_eq!(v["code"], "bridge_error", "{stdout}");
+    assert!(v["error"].as_str().unwrap().contains("symlink"), "{stdout}");
 
     stop_daemon(&client, mcp_port, &dir).await;
+}
+
+#[tokio::test]
+async fn a_job_the_dead_daemon_never_claimed_is_taken_back_and_reported_not_started() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let mut daemon = common::spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+    // Freeze the daemon: it keeps the lock but claims nothing.
+    let pid = daemon.id().expect("daemon pid") as libc::pid_t;
+    unsafe { libc::kill(pid, libc::SIGSTOP) };
+
+    let h = home.path().to_path_buf();
+    let job =
+        tokio::spawn(
+            async move { run_js(&h, mcp_port, ws_port, &[], "{\"op\":\"status\"}").await },
+        );
+    // The job file is in the inbox and unclaimed. Now kill the daemon.
+    common::wait_until(
+        || {
+            std::fs::read_dir(home.path().join("inbox"))
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        },
+        10_000,
+        "the job file in the inbox",
+    )
+    .await;
+    daemon.start_kill().unwrap();
+    daemon.wait().await.unwrap();
+
+    let (status, stdout, _) = tokio::time::timeout(Duration::from_secs(15), job)
+        .await
+        .expect("js must stop waiting")
+        .unwrap();
+    assert_eq!(status.code(), Some(1), "{stdout}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line");
+    assert_eq!(v["code"], "not_started", "{stdout}");
+    assert_eq!(v["reason"], "daemon_stopped", "{stdout}");
+    assert!(
+        inbox_outbox_entries(home.path()).is_empty(),
+        "inbox must be empty"
+    );
+}
+
+#[tokio::test]
+async fn a_relative_dir_is_made_absolute_and_the_default_folder_is_not_exported() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = common::serial_process_test().await;
+    let root = tempfile::tempdir().expect("temp root");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    // Relative --dir: the folder is root/rel/bridge, never root/rel/bridge/rel/bridge.
+    let (status, stdout, stderr) = run_js_full(
+        Some(root.path()),
+        &[("TURBOFIG_REQUEST_TIMEOUT_MS", "20000")],
+        root.path(),
+        root.path(),
+        mcp_port,
+        ws_port,
+        &["--dir", "rel/bridge"],
+        "{\"op\":\"status\"}",
+    )
+    .await;
+    assert!(status.success(), "{stdout} {stderr}");
+    wait_for_health(&client, mcp_port).await;
+    let bridge = root.path().join("rel/bridge");
+    let lock = std::fs::read_to_string(bridge.join("daemon.lock")).expect("daemon.lock");
+    assert!(lock.contains("\"requestTimeoutMs\":20000"), "{lock}");
+    assert!(!bridge.join("rel").exists());
+    stop_daemon(&client, mcp_port, &bridge).await;
+
+    // --dir equal to $HOME/.turbofig: the daemon runs in default-folder mode
+    // (the folder is set to 0700), which it skips when the variable is set.
+    let (mcp2, ws2) = (free_port(), free_port());
+    let default = root.path().join(".turbofig");
+    let other = root.path().join("other");
+    let (status, stdout, stderr) = run_js_env(
+        root.path(),
+        &other,
+        mcp2,
+        ws2,
+        &["--dir", default.to_str().unwrap()],
+        "{\"op\":\"status\"}",
+    )
+    .await;
+    assert!(status.success(), "{stdout} {stderr}");
+    wait_for_health(&client, mcp2).await;
+    let mode = std::fs::metadata(&default).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+    assert!(!other.exists());
+    stop_daemon(&client, mcp2, &default).await;
+}
+
+#[tokio::test]
+async fn js_works_against_an_older_daemon_that_holds_no_lock() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    // A stand-in for an older daemon: it listens on the port, serves the
+    // inbox, and never takes a lock.
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
+    let inbox = home.path().join("inbox");
+    let outbox = home.path().join("outbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    std::fs::create_dir_all(&outbox).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let fake = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for e in std::fs::read_dir(&inbox).unwrap().flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if let Some(id) = name.strip_suffix(".json") {
+                        let _ = std::fs::remove_file(e.path());
+                        std::fs::write(
+                            outbox.join(format!("{id}.json")),
+                            "{\"ok\":true,\"old\":1}",
+                        )
+                        .unwrap();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}").await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    fake.join().unwrap();
+    assert!(status.success(), "{stdout} {stderr}");
+    assert_eq!(stdout.trim(), "{\"ok\":true,\"old\":1}");
+    assert!(
+        !home.path().join("daemon.lock").exists(),
+        "js must not start a daemon next to an older one"
+    );
+}
+
+#[tokio::test]
+async fn stdin_that_never_closes_gives_usage_and_exit_2() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mut child = Command::new(BIN)
+        .arg("js")
+        .env("HOME", home.path())
+        .env("TURBOFIG_BRIDGE_DIR", home.path())
+        .env("TURBOFIG_TEST_JS_STDIN_WAIT_MS", "300")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let held = child.stdin.take().unwrap(); // open, silent
+    let out = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+        .await
+        .expect("js must not block on a silent stdin")
+        .unwrap();
+    drop(held);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no input on stdin"));
+    assert!(out.stdout.is_empty());
+}
+
+#[tokio::test]
+async fn a_second_lock_call_in_one_process_fails_and_keeps_the_first_lock() {
+    let _serial = common::serial_process_test().await;
+    let a = tempfile::tempdir().unwrap();
+    let (p, w) = (free_port(), free_port());
+    let zero = Duration::ZERO;
+    assert_eq!(
+        turbofig::lock_bridge_dir(a.path(), false, zero).unwrap(),
+        turbofig::LockOutcome::Held
+    );
+    // The second call must fail and must not close the first call's fd.
+    assert!(turbofig::lock_bridge_dir(a.path(), false, zero).is_err());
+    // Another process still cannot take the lock.
+    let out = Command::new(BIN)
+        .arg("serve")
+        .env("HOME", a.path())
+        .env("TURBOFIG_MCP_PORT", p.to_string())
+        .env("TURBOFIG_WS_PORT", w.to_string())
+        .env("TURBOFIG_BRIDGE_DIR", a.path())
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("already using"));
 }
