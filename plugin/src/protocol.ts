@@ -132,6 +132,8 @@ export interface WelcomeMessage {
   bridgeHome?: string;
   /** Absolute stable path of the daemon binary. Present in daemon v0.2.0+. Absent in older daemons. */
   binPath?: string;
+  /** Absolute bridge folder, only when it is not the default `$HOME/.turbofig` (else empty). Present in daemon v0.2.0+. */
+  bridgeDirCustom?: string;
 }
 
 /** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */

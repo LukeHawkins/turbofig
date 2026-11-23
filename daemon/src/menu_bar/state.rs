@@ -3,7 +3,7 @@
 //! needs to show. No tray-icon, no tao, no I/O: `mod.rs` is the only caller,
 //! and it is the only place this ever touches a real tray icon or menu.
 
-use crate::agent_prompt::{fill_agent_prompt, turbofig_bin_path, ConnectedFile, TEMPLATE};
+use crate::agent_prompt::{fill_agent_prompt, ConnectedFile, TEMPLATE};
 
 /// Which of the 2 checked-in tray-icon PNGs to show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +86,8 @@ pub fn build_menu_state(
     health: Option<&serde_json::Value>,
     bridge_dir: &str,
     mcp_port: u16,
+    turbofig_bin: &str,
+    custom_bridge_dir: &str,
 ) -> MenuState {
     let header = format!("turbofig {}", env!("CARGO_PKG_VERSION"));
     let connected = connected_files_from_health(health);
@@ -115,7 +117,8 @@ pub fn build_menu_state(
         &prompt_files,
         bridge_dir,
         mcp_port,
-        &turbofig_bin_path(),
+        turbofig_bin,
+        custom_bridge_dir,
     );
 
     MenuState {
@@ -146,7 +149,7 @@ mod tests {
 
     #[test]
     fn unreachable_daemon_shows_bridge_not_running_dimmed() {
-        let state = build_menu_state(None, "/tmp/bridge", 18846);
+        let state = build_menu_state(None, "/tmp/bridge", 18846, "/opt/homebrew/bin/turbofig", "");
         assert_eq!(state.status_text, "Bridge not running");
         assert_eq!(state.icon_state, IconState::Dimmed);
     }
@@ -154,7 +157,13 @@ mod tests {
     #[test]
     fn zero_files_shows_waiting_for_the_plugin_dimmed() {
         let health = health_with_files(&[]);
-        let state = build_menu_state(Some(&health), "/tmp/bridge", 18846);
+        let state = build_menu_state(
+            Some(&health),
+            "/tmp/bridge",
+            18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
+        );
         assert_eq!(state.status_text, "Waiting for the Figma plugin");
         assert_eq!(state.icon_state, IconState::Dimmed);
     }
@@ -162,7 +171,13 @@ mod tests {
     #[test]
     fn one_file_shows_connected_with_its_name_normal() {
         let health = health_with_files(&[("key1", "Design A")]);
-        let state = build_menu_state(Some(&health), "/tmp/bridge", 18846);
+        let state = build_menu_state(
+            Some(&health),
+            "/tmp/bridge",
+            18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
+        );
         assert_eq!(state.status_text, "Connected: Design A");
         assert_eq!(state.icon_state, IconState::Normal);
     }
@@ -170,14 +185,20 @@ mod tests {
     #[test]
     fn many_files_shows_the_plural_count_normal() {
         let health = health_with_files(&[("key1", "Design A"), ("key2", "Design B")]);
-        let state = build_menu_state(Some(&health), "/tmp/bridge", 18846);
+        let state = build_menu_state(
+            Some(&health),
+            "/tmp/bridge",
+            18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
+        );
         assert_eq!(state.status_text, "Connected: 2 files");
         assert_eq!(state.icon_state, IconState::Normal);
     }
 
     #[test]
     fn header_carries_the_crate_version() {
-        let state = build_menu_state(None, "/tmp/bridge", 18846);
+        let state = build_menu_state(None, "/tmp/bridge", 18846, "/opt/homebrew/bin/turbofig", "");
         assert_eq!(
             state.header,
             format!("turbofig {}", env!("CARGO_PKG_VERSION"))
@@ -186,13 +207,21 @@ mod tests {
 
     #[test]
     fn agent_prompt_reflects_the_connected_files() {
-        let zero = build_menu_state(Some(&health_with_files(&[])), "/tmp/bridge", 18846);
+        let zero = build_menu_state(
+            Some(&health_with_files(&[])),
+            "/tmp/bridge",
+            18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
+        );
         assert!(zero.agent_prompt.contains("Run the status op first"));
 
         let one = build_menu_state(
             Some(&health_with_files(&[("key1", "Design A")])),
             "/tmp/bridge",
             18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
         );
         assert!(one.agent_prompt.contains("\"fileKey\":\"key1\""));
 
@@ -203,6 +232,8 @@ mod tests {
             ])),
             "/tmp/bridge",
             18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
         );
         assert!(many
             .agent_prompt
@@ -214,7 +245,13 @@ mod tests {
         let health = serde_json::json!({
             "connectedFiles": [{"fileKey": "key1"}, {"fileKey": "key2", "name": "Design B"}],
         });
-        let state = build_menu_state(Some(&health), "/tmp/bridge", 18846);
+        let state = build_menu_state(
+            Some(&health),
+            "/tmp/bridge",
+            18846,
+            "/opt/homebrew/bin/turbofig",
+            "",
+        );
         assert_eq!(state.status_text, "Connected: Design B");
     }
 }

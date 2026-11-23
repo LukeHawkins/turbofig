@@ -300,16 +300,23 @@ export interface ConnectedFile {
 }
 
 /**
- * Renders the daemon binary path for a pasted shell command. A path of only
- * safe characters stays bare. Any other path is single-quoted. An empty path
- * (older daemon) or one with control characters becomes plain `turbofig`.
- * Mirrors `shell_bin` in `daemon/src/agent_prompt.rs`.
+ * Renders an absolute path for a pasted shell command. A path of only safe
+ * characters stays bare. Any other path is single-quoted. A path that is not
+ * absolute, or holds an unsafe character (C0, DEL, C1, line and paragraph
+ * separators, bidi controls), gives null. Mirrors `shell_path` in
+ * `daemon/src/agent_prompt.rs`.
  */
-export function shellBin(bin: string): string {
+export function shellPath(path: string): string | null {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point.
-  if (!bin || /[\u0000-\u001f\u007f]/.test(bin)) return "turbofig";
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(bin)) return bin;
-  return `'${bin.split("'").join("'\\''")}'`;
+  const unsafeChar = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+  if (!path.startsWith("/") || unsafeChar.test(path)) return null;
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(path)) return path;
+  return `'${path.split("'").join("'\\''")}'`;
+}
+
+/** The binary for the prompt: `shellPath`, else plain `turbofig`. */
+export function shellBin(bin: string): string {
+  return shellPath(bin) ?? "turbofig";
 }
 
 /**
@@ -330,6 +337,8 @@ export function shellBin(bin: string): string {
  *
  * `turbofigBin` is the daemon's stable binary path from WELCOME; empty (older
  * daemon) renders plain `turbofig`.
+ * `customBridgeDir` is the absolute bridge folder, sent only when it is not
+ * the default; it adds ` --dir <folder>` to the shell line.
  * `bridgeDir` falls back to `DEFAULT_BRIDGE_HOME` when empty, e.g. before
  * the first WELCOME (which carries the daemon's real `bridgeHome`) arrives.
  */
@@ -339,6 +348,7 @@ export function fillAgentPrompt(
   bridgeDir: string,
   mcpPort: number,
   turbofigBin = "",
+  customBridgeDir = "",
 ): string {
   let filesLine = "";
   let fileKey = "<fileKey>";
@@ -353,6 +363,8 @@ export function fillAgentPrompt(
     fileKeyHint = " Pick a fileKey from the list above.";
   }
   const home = bridgeDir || DEFAULT_BRIDGE_HOME;
+  const customPath = shellPath(customBridgeDir);
+  const bridgeFlag = customPath === null ? "" : ` --dir ${customPath}`;
   return template
     .split("{{FILES_LINE}}")
     .join(filesLine)
@@ -364,6 +376,8 @@ export function fillAgentPrompt(
     .join(home)
     .split("{{TURBOFIG_BIN}}")
     .join(shellBin(turbofigBin))
+    .split("{{BRIDGE_FLAG}}")
+    .join(bridgeFlag)
     .split("{{MCP_PORT}}")
     .join(String(mcpPort));
 }

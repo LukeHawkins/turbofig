@@ -14,7 +14,7 @@ return figma.root.name;
 EOF
 ```
 
-Add `--shot` to also screenshot the first node id the code returned (second line: the PNG path). Add `--file <fileKey>` when several files are open. For another op, pass a full job JSON with an `"op"` field the same way. Exit 0: a result printed (it may be `"ok":false`). Exit 1: no result (`no_result`, with the outbox path). Exit 2: usage error.
+Add `--shot` to also screenshot the first node id the code returned (second line: the screenshot result JSON, with the PNG `path`). Add `--file <fileKey>` when several files are open. For another op, pass a full job JSON with an `"op"` field the same way. Exit 0: a result printed (it may be `"ok":false`). Exit 1: no result (`no_result`, with the outbox path). Exit 2: usage error.
 
 With file tools only: write `inbox/<id>.json` in one operation, then read `outbox/<id>.json` once. The daemon retries a half-written file for a short grace time, so one complete write is the contract.
 

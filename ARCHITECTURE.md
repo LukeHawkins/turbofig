@@ -35,7 +35,7 @@ onto the daemon's `POST /job`, starting the daemon first if it is not already
 reachable (see "Daemon lifecycle" below). See `DECISIONS.md` item 15 and
 `skills/file-bridge.md`.
 
-`turbofig js` is the shell client for the file bridge. It reads JS (sent as an `execute` job) or a full job JSON from stdin, writes the inbox file, waits for the outbox result and prints it. It starts the daemon if needed. The connect prompt names it by the daemon's stable binary path (`launchd::stable_binary_path`, sent to the plugin as `binPath` in WELCOME), so an agent needs no recipe. Agents with only file tools still use the inbox directly.
+`turbofig js` is the shell client for the file bridge. It reads JS (sent as an `execute` job) or a full job JSON from stdin, writes the inbox file, waits for the outbox result and prints it. It starts the daemon if needed. The connect prompt names it by the daemon's stable binary path (`agent_prompt::turbofig_bin_path`, sent to the plugin as `binPath` in WELCOME): the Homebrew `<prefix>/bin/turbofig` link from a Cellar, and also from inside `turbofig.app` when `/opt/homebrew/bin/turbofig` or `/usr/local/bin/turbofig` exists and is an executable, so the prompt does not change between app and shell launches. A custom bridge folder is sent as `bridgeDirCustom` (empty for the default `$HOME/.turbofig`) and adds ` --dir <folder>` to the shell line, because the agent's shell does not share the daemon's environment. Both paths must be absolute and free of control and bidi characters, else the prompt falls back to plain `turbofig` and no flag. The menu bar app resolves both once at start, not on each health tick. Agents with only file tools still use the inbox directly.
 
 ## Daemon
 

@@ -410,10 +410,16 @@ pub async fn run_menu_bar_app() {
     }
 
     let initial_health = verified_health(mcp_port, &home).await;
+    // Resolved once: both read the file system and the environment, which
+    // `build_menu_state` must not do on every health tick.
+    let turbofig_bin = crate::agent_prompt::turbofig_bin_path();
+    let custom_bridge_dir = crate::config::bridge_dir_custom();
     let initial_state = build_menu_state(
         initial_health.as_ref(),
         &home.display().to_string(),
         mcp_port,
+        &turbofig_bin,
+        &custom_bridge_dir,
     );
 
     let MenuHandles {
@@ -533,7 +539,13 @@ pub async fn run_menu_bar_app() {
 
         match event {
             Event::UserEvent(UserEvent::Health(health)) => {
-                let new_state = build_menu_state(health.as_ref(), &bridge_dir_display, mcp_port);
+                let new_state = build_menu_state(
+                    health.as_ref(),
+                    &bridge_dir_display,
+                    mcp_port,
+                    &turbofig_bin,
+                    &custom_bridge_dir,
+                );
                 status_item.set_text(&new_state.status_text);
                 if let Some(icon) = icon::icon_for_state(new_state.icon_state) {
                     let _ = tray.set_icon_templated(Some(icon));

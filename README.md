@@ -136,6 +136,11 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
    same prompt. Chat apps that run in a browser cannot reach your Mac, so
    they cannot use turbofig.
 
+   **Claude Code tip:** to stop it asking before every Figma job, type
+   `/permissions` and add the allow rule `Bash(/opt/homebrew/bin/turbofig js *)`
+   (Intel Mac: `/usr/local/bin/turbofig`). This lets the agent edit your open
+   Figma file without asking each time.
+
 4. **Verify.** In the Terminal, run `turbofig status`. It prints
    `turbofig daemon: version X, up Ns`, then `- <file name> (<file key>)
    plugin X` for each connected Figma file. If it prints `No Figma file

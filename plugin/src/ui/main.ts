@@ -81,6 +81,9 @@ let daemonBridgeHome = "";
 /** Daemon binary path received on WELCOME. Empty for an older daemon; fillAgentPrompt then names plain `turbofig`. */
 let daemonBinPath = "";
 
+/** Absolute custom bridge folder from WELCOME. Empty for the default folder or an older daemon. */
+let daemonBridgeDirCustom = "";
+
 // Resolve panel elements once on load.
 const connStatusEl = document.getElementById("conn-status") as HTMLElement;
 const sessionLineEl = document.getElementById("session-line") as HTMLElement;
@@ -297,6 +300,7 @@ if (copyConnectBtn) {
       daemonBridgeHome,
       daemonMcpPort,
       daemonBinPath,
+      daemonBridgeDirCustom,
     );
     if (clipboardCopy(prompt)) {
       setCopiedFeedback(copyConnectBtn);
@@ -481,6 +485,8 @@ function connect(): void {
       daemonMcpPort = typeof parsed.mcpPort === "number" ? parsed.mcpPort : 18846;
       daemonBridgeHome = typeof parsed.bridgeHome === "string" ? parsed.bridgeHome : "";
       daemonBinPath = typeof parsed.binPath === "string" ? parsed.binPath : "";
+      daemonBridgeDirCustom =
+        typeof parsed.bridgeDirCustom === "string" ? parsed.bridgeDirCustom : "";
       const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
       if (staleWarningEl) {
         staleWarningEl.textContent = warning;

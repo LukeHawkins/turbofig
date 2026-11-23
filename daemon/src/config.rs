@@ -158,6 +158,27 @@ pub fn bridge_dir_display() -> String {
     )
 }
 
+/// The absolute bridge directory when it is NOT the default `$HOME/.turbofig`
+/// (a custom `TURBOFIG_BRIDGE_DIR`), else an empty string. The plugin sends
+/// it to `turbofig js --dir` in the connect prompt, because an agent's shell
+/// does not share the daemon's environment.
+pub fn bridge_dir_custom() -> String {
+    bridge_dir_custom_for(
+        &bridge_dir_from_env(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+/// The pure, testable half of `bridge_dir_custom`.
+fn bridge_dir_custom_for(dir: &std::path::Path, home: Option<&str>) -> String {
+    if let Some(home) = home.filter(|h| !h.is_empty()) {
+        if dir == PathBuf::from(home).join(".turbofig") {
+            return String::new();
+        }
+    }
+    dir.to_string_lossy().into_owned()
+}
+
 /// The pure, testable half of `bridge_dir_display`.
 fn bridge_dir_display_for(dir: &std::path::Path, home: Option<&str>) -> String {
     if let Some(home) = home {
@@ -175,6 +196,23 @@ fn bridge_dir_display_for(dir: &std::path::Path, home: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_dir_custom_is_empty_for_the_default_and_the_path_otherwise() {
+        let home = Some("/home/alice");
+        assert_eq!(
+            bridge_dir_custom_for(&PathBuf::from("/home/alice/.turbofig"), home),
+            ""
+        );
+        assert_eq!(
+            bridge_dir_custom_for(&PathBuf::from("/home/alice/bridge"), home),
+            "/home/alice/bridge"
+        );
+        assert_eq!(
+            bridge_dir_custom_for(&PathBuf::from("/tmp/b"), None),
+            "/tmp/b"
+        );
+    }
 
     #[test]
     fn port_defaults_when_unset() {

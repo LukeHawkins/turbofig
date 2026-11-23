@@ -152,8 +152,8 @@ impl WsContext {
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
 /// Returns a JSON string with `type`, `version`, `mcpPort`, `bridgeHome`
-/// and `binPath` fields. `mcpPort` is the HTTP MCP port and `bridgeHome` is the file-bridge
-/// home directory (see `config::bridge_dir_display`), so the plugin panel can
+/// `binPath` and `bridgeDirCustom` fields. `mcpPort` is the HTTP MCP port
+/// and `bridgeHome` is the file-bridge home directory (see `config::bridge_dir_display`), so the plugin panel can
 /// show a ready-to-paste connect prompt that names the real bridge directory
 /// even under a custom `TURBOFIG_BRIDGE_DIR`.
 pub(crate) fn welcome_message() -> String {
@@ -162,7 +162,8 @@ pub(crate) fn welcome_message() -> String {
         "version": env!("CARGO_PKG_VERSION"),
         "mcpPort": port_from_env(),
         "bridgeHome": bridge_dir_display(),
-        "binPath": crate::agent_prompt::turbofig_bin_path()
+        "binPath": crate::agent_prompt::turbofig_bin_path(),
+        "bridgeDirCustom": crate::config::bridge_dir_custom()
     })
     .to_string()
 }
@@ -539,6 +540,11 @@ mod tests {
             v["binPath"],
             json!(crate::agent_prompt::turbofig_bin_path()),
             "binPath must equal turbofig_bin_path()"
+        );
+        assert_eq!(
+            v["bridgeDirCustom"],
+            json!(crate::config::bridge_dir_custom()),
+            "bridgeDirCustom must equal bridge_dir_custom()"
         );
     }
 
