@@ -1,5 +1,9 @@
 # Claude Code and other MCP clients
 
+This page is optional. The default connection is the file bridge: run the
+plugin, copy its prompt, and paste it into your agent. AI agents add an MCP
+server only when the user asks for MCP.
+
 On a machine where MCP is not blocked, this is a lighter-weight connection
 than the file bridge, with no clipboard step.
 

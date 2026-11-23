@@ -1,6 +1,6 @@
 # turbofig: Figma design agent (local daemon)
 
-Prefer the file-bridge: cheaper, no dialog. Use MCP only if the bridge is unavailable.
+Use the file-bridge: run the turbofig plugin in Figma, copy its prompt, and paste it into your agent. It works where MCP is blocked and needs no approval dialog. Add MCP only when the user asks for it.
 
 ## File-bridge (recommended)
 
@@ -8,8 +8,8 @@ Write a JSON job to `~/.turbofig/inbox/<id>.json` and read the result from `~/.t
 
 Example job: `{"op":"execute","fileKey":"<key>","code":"return figma.root.name;"}`
 
-## MCP (fallback)
+## MCP (optional, only when the user asks)
 
-Claude Code: `claude mcp add turbofig -- turbofig mcp`. This starts a stdio MCP server that starts the daemon itself if it is not already running.
+Setup is in `docs/mcp-clients.md`. `turbofig mcp` is a stdio MCP server that starts the daemon itself if it is not already running.
 
 If you cannot add an MCP server this way, the daemon also speaks plain local HTTP on port 18846, not HTTPS. Use curl, never a web-fetch tool (it forces HTTPS and fails). `POST http://127.0.0.1:18846/mcp`, with `Authorization: Bearer $(cat ~/.turbofig/token)`. The four tools mirror the ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`, each with an optional `fileKey`.

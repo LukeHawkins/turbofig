@@ -145,8 +145,8 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
 to do them. Use the prompt in [docs/agents.md](docs/agents.md).</sub>
 
 **Prefer MCP? (developers)** MCP is a standard way for AI apps to add
-tools. Claude Code: `claude mcp add turbofig -- turbofig mcp`. See
-[docs/mcp-clients.md](docs/mcp-clients.md) for this and other MCP clients.
+tools. See [docs/mcp-clients.md](docs/mcp-clients.md) for the MCP setup.
+Set up MCP only when the user asks for it. The default needs no MCP setup.
 
 ## How turbofig compares
 
@@ -207,9 +207,9 @@ private because they contain unrelated personal context.
 Install turbofig, import the plugin into Figma Desktop once, then paste
 the copy-prompt into your agent. It drives Figma through plain files, with
 no Figma token and no MCP setup. Then ask in plain English, for example
-for a landing page from a written brief. Prefer MCP? Run
-`claude mcp add turbofig -- turbofig mcp`. See [Get started](#get-started)
-and [docs/agents.md](docs/agents.md).
+for a landing page from a written brief. Prefer MCP? See
+[docs/mcp-clients.md](docs/mcp-clients.md). See also
+[Get started](#get-started) and [docs/agents.md](docs/agents.md).
 
 ### Can I generate Figma designs with AI for free?
 

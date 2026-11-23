@@ -6,4 +6,4 @@ Options (others throw): frame name,direction,gap,padding,fill,width,height,prima
 tf.text loads its font; other text nodes need `await figma.loadFontAsync(node.fontName)` first.
 Errors: busy: wait retryAfterMs. not_started: resend. started_unknown: check first. plugin_disconnected, file_not_connected: ask the user to open the plugin.
 MCP session error: initialize again, retry.
-No turbofig tools? Preferred: `claude mcp add turbofig -- turbofig mcp`. HTTP: run `turbofig status`, then add http://127.0.0.1:{{MCP_PORT}}/mcp with header `Authorization: Bearer <contents of {{BRIDGE_DIR}}/token>`.
+No turbofig tools? Preferred: `claude mcp add turbofig -- turbofig mcp`. HTTP: run `turbofig status`, then add http://127.0.0.1:{{MCP_PORT}}/mcp with header `Authorization: Bearer <contents of {{BRIDGE_DIR}}/token>`. MCP blocked? Ask the user to copy the plugin's File bridge prompt.

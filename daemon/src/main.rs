@@ -629,7 +629,6 @@ async fn cmd_run() {
     let opener = opener_for_run();
     let clipboard_copied = clipboard.copy(&manifest_path.display().to_string());
     let figma_opened = opener.open_figma();
-    let binary_path = stable_path_for_running_binary();
     print!(
         "{}",
         turbofig::first_run::first_run_text(
@@ -637,7 +636,6 @@ async fn cmd_run() {
             mcp_port,
             ws_port,
             &manifest_path,
-            &binary_path,
             figma_opened,
             clipboard_copied,
         )

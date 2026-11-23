@@ -80,7 +80,7 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
     let manifest_path = home.path().join("figma-plugin/manifest.json");
     assert!(
         stdout.contains(&format!(
-            "turbofig {} is running (MCP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).",
+            "turbofig {} is running (HTTP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).",
             env!("CARGO_PKG_VERSION")
         )),
         "stdout must report the running version and both ports: {stdout}"
@@ -94,16 +94,16 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
         "stdout must name the real manifest path: {stdout}"
     );
     assert!(
-        stdout.contains("2. Connect your agent (once):"),
+        stdout.contains("2. Connect your agent: run the turbofig plugin in a Figma file"),
         "stdout must carry step 2: {stdout}"
     );
     assert!(
-        stdout.contains("claude mcp add turbofig -- turbofig mcp"),
-        "stdout must carry the Claude Code connect command: {stdout}"
+        !stdout.contains("claude mcp add"),
+        "stdout must not tell agents to add an MCP server: {stdout}"
     );
     assert!(
-        stdout.contains("3. MCP blocked on your machine?"),
-        "stdout must carry step 3: {stdout}"
+        stdout.contains("Add an MCP server only if the user asks for MCP:"),
+        "stdout must carry the MCP-only-on-request line: {stdout}"
     );
 
     let recorded = tokio::fs::read_to_string(&clipboard_record)

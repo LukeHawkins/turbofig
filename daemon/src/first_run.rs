@@ -185,12 +185,6 @@ impl AppOpener for FakeOpener {
 /// The first-run walkthrough `turbofig` prints once it has confirmed the
 /// daemon is healthy and `<home>/plugin-seen` does not exist yet.
 ///
-/// `binary_path` must already be the stable path (the Homebrew
-/// `<prefix>/bin/turbofig` symlink when running from a Cellar, otherwise the
-/// running binary's own path; see `launchd::stable_binary_path`): this
-/// function only ever formats whatever path it is given, so the Cellar rule
-/// itself is exercised and tested once, in `launchd.rs`.
-///
 /// `figma_opened` is whether `AppOpener::open_figma` already succeeded: when
 /// true, the first line of step 1 reads "Figma is opening now."; when false
 /// (no Figma Desktop installed, or `open` failed for any other reason), it
@@ -212,7 +206,6 @@ pub fn first_run_text(
     mcp_port: u16,
     ws_port: u16,
     manifest_path: &Path,
-    binary_path: &Path,
     figma_opened: bool,
     clipboard_copied: bool,
 ) -> String {
@@ -227,9 +220,8 @@ pub fn first_run_text(
         "copy this path"
     };
     format!(
-        "turbofig {version} is running (MCP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).\n\n1. Add the Figma plugin (once). {figma_line}\n   Plugins > Development > Import plugin from manifest...\n   Press Cmd+Shift+G, paste the path ({clipboard_hint}), then press Return:\n   {manifest}\n\n2. Connect your agent (once):\n   Claude Code:   claude mcp add turbofig -- turbofig mcp\n   Other MCP clients, add this server:\n     {{\"command\": \"{binary}\", \"args\": [\"mcp\"]}}\n\n3. MCP blocked on your machine? Run the plugin in Figma and click \"Copy prompt\".\n",
+        "turbofig {version} is running (HTTP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).\n\n1. Add the Figma plugin (once). {figma_line}\n   Plugins > Development > Import plugin from manifest...\n   Press Cmd+Shift+G, paste the path ({clipboard_hint}), then press Return:\n   {manifest}\n\n2. Connect your agent: run the turbofig plugin in a Figma file, click the link icon\n   next to the file name (\"Copy connect prompt\"), and paste the prompt into your agent.\n   This is the file bridge. It needs no MCP setup.\n\nAI agents: setup is done. Ask the user to do steps 1 and 2.\nAdd an MCP server only if the user asks for MCP:\nhttps://github.com/LukeHawkins/turbofig/blob/main/docs/mcp-clients.md\n",
         manifest = manifest_path.display(),
-        binary = binary_path.display(),
     )
 }
 
@@ -320,7 +312,6 @@ mod tests {
             18846,
             18847,
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
@@ -335,7 +326,6 @@ mod tests {
             18846,
             18847,
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             false,
             true,
         );
@@ -350,29 +340,30 @@ mod tests {
             19999,
             19998,
             Path::new("/tmp/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
         assert!(text.contains("turbofig 1.2.3 is running"));
-        assert!(text.contains("MCP 127.0.0.1:19999"));
+        assert!(text.contains("HTTP 127.0.0.1:19999"));
         assert!(text.contains("plugin 127.0.0.1:19998"));
     }
 
     #[test]
-    fn first_run_text_has_exactly_the_3_numbered_steps() {
+    fn first_run_text_has_exactly_the_2_numbered_steps() {
         let text = first_run_text(
             "1.2.3",
             18846,
             18847,
             Path::new("/tmp/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
         assert!(text.contains("1. Add the Figma plugin"));
         assert!(text.contains("2. Connect your agent"));
-        assert!(text.contains("3. MCP blocked on your machine?"));
+        assert!(!text.contains("3. "));
+        assert!(text.contains("click the link icon"));
+        assert!(text.contains("(\"Copy connect prompt\")"));
+        assert!(text.contains("This is the file bridge. It needs no MCP setup."));
     }
 
     #[test]
@@ -382,7 +373,6 @@ mod tests {
             18846,
             18847,
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
@@ -390,51 +380,19 @@ mod tests {
     }
 
     #[test]
-    fn first_run_text_carries_the_claude_mcp_add_command() {
+    fn first_run_text_leaves_mcp_to_an_explicit_user_request() {
         let text = first_run_text(
             "1.2.3",
             18846,
             18847,
             Path::new("/tmp/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
-        assert!(text.contains("claude mcp add turbofig -- turbofig mcp"));
-    }
-
-    /// The caller is responsible for resolving `binary_path` to the stable
-    /// Homebrew symlink before calling this function (see `launchd::
-    /// stable_binary_path`, exercised directly in `launchd.rs`); this test
-    /// only confirms the text embeds whatever stable path it is given,
-    /// whether that is a Cellar-rewritten path or a dev checkout path left
-    /// unchanged.
-    #[test]
-    fn first_run_text_embeds_the_given_stable_binary_path_verbatim() {
-        let cellar_resolved = Path::new("/opt/homebrew/bin/turbofig");
-        let text = first_run_text(
-            "1.2.3",
-            18846,
-            18847,
-            Path::new("/tmp/manifest.json"),
-            cellar_resolved,
-            true,
-            true,
-        );
-        assert!(text.contains("\"command\": \"/opt/homebrew/bin/turbofig\""));
-        assert!(!text.contains("/Cellar/"));
-
-        let dev_checkout = Path::new("/Users/dev/turbofig/target/release/turbofig");
-        let text = first_run_text(
-            "1.2.3",
-            18846,
-            18847,
-            Path::new("/tmp/manifest.json"),
-            dev_checkout,
-            true,
-            true,
-        );
-        assert!(text.contains("\"command\": \"/Users/dev/turbofig/target/release/turbofig\""));
+        assert!(!text.contains("claude mcp add"));
+        assert!(!text.contains("\"args\""));
+        assert!(text.contains("Add an MCP server only if the user asks for MCP:"));
+        assert!(text.contains("docs/mcp-clients.md"));
     }
 
     #[test]
@@ -444,7 +402,6 @@ mod tests {
             18846,
             18847,
             Path::new("/tmp/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
@@ -459,7 +416,6 @@ mod tests {
             18846,
             18847,
             Path::new("/tmp/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             false,
         );
@@ -480,7 +436,6 @@ mod tests {
             18846,
             18847,
             Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json"),
-            Path::new("/opt/homebrew/bin/turbofig"),
             true,
             true,
         );
@@ -498,13 +453,16 @@ mod tests {
             "   /Users/dev/.turbofig/figma-plugin/manifest.json"
         );
         assert_eq!(
-            lines[8],
-            "   Claude Code:   claude mcp add turbofig -- turbofig mcp"
+            lines[7],
+            "2. Connect your agent: run the turbofig plugin in a Figma file, click the link icon"
         );
-        assert_eq!(lines[9], "   Other MCP clients, add this server:");
         assert_eq!(
-            lines[10],
-            "     {\"command\": \"/opt/homebrew/bin/turbofig\", \"args\": [\"mcp\"]}"
+            lines[8],
+            "   next to the file name (\"Copy connect prompt\"), and paste the prompt into your agent."
+        );
+        assert_eq!(
+            lines[9],
+            "   This is the file bridge. It needs no MCP setup."
         );
     }
 

@@ -41,6 +41,10 @@ recorded under Unreleased.
 - A foreign listener now makes the CLI, the proxy and the menu bar exit
   non-zero. An older same-user daemon is still handed off.
 - `tools/list` text is shorter (1066 to 658 bytes).
+- The first-run output leads with the file bridge (plugin, copy prompt,
+  paste). It tells AI agents to add an MCP server only if the user asks.
+- The connect prompt says "Use it for all Figma work, not MCP tools.", so an
+  agent with other Figma MCP tools loaded uses the bridge.
 
 ### Security
 

@@ -297,19 +297,20 @@ come from `clap`.
   `open`, then prints (`first_run::first_run_text`):
 
   ```
-  turbofig <version> is running (MCP 127.0.0.1:<mcp port>, plugin 127.0.0.1:<ws port>).
+  turbofig {version} is running (HTTP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).
 
-  1. Add the Figma plugin (once). Figma is opening now.
+  1. Add the Figma plugin (once). {figma_line}
      Plugins > Development > Import plugin from manifest...
-     Press Cmd+Shift+G, paste the path (it is on your clipboard), then press Return:
-     <manifest path>
+     Press Cmd+Shift+G, paste the path ({clipboard_hint}), then press Return:
+     {manifest}
 
-  2. Connect your agent (once):
-     Claude Code:   claude mcp add turbofig -- turbofig mcp
-     Other MCP clients, add this server:
-       {"command": "<stable binary path>", "args": ["mcp"]}
+  2. Connect your agent: run the turbofig plugin in a Figma file, click the link icon
+     next to the file name ("Copy connect prompt"), and paste the prompt into your agent.
+     This is the file bridge. It needs no MCP setup.
 
-  3. MCP blocked on your machine? Run the plugin in Figma and click "Copy prompt".
+  AI agents: setup is done. Ask the user to do steps 1 and 2.
+  Add an MCP server only if the user asks for MCP:
+  https://github.com/LukeHawkins/turbofig/blob/main/docs/mcp-clients.md
   ```
 
   If `open -a Figma` failed, "Figma is opening now." becomes "Open Figma
