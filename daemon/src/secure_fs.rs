@@ -237,6 +237,112 @@ pub(crate) fn prepare_bridge_dirs(dir: &Path, own_mode: bool) -> io::Result<(Pat
     Ok((inbox, outbox))
 }
 
+/// Name of the single-instance lock file in the bridge folder.
+pub(crate) const DAEMON_LOCK: &str = "daemon.lock";
+
+/// The one lock fd of this process. The daemon never closes it: a POSIX
+/// `fcntl` lock is dropped when ANY fd to the file closes in the process, so
+/// nothing else in the process may open `daemon.lock`.
+#[cfg(unix)]
+static HELD_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+#[cfg(unix)]
+fn flock_struct(l_type: libc::c_short) -> libc::flock {
+    // SAFETY: `flock` is plain data; all zero is a valid value.
+    let mut fl: libc::flock = unsafe { std::mem::zeroed() };
+    fl.l_type = l_type;
+    fl.l_whence = libc::SEEK_SET as libc::c_short;
+    fl
+}
+
+/// Result of `lock_bridge_dir`.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum LockOutcome {
+    /// This process now holds the lock for its whole life.
+    Held,
+    /// Another process holds it.
+    Busy,
+}
+
+/// Takes the daemon's exclusive lock on `<dir>/daemon.lock`. Creates the
+/// bridge folder if missing and applies the same checks as the other bridge
+/// files (no symlink, owned by this user, safe ancestors). The lock file is
+/// opened with `O_NOFOLLOW`, mode 0600. Retries `F_SETLK` for `retry` so a
+/// racing check or a daemon that is just exiting does not cause a false
+/// refusal.
+#[cfg(unix)]
+pub fn lock_bridge_dir(
+    dir: &Path,
+    own_mode: bool,
+    retry: std::time::Duration,
+) -> io::Result<LockOutcome> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::io::AsRawFd;
+    check_ancestors(dir)?;
+    ensure_private_dir(dir, own_mode)?;
+    let path = dir.join(DAEMON_LOCK);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)?;
+    let meta = file.metadata()?;
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if !meta.is_file() {
+        return Err(refuse(&path, "it is not a regular file"));
+    }
+    if meta.uid() != euid {
+        return Err(refuse(&path, "it is owned by another user"));
+    }
+    let until = std::time::Instant::now() + retry;
+    loop {
+        let fl = flock_struct(libc::F_WRLCK as libc::c_short);
+        // SAFETY: valid fd and a valid `flock` struct.
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &fl) };
+        if rc == 0 {
+            // Keep the only fd open for the life of the process.
+            let _ = HELD_LOCK.set(file);
+            return Ok(LockOutcome::Held);
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EAGAIN) | Some(libc::EACCES) => {}
+            _ => return Err(err),
+        }
+        if std::time::Instant::now() >= until {
+            return Ok(LockOutcome::Busy);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// True when some process holds the daemon lock in `dir`. Queries with
+/// `F_GETLK`, which never takes the lock, so it cannot race the daemon's
+/// `F_SETLK`. Opens the file read-only with `O_NOFOLLOW` and never creates
+/// it. A read lock is the query type: it conflicts with the daemon's write
+/// lock and needs no write access on the fd. No file means no holder.
+#[cfg(unix)]
+pub(crate) fn bridge_lock_held(dir: &Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join(DAEMON_LOCK))
+    else {
+        return false;
+    };
+    let mut fl = flock_struct(libc::F_RDLCK as libc::c_short);
+    // SAFETY: valid fd and a valid `flock` struct.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETLK, &mut fl) };
+    rc == 0 && fl.l_type != libc::F_UNLCK as libc::c_short
+}
+
 /// Opens `path` with `O_NOFOLLOW`, checks the open handle (regular file,
 /// owner, mode with no 0o077 bit), and reads from that same handle. Checking
 /// and reading one handle leaves no gap in which the file could be swapped.
@@ -472,5 +578,25 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = read_token_nofollow(&tmp.path().join("token")).unwrap_err();
         assert!(!is_refusal(&err));
+    }
+
+    #[test]
+    fn lock_file_symlink_is_refused_and_a_lock_is_never_created_through_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("b");
+        std::fs::create_dir(&dir).unwrap();
+        let target = tmp.path().join("target");
+        std::os::unix::fs::symlink(&target, dir.join(DAEMON_LOCK)).unwrap();
+        let r = lock_bridge_dir(&dir, false, std::time::Duration::ZERO);
+        assert!(r.is_err());
+        assert!(!target.exists());
+        assert!(!bridge_lock_held(&dir));
+    }
+
+    #[test]
+    fn no_lock_file_means_no_holder_and_the_query_does_not_create_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!bridge_lock_held(tmp.path()));
+        assert!(!tmp.path().join(DAEMON_LOCK).exists());
     }
 }

@@ -212,12 +212,27 @@ fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
     hard.max(soft)
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let cli = Cli::parse();
     if cli.check_embedded {
         cmd_check_embedded();
     }
+    // `js` runs before any async runtime or other start-up: it must stay fast.
+    if let Some(Command::Js { file, shot, dir }) = &cli.command {
+        std::process::exit(turbofig::js_cmd::run(
+            file.as_deref(),
+            *shot,
+            dir.as_deref(),
+        ));
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build the tokio runtime")
+        .block_on(async_main(cli));
+}
+
+async fn async_main(cli: Cli) {
     match cli.command {
         None => cmd_run_or_app_mode().await,
         Some(Command::Serve) => run_daemon().await,
@@ -227,6 +242,7 @@ async fn main() {
         Some(Command::Autostart { state, headless }) => cmd_autostart(state, headless).await,
         Some(Command::Uninstall { purge }) => cmd_uninstall(purge).await,
         Some(Command::Mcp) => cmd_mcp().await,
+        Some(Command::Js { .. }) => unreachable!("handled in main"),
         #[cfg(target_os = "macos")]
         Some(Command::App {
             action: AppAction::Install,
@@ -1084,6 +1100,31 @@ fn exit_for_startup_error(e: &std::io::Error) -> ! {
 /// both ports, ensures the pairing token, refreshes a stale on-disk plugin
 /// copy, and runs the three servers until one of them dies. Shared by the
 /// bare `turbofig` invocation and `turbofig serve`.
+/// Takes the exclusive lock on the bridge folder for the life of this
+/// process, so no 2 daemons ever serve one inbox. Exits non-zero (0 under
+/// launchd for a folder refusal, like the other startup checks) when another
+/// daemon holds it.
+fn take_bridge_lock(bridge_dir: &Path) {
+    let own_mode = std::env::var("TURBOFIG_BRIDGE_DIR").is_err();
+    match turbofig::lock_bridge_dir(bridge_dir, own_mode, std::time::Duration::from_millis(300)) {
+        Ok(turbofig::LockOutcome::Held) => {}
+        Ok(turbofig::LockOutcome::Busy) => {
+            eprintln!(
+                "turbofig daemon: another turbofig daemon is already using {}",
+                bridge_dir.display()
+            );
+            std::process::exit(already_running_exit_code());
+        }
+        Err(e) => {
+            eprintln!(
+                "turbofig daemon: could not lock {}: {e}",
+                bridge_dir.display()
+            );
+            exit_for_startup_error(&e);
+        }
+    }
+}
+
 async fn run_daemon() {
     let mcp_port = turbofig::port_from_env();
     let ws_port = turbofig::ws_port_from_env();
@@ -1101,6 +1142,7 @@ async fn run_daemon() {
     // port): a second `turbofig serve` while one is already healthy on this
     // port must exit at once with a clear message, not silently fail later.
     exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
+    take_bridge_lock(&bridge_dir);
     raise_nofile_limit();
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
