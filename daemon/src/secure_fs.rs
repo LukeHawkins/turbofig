@@ -255,6 +255,15 @@ fn flock_struct(l_type: libc::c_short) -> libc::flock {
     fl
 }
 
+/// `fcntl` errors that mean the filesystem has no byte-range locks.
+#[cfg(unix)]
+fn lock_errno_means_unsupported(errno: i32) -> bool {
+    matches!(
+        errno,
+        libc::ENOLCK | libc::ENOTSUP | libc::EOPNOTSUPP | libc::ENOSYS
+    )
+}
+
 /// Result of `lock_bridge_dir`.
 #[cfg(unix)]
 #[derive(Debug, PartialEq, Eq)]
@@ -263,6 +272,9 @@ pub enum LockOutcome {
     Held,
     /// Another process holds it.
     Busy,
+    /// The folder's filesystem has no `fcntl` locks (SMB, NFS, FUSE): the
+    /// daemon runs without a lock rather than crash-looping under launchd.
+    Unsupported,
 }
 
 /// Takes the daemon's exclusive lock on `<dir>/daemon.lock`. Creates the
@@ -279,6 +291,13 @@ pub fn lock_bridge_dir(
 ) -> io::Result<LockOutcome> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::os::unix::io::AsRawFd;
+    // A second call must not open the file again: closing any fd to it would
+    // drop the lock the first call took.
+    if HELD_LOCK.get().is_some() {
+        return Err(io::Error::other(
+            "this process already holds a bridge folder lock",
+        ));
+    }
     check_ancestors(dir)?;
     ensure_private_dir(dir, own_mode)?;
     let path = dir.join(DAEMON_LOCK);
@@ -306,12 +325,21 @@ pub fn lock_bridge_dir(
         let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &fl) };
         if rc == 0 {
             // Keep the only fd open for the life of the process.
-            let _ = HELD_LOCK.set(file);
-            return Ok(LockOutcome::Held);
+            return match HELD_LOCK.set(file) {
+                Ok(()) => Ok(LockOutcome::Held),
+                Err(file) => {
+                    // Closing it would release the lock: leak it instead.
+                    std::mem::forget(file);
+                    Err(io::Error::other(
+                        "this process already holds a bridge folder lock",
+                    ))
+                }
+            };
         }
         let err = io::Error::last_os_error();
         match err.raw_os_error() {
             Some(libc::EAGAIN) | Some(libc::EACCES) => {}
+            Some(e) if lock_errno_means_unsupported(e) => return Ok(LockOutcome::Unsupported),
             _ => return Err(err),
         }
         if std::time::Instant::now() >= until {
@@ -321,6 +349,75 @@ pub fn lock_bridge_dir(
     }
 }
 
+/// Writes `{"pid":..,"requestTimeoutMs":..}` into the held lock file, in
+/// place, through the held fd (no second fd is ever opened: that would drop
+/// the lock). `turbofig js` reads it to size its wait. Best effort.
+#[cfg(unix)]
+pub fn write_lock_info(request_timeout_ms: u64) {
+    use std::os::unix::fs::FileExt;
+    let Some(file) = HELD_LOCK.get() else {
+        return;
+    };
+    let body = format!(
+        "{{\"pid\":{},\"requestTimeoutMs\":{request_timeout_ms}}}\n",
+        std::process::id()
+    );
+    if file.set_len(0).is_ok() {
+        let _ = file.write_all_at(body.as_bytes(), 0);
+    }
+}
+
+/// The request timeout the daemon recorded in its lock file, if readable.
+/// Opens the file read-only with `O_NOFOLLOW`, and requires a regular file
+/// owned by this user.
+#[cfg(unix)]
+pub(crate) fn read_lock_request_timeout(dir: &Path) -> Option<std::time::Duration> {
+    use std::io::Read;
+    let mut file = open_lock_readonly(dir)?;
+    let mut buf = String::new();
+    (&mut file).take(4096).read_to_string(&mut buf).ok()?;
+    let v: serde_json::Value = serde_json::from_str(buf.trim()).ok()?;
+    let ms = v.get("requestTimeoutMs")?.as_u64()?;
+    (ms > 0).then(|| std::time::Duration::from_millis(ms))
+}
+
+/// Opens `<dir>/daemon.lock` read-only (never creating it) and checks the
+/// open handle: a regular file owned by this user.
+#[cfg(unix)]
+fn open_lock_readonly(dir: &Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(dir.join(DAEMON_LOCK))
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    (meta.is_file() && meta.uid() == euid).then_some(file)
+}
+
+/// Refuses a folder that group or other can write to, unless it has the
+/// sticky bit: another account could then swap `inbox/` or `outbox/`.
+#[cfg(unix)]
+pub(crate) fn check_not_shared_writable(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(meta) = check_existing(dir)? else {
+        return Ok(());
+    };
+    let mode = meta.permissions().mode();
+    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+        return Err(refuse(
+            dir,
+            &format!(
+                "other accounts can write to it (mode {:03o}); run chmod go-w on it",
+                mode & 0o777
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// True when some process holds the daemon lock in `dir`. Queries with
 /// `F_GETLK`, which never takes the lock, so it cannot race the daemon's
 /// `F_SETLK`. Opens the file read-only with `O_NOFOLLOW` and never creates
@@ -328,13 +425,8 @@ pub fn lock_bridge_dir(
 /// lock and needs no write access on the fd. No file means no holder.
 #[cfg(unix)]
 pub(crate) fn bridge_lock_held(dir: &Path) -> bool {
-    use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
-    let Ok(file) = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(dir.join(DAEMON_LOCK))
-    else {
+    let Some(file) = open_lock_readonly(dir) else {
         return false;
     };
     let mut fl = flock_struct(libc::F_RDLCK as libc::c_short);
@@ -598,5 +690,52 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(!bridge_lock_held(tmp.path()));
         assert!(!tmp.path().join(DAEMON_LOCK).exists());
+    }
+
+    #[test]
+    fn lock_errors_for_filesystems_without_locks_are_recognised() {
+        for e in [libc::ENOLCK, libc::ENOTSUP, libc::EOPNOTSUPP, libc::ENOSYS] {
+            assert!(lock_errno_means_unsupported(e));
+        }
+        for e in [libc::EAGAIN, libc::EACCES, libc::EBADF, libc::EIO] {
+            assert!(!lock_errno_means_unsupported(e));
+        }
+    }
+
+    #[test]
+    fn a_folder_other_accounts_can_write_to_is_refused_unless_sticky() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().join("b");
+        std::fs::create_dir(&d).unwrap();
+        for (mode, ok) in [
+            (0o700, true),
+            (0o755, true),
+            (0o775, false),
+            (0o777, false),
+            (0o1777, true),
+        ] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(check_not_shared_writable(&d).is_ok(), ok, "{mode:o}");
+        }
+    }
+
+    #[test]
+    fn lock_info_is_read_back_and_a_symlinked_or_missing_file_gives_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_lock_request_timeout(tmp.path()), None);
+        let f = tmp.path().join(DAEMON_LOCK);
+        std::fs::write(&f, "{\"pid\":1,\"requestTimeoutMs\":45000}\n").unwrap();
+        assert_eq!(
+            read_lock_request_timeout(tmp.path()),
+            Some(std::time::Duration::from_millis(45000))
+        );
+        std::fs::write(&f, "garbage").unwrap();
+        assert_eq!(read_lock_request_timeout(tmp.path()), None);
+        std::fs::remove_file(&f).unwrap();
+        let real = tmp.path().join("real");
+        std::fs::write(&real, "{\"requestTimeoutMs\":1000}").unwrap();
+        std::os::unix::fs::symlink(&real, &f).unwrap();
+        assert_eq!(read_lock_request_timeout(tmp.path()), None);
     }
 }

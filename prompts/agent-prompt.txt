@@ -10,5 +10,5 @@ Shell: {{TURBOFIG_BIN}} js{{BRIDGE_FLAG}} <<'EOF'
 EOF
 Prints the result JSON. Add --shot to also screenshot the returned node (2nd line: screenshot JSON with path). Other ops: send a job JSON the same way. Several files open: add --file <fileKey>.
 File tools only: write {{BRIDGE_DIR}}/inbox/<unique-id>.json (e.g. job1.json), read the same name in outbox/; if missing, wait 1 s and read once more.
-Errors, then resend with a new id: busy: wait retryAfterMs. not_started: resend. started_unknown: check the file first. plugin_disconnected, file_not_connected: ask the user to open the plugin.
-No result (exit 1): run `{{TURBOFIG_BIN}} status`, then retry.
+Errors, then resend with a new id: busy: wait retryAfterMs. not_started: resend. started_unknown: check the file first. plugin_disconnected, file_not_connected: ask the user to open the plugin. bridge_error: read its error.
+js exit 1: act on its code above.
