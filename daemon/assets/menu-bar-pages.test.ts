@@ -91,13 +91,8 @@ describe("about.html", () => {
     expect(document.getElementById("version-text")?.textContent).toBe("v1.2.3");
   });
 
-  it("the copy-agent-prompt control is a labeled text link, and the plugin button is a non-clickable visual", () => {
-    const control = document.querySelector(
-      "a[href='turbofig-action://copy-agent-prompt']",
-    ) as unknown as HTMLElement;
-    expect(control).not.toBeNull();
-    expect(control.getAttribute("class")).toContain("text-link");
-    expect(control.textContent).toBe("Copy prompt here instead");
+  it("step 3 points at the plugin's button only: no copy control in the app, and the button is a non-clickable visual", () => {
+    expect(document.querySelector("a[href='turbofig-action://copy-agent-prompt']")).toBeNull();
 
     const visual = document.querySelector(".inline-btn") as unknown as HTMLElement;
     expect(visual.getAttribute("class")).toContain("icon-btn");

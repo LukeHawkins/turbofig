@@ -9,13 +9,14 @@ connects. Its menu:
 
 | Item | Does |
 |---|---|
-| About turbofig… | Opens the About window: the "How to use" steps and Copy agent prompt |
-| Settings… | Opens the Settings window: Start at login, Copy plugin manifest path, Open plugin folder |
+| About turbofig… | Opens the About window: the "How to use" steps |
+| Settings… | Opens the Settings window: Start at login, MCP over HTTP, Copy path, Show plugin folder |
 | Quit turbofig | Stops the daemon and quits the app |
 
-The menu is kept small on purpose: copying the agent prompt lives in the
-About window; copying the manifest path, revealing the plugin in Finder,
-and Start at login live in the Settings window. Both windows are plain
+The menu is kept small on purpose: the agent prompt is copied from the
+Figma plugin (the link-icon button next to the file name); copying the
+manifest path, revealing the plugin in Finder, Start at login and MCP over
+HTTP live in the Settings window. Both windows are plain
 pages with no script: every button is a link Rust intercepts and runs, so
 there is no live status display to go stale; close either window with its
 title bar button or Cmd+W.

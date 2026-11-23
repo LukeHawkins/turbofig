@@ -169,9 +169,19 @@
         padding: 0;
       }
 
+      /* Smaller than the real 28px button so it sits inside the text line
+         without raising the line height. */
       .inline-btn {
-        vertical-align: middle;
-        margin: 0 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        vertical-align: -4px;
+        margin: 0 1px;
+      }
+
+      .inline-btn svg {
+        width: 11px;
+        height: 11px;
       }
 
       .brand-btn {
@@ -243,9 +253,6 @@
           </svg></span>
         and paste into Claude Code, Cursor, Copilot CLI or any coding agent. It connects by itself.
       </p>
-      <div class="action-row">
-        <a id="copy-agent-prompt" class="text-link" href="turbofig-action://copy-agent-prompt">Copy prompt here instead</a>
-      </div>
     </div>
 
     <div class="footer">
