@@ -645,9 +645,21 @@ describe("fillAgentPrompt", () => {
   });
 
   test("single-quotes a binary path with spaces or shell metacharacters", () => {
-    const spaced = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/b", 18846, "/Users/a b/bin/turbofig");
+    const spaced = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [],
+      "/tmp/b",
+      18846,
+      "/Users/a b/bin/turbofig",
+    );
     expect(spaced).toContain("'/Users/a b/bin/turbofig' js <<'EOF'");
-    const quote = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/b", 18846, "/tmp/it's$x/turbofig");
+    const quote = fillAgentPrompt(
+      AGENT_PROMPT_TEMPLATE,
+      [],
+      "/tmp/b",
+      18846,
+      "/tmp/it's$x/turbofig",
+    );
     expect(quote).toContain("'/tmp/it'\\''s$x/turbofig' js <<'EOF'");
   });
 
@@ -685,7 +697,14 @@ describe("fillAgentPrompt", () => {
 
   test("an unsafe or relative custom bridge folder adds no flag", () => {
     for (const dir of UNSAFE_PATHS) {
-      const result = fillAgentPrompt(AGENT_PROMPT_TEMPLATE, [], "/tmp/b", 18846, "/b/turbofig", dir);
+      const result = fillAgentPrompt(
+        AGENT_PROMPT_TEMPLATE,
+        [],
+        "/tmp/b",
+        18846,
+        "/b/turbofig",
+        dir,
+      );
       expect(result).toContain("Shell: /b/turbofig js <<'EOF'");
     }
   });
