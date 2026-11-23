@@ -155,10 +155,9 @@
         color: var(--text-secondary);
       }
 
-      /* === ICON BUTTON: the "Copy agent prompt" action, styled identically
-         to the Figma plugin panel's own copy-prompt button
-         (plugin/src/ui/template.html's #copy-connect, .icon-btn.brand-btn),
-         same shape, size, icon, colours and hover/tooltip style. ========== */
+      /* === PLUGIN BUTTON VISUAL: a non-clickable copy of the Figma plugin
+         panel's copy-prompt button (plugin/src/ui/template.html's
+         #copy-connect, .icon-btn.brand-btn), shown inline in step 3. ====== */
       .icon-btn {
         display: inline-flex;
         align-items: center;
@@ -166,36 +165,13 @@
         width: 28px;
         height: 28px;
         border-radius: 6px;
-        cursor: pointer;
-        transition: opacity 0.15s;
         flex-shrink: 0;
         padding: 0;
-        position: relative;
-      }
-      .icon-btn:hover {
-        opacity: 0.85;
       }
 
-      .icon-btn[data-tooltip]::after {
-        content: attr(data-tooltip);
-        position: absolute;
-        bottom: calc(100% + 6px);
-        right: 0;
-        background: var(--bg);
-        color: var(--text);
-        border: 1px solid var(--border);
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
-        font-size: 12px;
-        white-space: nowrap;
-        padding: 3px 7px;
-        border-radius: 10px;
-        pointer-events: none;
-        z-index: 10;
-        opacity: 0;
-        transition: opacity 0.1s;
-      }
-      .icon-btn[data-tooltip]:hover::after {
-        opacity: 1;
+      .inline-btn {
+        vertical-align: middle;
+        margin: 0 2px;
       }
 
       .brand-btn {
@@ -260,22 +236,15 @@
     <div class="step">
       <p class="step-title">3. Connect your agent</p>
       <p class="step-hint">
-        The turbofig plugin in Figma shows a copy button. Press it, paste the prompt into your coding agent (Claude Code, Copilot CLI, Cursor or any other), and it connects by itself. That's it.
-      </p>
-      <div class="action-row">
-        <span class="step-hint">Or copy it from here:</span>
-        <a
-          id="copy-agent-prompt"
-          class="icon-btn brand-btn"
-          href="turbofig-action://copy-agent-prompt"
-          aria-label="Copy agent prompt"
-          data-tooltip="Copy agent prompt"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        In the turbofig Figma plugin, press this button
+        <span class="icon-btn brand-btn inline-btn" role="img" aria-label="Copy connect prompt button, a blue square with a link icon"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <path d="M5.5 8.5a3 3 0 0 0 4 0l1.5-1.5A3 3 0 0 0 6.757 2.757L5.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             <path d="M8.5 5.5a3 3 0 0 0-4 0L3 7a3 3 0 0 0 4.243 4.243L8.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </a>
+          </svg></span>
+        and paste into Claude Code, Cursor, Copilot CLI or any coding agent. It connects by itself.
+      </p>
+      <div class="action-row">
+        <a id="copy-agent-prompt" class="text-link" href="turbofig-action://copy-agent-prompt">Copy prompt here instead</a>
       </div>
     </div>
 

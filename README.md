@@ -129,9 +129,9 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
    Desktop, not the web app. Then open a file and run turbofig from the
    Plugins menu once, and leave the panel open.
 
-3. **Connect your agent.** Click **Copy agent prompt** in the About window
-   or the plugin panel, and paste it into Claude Code, Cursor, Copilot, or
-   any other agent with local file access. This needs no MCP setup. See
+3. **Connect your agent.** Press the link-icon button in the plugin panel
+   (or **Copy prompt here instead** in the About window), and paste it into
+   Claude Code, Cursor, Copilot, or any other agent with local file access. This needs no MCP setup. See
    [docs/agents.md](docs/agents.md) for an agent-neutral version of the
    same prompt. Chat apps that run in a browser cannot reach your Mac, so
    they cannot use turbofig.

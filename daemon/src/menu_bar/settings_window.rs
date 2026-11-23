@@ -98,7 +98,7 @@ fn render_settings_html(version: &str, start_at_login_on: bool, mcp: &McpHttpSta
         .replace("__START_AT_LOGIN_TOGGLE_LABEL__", toggle_label)
 }
 
-/// Builds the Settings window: a 360x260, non-resizable, titled "turbofig
+/// Builds the Settings window: a 420x310, non-resizable, titled "turbofig
 /// settings" window hosting a webview over the rendered page. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
@@ -108,7 +108,7 @@ pub fn create_settings_window<T: 'static>(
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig settings")
-        .with_inner_size(LogicalSize::new(360.0, 260.0))
+        .with_inner_size(LogicalSize::new(420.0, 310.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;
@@ -198,13 +198,13 @@ mod tests {
     #[test]
     fn the_mcp_http_row_renders_both_states_and_leaves_no_placeholder() {
         let on = render_settings_html("1.2.3", false, &McpHttpState::On);
-        assert!(on.contains("MCP over HTTP: On"));
+        assert!(on.contains("class=\"state\">On<"));
         assert!(on.contains("turbofig-action://mcp-http-off"));
         let off = render_settings_html("1.2.3", true, &McpHttpState::Off);
-        assert!(off.contains("MCP over HTTP: Off"));
+        assert!(off.contains("class=\"state\">Off<"));
         assert!(off.contains("turbofig-action://mcp-http-on"));
         let unknown = render_settings_html("1.2.3", true, &McpHttpState::Unknown("x".into()));
-        assert!(unknown.contains("MCP over HTTP: unknown (see log)"));
+        assert!(unknown.contains("class=\"state\">unknown (see log)<"));
         for html in [on, off, unknown] {
             assert!(!html.contains("__"));
         }

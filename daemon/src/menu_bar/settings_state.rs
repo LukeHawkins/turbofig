@@ -103,13 +103,16 @@ mod tests {
     /// The embedded settings page (`settings_window.rs`'s own `include_str!`
     /// copy), scanned the same way `about_state`'s html-scan test checks
     /// `about.html`: no `<script>` anywhere, and no remote URL at all, since
-    /// this page has no external link of its own.
+    /// the only remote links are the 2 allow-listed footer links.
     const SETTINGS_HTML: &str = include_str!("../../assets/settings/settings.html");
 
     #[test]
-    fn the_settings_page_has_no_script_and_no_remote_urls() {
+    fn the_settings_page_has_no_script_and_only_the_2_allowed_remote_links() {
+        let without_allowed = SETTINGS_HTML
+            .replacen("href=\"https://lukehawkins.eu\"", "", 1)
+            .replacen("href=\"https://github.com/LukeHawkins/turbofig\"", "", 1);
         assert!(!SETTINGS_HTML.to_lowercase().contains("<script"));
-        assert!(!SETTINGS_HTML.contains("src=\"http"));
-        assert!(!SETTINGS_HTML.contains("href=\"http"));
+        assert!(!without_allowed.contains("src=\"http"));
+        assert!(!without_allowed.contains("href=\"http"));
     }
 }

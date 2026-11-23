@@ -5,17 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>turbofig settings</title>
     <style>
-      /* Same token scheme as about.html (daemon/assets/about/about.html):
-         kept as 2 separate literals on purpose, not a shared include, since
-         each page is `include_str!`'d standalone (see `settings_window.rs`,
-         `about_window.rs`). No script tag anywhere: every control is a plain
-         `turbofig-action://` link, intercepted by
+      /* Same tokens, type scale, links and footer as about.html
+         (daemon/assets/about/about.html): kept as 2 separate literals on
+         purpose, since each page is `include_str!`'d standalone (see
+         `settings_window.rs`, `about_window.rs`). No script tag anywhere:
+         every control is a plain `turbofig-action://` link, intercepted by
          `settings_window::navigation_is_allowed` (see `settings_state.rs`). */
       :root {
         --bg: #ffffff;
         --bg-secondary: #f5f5f5;
+        --bg-brand: #0d99ff;
         --text: #1a1a1a;
         --text-secondary: #6b6b6b;
+        --text-onbrand: #ffffff;
         --border: #e6e6e6;
         --icon: #333333;
 
@@ -23,10 +25,13 @@
         --sp-2: 8px;
         --sp-3: 12px;
         --sp-4: 16px;
+        --sp-5: 24px;
 
         --fs-xs: 12px;
         --fs-sm: 14px;
+        --fs-lg: 22px;
 
+        --ff-display: "Inter", "Space Grotesk", Arial, sans-serif;
         --ff-body: "Inter", "Helvetica Neue", Arial, sans-serif;
       }
 
@@ -66,17 +71,33 @@
         text-align: left;
       }
 
-      .row {
+      /* === STEPS ========================================================== */
+      .step {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-1);
+      }
+
+      .step-title {
+        margin: 0;
+        font-size: var(--fs-sm);
+        font-weight: 600;
+      }
+
+      .step-hint {
+        margin: 0;
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+      }
+
+      .action-row {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: var(--sp-3);
+        margin-top: var(--sp-1);
       }
 
-      .row-label {
-        font-size: var(--fs-sm);
-      }
-
+      /* === LINKS: plain action links, no buttons with JS behind them ===== */
       .text-link {
         font-size: var(--fs-xs);
         color: var(--text-secondary);
@@ -88,50 +109,78 @@
         color: var(--text);
       }
 
-      .btn {
-        display: inline-block;
-        font-family: var(--ff-body);
+      .muted-line {
+        margin: 0;
         font-size: var(--fs-xs);
-        padding: var(--sp-1) var(--sp-3);
-        border-radius: 6px;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--icon);
-        text-align: left;
-        text-decoration: none;
+        color: var(--text-secondary);
       }
 
-      .btn:hover {
-        color: var(--text);
+      .state {
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
       }
 
-      .footer-line {
+      /* === FOOTER: lukehawkins.eu and the version ======================== */
+      .footer {
         margin-top: auto;
         display: flex;
         align-items: center;
-        justify-content: flex-end;
+        justify-content: space-between;
         padding-top: var(--sp-2);
         border-top: 1px solid var(--border);
         font-size: var(--fs-xs);
         color: var(--text-secondary);
       }
+
+      .links {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-3, 12px);
+      }
+
+      .link {
+        color: var(--text-secondary);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
+      .link:hover {
+        color: var(--text);
+      }
     </style>
   </head>
   <body>
-    <div class="row">
-      <span class="row-label">Start at login: __START_AT_LOGIN_STATE__</span>
-      <a class="text-link" href="turbofig-action://__START_AT_LOGIN_TOGGLE_ACTION__">__START_AT_LOGIN_TOGGLE_LABEL__</a>
+    <div class="step">
+      <p class="step-title">Start at login</p>
+      <div class="action-row">
+        <span class="state">__START_AT_LOGIN_STATE__</span>
+        <a class="text-link" href="turbofig-action://__START_AT_LOGIN_TOGGLE_ACTION__">__START_AT_LOGIN_TOGGLE_LABEL__</a>
+      </div>
+      <p class="muted-line">Keeps turbofig running after you restart your Mac.</p>
     </div>
 
-    <div class="row">
-      <span class="row-label">MCP over HTTP: __MCP_HTTP_STATE__</span>
-      <a class="text-link" href="turbofig-action://__MCP_HTTP_TOGGLE_ACTION__">__MCP_HTTP_TOGGLE_LABEL__</a>
+    <div class="step">
+      <p class="step-title">MCP over HTTP</p>
+      <div class="action-row">
+        <span class="state">__MCP_HTTP_STATE__</span>
+        <a class="text-link" href="turbofig-action://__MCP_HTTP_TOGGLE_ACTION__">__MCP_HTTP_TOGGLE_LABEL__</a>
+      </div>
+      <p class="muted-line">Only for MCP clients. The file bridge works either way.</p>
     </div>
 
-    <a class="btn" href="turbofig-action://copy-path">Copy plugin manifest path</a>
-    <a class="btn" href="turbofig-action://show-plugin-folder">Open plugin folder</a>
+    <div class="step">
+      <p class="step-title">Plugin</p>
+      <div class="action-row">
+        <a class="text-link" href="turbofig-action://copy-path">Copy path</a>
+        <a class="text-link" href="turbofig-action://show-plugin-folder">Show plugin folder</a>
+      </div>
+    </div>
 
-    <div class="footer-line">
+    <div class="footer">
+      <span class="links">
+        <a class="link" href="https://lukehawkins.eu">lukehawkins.eu</a>
+        <a class="link" href="https://github.com/LukeHawkins/turbofig">GitHub</a>
+      </span>
       <span id="version-text">v__VERSION__</span>
     </div>
   </body>

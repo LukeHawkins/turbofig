@@ -91,13 +91,19 @@ describe("about.html", () => {
     expect(document.getElementById("version-text")?.textContent).toBe("v1.2.3");
   });
 
-  it("the copy-agent-prompt control matches the plugin's own copy-prompt button", () => {
+  it("the copy-agent-prompt control is a labeled text link, and the plugin button is a non-clickable visual", () => {
     const control = document.querySelector(
       "a[href='turbofig-action://copy-agent-prompt']",
     ) as unknown as HTMLElement;
     expect(control).not.toBeNull();
-    expect(control.getAttribute("class")).toContain("icon-btn");
-    expect(control.getAttribute("class")).toContain("brand-btn");
+    expect(control.getAttribute("class")).toContain("text-link");
+    expect(control.textContent).toBe("Copy prompt here instead");
+
+    const visual = document.querySelector(".inline-btn") as unknown as HTMLElement;
+    expect(visual.getAttribute("class")).toContain("icon-btn");
+    expect(visual.getAttribute("class")).toContain("brand-btn");
+    expect(visual.getAttribute("aria-label")).toBeTruthy();
+    expect(visual.tagName).not.toBe("A");
 
     // The plugin's own button carries the same 2 classes.
     expect(PLUGIN_TEMPLATE).toContain('class="icon-btn brand-btn"');
@@ -127,18 +133,18 @@ describe("settings.html", () => {
     }
   });
 
-  it("has no external link at all", () => {
-    expect(externalHrefs(document)).toEqual([]);
+  it("has exactly the 2 allowed external links: website and GitHub", () => {
+    expect(externalHrefs(document).sort()).toEqual([GITHUB_URL, WEBSITE_URL].sort());
   });
 
   it("renders the version and the current Start at Login state", () => {
     expect(document.getElementById("version-text")?.textContent).toBe("v1.2.3");
-    expect(document.body.textContent).toContain("Start at login: On");
+    expect(document.body.textContent).toContain("Start at login");
     expect(document.querySelector("a[href='turbofig-action://start-at-login-off']")).not.toBeNull();
   });
 
   it("renders the MCP over HTTP row with its toggle link", () => {
-    expect(document.body.textContent).toContain("MCP over HTTP: On");
+    expect(document.body.textContent).toContain("MCP over HTTP");
     expect(document.querySelector("a[href='turbofig-action://mcp-http-off']")).not.toBeNull();
   });
 });
