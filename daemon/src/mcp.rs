@@ -300,7 +300,9 @@ Two transports. Prefer the file-bridge. Use MCP only when it is not available.
 
 File-bridge (recommended, dialog-free)
 --------------------------------------
-Write a JSON job to ~/.turbofig/inbox/<id>.json and read the result from
+With a shell: run `turbofig js <<'EOF'` with the JS on stdin and a closing
+EOF. It prints the result JSON. --shot also screenshots the returned node. Add --file <fileKey> if several files are open.
+With only file tools: write a JSON job to ~/.turbofig/inbox/<id>.json and read the result from
 ~/.turbofig/outbox/<id>.json (any unique <id>). Override the folder with
 TURBOFIG_BRIDGE_DIR. Ops: execute (JS in \"code\"), get_selection, screenshot,
 status. Add \"fileKey\":\"<key>\" to target one of several open files; omit it

@@ -151,8 +151,8 @@ impl WsContext {
 }
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
-/// Returns a JSON string with `type`, `version`, `mcpPort`, and `bridgeHome`
-/// fields. `mcpPort` is the HTTP MCP port and `bridgeHome` is the file-bridge
+/// Returns a JSON string with `type`, `version`, `mcpPort`, `bridgeHome`
+/// and `binPath` fields. `mcpPort` is the HTTP MCP port and `bridgeHome` is the file-bridge
 /// home directory (see `config::bridge_dir_display`), so the plugin panel can
 /// show a ready-to-paste connect prompt that names the real bridge directory
 /// even under a custom `TURBOFIG_BRIDGE_DIR`.
@@ -161,7 +161,8 @@ pub(crate) fn welcome_message() -> String {
         "type": "WELCOME",
         "version": env!("CARGO_PKG_VERSION"),
         "mcpPort": port_from_env(),
-        "bridgeHome": bridge_dir_display()
+        "bridgeHome": bridge_dir_display(),
+        "binPath": crate::agent_prompt::turbofig_bin_path()
     })
     .to_string()
 }
@@ -533,6 +534,11 @@ mod tests {
             v["bridgeHome"],
             json!(bridge_dir_display()),
             "bridgeHome must equal bridge_dir_display()"
+        );
+        assert_eq!(
+            v["binPath"],
+            json!(crate::agent_prompt::turbofig_bin_path()),
+            "binPath must equal turbofig_bin_path()"
         );
     }
 

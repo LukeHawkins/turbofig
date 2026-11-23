@@ -12,6 +12,9 @@ recorded under Unreleased.
 
 ### Added
 
+- `turbofig js`: runs JS or a job JSON from stdin through the file bridge and
+  prints the result. The connect prompt uses it instead of the shell recipe.
+  WELCOME carries `binPath` so the prompt names the daemon binary.
 - Challenge handshake on the plugin WebSocket: the plugin connects with
   `?nonce=`, the daemon sends `CHALLENGE`, the plugin answers `AUTH`. The
   token never goes on the wire.

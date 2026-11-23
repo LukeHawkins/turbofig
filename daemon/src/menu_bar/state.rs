@@ -3,7 +3,7 @@
 //! needs to show. No tray-icon, no tao, no I/O: `mod.rs` is the only caller,
 //! and it is the only place this ever touches a real tray icon or menu.
 
-use crate::agent_prompt::{fill_agent_prompt, ConnectedFile, TEMPLATE};
+use crate::agent_prompt::{fill_agent_prompt, turbofig_bin_path, ConnectedFile, TEMPLATE};
 
 /// Which of the 2 checked-in tray-icon PNGs to show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +110,13 @@ pub fn build_menu_state(
             name: f.name.clone(),
         })
         .collect();
-    let agent_prompt = fill_agent_prompt(TEMPLATE, &prompt_files, bridge_dir, mcp_port);
+    let agent_prompt = fill_agent_prompt(
+        TEMPLATE,
+        &prompt_files,
+        bridge_dir,
+        mcp_port,
+        &turbofig_bin_path(),
+    );
 
     MenuState {
         header,

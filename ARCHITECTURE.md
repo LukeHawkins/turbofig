@@ -35,6 +35,8 @@ onto the daemon's `POST /job`, starting the daemon first if it is not already
 reachable (see "Daemon lifecycle" below). See `DECISIONS.md` item 15 and
 `skills/file-bridge.md`.
 
+`turbofig js` is the shell client for the file bridge. It reads JS (sent as an `execute` job) or a full job JSON from stdin, writes the inbox file, waits for the outbox result and prints it. It starts the daemon if needed. The connect prompt names it by the daemon's stable binary path (`launchd::stable_binary_path`, sent to the plugin as `binPath` in WELCOME), so an agent needs no recipe. Agents with only file tools still use the inbox directly.
+
 ## Daemon
 
 The daemon is a single Rust process. It runs three servers as three `tokio::spawn` tasks that share one `Arc<AppState>`:

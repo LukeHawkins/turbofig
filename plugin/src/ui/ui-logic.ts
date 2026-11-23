@@ -300,6 +300,19 @@ export interface ConnectedFile {
 }
 
 /**
+ * Renders the daemon binary path for a pasted shell command. A path of only
+ * safe characters stays bare. Any other path is single-quoted. An empty path
+ * (older daemon) or one with control characters becomes plain `turbofig`.
+ * Mirrors `shell_bin` in `daemon/src/agent_prompt.rs`.
+ */
+export function shellBin(bin: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point.
+  if (!bin || /[\u0000-\u001f\u007f]/.test(bin)) return "turbofig";
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(bin)) return bin;
+  return `'${bin.split("'").join("'\\''")}'`;
+}
+
+/**
  * Fills the shared agent-connect-prompt template (`prompts/agent-prompt.txt`,
  * inlined at build time by `build-ui.ts` into `__AGENT_PROMPT_TEMPLATE__`)
  * for the given connected-file list, bridge directory and MCP port.
@@ -315,6 +328,8 @@ export interface ConnectedFile {
  * - More than 1: a `Connected files: ` line lists every name and fileKey,
  *   the example job keeps the placeholder, and the hint points at the list.
  *
+ * `turbofigBin` is the daemon's stable binary path from WELCOME; empty (older
+ * daemon) renders plain `turbofig`.
  * `bridgeDir` falls back to `DEFAULT_BRIDGE_HOME` when empty, e.g. before
  * the first WELCOME (which carries the daemon's real `bridgeHome`) arrives.
  */
@@ -323,6 +338,7 @@ export function fillAgentPrompt(
   connectedFiles: ConnectedFile[],
   bridgeDir: string,
   mcpPort: number,
+  turbofigBin = "",
 ): string {
   let filesLine = "";
   let fileKey = "<fileKey>";
@@ -346,6 +362,8 @@ export function fillAgentPrompt(
     .join(fileKeyHint)
     .split("{{BRIDGE_DIR}}")
     .join(home)
+    .split("{{TURBOFIG_BIN}}")
+    .join(shellBin(turbofigBin))
     .split("{{MCP_PORT}}")
     .join(String(mcpPort));
 }

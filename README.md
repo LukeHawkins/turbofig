@@ -279,7 +279,9 @@ No. turbofig needs Figma Desktop on macOS.
   examples.
 - [docs/mcp-clients.md](docs/mcp-clients.md): Claude Code and other MCP
   client setup, including the HTTP fallback.
-- [docs/commands.md](docs/commands.md): the full CLI command table.
+- [docs/commands.md](docs/commands.md): the full CLI command table,
+  including `turbofig js`, which sends JS through the file bridge from a
+  shell.
 - [docs/configuration.md](docs/configuration.md): environment variables
   and ports.
 - [docs/menu-bar.md](docs/menu-bar.md): the menu bar and its windows.

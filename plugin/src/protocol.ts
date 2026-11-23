@@ -130,6 +130,8 @@ export interface WelcomeMessage {
   mcpPort?: number;
   /** File-bridge home directory (e.g. "~/.turbofig"). Present in daemon v0.11+. Absent in older daemons. */
   bridgeHome?: string;
+  /** Absolute stable path of the daemon binary. Present in daemon v0.2.0+. Absent in older daemons. */
+  binPath?: string;
 }
 
 /** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */
