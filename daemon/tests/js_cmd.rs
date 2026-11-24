@@ -83,6 +83,7 @@ async fn js_runs_status_and_code_jobs_and_rejects_empty_stdin() {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // No daemon yet: `turbofig js` starts it on demand, then answers.
@@ -157,6 +158,7 @@ async fn js_size_cap_shot_usage_and_a_bridge_path_with_a_space() {
     let home = root.path().join("bridge with space");
     let mcp_port = free_port();
     let ws_port = free_port();
+    let _guard = common::DaemonGuard::new(&home, mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let (status, stdout, stderr) =
@@ -214,6 +216,7 @@ async fn twenty_parallel_js_calls_all_get_their_own_result() {
     let home = tempfile::tempdir().expect("temp home");
     let mcp_port = free_port();
     let ws_port = free_port();
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let (status, _, stderr) =
@@ -248,6 +251,8 @@ async fn a_second_daemon_on_one_bridge_folder_exits_but_another_folder_starts() 
     let (p1, w1) = (free_port(), free_port());
     let (p2, w2) = (free_port(), free_port());
     let (p3, w3) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(home.path(), p1);
+    let _guard3 = common::DaemonGuard::new(other.path(), p3);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let _first = common::spawn_daemon(home.path(), p1, w1, None);
@@ -290,6 +295,7 @@ async fn js_fails_fast_with_daemon_stopped_when_the_daemon_dies_mid_job() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = common::spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -353,6 +359,7 @@ async fn dir_flag_wins_over_the_env_folder_and_works_with_a_space() {
     let dir = root.path().join("my bridge");
     let env_dir = root.path().join("env bridge");
     let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(&dir, mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // No daemon holds the lock yet: js starts one in `--dir`.
@@ -397,6 +404,7 @@ async fn a_job_the_dead_daemon_never_claimed_is_taken_back_and_reported_not_star
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = common::spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -445,6 +453,7 @@ async fn a_relative_dir_is_made_absolute_and_the_default_folder_is_not_exported(
     let _serial = common::serial_process_test().await;
     let root = tempfile::tempdir().expect("temp root");
     let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(&root.path().join("rel/bridge"), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Relative --dir: the folder is root/rel/bridge, never root/rel/bridge/rel/bridge.
@@ -471,6 +480,7 @@ async fn a_relative_dir_is_made_absolute_and_the_default_folder_is_not_exported(
     // (the folder is set to 0700), which it skips when the variable is set.
     let (mcp2, ws2) = (free_port(), free_port());
     let default = root.path().join(".turbofig");
+    let _guard2 = common::DaemonGuard::new(&default, mcp2);
     let other = root.path().join("other");
     let (status, stdout, stderr) = run_js_env(
         root.path(),

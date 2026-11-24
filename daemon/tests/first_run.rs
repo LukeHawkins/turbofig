@@ -65,6 +65,7 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
     let ws_port = free_port();
     let clipboard_record = home.path().join("clipboard-record.txt");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
 
     assert!(
         !home.path().join("plugin-seen").exists(),
@@ -131,6 +132,7 @@ async fn bare_turbofig_second_run_with_an_existing_marker_prints_a_short_status(
     let ws_port = free_port();
     let clipboard_record = home.path().join("clipboard-record.txt");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
 
     // First run: start the daemon for real.
     let (status, _) =

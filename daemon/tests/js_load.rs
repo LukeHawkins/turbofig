@@ -35,11 +35,13 @@ impl Drop for AbortOnDrop {
 }
 
 struct Rig {
-    home: tempfile::TempDir,
     mcp_port: u16,
     ws_port: u16,
     _plugin: AbortOnDrop,
     _guard: DaemonGuard,
+    // Last field: fields drop in order, and the guard needs the folder (token
+    // file) still present to stop the daemon gracefully.
+    home: tempfile::TempDir,
 }
 
 impl Rig {
@@ -96,6 +98,9 @@ async fn rig(max_inflight: u32) -> Rig {
     let mcp_port = free_port();
     let ws_port = free_port();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // Built before `turbofig js` starts the daemon, so a panic anywhere below
+    // still stops it. Declared after `home`, so it drops first.
+    let guard = DaemonGuard::new(home.path(), mcp_port);
     // `TURBOFIG_MAX_INFLIGHT` is read by the daemon `turbofig js` starts, so
     // start it with the highest admission limit: the load tests run up to 50
     // calls at once. The default limit (4) is tested in its own test.
@@ -117,7 +122,6 @@ async fn rig(max_inflight: u32) -> Rig {
         si.write_all(b"{\"op\":\"status\"}").unwrap();
     }
     assert!(child.wait().unwrap().success(), "daemon start via js");
-    let guard = DaemonGuard::new(home.path(), mcp_port);
     wait_for_health(&client, mcp_port).await;
     let mut guard = guard;
     guard.refresh_pid().await;
