@@ -109,7 +109,9 @@ pub(crate) struct ScreenshotParams {
     #[schemars(description = "Node id; default is the selection")]
     pub(crate) node_id: Option<String>,
     #[serde(rename = "return", default)]
-    #[schemars(description = "file (default) or inline")]
+    #[schemars(
+        description = "file (default) returns a PNG path; inline returns the image itself, for clients that cannot read local files"
+    )]
     pub(crate) return_mode: ReturnMode,
     #[serde(rename = "fileKey", default)]
     #[schemars(description = "File key; omit when one file is open")]
@@ -222,7 +224,7 @@ impl TurbofigHandler {
     ///
     /// Delegates to `run_screenshot` for the shared logic; wraps the result in a
     /// `CallToolResult` for the MCP wire format.
-    #[tool(description = "PNG screenshot of a node. File mode (default) returns a file path.")]
+    #[tool(description = "PNG screenshot of a node. inline returns the image itself.")]
     async fn turbofig_screenshot(
         &self,
         Parameters(ScreenshotParams {
@@ -260,11 +262,32 @@ impl TurbofigHandler {
 /// able to tell without inspecting the text body.
 pub(crate) fn call_tool_result(value: Value) -> CallToolResult {
     let is_err = !value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    let content = vec![ContentBlock::text(value.to_string())];
+    let content = if is_err {
+        vec![ContentBlock::text(value.to_string())]
+    } else {
+        success_content(value)
+    };
     if is_err {
         CallToolResult::error(content)
     } else {
         CallToolResult::success(content)
+    }
+}
+
+/// Content blocks for a successful result. An inline screenshot carries the
+/// PNG as base64 in `png`. Send it as an MCP image block, and keep the rest
+/// of the metadata in one text block without the base64.
+fn success_content(mut value: Value) -> Vec<ContentBlock> {
+    let png = match value.get("png") {
+        Some(Value::String(_)) => value.as_object_mut().and_then(|o| o.remove("png")),
+        _ => None,
+    };
+    match png {
+        Some(Value::String(data)) => vec![
+            ContentBlock::image(data, "image/png"),
+            ContentBlock::text(value.to_string()),
+        ],
+        _ => vec![ContentBlock::text(value.to_string())],
     }
 }
 
@@ -975,6 +998,36 @@ mod tests {
         haystack
             .windows(needle.len())
             .any(|window| window == needle)
+    }
+
+    #[test]
+    fn inline_screenshot_is_one_image_block_plus_text_without_base64() {
+        let r = call_tool_result(json!({"ok": true, "w": 2, "h": 3, "png": "QUJD"}));
+        assert_ne!(r.is_error, Some(true));
+        let v = serde_json::to_value(&r).unwrap();
+        let c = v["content"].as_array().unwrap();
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0]["type"], "image");
+        assert_eq!(c[0]["mimeType"], "image/png");
+        assert_eq!(c[0]["data"], "QUJD");
+        assert_eq!(c[1]["type"], "text");
+        let text = c[1]["text"].as_str().unwrap();
+        let meta: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(meta, json!({"ok": true, "w": 2, "h": 3}));
+        assert!(!text.contains("QUJD"));
+    }
+
+    #[test]
+    fn file_screenshot_and_errors_stay_one_text_block() {
+        let file = call_tool_result(json!({"ok": true, "path": "/x/a.png", "w": 2, "h": 3}));
+        let v = serde_json::to_value(&file).unwrap();
+        assert_eq!(v["content"].as_array().unwrap().len(), 1);
+        assert_eq!(v["content"][0]["type"], "text");
+        let err = call_tool_result(json!({"ok": false, "error": "nope", "png": "QUJD"}));
+        assert_eq!(err.is_error, Some(true));
+        let v = serde_json::to_value(&err).unwrap();
+        assert_eq!(v["content"].as_array().unwrap().len(), 1);
+        assert_eq!(v["content"][0]["type"], "text");
     }
 
     #[test]

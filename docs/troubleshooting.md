@@ -21,6 +21,17 @@
 - **The panel or `turbofig status` warns of a version mismatch.** The
   daemon upgraded but the plugin in Figma has not reloaded. Reopen the
   turbofig plugin in Figma.
+- **My agent uses Figma's own tools instead of turbofig.** In Claude Code
+  you see lines such as "Called Figma 4 times · 2 failed". The server is
+  Figma's own connector, listed as "claude.ai Figma".
+  - Fix now: paste the turbofig connect prompt again. Say "use turbofig
+    for Figma, not the Figma connector".
+  - Prevent it for one project: in Claude Code, type `/mcp`, pick
+    "claude.ai Figma", and disable it. Claude Code saves this per project.
+  - Prevent it for every project: add this to `~/.claude/settings.json`.
+    `{"deniedMcpServers": [{"serverName": "claude.ai Figma"}]}`
+  - Check the active servers with `/mcp` or `claude mcp list`. Connector
+    names can change, so use the name that these commands show.
 - **Uninstalling.** Run `turbofig uninstall` before `brew uninstall
   turbofig`. Homebrew alone leaves `turbofig.app` and the login item in
   place.

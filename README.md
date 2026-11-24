@@ -150,6 +150,15 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
 <sub>Coding agent? Steps 2 and 3 need GUI clicks, so stop and ask the user
 to do them. Use the prompt in [docs/agents.md](docs/agents.md).</sub>
 
+**Let your AI install it.** Give your agent this prompt. It installs
+turbofig the right way and adds no MCP server.
+
+```text
+Install turbofig for me. Run `brew install LukeHawkins/tap/turbofig`, then run `turbofig` and tell me the Figma steps it prints. Do not add an MCP server.
+```
+
+An agent cannot click in Figma. It will hand steps 2 and 3 back to you.
+
 **Prefer MCP? (developers)** MCP is a standard way for AI apps to add
 tools. See [docs/mcp-clients.md](docs/mcp-clients.md) for the MCP setup.
 Set up MCP only when the user asks for it. The default needs no MCP setup.
@@ -268,6 +277,30 @@ session it used far fewer tokens and finished sooner. See
 Yes. Any agent that can read and write files on your Mac can use the file
 bridge, and any MCP client can use `turbofig mcp`. See
 [MCP client setup](docs/mcp-clients.md) and [agent prompt](docs/agents.md).
+
+### Which agent is best with turbofig?
+
+An agent with a shell, such as Claude Code. Cursor, Codex, Copilot CLI and
+the Code tab in Claude Desktop also work. Why:
+
+- Each job is one short `turbofig js` command. A short job took 29 output
+  tokens, against 35 for an MCP call. A card took 162, against 167.
+- `--shot` builds and screenshots in 1 call. A design step is 2 tool calls,
+  not 3 with MCP.
+- In Claude Code, one allow rule (`Bash(/opt/homebrew/bin/turbofig js *)`)
+  stops the approval prompts.
+- It works on locked-down machines where MCP servers are blocked.
+- It needs no config file.
+
+Chat apps such as Claude Desktop's chat work through MCP. That takes one
+config entry (see [MCP client setup](docs/mcp-clients.md)), more setup, and
+an extra step for each screenshot.
+
+### My agent uses Figma's own tools instead of turbofig
+
+In Claude Code you may see "Called Figma 4 times". That is Figma's own
+connector, not turbofig. See
+[Troubleshooting](docs/troubleshooting.md#my-agent-uses-figmas-own-tools-instead-of-turbofig).
 
 ### Can it edit designs, or only read them?
 

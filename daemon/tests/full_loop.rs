@@ -268,16 +268,24 @@ async fn test_full_loop_over_http_mcp() {
                 .expect("tools/call");
             assert!(res.status().is_success(), "tools/call must return HTTP 200");
             let body = res.text().await.expect("read tool body");
-            let text = parse_sse_data(&body)["result"]["content"][0]["text"]
-                .as_str()
-                .expect("tool text is a string")
+            let content = parse_sse_data(&body)["result"]["content"].clone();
+            // The JSON result is the first text block. An inline screenshot
+            // puts an image block first, so look the text block up by type.
+            let text = content
+                .as_array()
+                .expect("tool content is an array")
+                .iter()
+                .find(|block| block["type"] == "text")
+                .and_then(|block| block["text"].as_str())
+                .expect("tool result has a text block")
                 .to_owned();
-            serde_json::from_str::<serde_json::Value>(&text).expect("tool text is JSON")
+            let json = serde_json::from_str::<serde_json::Value>(&text).expect("tool text is JSON");
+            (json, content)
         }
     };
 
     // 1. Create a frame.
-    let exec = call_tool(
+    let (exec, _) = call_tool(
         "turbofig_execute",
         serde_json::json!({"code": "return figma.createFrame().id;"}),
         2,
@@ -291,7 +299,7 @@ async fn test_full_loop_over_http_mcp() {
     );
 
     // 2. Read the selection.
-    let sel = call_tool("turbofig_get_selection", serde_json::json!({}), 3).await;
+    let (sel, _) = call_tool("turbofig_get_selection", serde_json::json!({}), 3).await;
     assert_eq!(
         sel["ok"],
         serde_json::json!(true),
@@ -304,7 +312,7 @@ async fn test_full_loop_over_http_mcp() {
     );
 
     // 3. Get a screenshot back inline (no outbox dir in this MCP-only test).
-    let shot = call_tool(
+    let (shot, content) = call_tool(
         "turbofig_screenshot",
         serde_json::json!({"return": "inline"}),
         4,
@@ -315,10 +323,22 @@ async fn test_full_loop_over_http_mcp() {
         serde_json::json!(true),
         "screenshot must succeed"
     );
+    // The PNG arrives as an MCP image block, so clients without file access
+    // (Claude Desktop chat) see the image itself. The text block keeps the
+    // metadata and never repeats the base64.
     assert_eq!(
-        shot["png"],
+        content[0]["type"], "image",
+        "first block is the image: {content}"
+    );
+    assert_eq!(content[0]["mimeType"], "image/png");
+    assert_eq!(
+        content[0]["data"],
         serde_json::json!("aGVsbG8="),
-        "inline screenshot must carry the base64 PNG, got: {shot}"
+        "the image block carries the base64 PNG, got: {content}"
+    );
+    assert!(
+        shot.get("png").is_none(),
+        "the text block must not repeat the base64, got: {shot}"
     );
 }
 

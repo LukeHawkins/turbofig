@@ -26,6 +26,27 @@ starts an `npx`-based MCP server. If the daemon is not running, `turbofig
 mcp` starts it as a separate background process first. The daemon keeps
 running after the agent session ends.
 
+**Claude Desktop:**
+
+1. Open Settings > Developer > Edit Config. This opens
+   `~/Library/Application Support/Claude/claude_desktop_config.json`.
+2. Add the block below. Use the absolute path to `turbofig`
+   (`/usr/local/bin/turbofig` on an Intel Mac).
+3. Quit Claude Desktop fully, then open it again.
+
+```json
+{"mcpServers":{"turbofig":{"command":"/opt/homebrew/bin/turbofig","args":["mcp"]}}}
+```
+
+- This works in either Connection mode (it uses stdio).
+- For screenshots, ask for `inline`. Claude Desktop cannot open a local file
+  path. `inline` returns the image itself.
+- The Code tab of Claude Desktop runs Claude Code, so the file bridge prompt
+  works there too.
+- Claude's custom connectors need a public HTTPS URL. The localhost HTTP
+  transport is not for Claude Desktop.
+- Company admins can turn local extensions off.
+
 **Any other MCP client that starts its own server process:** add this
 block, with the absolute path to the `turbofig` binary (a GUI app does not
 have `/opt/homebrew/bin` on its `PATH`):

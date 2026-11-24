@@ -708,7 +708,7 @@ impl ProxyHandler {
         Ok(call_tool_result(value))
     }
 
-    #[tool(description = "PNG screenshot of a node. File mode (default) returns a file path.")]
+    #[tool(description = "PNG screenshot of a node. inline returns the image itself.")]
     async fn turbofig_screenshot(
         &self,
         Parameters(params): Parameters<ScreenshotParams>,

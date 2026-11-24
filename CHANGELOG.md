@@ -38,6 +38,9 @@ recorded under Unreleased.
 
 ### Changed
 
+- MCP `turbofig_screenshot` with `return: inline` sends an image content block (plus a text block with the metadata) instead of base64 text, so Claude Desktop sees it.
+- The connect prompt says to use turbofig for all Figma work and never other Figma tools, so an agent does not pick Figma's own connector ("claude.ai Figma"). docs/troubleshooting.md explains how to switch that connector off in Claude Code.
+- The README has a copy-paste prompt that lets an AI install turbofig correctly (file bridge, no MCP server), and explains why an agent with a shell, such as Claude Code, works best.
 - The WebSocket plugin reconnect delay caps at 2 s.
 - Connect prompt v2: a one-call shell recipe and a 0.02 s poll.
 - `turbofig_status` omits zero, null and false fields. `turbofig_execute`
