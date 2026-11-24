@@ -3,6 +3,7 @@
  * No DOM, no WebSocket. All functions are testable in isolation.
  */
 
+import { asConnectionMode, type ConnectionMode } from "../protocol";
 import { constantTimeEqual, hmacSha256Hex, toHex } from "./hmac";
 
 /** Connection state values. */
@@ -58,10 +59,12 @@ export function isRequestType(type: string): boolean {
 /**
  * Decides how the UI handles a message received from the daemon over the socket.
  * "welcome": consume it locally to read the daemon version (WELCOME).
+ * "mode": consume it locally to update the Connection mode (CONNECTION_MODE).
  * "relay": forward it to the main thread (requests and everything else).
  */
-export function daemonMessageAction(type: string): "welcome" | "relay" {
+export function daemonMessageAction(type: string): "welcome" | "mode" | "relay" {
   if (type === "WELCOME") return "welcome";
+  if (type === "CONNECTION_MODE") return "mode";
   return "relay";
 }
 
@@ -71,11 +74,8 @@ export function daemonMessageAction(type: string): "welcome" | "relay" {
  * "fileinfo": store and reflect the file identity (FILE_INFO).
  * "relay": forward it over the socket (RESULT and others).
  */
-export function mainMessageAction(
-  type: string,
-): "port" | "promptmode" | "showlog" | "fileinfo" | "relay" {
+export function mainMessageAction(type: string): "port" | "showlog" | "fileinfo" | "relay" {
   if (type === "PORT") return "port";
-  if (type === "PROMPT_MODE") return "promptmode";
   if (type === "SHOW_LOG") return "showlog";
   if (type === "FILE_INFO") return "fileinfo";
   return "relay";
@@ -382,26 +382,50 @@ export function fillAgentPrompt(
     .join(String(mcpPort));
 }
 
+/** Advanced screen height with the activity log hidden (rows only). */
+export const ADV_HEIGHT = 318;
+/** Advanced screen height with the activity log shown. */
+export const ADV_HEIGHT_LOG = 432;
+
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 150). advanced: full settings view (300 x 330, or 300 x 220 with the activity log hidden).
+ * main: compact status view (300 x 150). advanced: full settings view (ADV_HEIGHT_LOG, or ADV_HEIGHT with the activity log hidden).
  * about: project info view (300 x 375).
  */
 export function screenSize(
   name: "main" | "advanced" | "about",
   showLog = true,
 ): { width: number; height: number } {
-  if (name === "advanced") return { width: 300, height: showLog ? 330 : 220 };
+  if (name === "advanced") return { width: 300, height: showLog ? ADV_HEIGHT_LOG : ADV_HEIGHT };
   if (name === "about") return { width: 300, height: 375 };
   return { width: 300, height: 150 };
 }
 
-/** Which connect prompt the copy button builds. */
-export type PromptMode = "file" | "mcp";
+/** Returns the daemon's Connection mode when valid, else the default "file". */
+export function parseConnectionMode(x: unknown): ConnectionMode {
+  return asConnectionMode(x) ?? "file";
+}
 
-/** Returns the stored mode when valid, else the default "file". */
-export function parsePromptMode(x: unknown): PromptMode {
-  return x === "mcp" ? "mcp" : "file";
+/**
+ * Returns the Connection mode after a daemon frame. WELCOME sets it (absent or
+ * invalid: "file", for an older daemon). CONNECTION_MODE sets it when the mode
+ * is valid and is ignored otherwise. Any other frame leaves it unchanged.
+ */
+export function modeAfterDaemonFrame(current: ConnectionMode, frame: unknown): ConnectionMode {
+  if (typeof frame !== "object" || frame === null) return current;
+  const f = frame as Record<string, unknown>;
+  if (f.type === "WELCOME") return parseConnectionMode(f.connectionMode);
+  if (f.type === "CONNECTION_MODE") return asConnectionMode(f.mode) ?? current;
+  return current;
+}
+
+/** Picks the connect prompt template that follows the Connection mode. */
+export function promptTemplateFor(
+  mode: ConnectionMode,
+  fileTemplate: string,
+  mcpTemplate: string,
+): string {
+  return mode === "mcp" ? mcpTemplate : fileTemplate;
 }
 
 /** Returns the stored log setting when it is a boolean, else the default true. */

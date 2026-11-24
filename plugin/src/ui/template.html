@@ -477,100 +477,162 @@
         opacity: 0.7;
       }
 
-      /* === FORM CONTROLS ================================================= */
-      .control-section {
+      /* === SETTING ROWS (match the menu bar app Settings window) ======== */
+      .rows {
         display: flex;
         flex-direction: column;
-        gap: var(--sp-1);
       }
-
-      .control-label {
-        display: inline-block;
-        position: relative;
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--text-secondary);
+      .row-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        column-gap: var(--sp-4);
+        align-items: center;
+        padding: var(--sp-3) 0;
+        border-top: 1px solid var(--border);
       }
-
-      .control-label[data-tooltip]::after {
-        content: attr(data-tooltip);
-        position: absolute;
-        top: calc(100% + 4px);
-        left: 0;
-        background: var(--bg);
-        color: var(--text);
-        border: 1px solid var(--border);
-        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-        font-size: 12px;
-        white-space: normal;
-        max-width: 200px;
-        line-height: 1.4;
-        text-transform: none;
-        letter-spacing: normal;
-        font-weight: normal;
-        padding: 3px 7px;
-        border-radius: 10px;
-        pointer-events: none;
-        z-index: 10;
-        opacity: 0;
-        transition: opacity 0.1s;
+      .row-item:first-child {
+        border-top: none;
+        padding-top: var(--sp-1);
       }
-      .control-label[data-tooltip]:hover::after {
-        opacity: 1;
-      }
-
-      .radio-group {
-        margin: 0;
-        padding: 0;
-        border: none;
+      .row-text {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
         min-width: 0;
       }
-      .radio-group legend {
-        padding: 0;
-        margin-bottom: var(--sp-1);
+      .row-title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
       }
-      .radio-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sp-1) var(--sp-3);
+      .row-desc {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--text-secondary);
       }
-      .radio-opt {
+      /* Wide rows put the description under both columns. */
+      .row-wide .row-text {
+        display: contents;
+      }
+      .row-wide .row-title {
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .row-wide .row-control {
+        grid-column: 2;
+        grid-row: 1;
+      }
+      .row-wide .row-desc {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        margin-top: var(--sp-1);
+      }
+      .row-control {
+        justify-self: end;
         display: flex;
         align-items: center;
-        gap: var(--sp-2);
-        font-size: 14px;
-        color: var(--text);
-        cursor: pointer;
-      }
-      .radio-opt input {
-        margin: 0;
-        accent-color: var(--bg-brand);
       }
 
-      .controls-row {
-        display: flex;
-        gap: var(--sp-3);
-        align-items: flex-start;
+      /* Segmented control, like a native macOS one. */
+      .seg {
+        display: inline-flex;
+        padding: 2px;
+        gap: 2px;
+        border-radius: 8px;
+        background: var(--bg-secondary);
+        border: 1px solid var(--border);
+      }
+      .seg-btn {
+        font: inherit;
+        font-size: 12px;
+        line-height: 1.4;
+        padding: 2px 10px;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--text);
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background 0.15s;
+      }
+      .seg-btn.selected {
+        background: var(--bg);
+        font-weight: 600;
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.25),
+          0 0 0 0.5px rgba(0, 0, 0, 0.08);
+      }
+      .seg-btn:disabled {
+        cursor: default;
+        opacity: 0.5;
+      }
+      .seg-btn:focus-visible,
+      .switch:focus-visible {
+        outline: 2px solid var(--bg-brand);
+        outline-offset: 2px;
+      }
+
+      /* macOS-style switch: pill track, white knob. */
+      .switch {
+        position: relative;
+        flex-shrink: 0;
+        width: 38px;
+        height: 22px;
+        padding: 0;
+        border: none;
+        border-radius: 11px;
+        background: #d1d1d6;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #ffffff;
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.3),
+          0 0 0 0.5px rgba(0, 0, 0, 0.08);
+        transition: transform 0.15s;
+      }
+      .switch[aria-checked="true"] {
+        background: var(--bg-brand);
+      }
+      .switch[aria-checked="true"]::after {
+        transform: translateX(16px);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .switch,
+        .switch::after,
+        .seg-btn {
+          transition: none;
+        }
       }
 
       #port-field {
-        width: 100%;
+        width: 72px;
         font-size: 14px;
         font-family: var(--ff-body);
         padding: var(--sp-1) var(--sp-2);
         border: 1px solid var(--border);
-        border-radius: 4px;
+        border-radius: 6px;
         background: var(--bg);
         color: var(--text);
+        text-align: right;
       }
 
-      /* Validation hint: shown when the port field value is outside 1-65535. */
+      /* Validation hint: shown in place of the port description when the value is outside 1-65535. */
       .field-hint {
         font-size: 12px;
+        line-height: 1.4;
         color: var(--c-offline);
-        margin: var(--sp-1) 0 0;
+        margin: 0;
         display: none;
       }
 
@@ -656,7 +718,7 @@
       </div>
     </section>
 
-    <!-- Advanced screen: activity log, daemon port. -->
+    <!-- Advanced screen: connection mode, activity log, daemon port. -->
     <section id="screen-advanced" class="screen">
       <button id="nav-back" class="back-btn" type="button" aria-label="Back">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -665,26 +727,44 @@
         Back
       </button>
 
-      <!-- Port -->
-      <div class="controls-row">
-        <section class="control-section" aria-label="Port" style="flex:1;min-width:0">
-          <label class="control-label" for="port-field" data-tooltip="WebSocket port the plugin connects to. Default: 18847.">Port</label>
-          <input id="port-field" type="number" min="1" max="65535" value="18847" aria-describedby="port-hint" />
-          <p id="port-hint" class="field-hint">Enter a whole number between 1 and 65535.</p>
-        </section>
+      <div class="rows">
+        <!-- Connection: shared with the menu bar app, owned by the daemon. -->
+        <div class="row-item row-wide">
+          <p class="row-title" id="mode-title">Connection</p>
+          <div class="row-control">
+            <div class="seg" role="radiogroup" aria-labelledby="mode-title">
+              <button class="seg-btn selected" type="button" role="radio" aria-checked="true" data-mode="file" disabled>File bridge</button>
+              <button class="seg-btn" type="button" role="radio" aria-checked="false" data-mode="mcp" disabled>MCP</button>
+            </div>
+          </div>
+          <p class="row-desc">File bridge: your agent runs turbofig in its shell, no setup. MCP: for apps such as Claude Desktop. The menu bar app shares this setting.</p>
+        </div>
+
+        <!-- Activity log setting -->
+        <div class="row-item">
+          <div class="row-text">
+            <p class="row-title" id="show-log-title">Activity log</p>
+            <p class="row-desc">Shows recent requests below.</p>
+          </div>
+          <div class="row-control">
+            <button id="show-log" class="switch" type="button" role="switch" aria-checked="true" aria-labelledby="show-log-title"></button>
+          </div>
+        </div>
+
+        <!-- Port -->
+        <div class="row-item">
+          <div class="row-text">
+            <label class="row-title" for="port-field">Port</label>
+            <p id="port-desc" class="row-desc">WebSocket port. Default 18847.</p>
+            <p id="port-hint" class="field-hint">Enter a whole number, 1 to 65535.</p>
+          </div>
+          <div class="row-control">
+            <input id="port-field" type="number" min="1" max="65535" value="18847" aria-describedby="port-hint" />
+          </div>
+        </div>
       </div>
 
-      <!-- Prompt mode: which template the copy-prompt button builds. -->
-      <fieldset class="control-section radio-group">
-        <legend class="control-label">Copy prompt for</legend>
-        <div class="radio-row">
-          <label class="radio-opt"><input type="radio" name="prompt-mode" value="file" checked />File bridge (default)</label>
-          <label class="radio-opt"><input type="radio" name="prompt-mode" value="mcp" />MCP</label>
-        </div>
-      </fieldset>
-
-      <!-- Activity log setting -->
-      <label class="radio-opt" for="show-log"><input id="show-log" type="checkbox" checked />Activity log</label>
+      <p id="mode-hint" class="row-desc" style="margin-top:calc(-1 * var(--sp-2))">Connect to change the Connection setting.</p>
 
       <!-- Activity log -->
       <section id="log-section" class="log-section" aria-label="Activity">

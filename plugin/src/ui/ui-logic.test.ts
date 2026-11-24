@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildSetConnectionMode } from "../protocol";
 import {
+  ADV_HEIGHT,
+  ADV_HEIGHT_LOG,
   appendLog,
   buildSocketUrl,
   type ConnectedFile,
@@ -20,11 +23,13 @@ import {
   isDaemonStale,
   isRequestType,
   mainMessageAction,
+  modeAfterDaemonFrame,
   NO_TOKEN_LABEL,
+  parseConnectionMode,
   parsePort,
-  parsePromptMode,
   parseShowLog,
   portMessageAction,
+  promptTemplateFor,
   screenSize,
   shouldRenderLog,
   staleWarning,
@@ -158,10 +163,10 @@ describe("screenSize", () => {
     expect(height).toBe(150);
   });
 
-  test("advanced screen returns 300x330, or 300x220 with the log hidden", () => {
-    expect(screenSize("advanced")).toEqual({ width: 300, height: 330 });
-    expect(screenSize("advanced", true)).toEqual({ width: 300, height: 330 });
-    expect(screenSize("advanced", false)).toEqual({ width: 300, height: 220 });
+  test("advanced screen uses ADV_HEIGHT_LOG, or ADV_HEIGHT with the log hidden", () => {
+    expect(screenSize("advanced")).toEqual({ width: 300, height: ADV_HEIGHT_LOG });
+    expect(screenSize("advanced", true)).toEqual({ width: 300, height: ADV_HEIGHT_LOG });
+    expect(screenSize("advanced", false)).toEqual({ width: 300, height: ADV_HEIGHT });
     expect(screenSize("main", false).height).toBe(150);
   });
 
@@ -818,16 +823,66 @@ describe("trackActiveJobs", () => {
   });
 });
 
-describe("parsePromptMode and PROMPT_MODE routing", () => {
-  test("only mcp selects mcp; anything else is file", () => {
-    expect(parsePromptMode("mcp")).toBe("mcp");
-    expect(parsePromptMode("file")).toBe("file");
-    expect(parsePromptMode(undefined)).toBe("file");
-    expect(parsePromptMode("MCP")).toBe("file");
+describe("Connection mode", () => {
+  const FILE_T = "file template";
+  const MCP_T = "mcp template";
+
+  test("parseConnectionMode: only file or mcp; anything else is file", () => {
+    expect(parseConnectionMode("mcp")).toBe("mcp");
+    expect(parseConnectionMode("file")).toBe("file");
+    expect(parseConnectionMode(undefined)).toBe("file");
+    expect(parseConnectionMode("MCP")).toBe("file");
   });
 
-  test("mainMessageAction routes PROMPT_MODE", () => {
-    expect(mainMessageAction("PROMPT_MODE")).toBe("promptmode");
+  test("WELCOME mode drives the copied prompt", () => {
+    const mode = modeAfterDaemonFrame("file", {
+      type: "WELCOME",
+      version: "1",
+      connectionMode: "mcp",
+    });
+    expect(mode).toBe("mcp");
+    expect(promptTemplateFor(mode, FILE_T, MCP_T)).toBe(MCP_T);
+  });
+
+  test("an older daemon WELCOME (no field) gives file", () => {
+    const mode = modeAfterDaemonFrame("mcp", { type: "WELCOME", version: "1" });
+    expect(mode).toBe("file");
+    expect(promptTemplateFor(mode, FILE_T, MCP_T)).toBe(FILE_T);
+  });
+
+  test("a WELCOME with an invalid mode gives file", () => {
+    expect(
+      modeAfterDaemonFrame("mcp", { type: "WELCOME", version: "1", connectionMode: "x" }),
+    ).toBe("file");
+  });
+
+  test("CONNECTION_MODE updates the copied prompt", () => {
+    const mode = modeAfterDaemonFrame("file", { type: "CONNECTION_MODE", mode: "mcp" });
+    expect(promptTemplateFor(mode, FILE_T, MCP_T)).toBe(MCP_T);
+    const back = modeAfterDaemonFrame(mode, { type: "CONNECTION_MODE", mode: "file" });
+    expect(promptTemplateFor(back, FILE_T, MCP_T)).toBe(FILE_T);
+  });
+
+  test("invalid CONNECTION_MODE values and other frames are ignored", () => {
+    expect(modeAfterDaemonFrame("mcp", { type: "CONNECTION_MODE", mode: "x" })).toBe("mcp");
+    expect(modeAfterDaemonFrame("mcp", { type: "CONNECTION_MODE" })).toBe("mcp");
+    expect(modeAfterDaemonFrame("mcp", { type: "STATUS", requestId: 1 })).toBe("mcp");
+    expect(modeAfterDaemonFrame("mcp", null)).toBe("mcp");
+    expect(modeAfterDaemonFrame("mcp", "CONNECTION_MODE")).toBe("mcp");
+  });
+
+  test("the UI consumes CONNECTION_MODE locally", () => {
+    expect(daemonMessageAction("CONNECTION_MODE")).toBe("mode");
+  });
+
+  test("picking a segment sends SET_CONNECTION_MODE", () => {
+    expect(JSON.stringify(buildSetConnectionMode(parseConnectionMode("mcp")))).toBe(
+      '{"type":"SET_CONNECTION_MODE","mode":"mcp"}',
+    );
+  });
+
+  test("PROMPT_MODE is no longer routed locally", () => {
+    expect(mainMessageAction("PROMPT_MODE")).toBe("relay");
   });
 });
 

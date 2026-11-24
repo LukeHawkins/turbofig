@@ -640,23 +640,25 @@ describe("createDispatcher", () => {
     expect((posted[1] as { type: string }).type).toBe("PORT");
   });
 
-  test("READY also replies PROMPT_MODE: file by default, mcp when stored", async () => {
-    const settle = () => new Promise((r) => setTimeout(r, 10));
-    const a: { type: string; mode?: string }[] = [];
-    createDispatcher(makeMockFigma(), (m) => a.push(m as { type: string }))({ type: "READY" });
-    await settle();
-    expect(a.find((m) => m.type === "PROMPT_MODE")?.mode).toBe("file");
-
-    const b: { type: string; mode?: string }[] = [];
+  test("READY no longer replies PROMPT_MODE and never reads the old promptMode key", async () => {
+    const reads: string[] = [];
+    const a: { type: string }[] = [];
     const figma = makeMockFigma({
-      clientStorage: { getAsync: async () => "mcp", setAsync: async () => {} },
+      clientStorage: {
+        getAsync: async (k: string) => {
+          reads.push(k);
+          return "mcp";
+        },
+        setAsync: async () => {},
+      },
     });
-    createDispatcher(figma, (m) => b.push(m as { type: string }))({ type: "READY" });
-    await settle();
-    expect(b.find((m) => m.type === "PROMPT_MODE")?.mode).toBe("mcp");
+    createDispatcher(figma, (m) => a.push(m as { type: string }))({ type: "READY" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(a.some((m) => m.type === "PROMPT_MODE")).toBe(false);
+    expect(reads).not.toContain("turbofig:promptMode");
   });
 
-  test("SET_PROMPT_MODE persists the mode under turbofig:promptMode", async () => {
+  test("SET_PROMPT_MODE is ignored and writes nothing", async () => {
     const saved: [string, unknown][] = [];
     const figma = makeMockFigma({
       clientStorage: {
@@ -668,7 +670,7 @@ describe("createDispatcher", () => {
     });
     createDispatcher(figma, () => {})({ type: "SET_PROMPT_MODE", mode: "mcp" });
     await new Promise((r) => setTimeout(r, 10));
-    expect(saved).toEqual([["turbofig:promptMode", "mcp"]]);
+    expect(saved).toEqual([]);
   });
 
   test("READY also replies SHOW_LOG: true by default, false when stored false", async () => {

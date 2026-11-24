@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  asConnectionMode,
   backoffDelayMs,
   buildExecuteError,
   buildExecuteSuccess,
@@ -7,6 +8,7 @@ import {
   buildResult,
   buildScreenshot,
   buildSelection,
+  buildSetConnectionMode,
   buildStarted,
   capResultMessage,
   DEPRECATION_PREAMBLE,
@@ -21,6 +23,26 @@ import {
   utf8ByteLength,
   wrapUserCode,
 } from "./protocol";
+
+describe("connection mode messages", () => {
+  test("accepts CONNECTION_MODE only with mode file or mcp", () => {
+    expect(isDaemonMessage({ type: "CONNECTION_MODE", mode: "file" })).toBe(true);
+    expect(isDaemonMessage({ type: "CONNECTION_MODE", mode: "mcp" })).toBe(true);
+    expect(isDaemonMessage({ type: "CONNECTION_MODE", mode: "x" })).toBe(false);
+    expect(isDaemonMessage({ type: "CONNECTION_MODE" })).toBe(false);
+  });
+
+  test("asConnectionMode validates", () => {
+    expect(asConnectionMode("file")).toBe("file");
+    expect(asConnectionMode("mcp")).toBe("mcp");
+    expect(asConnectionMode("MCP")).toBeNull();
+    expect(asConnectionMode(undefined)).toBeNull();
+  });
+
+  test("buildSetConnectionMode builds the plugin to daemon message", () => {
+    expect(buildSetConnectionMode("mcp")).toEqual({ type: "SET_CONNECTION_MODE", mode: "mcp" });
+  });
+});
 
 describe("isDaemonMessage", () => {
   test("accepts a valid FILE_INFO message", () => {
@@ -810,11 +832,8 @@ describe("isInboundMessage", () => {
     expect(isInboundMessage({ type: "SET_SHOW_LOG" })).toBe(false);
   });
 
-  test("accepts SET_PROMPT_MODE only with mode file or mcp", () => {
-    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "file" })).toBe(true);
-    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "mcp" })).toBe(true);
-    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "x" })).toBe(false);
-    expect(isInboundMessage({ type: "SET_PROMPT_MODE" })).toBe(false);
+  test("no longer accepts SET_PROMPT_MODE", () => {
+    expect(isInboundMessage({ type: "SET_PROMPT_MODE", mode: "file" })).toBe(false);
   });
 
   test("rejects SET_PORT missing port", () => {

@@ -4,8 +4,8 @@
  * Imports backoffDelayMs from protocol.ts to avoid duplicating the implementation.
  */
 
-import type { FileInfoMessage } from "../protocol";
-import { backoffDelayMs, isDaemonMessage } from "../protocol";
+import type { ConnectionMode, FileInfoMessage } from "../protocol";
+import { backoffDelayMs, buildSetConnectionMode, isDaemonMessage } from "../protocol";
 import { createLiveness } from "./liveness";
 import {
   appendLog,
@@ -24,12 +24,13 @@ import {
   isRequestType,
   type LinkHealth,
   mainMessageAction,
+  modeAfterDaemonFrame,
   NO_TOKEN_LABEL,
-  type PromptMode,
+  parseConnectionMode,
   parsePort,
-  parsePromptMode,
   parseShowLog,
   portMessageAction,
+  promptTemplateFor,
   screenSize,
   shouldRenderLog,
   staleWarning,
@@ -58,8 +59,8 @@ declare const __AGENT_PROMPT_TEMPLATE__: string;
 /** Build-time constant: the MCP variant (`prompts/agent-prompt-mcp.txt`). */
 declare const __AGENT_PROMPT_MCP_TEMPLATE__: string;
 
-/** Chosen "Copy prompt for" mode. Updated when PROMPT_MODE arrives and on user choice. */
-let promptMode: PromptMode = "file";
+/** Shared Connection mode. The daemon owns it: set from WELCOME and CONNECTION_MODE, and optimistically on a pick. */
+let connectionMode: ConnectionMode = "file";
 
 /** "Activity log" setting. Updated when SHOW_LOG arrives and on user choice. */
 let showLog = true;
@@ -93,10 +94,10 @@ const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
 const activityLogEl = document.getElementById("activity-log") as HTMLElement;
 const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
-const promptModeEls = Array.from(
-  document.querySelectorAll<HTMLInputElement>('input[name="prompt-mode"]'),
-);
-const showLogEl = document.getElementById("show-log") as HTMLInputElement;
+const modeSegEls = Array.from(document.querySelectorAll<HTMLButtonElement>(".seg-btn"));
+const modeHintEl = document.getElementById("mode-hint") as HTMLElement;
+const portDescEl = document.getElementById("port-desc") as HTMLElement;
+const showLogEl = document.getElementById("show-log") as HTMLButtonElement;
 const logSectionEl = document.getElementById("log-section") as HTMLElement;
 const copyFilekeyBtn = document.getElementById("copy-filekey") as HTMLButtonElement;
 const copyConnectBtn = document.getElementById("copy-connect") as HTMLButtonElement;
@@ -162,14 +163,26 @@ for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-open-u
   });
 }
 
-/** Checks the radio that matches the prompt mode. */
-function showPromptMode(): void {
-  for (const el of promptModeEls) el.checked = el.value === promptMode;
+/** True when a verified daemon socket is open, so a mode change can reach the daemon. */
+function daemonReady(): boolean {
+  return Boolean(ws && verified && ws.readyState === 1 /* OPEN */);
+}
+
+/** Highlights the active Connection segment and disables the control while the daemon is away. */
+function showConnectionMode(): void {
+  const ready = daemonReady();
+  for (const el of modeSegEls) {
+    const on = el.dataset.mode === connectionMode;
+    el.classList.toggle("selected", on);
+    el.setAttribute("aria-checked", on ? "true" : "false");
+    el.disabled = !ready;
+  }
+  if (modeHintEl) modeHintEl.hidden = ready;
 }
 
 /** Shows or hides the activity log section and fits the advanced panel to it. */
 function showLogSetting(): void {
-  if (showLogEl) showLogEl.checked = showLog;
+  if (showLogEl) showLogEl.setAttribute("aria-checked", showLog ? "true" : "false");
   if (logSectionEl) logSectionEl.hidden = !showLog;
   if (currentScreen === "advanced") {
     const { width, height } = screenSize("advanced", showLog);
@@ -182,6 +195,7 @@ function showLogSetting(): void {
 let linkHealth: LinkHealth = INITIAL_LINK_HEALTH;
 
 function setConnStatus(event: "open" | "close" | "error" | "attempt"): void {
+  showConnectionMode();
   const { state } = connStateFromEvent(event, attempt);
   if (connStatusEl) {
     const override = event === "open" ? null : statusOverride(linkHealth);
@@ -295,7 +309,7 @@ if (copyConnectBtn) {
     if (copyConnectBtn.classList.contains("copied")) return;
     if (!latestFileInfo?.fileKey) return;
     const prompt = fillAgentPrompt(
-      promptMode === "mcp" ? __AGENT_PROMPT_MCP_TEMPLATE__ : __AGENT_PROMPT_TEMPLATE__,
+      promptTemplateFor(connectionMode, __AGENT_PROMPT_TEMPLATE__, __AGENT_PROMPT_MCP_TEMPLATE__),
       [{ fileKey: latestFileInfo.fileKey, name: latestFileInfo.name }],
       daemonBridgeHome,
       daemonMcpPort,
@@ -308,19 +322,21 @@ if (copyConnectBtn) {
   });
 }
 
-/* Persist the chosen prompt mode through the main thread. */
-for (const el of promptModeEls) {
-  el.addEventListener("change", () => {
-    if (!el.checked) return;
-    promptMode = parsePromptMode(el.value);
-    parent.postMessage({ pluginMessage: { type: "SET_PROMPT_MODE", mode: promptMode } }, "*");
+/* Send the picked Connection mode to the daemon. The UI updates at once and then follows the next CONNECTION_MODE. */
+for (const el of modeSegEls) {
+  el.addEventListener("click", () => {
+    if (el.disabled || !daemonReady()) return;
+    const picked = parseConnectionMode(el.dataset.mode);
+    connectionMode = picked;
+    showConnectionMode();
+    (ws as WebSocket).send(JSON.stringify(buildSetConnectionMode(picked)));
   });
 }
 
 /* Persist the activity log setting through the main thread. */
 if (showLogEl) {
-  showLogEl.addEventListener("change", () => {
-    showLog = showLogEl.checked;
+  showLogEl.addEventListener("click", () => {
+    showLog = !showLog;
     showLogSetting();
     parent.postMessage({ pluginMessage: { type: "SET_SHOW_LOG", show: showLog } }, "*");
   });
@@ -352,10 +368,12 @@ portFieldEl.onchange = () => {
   const parsed = parsePort(portFieldEl.value);
   if (parsed === null) {
     if (portHintEl) portHintEl.style.display = "block";
+    if (portDescEl) portDescEl.style.display = "none";
     portFieldEl.value = String(currentPort);
     return;
   }
   if (portHintEl) portHintEl.style.display = "none";
+  if (portDescEl) portDescEl.style.display = "";
   parent.postMessage({ pluginMessage: { type: "SET_PORT", port: parsed } }, "*");
 };
 
@@ -422,6 +440,7 @@ function connect(): void {
   /* Close bookkeeping shared by onclose and an immediate reconnect. It never schedules a retry. */
   const finishClose = (): void => {
     if (ws === socket) verified = false;
+    showConnectionMode();
     /* No result can arrive on a closed socket: end the working state. */
     activeJobs = new Set();
     setWorking();
@@ -487,11 +506,19 @@ function connect(): void {
       daemonBinPath = typeof parsed.binPath === "string" ? parsed.binPath : "";
       daemonBridgeDirCustom =
         typeof parsed.bridgeDirCustom === "string" ? parsed.bridgeDirCustom : "";
+      connectionMode = modeAfterDaemonFrame(connectionMode, parsed);
+      showConnectionMode();
       const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
       if (staleWarningEl) {
         staleWarningEl.textContent = warning;
         staleWarningEl.style.display = warning ? "block" : "none";
       }
+      return;
+    }
+    /* Consume CONNECTION_MODE: the daemon's mode is the truth. */
+    if (action === "mode") {
+      connectionMode = modeAfterDaemonFrame(connectionMode, parsed);
+      showConnectionMode();
       return;
     }
     /* Read the active session id from a request that carries a real one.
@@ -575,11 +602,6 @@ window.onmessage = (event: MessageEvent) => {
       /* connect() clears any pending reconnect timer, so only one socket opens. */
       connect();
     }
-    return;
-  }
-  if (action === "promptmode") {
-    promptMode = parsePromptMode(m.mode);
-    showPromptMode();
     return;
   }
   if (action === "showlog") {

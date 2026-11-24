@@ -37,22 +37,30 @@ export interface PortMessage {
 }
 
 /**
- * Sent by the plugin UI iframe to persist the chosen "Copy prompt for" mode
- * ("file" or "mcp") in clientStorage. Never forwarded over the WebSocket.
+ * The shared Connection setting. The daemon owns it; the menu bar app and the
+ * plugin both show it. "file" is the default.
  */
-export interface SetPromptModeMessage {
-  type: "SET_PROMPT_MODE";
-  mode: "file" | "mcp";
+export type ConnectionMode = "file" | "mcp";
+
+/** Returns the mode when valid, else null. Callers choose their own fallback. */
+export function asConnectionMode(x: unknown): ConnectionMode | null {
+  return x === "file" || x === "mcp" ? x : null;
 }
 
 /**
- * Sent by the plugin main thread to the UI with the stored prompt mode.
- * Emitted on READY and after each accepted SET_PROMPT_MODE. Never travels
- * over the WebSocket.
+ * Sent by the daemon to the plugin whenever the Connection mode changes (from
+ * the app or any plugin). The UI consumes it locally; it never reaches the
+ * main thread.
  */
-export interface PromptModeMessage {
-  type: "PROMPT_MODE";
-  mode: "file" | "mcp";
+export interface ConnectionModeMessage {
+  type: "CONNECTION_MODE";
+  mode: ConnectionMode;
+}
+
+/** Sent by the plugin UI to the daemon when the user picks a Connection segment. */
+export interface SetConnectionModeMessage {
+  type: "SET_CONNECTION_MODE";
+  mode: ConnectionMode;
 }
 
 /**
@@ -134,6 +142,8 @@ export interface WelcomeMessage {
   binPath?: string;
   /** Absolute bridge folder, only when it is not the default `$HOME/.turbofig` (else empty). Present in daemon v0.2.0+. */
   bridgeDirCustom?: string;
+  /** Shared Connection mode. Absent in older daemons: treat as "file". */
+  connectionMode?: ConnectionMode;
 }
 
 /** Sent by the daemon to the plugin to request a status ping. requestId is a u64 JSON number. */
@@ -257,6 +267,7 @@ export type DaemonMessage =
   | HeartbeatMessage
   | FileInfoMessage
   | WelcomeMessage
+  | ConnectionModeMessage
   | StatusMessage
   | ExecuteMessage
   | GetSelectionMessage
@@ -274,7 +285,6 @@ export type InboundMessage =
   | GetSelectionMessage
   | ScreenshotMessage
   | SetPortMessage
-  | SetPromptModeMessage
   | SetShowLogMessage
   | ResizeMessage
   | OpenUrlMessage
@@ -318,8 +328,6 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       );
     case "SET_PORT":
       return typeof msg.port === "number";
-    case "SET_PROMPT_MODE":
-      return msg.mode === "file" || msg.mode === "mcp";
     case "SET_SHOW_LOG":
       return typeof msg.show === "boolean";
     case "RESIZE":
@@ -347,6 +355,8 @@ export function isDaemonMessage(x: unknown): x is DaemonMessage {
       return typeof msg.fileKey === "string" && typeof msg.name === "string";
     case "WELCOME":
       return typeof msg.version === "string";
+    case "CONNECTION_MODE":
+      return asConnectionMode(msg.mode) !== null;
     case "STATUS":
       return typeof msg.requestId === "number";
     case "EXECUTE":
@@ -724,3 +734,8 @@ export function wrapUserCode(code: string): string {
  * wrapped source to recover the line in the user's original code.
  */
 export const PREAMBLE_LINE_OFFSET = DEPRECATION_PREAMBLE.split("\n").length;
+
+/** Builds the SET_CONNECTION_MODE message the UI sends to the daemon. */
+export function buildSetConnectionMode(mode: ConnectionMode): SetConnectionModeMessage {
+  return { type: "SET_CONNECTION_MODE", mode };
+}
