@@ -490,9 +490,10 @@ describe("decideFrame", () => {
 });
 
 describe("link health", () => {
-  const miss = { sawChallenge: false, failedVerification: false };
+  const miss = { opened: true, sawChallenge: false, failedVerification: false };
+  const refused = { opened: false, sawChallenge: false, failedVerification: false };
 
-  test("shows the old-daemon text after 3 closes with no CHALLENGE", () => {
+  test("shows the old-daemon text after 3 opened sockets with no CHALLENGE", () => {
     let h = INITIAL_LINK_HEALTH;
     h = healthAfterClose(h, miss);
     h = healthAfterClose(h, miss);
@@ -501,17 +502,34 @@ describe("link health", () => {
     expect(statusOverride(h)).toBe(DAEMON_OLD_LABEL);
   });
 
+  test("sockets that never open (daemon not running) never show the old-daemon text", () => {
+    let h = INITIAL_LINK_HEALTH;
+    for (let i = 0; i < 10; i++) h = healthAfterClose(h, refused);
+    expect(statusOverride(h)).toBeNull();
+  });
+
+  test("a refused socket resets the miss counter", () => {
+    let h = healthAfterClose(healthAfterClose(INITIAL_LINK_HEALTH, miss), miss);
+    h = healthAfterClose(h, refused);
+    h = healthAfterClose(h, miss);
+    expect(statusOverride(h)).toBeNull();
+  });
+
   test("a CHALLENGE resets the miss counter", () => {
     let h = healthAfterClose(healthAfterClose(INITIAL_LINK_HEALTH, miss), miss);
-    h = healthAfterClose(h, { sawChallenge: true, failedVerification: false });
+    h = healthAfterClose(h, { opened: true, sawChallenge: true, failedVerification: false });
     h = healthAfterClose(h, miss);
     expect(statusOverride(h)).toBeNull();
   });
 
   test("verification failure text is sticky until a connection verifies", () => {
-    let h = healthAfterClose(INITIAL_LINK_HEALTH, { sawChallenge: true, failedVerification: true });
+    let h = healthAfterClose(INITIAL_LINK_HEALTH, {
+      opened: true,
+      sawChallenge: true,
+      failedVerification: true,
+    });
     expect(statusOverride(h)).toBe(VERIFY_FAILED_LABEL);
-    h = healthAfterClose(h, { sawChallenge: true, failedVerification: false });
+    h = healthAfterClose(h, { opened: true, sawChallenge: true, failedVerification: false });
     expect(statusOverride(h)).toBe(VERIFY_FAILED_LABEL);
     expect(statusOverride(INITIAL_LINK_HEALTH)).toBeNull();
   });

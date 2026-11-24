@@ -128,7 +128,7 @@ let hasConnectedOnce = false;
 
 const CONN_LABELS: Record<string, string> = {
   connected: "Connected to daemon",
-  offline: "Daemon not running. Run `turbofig` in Terminal.",
+  offline: "turbofig is not running. Open Terminal and run: turbofig",
   connecting: "Connecting...",
   reconnecting: "Reconnecting...",
 };
@@ -441,6 +441,8 @@ function connect(): void {
   welcomedSocket = false;
   let failed = false;
   let sawChallenge = false;
+  /* False until the WebSocket opens: a socket that never opens means no daemon listens. */
+  let opened = false;
 
   /* Close the socket, run nothing, and show the failure after the normal backoff. */
   const failVerification = (): void => {
@@ -450,6 +452,7 @@ function connect(): void {
   };
 
   socket.onopen = () => {
+    opened = true;
     /* Wait for the CHALLENGE. Status and FILE_INFO follow verification. */
   };
 
@@ -463,7 +466,11 @@ function connect(): void {
     /* No result can arrive on a closed socket: end the working state. */
     activeJobs = new Set();
     setWorking();
-    linkHealth = healthAfterClose(linkHealth, { sawChallenge, failedVerification: failed });
+    linkHealth = healthAfterClose(linkHealth, {
+      opened,
+      sawChallenge,
+      failedVerification: failed,
+    });
   };
   socket.onclose = () => {
     finishClose();

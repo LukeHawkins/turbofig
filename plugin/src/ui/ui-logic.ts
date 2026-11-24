@@ -276,15 +276,15 @@ export function decideFrame(
   return { action: "relay" };
 }
 
-/** Status text for a daemon that never sends a CHALLENGE (older daemon, or nothing there). */
-export const DAEMON_OLD_LABEL = "daemon unreachable or older than the plugin: update turbofig";
+/** Status text for a daemon that accepts the socket but never sends a CHALLENGE (an older daemon). */
+export const DAEMON_OLD_LABEL = "turbofig is older than this plugin: update turbofig";
 
 /** Closes in a row with no CHALLENGE before the old-daemon text shows. */
 export const NO_CHALLENGE_LIMIT = 3;
 
 /** Handshake health across reconnects. */
 export interface LinkHealth {
-  /** Consecutive closes where no CHALLENGE frame arrived. */
+  /** Consecutive opened sockets that closed with no CHALLENGE frame. */
   misses: number;
   /** True after a failed verification, until a connection verifies. */
   failed: boolean;
@@ -292,13 +292,22 @@ export interface LinkHealth {
 
 export const INITIAL_LINK_HEALTH: LinkHealth = { misses: 0, failed: false };
 
-/** Returns the new health after a socket closes. */
+/**
+ * Returns the new health after a socket closes.
+ *
+ * Only a socket that OPENED and then closed with no CHALLENGE counts as a
+ * miss: that is an older daemon. A socket that never opened means nothing
+ * listens (the daemon is not running); it resets the count, so the normal
+ * "Daemon not running" label shows instead of the old-daemon text.
+ */
 export function healthAfterClose(
   h: LinkHealth,
-  outcome: { sawChallenge: boolean; failedVerification: boolean },
+  outcome: { opened: boolean; sawChallenge: boolean; failedVerification: boolean },
 ): LinkHealth {
+  let misses = 0;
+  if (!outcome.sawChallenge && outcome.opened) misses = h.misses + 1;
   return {
-    misses: outcome.sawChallenge ? 0 : h.misses + 1,
+    misses,
     failed: h.failed || outcome.failedVerification,
   };
 }
