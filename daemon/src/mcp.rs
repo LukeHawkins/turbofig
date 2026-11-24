@@ -312,6 +312,8 @@ Example: {\"op\":\"execute\",\"fileKey\":\"<key>\",\"code\":\"return figma.root.
 MCP (fallback)
 --------------
 This is plain local HTTP, not HTTPS. Use curl, never a web-fetch tool.
+POST /mcp is served only when Connection is MCP (turbofig Settings, or the
+gear in the Figma plugin). In File bridge mode it returns 404 mcp_http_off.
 With a shell, run `turbofig status` first: it checks that this port is
 your own daemon, so you never send the token to another process.
 POST /mcp (streamable-http, legacy session mode). Send initialize, then
@@ -481,8 +483,9 @@ async fn require_bearer_token(
     next.run(req).await
 }
 
-/// Answers `/mcp` with 404 and a short JSON body while "MCP over HTTP" is
-/// off in Settings. Runs after the bearer check, so an unauthenticated caller
+/// Answers `/mcp` with 404 and a short JSON body unless Connection is MCP.
+/// The stdio proxy (`turbofig mcp`) never calls `/mcp`: it posts to `/job`,
+/// so it works in both modes. Runs after the bearer check, so an unauthenticated caller
 /// learns nothing. `/job`, `/health` and `/control` never pass through here.
 async fn mcp_http_gate(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
@@ -495,7 +498,7 @@ async fn mcp_http_gate(
             axum::Json(serde_json::json!({
                 "ok": false,
                 "code": "mcp_http_off",
-                "error": "MCP over HTTP is turned off in turbofig Settings. Use the file-bridge or `turbofig mcp`.",
+                "error": "turbofig is in File bridge mode. Switch Connection to MCP in the turbofig plugin (gear) or in Settings.",
             })),
         )
             .into_response();
@@ -1439,10 +1442,17 @@ mod tests {
         router.oneshot(req).await.expect("router must respond")
     }
 
-    /// A state whose home holds (or lacks) the `mcp-http-off` marker.
+    /// A state whose home holds (MCP mode) or lacks (File bridge mode) the
+    /// `mcp-mode` marker.
     fn state_with_mcp_http(enabled: bool) -> (Arc<AppState>, tempfile::TempDir) {
+        use crate::plugin_files::ConnectionMode;
         let home = tempfile::tempdir().expect("tempdir");
-        crate::plugin_files::set_mcp_http_enabled(home.path(), enabled).expect("set marker");
+        let mode = if enabled {
+            ConnectionMode::Mcp
+        } else {
+            ConnectionMode::File
+        };
+        crate::plugin_files::set_connection_mode(home.path(), mode).expect("set marker");
         let state = Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
         (state, home)
     }
@@ -1454,7 +1464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_returns_404_json_when_mcp_http_is_off() {
+    async fn mcp_returns_404_json_in_file_bridge_mode() {
         let (state, _home) = state_with_mcp_http(false);
         let token = state.token().to_owned();
         let router = build_router(state);
@@ -1476,13 +1486,13 @@ mod tests {
             assert_eq!(v["code"], "mcp_http_off");
             assert_eq!(
                 v["error"],
-                "MCP over HTTP is turned off in turbofig Settings. Use the file-bridge or `turbofig mcp`."
+                "turbofig is in File bridge mode. Switch Connection to MCP in the turbofig plugin (gear) or in Settings."
             );
         }
     }
 
     #[tokio::test]
-    async fn mcp_works_when_mcp_http_is_on() {
+    async fn mcp_is_served_in_mcp_mode() {
         let (state, _home) = state_with_mcp_http(true);
         let token = state.token().to_owned();
         let resp = post_mcp(build_router(state), &token, None, mcp_init_body()).await;
@@ -1490,20 +1500,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_http_off_applies_to_the_next_request_and_back_on() {
+    async fn the_mode_applies_to_the_next_request_both_ways() {
         let (state, home) = state_with_mcp_http(true);
         let token = state.token().to_owned();
         let router = build_router(state);
-        crate::plugin_files::set_mcp_http_enabled(home.path(), false).expect("off");
+        crate::plugin_files::set_connection_mode(
+            home.path(),
+            crate::plugin_files::ConnectionMode::File,
+        )
+        .expect("file");
         let resp = post_mcp(router.clone(), &token, None, mcp_init_body()).await;
         assert_eq!(resp.status(), 404);
-        crate::plugin_files::set_mcp_http_enabled(home.path(), true).expect("on");
+        crate::plugin_files::set_connection_mode(
+            home.path(),
+            crate::plugin_files::ConnectionMode::Mcp,
+        )
+        .expect("mcp");
         let resp = post_mcp(router, &token, None, mcp_init_body()).await;
         assert_eq!(resp.status(), 200);
     }
 
     #[tokio::test]
-    async fn mcp_http_off_without_a_token_is_still_401() {
+    async fn file_bridge_mode_without_a_token_is_still_401() {
         let (state, _home) = state_with_mcp_http(false);
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1516,7 +1534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn job_and_health_are_unaffected_when_mcp_http_is_off() {
+    async fn job_and_health_are_unaffected_in_file_bridge_mode() {
         let (state, _home) = state_with_mcp_http(false);
         let token = state.token().to_owned();
         let router = build_router(state);

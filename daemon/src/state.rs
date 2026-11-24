@@ -285,8 +285,9 @@ pub struct AppState {
     /// an in-process test building an `AppState` directly never writes to a
     /// real `~/.turbofig` on a successful plugin WS authentication.
     plugin_seen_path: Option<std::path::PathBuf>,
-    /// The turbofig home that holds the `mcp-http-off` marker. Set only by
-    /// `new_with_token`. `None` means "MCP over HTTP" is always on.
+    /// The turbofig home that holds the `mcp-mode` marker. Set only by
+    /// `new_with_token`. `None` means MCP mode (an in-process test state has
+    /// no home to persist a mode in, and `/mcp` stays open for it).
     home: Option<std::path::PathBuf>,
     /// Per-connection EXECUTE/SCREENSHOT admission-control lanes. See `Lane`
     /// and `try_admit`.
@@ -408,16 +409,52 @@ impl AppState {
             max_inflight_from_env(),
         );
         state.home = Some(home.to_path_buf());
+        // A leftover `mcp-http-off` meant "off", which is the new default.
+        crate::plugin_files::remove_legacy_mcp_http_off(home);
         state
     }
 
-    /// True when `/mcp` may serve (the "MCP over HTTP" setting, default on).
-    /// Reads the `mcp-http-off` marker in the home on every call. A state
-    /// with no home (every constructor but `new_with_token`) is always on.
+    /// The Connection setting. Reads the `mcp-mode` marker in the home on
+    /// every call. A state with no home (every constructor but
+    /// `new_with_token`) is in MCP mode, so `/mcp` stays open for in-process
+    /// tests.
+    pub(crate) fn connection_mode(&self) -> crate::plugin_files::ConnectionMode {
+        match self.home.as_deref() {
+            Some(home) => crate::plugin_files::connection_mode(home),
+            None => crate::plugin_files::ConnectionMode::Mcp,
+        }
+    }
+
+    /// True when `/mcp` may serve: MCP mode only.
     pub(crate) fn mcp_http_enabled(&self) -> bool {
-        self.home
-            .as_deref()
-            .is_none_or(crate::plugin_files::mcp_http_enabled)
+        self.connection_mode() == crate::plugin_files::ConnectionMode::Mcp
+    }
+
+    /// Persists `mode` (the daemon is the single writer of the marker), then
+    /// sends `CONNECTION_MODE` to every registered plugin connection. Every
+    /// registered connection finished the AUTH handshake, so all are
+    /// verified. Broadcasts the mode now in effect, even when the write
+    /// failed or the state has no home, so a plugin never shows a value the
+    /// daemon does not apply. Returns the write error, if any.
+    pub(crate) fn set_connection_mode(
+        &self,
+        mode: crate::plugin_files::ConnectionMode,
+    ) -> std::io::Result<()> {
+        let result = match self.home.as_deref() {
+            Some(home) => crate::plugin_files::set_connection_mode(home, mode),
+            None => Err(std::io::Error::other("this state has no home")),
+        };
+        self.broadcast_connection_mode();
+        result
+    }
+
+    /// Sends `CONNECTION_MODE` with the mode now in effect to every plugin.
+    pub(crate) fn broadcast_connection_mode(&self) {
+        let msg = crate::ws::connection_mode_message(self.connection_mode());
+        let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
+        for conn in guard.values() {
+            let _ = conn.tx.send(msg.clone());
+        }
     }
 
     /// Return a clone of the screenshot output directory, if configured.

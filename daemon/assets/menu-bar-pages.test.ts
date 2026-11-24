@@ -29,8 +29,8 @@ const ALLOWED_ABOUT_ACTIONS = ["copy-path", "show-plugin-folder", "copy-agent-pr
 const ALLOWED_SETTINGS_ACTIONS = [
   "start-at-login-on",
   "start-at-login-off",
-  "mcp-http-on",
-  "mcp-http-off",
+  "connection-file",
+  "connection-mcp",
   "copy-path",
   "show-plugin-folder",
 ];
@@ -110,9 +110,10 @@ describe("settings.html", () => {
     .replace("__START_AT_LOGIN_STATE__", "On")
     .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
     .replace("__START_AT_LOGIN_CHECKED__", "true")
-    .replace("__MCP_HTTP_STATE__", "On")
-    .replace("__MCP_HTTP_TOGGLE_ACTION__", "mcp-http-off")
-    .replace("__MCP_HTTP_CHECKED__", "true");
+    .replace("__CONNECTION_FILE_STATE__", "On")
+    .replace("__CONNECTION_FILE_CHECKED__", "true")
+    .replace("__CONNECTION_MCP_STATE__", "Off")
+    .replace("__CONNECTION_MCP_CHECKED__", "false");
   const { document } = loadPage(rendered);
 
   it("has no script tag and no inline on* handler", () => {
@@ -138,14 +139,31 @@ describe("settings.html", () => {
     expect(document.querySelector("a[href='turbofig-action://start-at-login-off']")).not.toBeNull();
   });
 
-  it("renders the MCP over HTTP row with its toggle link", () => {
-    expect(document.body.textContent).toContain("MCP over HTTP");
-    const sw = document.querySelector("a[href='turbofig-action://mcp-http-off']") as unknown as HTMLElement;
-    expect(sw).not.toBeNull();
-    expect(sw.getAttribute("role")).toBe("switch");
-    expect(sw.getAttribute("aria-checked")).toBe("true");
-    expect(sw.getAttribute("aria-label")).toBe("MCP over HTTP");
-    expect(sw.getAttribute("data-state")).toBe("On");
+  it("renders the Connection row as a 2 segment control", () => {
+    expect(document.body.textContent).toContain("Connection");
+    expect(document.body.textContent).not.toContain("MCP over HTTP");
+    const group = document.querySelector("[role='radiogroup']") as unknown as HTMLElement;
+    expect(group.getAttribute("aria-label")).toBe("Connection");
+    const file = group.querySelector("a[href='turbofig-action://connection-file']") as unknown as HTMLElement;
+    const mcp = group.querySelector("a[href='turbofig-action://connection-mcp']") as unknown as HTMLElement;
+    expect(file.textContent).toBe("File bridge");
+    expect(mcp.textContent).toBe("MCP");
+    for (const seg of [file, mcp]) {
+      expect(seg.getAttribute("role")).toBe("radio");
+      expect(seg.classList.contains("seg")).toBe(true);
+    }
+    expect(file.getAttribute("aria-checked")).toBe("true");
+    expect(file.getAttribute("data-state")).toBe("On");
+    expect(mcp.getAttribute("aria-checked")).toBe("false");
+    expect(mcp.getAttribute("data-state")).toBe("Off");
+    expect(group.querySelectorAll("a").length).toBe(2);
+  });
+
+  it("describes both modes in the muted line", () => {
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("File bridge: your agent runs turbofig in its shell.");
+    expect(text).toContain("MCP: for MCP apps such as Claude Desktop.");
+    expect(text).toContain("The Figma plugin uses the same setting.");
   });
 });
 
@@ -158,10 +176,11 @@ describe("both pages", () => {
       .replace("__START_AT_LOGIN_STATE__", "On")
       .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
     .replace("__START_AT_LOGIN_CHECKED__", "true")
-      .replace("__MCP_HTTP_STATE__", "On")
-      .replace("__MCP_HTTP_TOGGLE_ACTION__", "mcp-http-off")
-    .replace("__MCP_HTTP_CHECKED__", "true");
-    expect(settingsRendered).not.toContain("__MCP_HTTP");
+      .replace("__CONNECTION_FILE_STATE__", "On")
+      .replace("__CONNECTION_FILE_CHECKED__", "true")
+      .replace("__CONNECTION_MCP_STATE__", "Off")
+      .replace("__CONNECTION_MCP_CHECKED__", "false");
+    expect(settingsRendered).not.toContain("__CONNECTION");
     expect(settingsRendered).not.toContain("__START_AT_LOGIN");
     expect(settingsRendered).not.toContain("__VERSION__");
   });

@@ -18,10 +18,10 @@ pub enum SettingsAction {
     StartAtLoginOn,
     /// The "Turn off" link: turns Start at Login off.
     StartAtLoginOff,
-    /// The "Turn on" link of "MCP over HTTP": removes the off marker.
-    McpHttpOn,
-    /// The "Turn off" link of "MCP over HTTP": writes the off marker.
-    McpHttpOff,
+    /// The "File bridge" segment of "Connection".
+    ConnectionFile,
+    /// The "MCP" segment of "Connection".
+    ConnectionMcp,
     CopyPath,
     /// "Open plugin folder": reveals the plugin manifest (`open -R`), the
     /// same action the About window's "Show plugin folder" link runs.
@@ -39,8 +39,8 @@ pub fn parse_action_link(url: &str) -> Option<SettingsAction> {
     match url.strip_prefix(ACTION_SCHEME)? {
         "start-at-login-on" => Some(SettingsAction::StartAtLoginOn),
         "start-at-login-off" => Some(SettingsAction::StartAtLoginOff),
-        "mcp-http-on" => Some(SettingsAction::McpHttpOn),
-        "mcp-http-off" => Some(SettingsAction::McpHttpOff),
+        "connection-file" => Some(SettingsAction::ConnectionFile),
+        "connection-mcp" => Some(SettingsAction::ConnectionMcp),
         "copy-path" => Some(SettingsAction::CopyPath),
         "show-plugin-folder" => Some(SettingsAction::ShowPluginFolder),
         _ => None,
@@ -62,12 +62,12 @@ mod tests {
             Some(SettingsAction::StartAtLoginOff)
         );
         assert_eq!(
-            parse_action_link("turbofig-action://mcp-http-on"),
-            Some(SettingsAction::McpHttpOn)
+            parse_action_link("turbofig-action://connection-file"),
+            Some(SettingsAction::ConnectionFile)
         );
         assert_eq!(
-            parse_action_link("turbofig-action://mcp-http-off"),
-            Some(SettingsAction::McpHttpOff)
+            parse_action_link("turbofig-action://connection-mcp"),
+            Some(SettingsAction::ConnectionMcp)
         );
         assert_eq!(
             parse_action_link("turbofig-action://copy-path"),
@@ -95,8 +95,9 @@ mod tests {
             None
         );
         assert_eq!(parse_action_link("turbofig-action://copy-path "), None);
-        assert_eq!(parse_action_link("turbofig-action://mcp-http"), None);
-        assert_eq!(parse_action_link("turbofig-action://MCP-HTTP-OFF"), None);
+        assert_eq!(parse_action_link("turbofig-action://connection"), None);
+        assert_eq!(parse_action_link("turbofig-action://CONNECTION-MCP"), None);
+        assert_eq!(parse_action_link("turbofig-action://mcp-http-off"), None);
         assert_eq!(parse_action_link("https://example.com"), None);
     }
 

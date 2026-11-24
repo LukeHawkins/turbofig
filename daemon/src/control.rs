@@ -75,6 +75,9 @@ fn control_exit_grace() -> Duration {
 #[derive(Debug, Deserialize)]
 pub(crate) struct ControlRequest {
     action: ControlAction,
+    /// Only for `set_connection_mode`: `"file"` or `"mcp"`.
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -82,6 +85,11 @@ pub(crate) struct ControlRequest {
 pub(crate) enum ControlAction {
     Restart,
     Stop,
+    /// Sets the shared Connection setting. Does not drain or exit. Carries
+    /// `mode` (`"file"` or `"mcp"`); the daemon persists it and broadcasts
+    /// `CONNECTION_MODE` to every plugin. The menu-bar Settings window uses
+    /// it so the daemon stays the single writer of the marker.
+    SetConnectionMode,
 }
 
 /// `POST /control` handler.
@@ -131,6 +139,28 @@ pub(crate) async fn control_handler(
     };
 
     let action = req.action;
+    if action == ControlAction::SetConnectionMode {
+        let Some(mode) = req
+            .mode
+            .as_deref()
+            .and_then(crate::plugin_files::ConnectionMode::parse)
+        else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "mode must be \"file\" or \"mcp\""})),
+            );
+        };
+        return match state.set_connection_mode(mode) {
+            Ok(()) => (
+                StatusCode::OK,
+                Json(json!({"ok": true, "action": action, "mode": mode.as_str()})),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": format!("could not save the mode: {e}")})),
+            ),
+        };
+    }
     if action == ControlAction::Stop {
         // Record the stop even if a restart is already draining (the branch
         // below then returns false for this caller): a stop must always win
@@ -189,7 +219,8 @@ pub(crate) async fn control_handler(
 /// process.
 fn exit_code_for(action: ControlAction) -> i32 {
     match action {
-        ControlAction::Stop => 0,
+        // `SetConnectionMode` never reaches the exit path; 0 is only a total match.
+        ControlAction::Stop | ControlAction::SetConnectionMode => 0,
         ControlAction::Restart if crate::supervisor::is_supervised() => {
             crate::supervisor::SUPERVISED_RESTART_EXIT_CODE
         }
@@ -307,6 +338,63 @@ mod tests {
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["ok"], json!(false));
+    }
+
+    async fn control(state: &std::sync::Arc<AppState>, body: Value) -> (StatusCode, Value) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", state.token()).parse().unwrap(),
+        );
+        let (status, Json(v)) = control_handler(
+            State(state.clone()),
+            headers,
+            axum::body::Bytes::from(body.to_string()),
+        )
+        .await;
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn set_connection_mode_persists_and_broadcasts_without_draining() {
+        let home = tempfile::tempdir().unwrap();
+        let state = std::sync::Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        state.add_connection(tx);
+        let (status, v) = control(
+            &state,
+            json!({"action": "set_connection_mode", "mode": "mcp"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["mode"], json!("mcp"));
+        assert!(home.path().join("mcp-mode").exists());
+        assert!(!state.is_draining());
+        let msg: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(msg, json!({"type": "CONNECTION_MODE", "mode": "mcp"}));
+        let (status, _) = control(
+            &state,
+            json!({"action": "set_connection_mode", "mode": "file"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!home.path().join("mcp-mode").exists());
+    }
+
+    #[tokio::test]
+    async fn set_connection_mode_rejects_a_bad_or_missing_mode() {
+        let home = tempfile::tempdir().unwrap();
+        let state = std::sync::Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
+        for body in [
+            json!({"action": "set_connection_mode"}),
+            json!({"action": "set_connection_mode", "mode": "http"}),
+            json!({"action": "set_connection_mode", "mode": 3}),
+        ] {
+            let (status, v) = control(&state, body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(v["ok"], json!(false));
+        }
+        assert!(!home.path().join("mcp-mode").exists());
     }
 
     #[test]

@@ -603,13 +603,16 @@ from the tray menu's "Settings…"; already open, a second click just calls
   `set_start_at_login` via its own 2 IPC commands,
   `start_at_login_on`/`start_at_login_off`, showing the real plist state,
   re-read fresh on every open and on `page_ready`, never a cached belief),
-  an "MCP over HTTP" switch (default on; the marker file
-  `<home>/mcp-http-off`, mode 0600, present means off; the daemon checks it
-  on every new `/mcp` request and answers 404 `mcp_http_off` when off (an open
-  SSE stream stays open; a reconnecting client gets 404; a marker that is not
-  a regular file owned by you counts as off, shown as "unknown (see log)"); `/job`,
-  `/health` and `/control` are not gated; actions `mcp-http-on` and
-  `mcp-http-off`),
+  a "Connection" segmented control (File bridge, the default, or MCP;
+  the marker file `<home>/mcp-mode`, mode 0600, present means MCP; the daemon
+  is the single writer and checks it on every new `/mcp` request, answering
+  404 `mcp_http_off` in File bridge mode (an open SSE stream stays open; a
+  reconnecting client gets 404; a marker that is not a regular file owned by
+  you counts as File bridge); `/job`, `/health`, `/control` and the stdio
+  proxy are not gated; actions `connection-file` and `connection-mcp`; the
+  app asks the daemon over `/control` `set_connection_mode`, and writes the
+  marker itself only when the daemon is not running; the daemon broadcasts
+  `CONNECTION_MODE` to every plugin),
   "Copy plugin manifest path", "Open plugin folder" (the same
   `reveal_in_finder` the About window's "Show plugin in Finder" uses), and
   1 small footer line with the version and an "Open log" text link

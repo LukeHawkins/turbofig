@@ -537,6 +537,8 @@ const PURGE_ENTRIES: &[&str] = &[
     "daemon.log.1",
     "plugin-seen",
     "daemon.lock",
+    "mcp-mode",
+    "mcp-http-off",
 ];
 
 /// Deletes the known turbofig entries inside `home`, then removes `home`

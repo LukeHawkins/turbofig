@@ -12,7 +12,7 @@ use super::activate::activate_app_and_focus;
 use super::link_policy::{decide_navigation, new_window_target, open_external, NavDecision};
 use super::settings_state::{parse_action_link, SettingsAction};
 use super::{clipboard_for_app, opener_for_app};
-use crate::plugin_files::McpHttpState;
+use crate::plugin_files::ConnectionMode;
 use std::path::PathBuf;
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
@@ -29,6 +29,9 @@ const SETTINGS_HTML_TEMPLATE: &str = include_str!("../../assets/settings/setting
 #[derive(Clone)]
 pub struct SettingsWindowContext {
     pub home: PathBuf,
+    /// The daemon's HTTP port, for the verified `/control` call that sets
+    /// Connection.
+    pub mcp_port: u16,
     /// Asks the event loop to re-render the window after "Start at login"
     /// changes, because the page has no JavaScript to update itself.
     pub reload: std::sync::Arc<dyn Fn() + Send + Sync>,
@@ -67,38 +70,58 @@ fn start_at_login_checked() -> bool {
     crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env())
 }
 
-/// Reads "MCP over HTTP" (default on) from the marker in the turbofig home.
-fn mcp_http_checked(home: &std::path::Path) -> McpHttpState {
-    crate::plugin_files::mcp_http_state(home)
+/// Reads Connection (default File bridge) from the marker in the turbofig
+/// home. An odd marker counts as File bridge, like the daemon's gate.
+fn connection_checked(home: &std::path::Path) -> ConnectionMode {
+    crate::plugin_files::connection_mode(home)
 }
 
-/// Renders the page: the version, and the "Start at login" and "MCP over
-/// HTTP" rows, each as plain state text plus the one link that flips it
-/// (there is no JS to drive a live checkbox).
-fn render_settings_html(version: &str, start_at_login_on: bool, mcp: &McpHttpState) -> String {
+/// Renders the page: the version, the "Start at login" switch, and the
+/// "Connection" segmented control. Each is plain state text plus the link
+/// that changes it (there is no JS to drive a live control).
+fn render_settings_html(version: &str, start_at_login_on: bool, mode: ConnectionMode) -> String {
     let (state_text, toggle_action, checked) = if start_at_login_on {
         ("On", "start-at-login-off", "true")
     } else {
         ("Off", "start-at-login-on", "false")
     };
-    let (mcp_text, mcp_action, mcp_checked) = match mcp {
-        McpHttpState::On => ("On", "mcp-http-off", "true"),
-        McpHttpState::Off => ("Off", "mcp-http-on", "false"),
-        // The marker is odd: /mcp is closed. The switch shows off, and
-        // flipping it on tries to fix it and logs the reason when it cannot.
-        McpHttpState::Unknown(_) => ("unknown (see log)", "mcp-http-on", "false"),
+    let (file_state, file_checked, mcp_state, mcp_checked) = match mode {
+        ConnectionMode::File => ("On", "true", "Off", "false"),
+        ConnectionMode::Mcp => ("Off", "false", "On", "true"),
     };
     SETTINGS_HTML_TEMPLATE
         .replace("__VERSION__", version)
-        .replace("__MCP_HTTP_STATE__", mcp_text)
-        .replace("__MCP_HTTP_TOGGLE_ACTION__", mcp_action)
-        .replace("__MCP_HTTP_CHECKED__", mcp_checked)
+        .replace("__CONNECTION_FILE_STATE__", file_state)
+        .replace("__CONNECTION_FILE_CHECKED__", file_checked)
+        .replace("__CONNECTION_MCP_STATE__", mcp_state)
+        .replace("__CONNECTION_MCP_CHECKED__", mcp_checked)
         .replace("__START_AT_LOGIN_STATE__", state_text)
         .replace("__START_AT_LOGIN_TOGGLE_ACTION__", toggle_action)
         .replace("__START_AT_LOGIN_CHECKED__", checked)
 }
 
-/// Builds the Settings window: a 420x310, non-resizable, titled "turbofig
+/// Sets Connection. First asks the running daemon over the verified
+/// `/control` path, so the daemon writes the marker and broadcasts to every
+/// plugin. When that fails (the daemon is not running, or it did not
+/// verify), the app writes the marker itself with the same safe write.
+pub(crate) async fn apply_connection_mode(
+    home: &std::path::Path,
+    mcp_port: u16,
+    mode: ConnectionMode,
+) -> std::io::Result<()> {
+    if let Some(token) = crate::read_token_file(home).await {
+        match crate::daemon_client::send_connection_mode(mcp_port, &token, mode.as_str()).await {
+            Ok(status) if status.is_success() => return Ok(()),
+            Ok(status) => {
+                eprintln!("turbofig: the daemon refused Connection ({status}); writing it here")
+            }
+            Err(_) => {}
+        }
+    }
+    crate::plugin_files::set_connection_mode(home, mode)
+}
+
+/// Builds the Settings window: a 420x320, non-resizable, titled "turbofig
 /// settings" window hosting a webview over the rendered page. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
@@ -108,7 +131,7 @@ pub fn create_settings_window<T: 'static>(
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig settings")
-        .with_inner_size(LogicalSize::new(420.0, 310.0))
+        .with_inner_size(LogicalSize::new(420.0, 320.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;
@@ -119,7 +142,7 @@ pub fn create_settings_window<T: 'static>(
         .with_html(render_settings_html(
             env!("CARGO_PKG_VERSION"),
             start_at_login_checked(),
-            &mcp_http_checked(&ctx.home),
+            connection_checked(&ctx.home),
         ))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |url: String| navigation_is_allowed(&url, &navigation_ctx))
@@ -153,12 +176,29 @@ fn dispatch_settings_action(action: SettingsAction, ctx: &SettingsWindowContext)
             }
             (ctx.reload)();
         }
-        SettingsAction::McpHttpOn | SettingsAction::McpHttpOff => {
-            let on = action == SettingsAction::McpHttpOn;
-            if let Err(e) = crate::plugin_files::set_mcp_http_enabled(&ctx.home, on) {
-                eprintln!("turbofig: MCP over HTTP -> {on} failed: {e}");
-            }
-            (ctx.reload)();
+        SettingsAction::ConnectionFile | SettingsAction::ConnectionMcp => {
+            let mode = if action == SettingsAction::ConnectionMcp {
+                ConnectionMode::Mcp
+            } else {
+                ConnectionMode::File
+            };
+            // The click handler runs on the event loop thread, which may sit
+            // inside the app's async runtime: a plain thread with its own
+            // small runtime is safe either way, and it keeps the window live.
+            let home = ctx.home.clone();
+            let port = ctx.mcp_port;
+            let reload = ctx.reload.clone();
+            std::thread::spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(std::io::Error::other)
+                    .and_then(|rt| rt.block_on(apply_connection_mode(&home, port, mode)));
+                if let Err(e) = result {
+                    eprintln!("turbofig: Connection -> {} failed: {e}", mode.as_str());
+                }
+                reload();
+            });
         }
         SettingsAction::CopyPath => {
             let manifest_path = ctx.home.join("figma-plugin").join("manifest.json");
@@ -196,33 +236,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_mcp_http_row_renders_both_states_and_leaves_no_placeholder() {
-        let on = render_settings_html("1.2.3", false, &McpHttpState::On);
-        assert!(on.contains("data-state=\"On\""));
-        assert!(on.contains("aria-checked=\"true\""));
-        assert!(on.contains("turbofig-action://mcp-http-off"));
-        let off = render_settings_html("1.2.3", true, &McpHttpState::Off);
-        assert!(off.contains("data-state=\"Off\""));
-        assert!(off.contains("aria-checked=\"false\""));
-        assert!(off.contains("turbofig-action://mcp-http-on"));
-        let unknown = render_settings_html("1.2.3", true, &McpHttpState::Unknown("x".into()));
-        assert!(unknown.contains("data-state=\"unknown (see log)\""));
-        for html in [on, off, unknown] {
+    fn the_connection_row_renders_both_modes_and_leaves_no_placeholder() {
+        let file = render_settings_html("1.2.3", false, ConnectionMode::File);
+        let mcp = render_settings_html("1.2.3", true, ConnectionMode::Mcp);
+        for html in [&file, &mcp] {
             assert!(!html.contains("__"));
+            assert!(html.contains("turbofig-action://connection-file"));
+            assert!(html.contains("turbofig-action://connection-mcp"));
         }
+        assert!(file.contains(
+            "aria-checked=\"true\" data-state=\"On\" href=\"turbofig-action://connection-file\""
+        ));
+        assert!(file.contains(
+            "aria-checked=\"false\" data-state=\"Off\" href=\"turbofig-action://connection-mcp\""
+        ));
+        assert!(mcp.contains(
+            "aria-checked=\"true\" data-state=\"On\" href=\"turbofig-action://connection-mcp\""
+        ));
+        assert!(mcp.contains(
+            "aria-checked=\"false\" data-state=\"Off\" href=\"turbofig-action://connection-file\""
+        ));
     }
 
     #[test]
     fn the_settings_page_shows_the_crate_version() {
-        let html = render_settings_html(env!("CARGO_PKG_VERSION"), false, &McpHttpState::On);
+        let html = render_settings_html(env!("CARGO_PKG_VERSION"), false, ConnectionMode::File);
         assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]
-    fn mcp_http_checked_follows_the_marker() {
+    fn connection_checked_follows_the_marker() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        assert_eq!(mcp_http_checked(tmp.path()), McpHttpState::On);
-        crate::plugin_files::set_mcp_http_enabled(tmp.path(), false).expect("off");
-        assert_eq!(mcp_http_checked(tmp.path()), McpHttpState::Off);
+        assert_eq!(connection_checked(tmp.path()), ConnectionMode::File);
+        crate::plugin_files::set_connection_mode(tmp.path(), ConnectionMode::Mcp).expect("mcp");
+        assert_eq!(connection_checked(tmp.path()), ConnectionMode::Mcp);
+    }
+
+    #[tokio::test]
+    async fn apply_connection_mode_writes_the_marker_itself_when_no_daemon_runs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        apply_connection_mode(tmp.path(), port, ConnectionMode::Mcp)
+            .await
+            .expect("mcp");
+        assert_eq!(connection_checked(tmp.path()), ConnectionMode::Mcp);
+        apply_connection_mode(tmp.path(), port, ConnectionMode::File)
+            .await
+            .expect("file");
+        assert_eq!(connection_checked(tmp.path()), ConnectionMode::File);
     }
 }

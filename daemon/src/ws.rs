@@ -152,13 +152,14 @@ impl WsContext {
 
 /// Build the WELCOME message sent to a plugin after it sends FILE_INFO.
 /// Returns a JSON string with `type`, `version`, `mcpPort`, `bridgeHome`
-/// `binPath` and `bridgeDirCustom` fields. `mcpPort` is the HTTP MCP port
+/// `binPath`, `bridgeDirCustom` and `connectionMode` (`"file"` or `"mcp"`) fields. `mcpPort` is the HTTP MCP port
 /// and `bridgeHome` is the file-bridge home directory (see `config::bridge_dir_display`), so the plugin panel can
 /// show a ready-to-paste connect prompt that names the real bridge directory
 /// even under a custom `TURBOFIG_BRIDGE_DIR`.
-pub(crate) fn welcome_message() -> String {
+pub(crate) fn welcome_message(mode: crate::plugin_files::ConnectionMode) -> String {
     json!({
         "type": "WELCOME",
+        "connectionMode": mode.as_str(),
         "version": env!("CARGO_PKG_VERSION"),
         "mcpPort": port_from_env(),
         "bridgeHome": bridge_dir_display(),
@@ -166,6 +167,12 @@ pub(crate) fn welcome_message() -> String {
         "bridgeDirCustom": crate::config::bridge_dir_custom()
     })
     .to_string()
+}
+
+/// The `CONNECTION_MODE` message the daemon broadcasts to every verified
+/// plugin whenever the Connection setting changes.
+pub(crate) fn connection_mode_message(mode: crate::plugin_files::ConnectionMode) -> String {
+    json!({ "type": "CONNECTION_MODE", "mode": mode.as_str() }).to_string()
 }
 
 /// Handle an upgraded WebSocket connection from the Figma plugin.
@@ -281,7 +288,7 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
             state.set_connection_info_with_version(conn_id, file_key, name, plugin_version);
             // Push WELCOME so the plugin UI can display version/session info.
             // Ignore send errors: the write task may have already exited.
-            let _ = tx.send(welcome_message());
+            let _ = tx.send(welcome_message(state.connection_mode()));
         }
         Some("RESULT") => {
             if let Some(id) = json.get("requestId").and_then(|v| v.as_u64()) {
@@ -299,6 +306,23 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
                 // an id owned by a different connection is ignored. See
                 // state::AppState::mark_started.
                 state.mark_started(id, conn_id);
+            }
+        }
+        Some("SET_CONNECTION_MODE") => {
+            // Only a verified socket reaches `handle_socket`, so every
+            // registered conn_id is verified. An invalid value is logged and
+            // ignored. The daemon persists, then broadcasts to every plugin
+            // (the sender included).
+            let value = json.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::plugin_files::ConnectionMode::parse(value) {
+                Some(mode) => {
+                    if let Err(e) = state.set_connection_mode(mode) {
+                        eprintln!("turbofig: SET_CONNECTION_MODE {value} failed: {e}");
+                    }
+                }
+                None => {
+                    eprintln!("turbofig: ignored SET_CONNECTION_MODE with an invalid mode");
+                }
             }
         }
         // Unknown type: ignore safely, never panic.
@@ -514,7 +538,7 @@ mod tests {
 
     #[test]
     fn welcome_message_has_correct_type_and_version() {
-        let msg = welcome_message();
+        let msg = welcome_message(crate::plugin_files::ConnectionMode::File);
         let v: Value = serde_json::from_str(&msg).expect("welcome_message must be valid JSON");
         assert_eq!(v["type"], json!("WELCOME"), "type must be WELCOME");
         assert_eq!(
@@ -546,6 +570,59 @@ mod tests {
             json!(crate::config::bridge_dir_custom()),
             "bridgeDirCustom must equal bridge_dir_custom()"
         );
+    }
+
+    #[test]
+    fn welcome_carries_the_connection_mode() {
+        use crate::plugin_files::ConnectionMode;
+        for (mode, wire) in [(ConnectionMode::File, "file"), (ConnectionMode::Mcp, "mcp")] {
+            let v: Value = serde_json::from_str(&welcome_message(mode)).expect("json");
+            assert_eq!(v["connectionMode"], json!(wire));
+        }
+    }
+
+    #[test]
+    fn dispatch_set_connection_mode_persists_broadcasts_and_ignores_bad_values() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let id1 = state.add_connection(tx1.clone());
+        state.add_connection(tx2);
+        dispatch(
+            &json!({"type": "SET_CONNECTION_MODE", "mode": "bogus"}),
+            &state,
+            &tx1,
+            id1,
+        );
+        assert!(rx1.try_recv().is_err() && rx2.try_recv().is_err());
+        assert!(!home.path().join("mcp-mode").exists());
+        dispatch(
+            &json!({"type": "SET_CONNECTION_MODE", "mode": "mcp"}),
+            &state,
+            &tx1,
+            id1,
+        );
+        let want = json!({"type": "CONNECTION_MODE", "mode": "mcp"});
+        for rx in [&mut rx1, &mut rx2] {
+            let got: Value = serde_json::from_str(&rx.try_recv().expect("broadcast")).unwrap();
+            assert_eq!(got, want);
+        }
+        assert!(home.path().join("mcp-mode").exists());
+    }
+
+    #[test]
+    fn dispatch_set_connection_mode_from_an_unregistered_conn_is_ignored() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        dispatch(
+            &json!({"type": "SET_CONNECTION_MODE", "mode": "mcp"}),
+            &state,
+            &tx,
+            999,
+        );
+        assert!(!home.path().join("mcp-mode").exists());
     }
 
     #[test]

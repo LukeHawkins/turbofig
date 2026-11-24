@@ -449,6 +449,7 @@ pub async fn run_menu_bar_app() {
     let reload_proxy = std::sync::Mutex::new(proxy.clone());
     let settings_ctx = SettingsWindowContext {
         home: home.clone(),
+        mcp_port,
         reload: std::sync::Arc::new(move || {
             if let Ok(p) = reload_proxy.lock() {
                 let _ = p.send_event(UserEvent::ReloadSettings);

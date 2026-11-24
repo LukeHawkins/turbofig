@@ -373,13 +373,25 @@ pub async fn send_control(
     token: &str,
     action: &str,
 ) -> Result<reqwest::StatusCode, ClientError> {
-    send_control_with_lookup(port, token, action, listener_uid).await
+    let body = serde_json::json!({ "action": action });
+    send_control_with_lookup(port, token, &body, listener_uid).await
+}
+
+/// Asks the verified daemon to set the shared Connection (`"file"` or
+/// `"mcp"`), the same verified `POST /control` path as `send_control`.
+pub async fn send_connection_mode(
+    port: u16,
+    token: &str,
+    mode: &str,
+) -> Result<reqwest::StatusCode, ClientError> {
+    let body = serde_json::json!({ "action": "set_connection_mode", "mode": mode });
+    send_control_with_lookup(port, token, &body, listener_uid).await
 }
 
 async fn send_control_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
     port: u16,
     token: &str,
-    action: &str,
+    body: &serde_json::Value,
     lookup: impl Fn(u16) -> Fut,
 ) -> Result<reqwest::StatusCode, ClientError> {
     let url = base_url(port);
@@ -393,7 +405,7 @@ async fn send_control_with_lookup<Fut: std::future::Future<Output = Option<u32>>
     let resp = client
         .post(format!("{url}/control"))
         .bearer_auth(token)
-        .json(&serde_json::json!({ "action": action }))
+        .json(body)
         .send()
         .await
         .map_err(ClientError::Http)?;
@@ -801,10 +813,14 @@ mod tests {
             .is_err());
         assert!(seen.lock().unwrap().auth.is_empty());
         // send_control reaches it: the upgrade handoff.
-        let status =
-            send_control_with_lookup(port, TOKEN, "restart", |_| async move { Some(my_uid) })
-                .await
-                .expect("legacy control allowed");
+        let status = send_control_with_lookup(
+            port,
+            TOKEN,
+            &serde_json::json!({"action": "restart"}),
+            |_| async move { Some(my_uid) },
+        )
+        .await
+        .expect("legacy control allowed");
         assert!(status.is_success());
         assert_eq!(seen.lock().unwrap().auth, vec![format!("Bearer {TOKEN}")]);
         // A foreign owner is still refused.
@@ -812,7 +828,7 @@ mod tests {
         assert!(send_control_with_lookup(
             port,
             TOKEN,
-            "restart",
+            &serde_json::json!({"action": "restart"}),
             |_| async move { Some(my_uid + 1) }
         )
         .await

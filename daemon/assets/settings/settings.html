@@ -166,8 +166,61 @@
         }
       }
 
+      /* === SEGMENTED CONTROL: macOS-style, 2 links. The look comes from
+         the data-state attribute ("On" marks the selected segment). ===== */
+      .segmented {
+        --seg-track: rgba(0, 0, 0, 0.06);
+        --seg-selected: #ffffff;
+        --seg-selected-text: #1a1a1a;
+        display: flex;
+        flex-shrink: 0;
+        padding: 2px;
+        gap: 1px;
+        border-radius: 8px;
+        background: var(--seg-track);
+      }
+
+      .seg {
+        padding: 3px 12px;
+        border-radius: 6px;
+        font-size: var(--fs-xs);
+        font-weight: 500;
+        line-height: 16px;
+        white-space: nowrap;
+        text-decoration: none;
+        color: var(--text);
+        transition: background 0.15s;
+      }
+
+      .seg[data-state="On"] {
+        background: var(--seg-selected);
+        color: var(--seg-selected-text);
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.2),
+          0 0 0 0.5px rgba(0, 0, 0, 0.06);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .segmented {
+          --seg-track: rgba(255, 255, 255, 0.1);
+          --seg-selected: #636366;
+          --seg-selected-text: #ffffff;
+        }
+
+        .seg[data-state="On"] {
+          box-shadow:
+            0 1px 2px rgba(0, 0, 0, 0.4),
+            0 0 0 0.5px rgba(0, 0, 0, 0.2);
+        }
+      }
+
+      .switch-row > .step {
+        min-width: 0;
+      }
+
       @media (prefers-reduced-motion: reduce) {
         .switch,
+        .seg,
         .switch::after {
           transition: none;
         }
@@ -213,10 +266,13 @@
 
     <div class="switch-row">
       <div class="step">
-        <p class="step-title">MCP over HTTP</p>
-        <p class="muted-line">Only for MCP clients. The file bridge works either way.</p>
+        <p class="step-title">Connection</p>
+        <p class="muted-line">File bridge: your agent runs turbofig in its shell. Works everywhere, no setup. MCP: for MCP apps such as Claude Desktop. The Figma plugin uses the same setting.</p>
       </div>
-      <a class="switch" role="switch" aria-checked="__MCP_HTTP_CHECKED__" aria-label="MCP over HTTP" data-state="__MCP_HTTP_STATE__" href="turbofig-action://__MCP_HTTP_TOGGLE_ACTION__"></a>
+      <div class="segmented" role="radiogroup" aria-label="Connection">
+        <a class="seg" role="radio" aria-checked="__CONNECTION_FILE_CHECKED__" data-state="__CONNECTION_FILE_STATE__" href="turbofig-action://connection-file">File bridge</a>
+        <a class="seg" role="radio" aria-checked="__CONNECTION_MCP_CHECKED__" data-state="__CONNECTION_MCP_STATE__" href="turbofig-action://connection-mcp">MCP</a>
+      </div>
     </div>
 
     <div class="step">

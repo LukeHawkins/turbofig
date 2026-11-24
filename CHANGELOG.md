@@ -18,10 +18,15 @@ recorded under Unreleased.
 - Challenge handshake on the plugin WebSocket: the plugin connects with
   `?nonce=`, the daemon sends `CHALLENGE`, the plugin answers `AUTH`. The
   token never goes on the wire.
-- Settings row "MCP over HTTP" (default on). When it is off, `/mcp` returns
-  404 with `{"ok":false,"code":"mcp_http_off",...}`. `/job`, `/health`,
-  `/control` and `turbofig mcp` keep working. The setting is the marker file
-  `<home>/mcp-http-off` (mode 0600; present means off).
+- One shared "Connection" setting: File bridge (default) or MCP. Change it in
+  the Settings window (a segmented control) or in the plugin (gear). Both stay
+  in sync: the daemon saves it as the marker file `<home>/mcp-mode` (mode
+  0600; present means MCP) and sends `CONNECTION_MODE` to every plugin. WELCOME
+  carries `connectionMode`. The plugin sends `SET_CONNECTION_MODE`. In File
+  bridge mode `/mcp` returns 404 with `{"ok":false,"code":"mcp_http_off",...}`.
+  `/job`, `/health`, `/control` and `turbofig mcp` (stdio) work in both modes.
+  Upgrade note: if you added the HTTP transport by hand, switch Connection to
+  MCP once. A leftover `mcp-http-off` file is deleted at startup.
 - `GET /health` signs a client nonce (`X-Turbofig-Nonce`,
   `X-Turbofig-Proof`). The CLI, the stdio proxy and the menu bar verify the
   proof before they send the token.
