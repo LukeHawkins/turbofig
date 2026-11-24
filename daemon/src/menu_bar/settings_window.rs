@@ -98,6 +98,18 @@ fn connection_state(home: &std::path::Path) -> ConnectionModeState {
     crate::plugin_files::connection_mode_state(home)
 }
 
+/// Description of the File bridge option, shown only while it is selected.
+/// (`preview.ts` reads these 3 constants from this file.)
+const DESC_FILE: &str = "Your agent runs turbofig in its shell. Works everywhere, no setup.";
+/// Description of the MCP option, shown only while it is selected.
+const DESC_MCP: &str = "turbofig serves MCP over HTTP, and the plugin copies the MCP prompt.";
+/// The note shown when the marker cannot be read.
+const UNKNOWN_NOTE: &str = "Can't read the setting. See the log.";
+
+fn muted_line(text: &str) -> String {
+    format!("<p class=\"muted-line\">{text}</p>")
+}
+
 /// Renders the page: the version, the "Start at login" switch, and the
 /// "Connection" segmented control. Each is plain state text plus the link
 /// that changes it (there is no JS to drive a live control). The page is refreshed on focus and on a health tick that sees a changed marker.
@@ -116,11 +128,14 @@ fn render_settings_html(
         ConnectionModeState::Mcp => ("Off", "false", "On", "true"),
         ConnectionModeState::Unknown(_) => ("Off", "false", "Off", "false"),
     };
-    let note = match mode {
-        ConnectionModeState::Unknown(_) => {
-            "<p class=\"muted-line conn-note\">Can't read the setting. See the log.</p>"
-        }
-        _ => "",
+    // Only the selected option is described. Unknown shows the note alone.
+    let (note, desc) = match mode {
+        ConnectionModeState::File => ("".to_owned(), muted_line(DESC_FILE)),
+        ConnectionModeState::Mcp => ("".to_owned(), muted_line(DESC_MCP)),
+        ConnectionModeState::Unknown(_) => (
+            format!("<p class=\"muted-line conn-note\">{UNKNOWN_NOTE}</p>"),
+            String::new(),
+        ),
     };
     SETTINGS_HTML_TEMPLATE
         .replace("__VERSION__", version)
@@ -128,7 +143,8 @@ fn render_settings_html(
         .replace("__CONNECTION_FILE_CHECKED__", file_checked)
         .replace("__CONNECTION_MCP_STATE__", mcp_state)
         .replace("__CONNECTION_MCP_CHECKED__", mcp_checked)
-        .replace("__CONNECTION_NOTE__", note)
+        .replace("__CONNECTION_NOTE__", &note)
+        .replace("__CONNECTION_DESC__", &desc)
         .replace("__START_AT_LOGIN_STATE__", state_text)
         .replace("__START_AT_LOGIN_TOGGLE_ACTION__", toggle_action)
         .replace("__START_AT_LOGIN_CHECKED__", checked)
@@ -163,7 +179,7 @@ pub(crate) async fn apply_connection_mode(
     }
 }
 
-/// Builds the Settings window: a 420x368, non-resizable, titled "turbofig
+/// Builds the Settings window: a 420x316, non-resizable, titled "turbofig
 /// settings" window hosting a webview over the rendered page. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
@@ -173,7 +189,7 @@ pub fn create_settings_window<T: 'static>(
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig settings")
-        .with_inner_size(LogicalSize::new(420.0, 368.0))
+        .with_inner_size(LogicalSize::new(420.0, 316.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;
@@ -306,6 +322,18 @@ mod tests {
     }
 
     #[test]
+    fn only_the_selected_option_is_described() {
+        let file = render_settings_html("1", false, &ConnectionModeState::File);
+        let mcp = render_settings_html("1", false, &ConnectionModeState::Mcp);
+        assert!(file.contains(DESC_FILE) && !file.contains(DESC_MCP));
+        assert!(mcp.contains(DESC_MCP) && !mcp.contains(DESC_FILE));
+        for html in [&file, &mcp] {
+            assert!(html.contains("The Figma plugin uses the same setting."));
+            assert!(!html.contains("__"));
+        }
+    }
+
+    #[test]
     fn the_settings_page_shows_the_crate_version() {
         let html =
             render_settings_html(env!("CARGO_PKG_VERSION"), false, &ConnectionModeState::File);
@@ -326,6 +354,7 @@ mod tests {
         let html = render_settings_html("1.2.3", false, &unknown);
         assert!(!html.contains("__"));
         assert!(html.contains("Can't read the setting. See the log."));
+        assert!(!html.contains(DESC_FILE) && !html.contains(DESC_MCP));
         assert!(!html.contains(
             "aria-checked=\"true\" data-state=\"On\" href=\"turbofig-action://connection"
         ));

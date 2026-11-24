@@ -103,6 +103,21 @@ describe("about.html", () => {
     // The plugin's own button carries the same 2 classes.
     expect(PLUGIN_TEMPLATE).toContain('class="icon-btn brand-btn"');
   });
+
+  it("step 3 is 2 paragraphs: the button sentence ends after the button, then the explanation", () => {
+    const step = Array.from(document.querySelectorAll(".step")).find((e) =>
+      (e.textContent ?? "").includes("3. Connect your agent"),
+    ) as unknown as HTMLElement;
+    const paras = Array.from(step.querySelectorAll("p.step-hint")) as unknown as HTMLElement[];
+    expect(paras.length).toBe(2);
+    expect(paras[0].textContent?.replace(/\s+/g, " ").trim()).toBe(
+      "In the turbofig Figma plugin, press this button .",
+    );
+    expect(paras[0].querySelector(".inline-btn")).not.toBeNull();
+    expect(paras[1].querySelector(".inline-btn")).toBeNull();
+    expect(paras[1].textContent).toContain("It copies a short prompt that gives your AI everything it needs.");
+    expect(paras[1].textContent).toContain("Paste it into Claude Code, Cursor, Copilot CLI or any coding agent");
+  });
 });
 
 describe("settings.html", () => {
@@ -114,7 +129,8 @@ describe("settings.html", () => {
     .replace("__CONNECTION_FILE_CHECKED__", "true")
     .replace("__CONNECTION_MCP_STATE__", "Off")
     .replace("__CONNECTION_MCP_CHECKED__", "false")
-    .replace("__CONNECTION_NOTE__", "");
+    .replace("__CONNECTION_NOTE__", "")
+    .replace("__CONNECTION_DESC__", '<p class="muted-line">Your agent runs turbofig in its shell. Works everywhere, no setup.</p>');
   const { document } = loadPage(rendered);
 
   it("has no script tag and no inline on* handler", () => {
@@ -159,10 +175,10 @@ describe("settings.html", () => {
     expect(group.querySelectorAll("a").length).toBe(2);
   });
 
-  it("describes both modes in the muted line", () => {
+  it("describes only the selected option, then the shared-setting line", () => {
     const text = document.body.textContent ?? "";
-    expect(text).toContain("File bridge: your agent runs turbofig in its shell.");
-    expect(text).toContain("MCP: turbofig serves MCP over HTTP");
+    expect(text).toContain("Your agent runs turbofig in its shell. Works everywhere, no setup.");
+    expect(text).not.toContain("turbofig serves MCP over HTTP");
     expect(text).not.toContain("Claude Desktop");
     expect(text).toContain("The Figma plugin uses the same setting.");
   });
@@ -184,7 +200,8 @@ describe("settings.html", () => {
         .replace("__CONNECTION_FILE_STATE__", "Off")
         .replace("__CONNECTION_FILE_CHECKED__", "false")
         .replace("__CONNECTION_MCP_STATE__", "Off")
-        .replace("__CONNECTION_MCP_CHECKED__", "false"),
+        .replace("__CONNECTION_MCP_CHECKED__", "false")
+        .replace("__CONNECTION_DESC__", ""),
     ).document;
     expect(unknown.querySelector(".conn-note")?.textContent).toBe("Can't read the setting. See the log.");
     expect(unknown.querySelectorAll("[role='radio'][aria-checked='true']").length).toBe(0);
@@ -204,7 +221,8 @@ describe("both pages", () => {
       .replace("__CONNECTION_FILE_CHECKED__", "true")
       .replace("__CONNECTION_MCP_STATE__", "Off")
       .replace("__CONNECTION_MCP_CHECKED__", "false")
-      .replace("__CONNECTION_NOTE__", "");
+      .replace("__CONNECTION_NOTE__", "")
+      .replace("__CONNECTION_DESC__", '<p class="muted-line">Your agent runs turbofig in its shell. Works everywhere, no setup.</p>');
     expect(settingsRendered).not.toContain("__CONNECTION");
     expect(settingsRendered).not.toContain("__START_AT_LOGIN");
     expect(settingsRendered).not.toContain("__VERSION__");
