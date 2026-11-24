@@ -165,6 +165,17 @@ async fn js_size_cap_shot_usage_and_a_bridge_path_with_a_space() {
     wait_for_health(&client, mcp_port).await;
     assert!(inbox_outbox_entries(&home).is_empty());
 
+    // The lock file always holds one complete JSON body (never empty).
+    let info: Value = serde_json::from_str(
+        std::fs::read_to_string(home.join("daemon.lock"))
+            .unwrap()
+            .trim(),
+    )
+    .expect("lock info is valid JSON");
+    assert_eq!(info["locked"], Value::Bool(true));
+    assert!(info["pid"].as_u64().unwrap() > 0);
+    assert!(info["requestTimeoutMs"].as_u64().unwrap() > 0);
+
     // Near the cap: the daemon gets the job and answers (no plugin: error result).
     let cap = 30 * 1024 * 1024;
     let near = format!("//{}", "a".repeat(cap - 1024));
@@ -478,20 +489,20 @@ async fn a_relative_dir_is_made_absolute_and_the_default_folder_is_not_exported(
     stop_daemon(&client, mcp2, &default).await;
 }
 
-#[tokio::test]
-async fn js_works_against_an_older_daemon_that_holds_no_lock() {
-    let _serial = common::serial_process_test().await;
-    let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
-    // A stand-in for an older daemon: it listens on the port, serves the
-    // inbox, and never takes a lock.
-    let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
-    let inbox = home.path().join("inbox");
-    let outbox = home.path().join("outbox");
+/// A stand-in daemon: serves the inbox of `home` with a fixed reply and
+/// takes no lock. Returns the stop flag and the thread.
+fn fake_inbox_server(
+    home: &Path,
+) -> (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::thread::JoinHandle<()>,
+) {
+    let inbox = home.join("inbox");
+    let outbox = home.join("outbox");
     std::fs::create_dir_all(&inbox).unwrap();
     std::fs::create_dir_all(&outbox).unwrap();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let fake = {
+    let handle = {
         let stop = stop.clone();
         std::thread::spawn(move || {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -510,6 +521,18 @@ async fn js_works_against_an_older_daemon_that_holds_no_lock() {
             }
         })
     };
+    (stop, handle)
+}
+
+#[tokio::test]
+async fn js_works_against_an_older_daemon_that_holds_no_lock() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    // A stand-in for an older daemon: it listens on the port, serves the
+    // inbox, and never takes a lock or creates daemon.lock.
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
+    let (stop, fake) = fake_inbox_server(home.path());
     let (status, stdout, stderr) =
         run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}").await;
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -520,6 +543,103 @@ async fn js_works_against_an_older_daemon_that_holds_no_lock() {
         !home.path().join("daemon.lock").exists(),
         "js must not start a daemon next to an older one"
     );
+}
+
+#[tokio::test]
+async fn js_works_against_a_daemon_on_a_filesystem_without_locks() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    // No listener on the port: only the lock file says a daemon is there.
+    // Pid = this test process, which is alive.
+    std::fs::write(
+        home.path().join("daemon.lock"),
+        format!(
+            "{{\"pid\":{},\"requestTimeoutMs\":30000,\"locked\":false}}\n",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    let (stop, fake) = fake_inbox_server(home.path());
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}").await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    fake.join().unwrap();
+    assert!(status.success(), "{stdout} {stderr}");
+    assert_eq!(stdout.trim(), "{\"ok\":true,\"old\":1}");
+}
+
+#[tokio::test]
+async fn a_lock_file_rules_out_legacy_mode_even_with_a_listener_on_the_port() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    // An unrelated process on the port, a stale inbox, and a stale lock file
+    // of a dead daemon (locked:true, nobody holds it): js must not write into
+    // this folder as if a daemon served it. It reports a bridge error.
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
+    let (stop, fake) = fake_inbox_server(home.path());
+    std::fs::write(
+        home.path().join("daemon.lock"),
+        "{\"pid\":2147483646,\"locked\":true}\n",
+    )
+    .unwrap();
+    let (status, stdout, _) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}").await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    fake.join().unwrap();
+    assert_eq!(status.code(), Some(1), "{stdout}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line");
+    assert_eq!(v["code"], json!("bridge_error"));
+    assert!(!stdout.contains("\"old\""), "{stdout}");
+}
+
+#[tokio::test]
+async fn no_home_and_no_bridge_env_is_a_bridge_error_line_with_exit_1() {
+    let _serial = common::serial_process_test().await;
+    let mut child = Command::new(BIN)
+        .arg("js")
+        .env_remove("HOME")
+        .env_remove("TURBOFIG_BRIDGE_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut si = child.stdin.take().unwrap();
+    si.write_all(b"{\"op\":\"status\"}").await.unwrap();
+    drop(si);
+    let out = child.wait_with_output().await.unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line on stdout");
+    assert_eq!(v["code"], json!("bridge_error"));
+    assert!(v["error"].as_str().unwrap().contains("HOME"), "{stdout}");
+}
+
+#[tokio::test]
+async fn the_daemon_refuses_a_group_writable_bridge_folder_at_startup() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let dir = home.path().join("shared");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let (p, w) = (free_port(), free_port());
+    let out = Command::new(BIN)
+        .arg("serve")
+        .env("HOME", home.path())
+        .env("TURBOFIG_MCP_PORT", p.to_string())
+        .env("TURBOFIG_WS_PORT", w.to_string())
+        .env("TURBOFIG_BRIDGE_DIR", &dir)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("other accounts can write"), "{err}");
+    assert!(!dir.join("inbox").exists(), "nothing is served or created");
 }
 
 #[tokio::test]

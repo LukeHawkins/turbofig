@@ -1105,16 +1105,20 @@ fn exit_for_startup_error(e: &std::io::Error) -> ! {
 /// launchd for a folder refusal, like the other startup checks) when another
 /// daemon holds it.
 fn take_bridge_lock(bridge_dir: &Path) {
+    fn request_timeout_ms() -> u64 {
+        turbofig::request_timeout_from_env()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    }
     let own_mode = std::env::var("TURBOFIG_BRIDGE_DIR").is_err();
     match turbofig::lock_bridge_dir(bridge_dir, own_mode, std::time::Duration::from_millis(300)) {
         Ok(turbofig::LockOutcome::Held) => {
-            turbofig::write_lock_info(
-                turbofig::request_timeout_from_env()
-                    .as_millis()
-                    .min(u128::from(u64::MAX)) as u64,
-            );
+            turbofig::write_lock_info(request_timeout_ms(), true);
         }
         Ok(turbofig::LockOutcome::Unsupported) => {
+            // `turbofig js` accepts this folder only with `"locked":false`
+            // and a live pid in the lock file.
+            turbofig::write_lock_info(request_timeout_ms(), false);
             eprintln!(
                 "turbofig daemon: the filesystem of {} has no file locks; running without the bridge folder lock",
                 bridge_dir.display()

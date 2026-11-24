@@ -225,6 +225,7 @@ pub(crate) fn prepare_bridge_dirs(dir: &Path, own_mode: bool) -> io::Result<(Pat
     let outbox = dir.join("outbox");
     check_ancestors(dir)?;
     ensure_private_dir(dir, own_mode)?;
+    check_not_shared_writable(dir)?;
     ensure_private_dir(&inbox, true)?;
     let outbox_is_new = check_existing(&outbox)?.is_none();
     ensure_private_dir(&outbox, true)?;
@@ -300,6 +301,9 @@ pub fn lock_bridge_dir(
     }
     check_ancestors(dir)?;
     ensure_private_dir(dir, own_mode)?;
+    // `turbofig js` refuses such a folder, so the daemon must too: it would
+    // serve a folder no agent can use, and another account could queue jobs.
+    check_not_shared_writable(dir)?;
     let path = dir.join(DAEMON_LOCK);
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -339,7 +343,12 @@ pub fn lock_bridge_dir(
         let err = io::Error::last_os_error();
         match err.raw_os_error() {
             Some(libc::EAGAIN) | Some(libc::EACCES) => {}
-            Some(e) if lock_errno_means_unsupported(e) => return Ok(LockOutcome::Unsupported),
+            Some(e) if lock_errno_means_unsupported(e) => {
+                // Keep the fd (no lock is held) so `write_lock_info` can
+                // record `"locked":false` for `turbofig js`.
+                let _ = HELD_LOCK.set(file);
+                return Ok(LockOutcome::Unsupported);
+            }
             _ => return Err(err),
         }
         if std::time::Instant::now() >= until {
@@ -349,36 +358,133 @@ pub fn lock_bridge_dir(
     }
 }
 
-/// Writes `{"pid":..,"requestTimeoutMs":..}` into the held lock file, in
-/// place, through the held fd (no second fd is ever opened: that would drop
-/// the lock). `turbofig js` reads it to size its wait. Best effort.
+/// Writes `{"pid":..,"requestTimeoutMs":..,"locked":..}` into the lock file,
+/// in place, through the held fd (no second fd is ever opened: that would
+/// drop the lock). `locked` is false when the filesystem has no locks
+/// (`LockOutcome::Unsupported`). The new body goes in first and the file is
+/// then cut to its length, so a reader never sees an empty file. `turbofig js`
+/// reads it to size its wait. Best effort.
 #[cfg(unix)]
-pub fn write_lock_info(request_timeout_ms: u64) {
+pub fn write_lock_info(request_timeout_ms: u64, locked: bool) {
     use std::os::unix::fs::FileExt;
     let Some(file) = HELD_LOCK.get() else {
         return;
     };
     let body = format!(
-        "{{\"pid\":{},\"requestTimeoutMs\":{request_timeout_ms}}}\n",
+        "{{\"pid\":{},\"requestTimeoutMs\":{request_timeout_ms},\"locked\":{locked}}}\n",
         std::process::id()
     );
-    if file.set_len(0).is_ok() {
-        let _ = file.write_all_at(body.as_bytes(), 0);
+    if file.write_all_at(body.as_bytes(), 0).is_ok() {
+        let _ = file.set_len(body.len() as u64);
+    }
+}
+
+/// What the daemon recorded in its lock file.
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LockInfo {
+    pub pid: Option<u32>,
+    pub request_timeout: Option<std::time::Duration>,
+    /// False when the daemon runs without a lock (a filesystem with no
+    /// locks). A file without the field counts as locked.
+    pub locked: bool,
+}
+
+#[cfg(unix)]
+enum LockRead {
+    /// No usable file (missing, a symlink, or owned by another user).
+    Missing,
+    /// The file is there but empty or not JSON yet.
+    Unreadable,
+    Info(LockInfo),
+}
+
+#[cfg(unix)]
+fn read_lock_info_once(dir: &Path) -> LockRead {
+    use std::io::Read;
+    let Some(mut file) = open_lock_readonly(dir) else {
+        return LockRead::Missing;
+    };
+    let mut buf = String::new();
+    if (&mut file).take(4096).read_to_string(&mut buf).is_err() {
+        return LockRead::Unreadable;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(buf.trim()) else {
+        return LockRead::Unreadable;
+    };
+    LockRead::Info(LockInfo {
+        pid: v
+            .get("pid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|p| u32::try_from(p).ok()),
+        request_timeout: v
+            .get("requestTimeoutMs")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|ms| *ms > 0)
+            .map(std::time::Duration::from_millis),
+        locked: v
+            .get("locked")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+    })
+}
+
+/// How long a reader retries an empty or half-written lock file.
+#[cfg(unix)]
+const LOCK_INFO_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The lock file content, if readable. Opens it read-only with `O_NOFOLLOW`
+/// and requires a regular file owned by this user. An empty or unparseable
+/// file is retried for up to 100 ms (the daemon may be writing it).
+#[cfg(unix)]
+pub(crate) fn read_lock_info(dir: &Path) -> Option<LockInfo> {
+    let until = std::time::Instant::now() + LOCK_INFO_RETRY;
+    loop {
+        match read_lock_info_once(dir) {
+            LockRead::Info(info) => return Some(info),
+            LockRead::Missing => return None,
+            LockRead::Unreadable => {}
+        }
+        if std::time::Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
 /// The request timeout the daemon recorded in its lock file, if readable.
-/// Opens the file read-only with `O_NOFOLLOW`, and requires a regular file
-/// owned by this user.
 #[cfg(unix)]
 pub(crate) fn read_lock_request_timeout(dir: &Path) -> Option<std::time::Duration> {
-    use std::io::Read;
-    let mut file = open_lock_readonly(dir)?;
-    let mut buf = String::new();
-    (&mut file).take(4096).read_to_string(&mut buf).ok()?;
-    let v: serde_json::Value = serde_json::from_str(buf.trim()).ok()?;
-    let ms = v.get("requestTimeoutMs")?.as_u64()?;
-    (ms > 0).then(|| std::time::Duration::from_millis(ms))
+    read_lock_info(dir)?.request_timeout
+}
+
+/// True when `<dir>/daemon.lock` does not exist at all (not even as a
+/// symlink). A daemon from before the lock existed never creates it.
+#[cfg(unix)]
+pub(crate) fn lock_file_absent(dir: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(dir.join(DAEMON_LOCK)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound
+    )
+}
+
+/// The pid of a daemon that runs without a lock (its lock file says
+/// `"locked":false`) and is still alive (`kill(pid, 0)`). `None` otherwise.
+#[cfg(unix)]
+pub(crate) fn unlocked_daemon_pid(dir: &Path) -> Option<u32> {
+    let info = read_lock_info(dir)?;
+    let pid = info.pid?;
+    (!info.locked && pid_alive(pid)).then_some(pid)
+}
+
+/// True when a process with this pid exists (`kill(pid, 0)` succeeds).
+#[cfg(unix)]
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 only checks that the process exists.
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
 /// Opens `<dir>/daemon.lock` read-only (never creating it) and checks the
@@ -737,5 +843,93 @@ mod tests {
         std::fs::write(&real, "{\"requestTimeoutMs\":1000}").unwrap();
         std::os::unix::fs::symlink(&real, &f).unwrap();
         assert_eq!(read_lock_request_timeout(tmp.path()), None);
+    }
+
+    #[test]
+    fn lock_info_is_written_without_ever_being_empty_and_shrinks_cleanly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join(DAEMON_LOCK);
+        // A longer old body, then a rewrite: no stale tail, valid JSON.
+        std::fs::write(&f, "x".repeat(500)).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&f).unwrap();
+        use std::os::unix::fs::FileExt;
+        let body = "{\"pid\":1,\"requestTimeoutMs\":5,\"locked\":false}\n";
+        file.write_all_at(body.as_bytes(), 0).unwrap();
+        // Before the cut the file is never shorter than the new body.
+        assert!(std::fs::metadata(&f).unwrap().len() >= body.len() as u64);
+        file.set_len(body.len() as u64).unwrap();
+        let info = read_lock_info(tmp.path()).unwrap();
+        assert_eq!(info.pid, Some(1));
+        assert!(!info.locked);
+    }
+
+    #[test]
+    fn an_empty_lock_file_is_retried_until_content_arrives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join(DAEMON_LOCK);
+        std::fs::write(&f, "").unwrap();
+        let writer = std::thread::spawn({
+            let f = f.clone();
+            move || {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                std::fs::write(&f, "{\"pid\":7,\"requestTimeoutMs\":9000}\n").unwrap();
+            }
+        });
+        let info = read_lock_info(tmp.path()).expect("the retry must see the content");
+        writer.join().unwrap();
+        assert_eq!(
+            info.request_timeout,
+            Some(std::time::Duration::from_secs(9))
+        );
+        assert!(info.locked, "a missing locked field counts as locked");
+    }
+
+    #[test]
+    fn an_unreadable_lock_file_gives_up_after_the_retry_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(DAEMON_LOCK), "").unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(read_lock_info(tmp.path()), None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        // A missing file is not retried.
+        let empty = tempfile::tempdir().unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(read_lock_info(empty.path()), None);
+        assert!(t.elapsed() < std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn lock_file_absent_and_unlocked_daemon_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(lock_file_absent(tmp.path()));
+        let f = tmp.path().join(DAEMON_LOCK);
+        let me = std::process::id();
+        std::fs::write(&f, format!("{{\"pid\":{me},\"locked\":false}}")).unwrap();
+        assert!(!lock_file_absent(tmp.path()));
+        assert_eq!(unlocked_daemon_pid(tmp.path()), Some(me));
+        // locked:true is not an unlocked daemon.
+        std::fs::write(&f, format!("{{\"pid\":{me},\"locked\":true}}")).unwrap();
+        assert_eq!(unlocked_daemon_pid(tmp.path()), None);
+        // A dead pid is not alive.
+        std::fs::write(&f, "{\"pid\":2147483646,\"locked\":false}").unwrap();
+        assert_eq!(unlocked_daemon_pid(tmp.path()), None);
+    }
+
+    #[test]
+    fn the_daemon_refuses_a_group_writable_bridge_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().join("b");
+        std::fs::create_dir(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o775)).unwrap();
+        // Custom folder (own_mode false): the mode is kept, so it is refused.
+        let e = prepare_bridge_dirs(&d, false).unwrap_err();
+        assert!(is_refusal(&e), "{e}");
+        assert!(e.to_string().contains("other accounts can write"), "{e}");
+        let e = lock_bridge_dir(&d, false, std::time::Duration::ZERO).unwrap_err();
+        assert!(is_refusal(&e), "{e}");
+        assert!(!d.join(DAEMON_LOCK).exists() || !bridge_lock_held(&d));
+        // The default home is tightened to 0700 first, so it passes.
+        assert!(prepare_bridge_dirs(&d, true).is_ok());
     }
 }
