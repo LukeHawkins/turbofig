@@ -139,19 +139,35 @@ enum Waited {
     Timeout,
     /// `alive` said "no daemon" on 2 checks in a row.
     DaemonStopped,
+    /// Legacy mode: nobody claimed the job within the grace time. The job
+    /// file was removed again.
+    Unserved,
 }
+
+/// Legacy mode only: a job nobody claims within this time means no daemon
+/// serves the folder (a stale folder left by an old daemon).
+const LEGACY_CLAIM_GRACE: Duration = Duration::from_secs(3);
+
+/// How often an unlocked daemon's port is probed while polling.
+const PORT_CHECK_EVERY: Duration = Duration::from_secs(2);
 
 /// How often the daemon lock is re-checked while polling.
 const LIVENESS_EVERY: Duration = Duration::from_millis(500);
 
 /// Polls for the result until `wait` passes. Every 500 ms it calls `alive`
-/// (a network-free check); 2 failed checks in a row end the wait early. The
+/// (a cheap check); 2 failed checks in a row end the wait early. The
 /// result is always tried first, so a result that landed before the daemon
 /// went away is never lost.
-fn wait_for_result(
+///
+/// `claim` is `(job_file, grace)`. When
+/// the job file is still in the inbox after `grace`, it is removed and the
+/// wait ends with `Unserved`. If the removal fails, a daemon claimed the job
+/// and the wait goes on without the check.
+fn wait_for_result_with(
     path: &Path,
     wait: Duration,
     alive: &mut dyn FnMut() -> bool,
+    mut claim: Option<(&Path, Duration)>,
 ) -> std::io::Result<Waited> {
     let start = Instant::now();
     let mut last_check = start;
@@ -163,6 +179,14 @@ fn wait_for_result(
         let elapsed = start.elapsed();
         if elapsed >= wait {
             return Ok(Waited::Timeout);
+        }
+        if let Some((job, grace)) = claim {
+            if elapsed >= grace {
+                claim = None;
+                if std::fs::remove_file(job).is_ok() {
+                    return Ok(Waited::Unserved);
+                }
+            }
         }
         if last_check.elapsed() >= LIVENESS_EVERY {
             last_check = Instant::now();
@@ -259,11 +283,24 @@ fn absolute(outbox_file: &Path) -> String {
 /// exit code. The result file is deleted after a successful read: the id is
 /// unique, so nobody reads it again, and the daemon's 24 h prune is only a
 /// backstop for results nobody read.
+#[cfg(test)]
 fn run_job(
     dir: &Path,
     job: &Value,
     wait: Duration,
     alive: &mut dyn FnMut() -> bool,
+) -> (Vec<u8>, i32) {
+    run_job_with(dir, job, wait, alive, None)
+}
+
+/// `run_job` with an optional claim grace (Legacy mode): a job still in the
+/// inbox after that time is removed and reported as a `bridge_error`.
+fn run_job_with(
+    dir: &Path,
+    job: &Value,
+    wait: Duration,
+    alive: &mut dyn FnMut() -> bool,
+    claim_grace: Option<Duration>,
 ) -> (Vec<u8>, i32) {
     let line = |s: String| -> Vec<u8> {
         let mut b = s.into_bytes();
@@ -281,7 +318,9 @@ fn run_job(
         return fail(format!("could not write the job: {e}"));
     }
     let result_path = outbox.join(format!("{id}.json"));
-    let why = match wait_for_result(&result_path, wait, alive) {
+    let job_file = inbox.join(format!("{id}.json"));
+    let claim = claim_grace.map(|g| (job_file.as_path(), g));
+    let why = match wait_for_result_with(&result_path, wait, alive, claim) {
         Ok(Waited::Result(mut out)) => {
             let _ = std::fs::remove_file(&result_path);
             if out.last() != Some(&b'\n') {
@@ -291,6 +330,16 @@ fn run_job(
         }
         Ok(Waited::Timeout) => NoResult::Timeout,
         Ok(Waited::DaemonStopped) => NoResult::DaemonStopped,
+        Ok(Waited::Unserved) => {
+            let bin = std::env::current_exe()
+                .ok()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "turbofig".to_owned());
+            return fail(format!(
+                "no turbofig daemon serves {}; run {bin} status",
+                dir.display()
+            ));
+        }
         Err(e) => return fail(format!("could not read the result: {e}")),
     };
     // Take the job back out of the inbox, so a daemon that starts later never
@@ -353,7 +402,8 @@ fn shot_target(first_line: &[u8]) -> Option<Option<String>> {
 /// (line 2). The code already ran (line 1), so this code never means
 /// "resend". `reason` says why: `not_started`, `started_unknown`,
 /// `no_node_id`, `bridge_error`, or the plugin's own error code. `detail` is
-/// the original error text, when there is one.
+/// a short cause, when there is one. It never carries the inner "resend" or
+/// "check before resending" wording.
 fn shot_failed_line(reason: &str, detail: Option<&str>) -> String {
     let mut v = json!({
         "ok": false,
@@ -369,18 +419,34 @@ fn shot_failed_line(reason: &str, detail: Option<&str>) -> String {
 
 /// Turns what the screenshot job returned into line 2: an `ok:true` result as
 /// given, anything else (a failure of `run_job`, or an `ok:false` result from
-/// the plugin) as `shot_failed`.
+/// the plugin) as `shot_failed`. For a wrapped `not_started` or
+/// `started_unknown`, `detail` is the inner `reason` (`timeout` or
+/// `daemon_stopped`) and not the inner error text. `retryAfterMs` (busy) and
+/// `outbox` (started_unknown) are copied through.
 fn shot_second_line(raw: &[u8]) -> Vec<u8> {
     let text = String::from_utf8_lossy(raw);
     let parsed: Option<Value> = serde_json::from_str(text.trim()).ok();
     let line = match &parsed {
         Some(v) if v.get("ok") == Some(&Value::Bool(true)) => text.trim().to_owned(),
-        Some(v) => shot_failed_line(
-            v.get("code")
+        Some(v) => {
+            let code = v
+                .get("code")
                 .and_then(Value::as_str)
-                .unwrap_or("plugin_error"),
-            v.get("error").and_then(Value::as_str),
-        ),
+                .unwrap_or("plugin_error");
+            let detail = if matches!(code, "not_started" | "started_unknown") {
+                v.get("reason").and_then(Value::as_str)
+            } else {
+                v.get("error").and_then(Value::as_str)
+            };
+            let mut out: Value = serde_json::from_str(&shot_failed_line(code, detail))
+                .expect("shot_failed_line is valid JSON");
+            for key in ["retryAfterMs", "outbox"] {
+                if let Some(val) = v.get(key) {
+                    out[key] = val.clone();
+                }
+            }
+            out.to_string()
+        }
         None => shot_failed_line("bridge_error", Some(text.trim())),
     };
     let mut bytes = line.into_bytes();
@@ -392,6 +458,7 @@ fn shot_second_line(raw: &[u8]) -> Vec<u8> {
 /// first node id in an ok result. Returns the stdout bytes and the exit code.
 /// Exit 2: usage error (a job that is too large, or `--shot` with a job that
 /// is not `execute`); nothing is written to the inbox then.
+#[cfg(test)]
 fn execute(
     dir: &Path,
     text: &str,
@@ -399,6 +466,19 @@ fn execute(
     shot: bool,
     wait: Duration,
     alive: &mut dyn FnMut() -> bool,
+) -> (Vec<u8>, i32) {
+    execute_with(dir, text, file_key, shot, wait, alive, None)
+}
+
+/// `execute` with an optional claim grace for each job (Legacy mode).
+fn execute_with(
+    dir: &Path,
+    text: &str,
+    file_key: Option<&str>,
+    shot: bool,
+    wait: Duration,
+    alive: &mut dyn FnMut() -> bool,
+    claim_grace: Option<Duration>,
 ) -> (Vec<u8>, i32) {
     let job = build_job(text, file_key);
     if shot && job["op"] != json!("execute") {
@@ -413,7 +493,7 @@ fn execute(
         );
         return (Vec::new(), 2);
     }
-    let (mut out, code) = run_job(dir, &job, wait, alive);
+    let (mut out, code) = run_job_with(dir, &job, wait, alive, claim_grace);
     if !shot || code != 0 {
         return (out, code);
     }
@@ -435,7 +515,7 @@ fn execute(
             if let Some(key) = job.get("fileKey") {
                 shot_job["fileKey"] = key.clone();
             }
-            let (line, _) = run_job(dir, &shot_job, wait, alive);
+            let (line, _) = run_job_with(dir, &shot_job, wait, alive, claim_grace);
             shot_second_line(&line)
         }
     };
@@ -479,7 +559,13 @@ fn legacy_daemon_alive(dir: &Path) -> bool {
     if !crate::secure_fs::lock_file_absent(dir) || checked_dirs(dir).is_err() {
         return false;
     }
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], crate::config::port_from_env()));
+    tcp_up(crate::config::port_from_env())
+}
+
+/// True when something accepts one TCP connect on `127.0.0.1:<port>`. It
+/// sends no bytes.
+fn tcp_up(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
@@ -528,9 +614,16 @@ fn should_wait_for_relaunch(route_applies: bool, kick: impl FnOnce() -> bool) ->
 /// lock file. The bridge folders must pass the daemon's own checks; a
 /// refusal is an `Err`.
 fn served_mode(dir: &Path) -> Result<Option<Mode>, String> {
+    served_mode_on(dir, crate::config::port_from_env())
+}
+
+/// `served_mode` with an explicit daemon port. An unlocked daemon counts only
+/// when its pid is alive and the port accepts a connect: a reused pid (or a
+/// pid of another host on a network share) has no listener.
+fn served_mode_on(dir: &Path, port: u16) -> Result<Option<Mode>, String> {
     let mode = if crate::secure_fs::bridge_lock_held(dir) {
         Mode::Locked
-    } else if let Some(pid) = crate::secure_fs::unlocked_daemon_pid(dir) {
+    } else if let Some(pid) = crate::secure_fs::unlocked_daemon_pid(dir).filter(|_| tcp_up(port)) {
         Mode::Unlocked(pid)
     } else {
         return Ok(None);
@@ -625,6 +718,7 @@ enum DirError {
 /// folder as custom (no chmod, no outbox marker), so the variable is left
 /// unset then. Returns the folder and whether it is the default one.
 fn resolve_dir(dir_arg: Option<&str>) -> Result<(PathBuf, bool), DirError> {
+    let from_env = dir_arg.is_none();
     let raw: PathBuf = match dir_arg {
         Some(raw) => {
             let trimmed = raw.trim_end_matches('/');
@@ -637,8 +731,19 @@ fn resolve_dir(dir_arg: Option<&str>) -> Result<(PathBuf, bool), DirError> {
         // Not `bridge_dir_from_env`: that one exits the process with stderr only.
         None => crate::config::try_bridge_dir_from_env().map_err(DirError::Bridge)?,
     };
-    let abs = std::path::absolute(&raw)
-        .map_err(|e| DirError::Usage(format!("bad bridge folder: {e}")))?;
+    // A bad `TURBOFIG_BRIDGE_DIR` (for example an empty one) is a bridge
+    // error, not a usage error: the agent typed no bad flag.
+    let abs = if from_env && raw.as_os_str().is_empty() {
+        return Err(DirError::Bridge(
+            "TURBOFIG_BRIDGE_DIR is empty; unset it or set a folder path".to_owned(),
+        ));
+    } else if from_env {
+        std::path::absolute(&raw).map_err(|e| {
+            DirError::Bridge(format!("bad bridge folder in TURBOFIG_BRIDGE_DIR: {e}"))
+        })?
+    } else {
+        std::path::absolute(&raw).map_err(|e| DirError::Usage(format!("bad bridge folder: {e}")))?
+    };
     let default = std::env::var("HOME")
         .ok()
         .filter(|h| !h.is_empty())
@@ -766,12 +871,27 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
             .unwrap_or(FALLBACK_WAIT),
         Mode::Legacy => crate::config::request_timeout_from_env() + WAIT_MARGIN,
     };
+    // An unlocked daemon is watched by pid and by its port. The pid alone can
+    // be reused. The port connect is cached for `PORT_CHECK_EVERY`.
+    let port = crate::config::port_from_env();
+    let mut last_port: Option<(Instant, bool)> = None;
     let mut alive = || match mode {
         Mode::Legacy => true,
         Mode::Locked => crate::secure_fs::bridge_lock_held(&dir),
-        Mode::Unlocked(pid) => crate::secure_fs::pid_alive(pid),
+        Mode::Unlocked(pid) => {
+            crate::secure_fs::pid_alive(pid)
+                && match last_port {
+                    Some((at, up)) if at.elapsed() < PORT_CHECK_EVERY => up,
+                    _ => {
+                        let up = tcp_up(port);
+                        last_port = Some((Instant::now(), up));
+                        up
+                    }
+                }
+        }
     };
-    let (out, code) = execute(&dir, &text, file_key, shot, wait, &mut alive);
+    let claim_grace = (mode == Mode::Legacy).then_some(LEGACY_CLAIM_GRACE);
+    let (out, code) = execute_with(&dir, &text, file_key, shot, wait, &mut alive, claim_grace);
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&out);
     let _ = stdout.flush();
@@ -781,6 +901,9 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tests that touch process environment variables run one at a time.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn plain_js_becomes_an_execute_job() {
@@ -1184,13 +1307,144 @@ mod tests {
         let dir = bridge(tmp.path());
         let lock = dir.join("daemon.lock");
         let me = std::process::id();
-        assert_eq!(served_mode(&dir).unwrap(), None);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(served_mode_on(&dir, port).unwrap(), None);
         std::fs::write(&lock, format!("{{\"pid\":{me},\"locked\":false}}")).unwrap();
-        assert_eq!(served_mode(&dir).unwrap(), Some(Mode::Unlocked(me)));
+        assert_eq!(
+            served_mode_on(&dir, port).unwrap(),
+            Some(Mode::Unlocked(me))
+        );
         std::fs::write(&lock, "{\"pid\":2147483646,\"locked\":false}").unwrap();
-        assert_eq!(served_mode(&dir).unwrap(), None);
+        assert_eq!(served_mode_on(&dir, port).unwrap(), None);
         std::fs::write(&lock, format!("{{\"pid\":{me},\"locked\":true}}")).unwrap();
-        assert_eq!(served_mode(&dir).unwrap(), None);
+        assert_eq!(served_mode_on(&dir, port).unwrap(), None);
+    }
+
+    #[test]
+    fn an_unlocked_daemon_with_a_live_pid_but_no_listener_is_not_served() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = bridge(tmp.path());
+        let me = std::process::id();
+        std::fs::write(
+            dir.join("daemon.lock"),
+            format!("{{\"pid\":{me},\"locked\":false}}"),
+        )
+        .unwrap();
+        // A port with no listener: bind, read the port, drop.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        assert_eq!(served_mode_on(&dir, port).unwrap(), None);
+    }
+
+    #[test]
+    fn a_wrapped_not_started_puts_the_reason_in_detail_and_never_says_resend() {
+        for (inner, reason) in [
+            (
+                no_result_line(NoResult::Timeout, WAIT, true, Path::new("/o/x.json")),
+                "timeout",
+            ),
+            (
+                no_result_line(NoResult::DaemonStopped, WAIT, false, Path::new("/o/x.json")),
+                "daemon_stopped",
+            ),
+        ] {
+            let bytes = shot_second_line(inner.as_bytes());
+            let text = String::from_utf8(bytes).unwrap();
+            let v: Value = serde_json::from_str(text.trim()).unwrap();
+            assert_eq!(v["code"], json!("shot_failed"));
+            assert_eq!(v["detail"], json!(reason));
+            assert!(!text.contains("resend it"), "{text}");
+            assert!(!text.contains("check before resending"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_wrapped_busy_and_started_unknown_keep_retry_after_and_outbox() {
+        let v: Value = serde_json::from_slice(&shot_second_line(
+            b"{\"ok\":false,\"code\":\"busy\",\"error\":\"too many jobs\",\"retryAfterMs\":500}",
+        ))
+        .unwrap();
+        assert_eq!(v["reason"], json!("busy"));
+        assert_eq!(v["retryAfterMs"], json!(500));
+        assert_eq!(v["detail"], json!("too many jobs"));
+        let inner = no_result_line(NoResult::Timeout, WAIT, false, Path::new("/o/x.json"));
+        let v: Value = serde_json::from_slice(&shot_second_line(inner.as_bytes())).unwrap();
+        assert_eq!(v["reason"], json!("started_unknown"));
+        assert_eq!(v["outbox"], json!("/o/x.json"));
+    }
+
+    #[test]
+    fn an_unclaimed_job_in_legacy_mode_is_removed_and_is_a_bridge_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = bridge(tmp.path());
+        let t = Instant::now();
+        let (out, code) = run_job_with(
+            &dir,
+            &json!({"op": "status"}),
+            Duration::from_secs(30),
+            &mut || true,
+            Some(Duration::from_millis(200)),
+        );
+        assert_eq!(code, 1);
+        assert!(t.elapsed() < Duration::from_secs(3));
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["code"], json!("bridge_error"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("no turbofig daemon serves"));
+        assert_eq!(inbox_count(&dir), 0);
+    }
+
+    #[test]
+    fn a_claimed_job_in_legacy_mode_is_not_cut_short() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = bridge(tmp.path());
+        let inbox = dir.join("inbox");
+        let outbox = dir.join("outbox");
+        // Claims the job at once, answers after the grace time.
+        let fake = std::thread::spawn(move || loop {
+            if let Some(e) = std::fs::read_dir(&inbox)
+                .unwrap()
+                .flatten()
+                .find(|e| e.file_name().to_string_lossy().ends_with(".json"))
+            {
+                let id = e.file_name().to_string_lossy().replace(".json", "");
+                std::fs::remove_file(e.path()).unwrap();
+                std::thread::sleep(Duration::from_millis(500));
+                std::fs::write(outbox.join(format!("{id}.json")), "{\"ok\":true}").unwrap();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        });
+        let (out, code) = run_job_with(
+            &dir,
+            &json!({"op": "status"}),
+            WAIT,
+            &mut || true,
+            Some(Duration::from_millis(200)),
+        );
+        fake.join().unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(out, b"{\"ok\":true}\n");
+    }
+
+    #[test]
+    fn an_empty_bridge_dir_env_is_a_bridge_error_and_an_empty_dir_flag_is_usage() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("TURBOFIG_BRIDGE_DIR").ok();
+        std::env::set_var("TURBOFIG_BRIDGE_DIR", "");
+        let env_case = resolve_dir(None);
+        let flag_case = resolve_dir(Some(""));
+        match old {
+            Some(v) => std::env::set_var("TURBOFIG_BRIDGE_DIR", v),
+            None => std::env::remove_var("TURBOFIG_BRIDGE_DIR"),
+        }
+        assert!(matches!(env_case, Err(DirError::Bridge(_))));
+        assert!(matches!(flag_case, Err(DirError::Usage(_))));
     }
 
     #[test]

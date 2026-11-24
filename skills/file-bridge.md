@@ -14,12 +14,12 @@ return figma.root.name;
 EOF
 ```
 
-Add `--shot` to also screenshot the first node id the code returned (second line: the screenshot result JSON, with the PNG `path`). If only the screenshot fails, line 2 is `{"ok":false,"code":"shot_failed","reason":...}` and the exit code is 0. The code already ran: never resend it. Send a screenshot job if needed. `reason` is `not_started`, `started_unknown`, `no_node_id`, `bridge_error`, or the plugin's error code. Add `--file <fileKey>` when several files are open. Add `--dir <folder>` for a non-default bridge folder. For another op, pass a full job JSON with an `"op"` field the same way.
+Add `--shot` to also screenshot the first node id the code returned (second line: the screenshot result JSON, with the PNG `path`). If only the screenshot fails, line 2 is `{"ok":false,"code":"shot_failed","reason":...}` and the exit code is 0. The code already ran: never resend it. Send a screenshot job if needed. `reason` is `not_started`, `started_unknown`, `no_node_id`, `bridge_error`, or the plugin's error code. `detail` holds the cause (`timeout` or `daemon_stopped` for `not_started` and `started_unknown`). `retryAfterMs` (busy) and `outbox` (started_unknown) are copied through. Add `--file <fileKey>` when several files are open. Add `--dir <folder>` for a non-default bridge folder. For another op, pass a full job JSON with an `"op"` field the same way.
 
 Exit codes:
 
 - 0: a result printed (it may be `"ok":false`). With `--shot` the exit code reflects line 1 only: the code ran, even when the screenshot failed.
-- 1: no result. One JSON line on stdout. `not_started`: the job never ran, resend it. `started_unknown`: the daemon claimed the job and it may have run, so check the file before you resend. `bridge_error`: the bridge folder or a file is unusable; read `error`. The `reason` field (`timeout` or `daemon_stopped`) is for information.
+- 1: no result. One JSON line on stdout. `not_started`: the job never ran, resend it. `started_unknown`: the daemon claimed the job and it may have run, so check the file before you resend. `bridge_error`: the bridge folder or a file is unusable, `TURBOFIG_BRIDGE_DIR` is empty, or no turbofig daemon serves the folder (run `turbofig status`); read `error`. The `reason` field (`timeout` or `daemon_stopped`) is for information.
 - 2: usage error, message on stderr (also when no input arrives on stdin within 10 s).
 
 With file tools only: write `inbox/<id>.json` in one operation, then read `outbox/<id>.json` once. The daemon retries a half-written file for a short grace time, so one complete write is the contract.
