@@ -1147,21 +1147,33 @@ async fn test_turbofig_screenshot_inline_routes_through_plugin() {
     let tools_body = tools_res.text().await.expect("read tools/call body");
     let msg = parse_sse_data(&tools_body);
 
-    let text_str = msg["result"]["content"][0]["text"]
+    // Inline mode: block 0 is the MCP image (so clients without file access
+    // see the picture), block 1 is the JSON metadata without the base64.
+    let content = &msg["result"]["content"];
+    assert_eq!(
+        content[0]["type"], "image",
+        "block 0 is the image: {content}"
+    );
+    assert_eq!(content[0]["mimeType"], "image/png");
+    assert_eq!(
+        content[0]["data"],
+        serde_json::json!("aGVsbG8="),
+        "the image block must echo the plugin's PNG, got: {content}"
+    );
+    let text_str = content[1]["text"]
         .as_str()
-        .expect("content[0].text must be a string");
+        .expect("content[1].text must be a string");
     let payload: serde_json::Value =
-        serde_json::from_str(text_str).expect("content[0].text must be valid JSON");
+        serde_json::from_str(text_str).expect("content[1].text must be valid JSON");
 
     assert_eq!(
         payload["ok"],
         serde_json::json!(true),
         "ok must be true in inline mode, got: {payload}"
     );
-    assert_eq!(
-        payload["png"],
-        serde_json::json!("aGVsbG8="),
-        "png must echo the plugin reply, got: {payload}"
+    assert!(
+        payload.get("png").is_none(),
+        "the metadata block must not repeat the base64, got: {payload}"
     );
     // w and h are floats: a node's width and height can be fractional.
     assert_eq!(
