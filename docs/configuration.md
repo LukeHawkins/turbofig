@@ -21,7 +21,9 @@ group or other can write to a parent folder that has no sticky bit. Fix:
 outbox prune runs only when `outbox/.turbofig-outbox` exists. The daemon
 writes it in an outbox it creates, and in the default folder. A custom
 folder with an older outbox is never pruned. The default folder is set
-to mode 0700. A custom folder keeps its own mode. If `HOME` is unset and
+to mode 0700. A custom folder keeps its own mode, but the daemon refuses
+a bridge folder that group or other can write to (no sticky bit). Some SMB
+mounts report mode 0777 for every folder and are refused for that reason. If `HOME` is unset and
 `TURBOFIG_BRIDGE_DIR` is not set, the daemon refuses to start. Under
 autostart a refusal exits with code 0, so launchd does not restart it in a
 loop. Fix the problem, then run `turbofig autostart on`.

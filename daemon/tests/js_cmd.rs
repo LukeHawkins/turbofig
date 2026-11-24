@@ -550,8 +550,9 @@ async fn js_works_against_a_daemon_on_a_filesystem_without_locks() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let (mcp_port, ws_port) = (free_port(), free_port());
-    // No listener on the port: only the lock file says a daemon is there.
-    // Pid = this test process, which is alive.
+    // The lock file says a daemon is there (pid = this test process, which is
+    // alive) and the port accepts a connect: both are required.
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
     std::fs::write(
         home.path().join("daemon.lock"),
         format!(
@@ -691,4 +692,68 @@ async fn a_second_lock_call_in_one_process_fails_and_keeps_the_first_lock() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("already using"));
+}
+
+#[tokio::test]
+async fn a_stale_folder_with_nobody_claiming_jobs_is_a_bridge_error_after_about_3_s() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    // Legacy mode (no lock file, something on the port, folders present) but
+    // nobody serves the inbox.
+    let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
+    std::fs::create_dir_all(home.path().join("inbox")).unwrap();
+    std::fs::create_dir_all(home.path().join("outbox")).unwrap();
+    let t = Instant::now();
+    let (status, stdout, _) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}").await;
+    assert!(t.elapsed() < Duration::from_secs(15), "{:?}", t.elapsed());
+    assert_eq!(status.code(), Some(1), "{stdout}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line");
+    assert_eq!(v["code"], json!("bridge_error"));
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("no turbofig daemon serves"),
+        "{stdout}"
+    );
+    let left = std::fs::read_dir(home.path().join("inbox"))
+        .unwrap()
+        .count();
+    assert_eq!(left, 0, "the unclaimed job must be removed");
+}
+
+#[tokio::test]
+async fn an_empty_bridge_dir_env_is_a_bridge_error_with_exit_1() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (status, stdout, _) = run_js_env(
+        home.path(),
+        Path::new(""),
+        mcp_port,
+        ws_port,
+        &[],
+        "{\"op\":\"status\"}",
+    )
+    .await;
+    assert_eq!(status.code(), Some(1), "{stdout}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("one JSON line");
+    assert_eq!(v["code"], json!("bridge_error"));
+    assert!(
+        v["error"].as_str().unwrap().contains("TURBOFIG_BRIDGE_DIR"),
+        "{stdout}"
+    );
+    // A bad --dir flag stays a usage error.
+    let (status, stdout, _) = run_js_env(
+        home.path(),
+        home.path(),
+        mcp_port,
+        ws_port,
+        &["--dir", ""],
+        "{\"op\":\"status\"}",
+    )
+    .await;
+    assert_eq!(status.code(), Some(2), "{stdout}");
 }

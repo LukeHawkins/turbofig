@@ -1104,7 +1104,10 @@ fn exit_for_startup_error(e: &std::io::Error) -> ! {
 /// process, so no 2 daemons ever serve one inbox. Exits non-zero (0 under
 /// launchd for a folder refusal, like the other startup checks) when another
 /// daemon holds it.
-fn take_bridge_lock(bridge_dir: &Path) {
+/// Returns true when the filesystem has no file locks (`Unsupported`): the
+/// caller then writes the lock info only after both listeners are bound, so
+/// a daemon that loses the port race never leaves its pid behind.
+fn take_bridge_lock(bridge_dir: &Path) -> bool {
     fn request_timeout_ms() -> u64 {
         turbofig::request_timeout_from_env()
             .as_millis()
@@ -1114,15 +1117,17 @@ fn take_bridge_lock(bridge_dir: &Path) {
     match turbofig::lock_bridge_dir(bridge_dir, own_mode, std::time::Duration::from_millis(300)) {
         Ok(turbofig::LockOutcome::Held) => {
             turbofig::write_lock_info(request_timeout_ms(), true);
+            false
         }
         Ok(turbofig::LockOutcome::Unsupported) => {
             // `turbofig js` accepts this folder only with `"locked":false`
-            // and a live pid in the lock file.
-            turbofig::write_lock_info(request_timeout_ms(), false);
+            // and a live pid in the lock file. `run_daemon` writes them after
+            // both ports are bound (see `write_unlocked_lock_info`).
             eprintln!(
                 "turbofig daemon: the filesystem of {} has no file locks; running without the bridge folder lock",
                 bridge_dir.display()
             );
+            true
         }
         Ok(turbofig::LockOutcome::Busy) => {
             eprintln!(
@@ -1139,6 +1144,14 @@ fn take_bridge_lock(bridge_dir: &Path) {
             exit_for_startup_error(&e);
         }
     }
+}
+
+/// Records `"locked":false` and the pid, for the no-lock filesystem case.
+fn write_unlocked_lock_info() {
+    let ms = turbofig::request_timeout_from_env()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64;
+    turbofig::write_lock_info(ms, false);
 }
 
 async fn run_daemon() {
@@ -1158,7 +1171,7 @@ async fn run_daemon() {
     // port): a second `turbofig serve` while one is already healthy on this
     // port must exit at once with a clear message, not silently fail later.
     exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
-    take_bridge_lock(&bridge_dir);
+    let unlocked = take_bridge_lock(&bridge_dir);
     raise_nofile_limit();
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
@@ -1190,6 +1203,10 @@ async fn run_daemon() {
             std::process::exit(1);
         }
     };
+
+    if unlocked {
+        write_unlocked_lock_info();
+    }
 
     println!(
         "turbofig MCP listening on {}",
