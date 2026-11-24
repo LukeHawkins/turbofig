@@ -115,9 +115,62 @@
         color: var(--text-secondary);
       }
 
-      .state {
-        font-size: var(--fs-xs);
-        color: var(--text-secondary);
+      /* === SWITCH: macOS-style, the link itself. Look comes from the
+         data-state attribute ("On" is the only on value). ============== */
+      .switch-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-4);
+      }
+
+      .switch {
+        --track-off: #d1d1d6;
+        --track-on: #007aff;
+        position: relative;
+        flex-shrink: 0;
+        width: 38px;
+        height: 22px;
+        border-radius: 11px;
+        background: var(--track-off);
+        transition: background 0.15s;
+      }
+
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #ffffff;
+        box-shadow:
+          0 1px 2px rgba(0, 0, 0, 0.3),
+          0 0 0 0.5px rgba(0, 0, 0, 0.08);
+        transition: transform 0.15s;
+      }
+
+      .switch[data-state="On"] {
+        background: var(--track-on);
+      }
+
+      .switch[data-state="On"]::after {
+        transform: translateX(16px);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .switch {
+          --track-off: #48484a;
+          --track-on: #0a84ff;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .switch,
+        .switch::after {
+          transition: none;
+        }
       }
 
       /* === FOOTER: lukehawkins.eu and the version ======================== */
@@ -150,22 +203,20 @@
     </style>
   </head>
   <body>
-    <div class="step">
-      <p class="step-title">Start at login</p>
-      <div class="action-row">
-        <span class="state">__START_AT_LOGIN_STATE__</span>
-        <a class="text-link" href="turbofig-action://__START_AT_LOGIN_TOGGLE_ACTION__">__START_AT_LOGIN_TOGGLE_LABEL__</a>
+    <div class="switch-row">
+      <div class="step">
+        <p class="step-title">Start at login</p>
+        <p class="muted-line">Keeps turbofig running after you restart your Mac.</p>
       </div>
-      <p class="muted-line">Keeps turbofig running after you restart your Mac.</p>
+      <a class="switch" role="switch" aria-checked="__START_AT_LOGIN_CHECKED__" aria-label="Start at login" data-state="__START_AT_LOGIN_STATE__" href="turbofig-action://__START_AT_LOGIN_TOGGLE_ACTION__"></a>
     </div>
 
-    <div class="step">
-      <p class="step-title">MCP over HTTP</p>
-      <div class="action-row">
-        <span class="state">__MCP_HTTP_STATE__</span>
-        <a class="text-link" href="turbofig-action://__MCP_HTTP_TOGGLE_ACTION__">__MCP_HTTP_TOGGLE_LABEL__</a>
+    <div class="switch-row">
+      <div class="step">
+        <p class="step-title">MCP over HTTP</p>
+        <p class="muted-line">Only for MCP clients. The file bridge works either way.</p>
       </div>
-      <p class="muted-line">Only for MCP clients. The file bridge works either way.</p>
+      <a class="switch" role="switch" aria-checked="__MCP_HTTP_CHECKED__" aria-label="MCP over HTTP" data-state="__MCP_HTTP_STATE__" href="turbofig-action://__MCP_HTTP_TOGGLE_ACTION__"></a>
     </div>
 
     <div class="step">

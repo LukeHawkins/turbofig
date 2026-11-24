@@ -76,26 +76,26 @@ fn mcp_http_checked(home: &std::path::Path) -> McpHttpState {
 /// HTTP" rows, each as plain state text plus the one link that flips it
 /// (there is no JS to drive a live checkbox).
 fn render_settings_html(version: &str, start_at_login_on: bool, mcp: &McpHttpState) -> String {
-    let (state_text, toggle_action, toggle_label) = if start_at_login_on {
-        ("On", "start-at-login-off", "Turn off")
+    let (state_text, toggle_action, checked) = if start_at_login_on {
+        ("On", "start-at-login-off", "true")
     } else {
-        ("Off", "start-at-login-on", "Turn on")
+        ("Off", "start-at-login-on", "false")
     };
-    let (mcp_text, mcp_action, mcp_label) = match mcp {
-        McpHttpState::On => ("On", "mcp-http-off", "Turn off"),
-        McpHttpState::Off => ("Off", "mcp-http-on", "Turn on"),
-        // The marker is odd: /mcp is closed. "Turn on" tries to fix it and
-        // logs the reason when it cannot.
-        McpHttpState::Unknown(_) => ("unknown (see log)", "mcp-http-on", "Turn on"),
+    let (mcp_text, mcp_action, mcp_checked) = match mcp {
+        McpHttpState::On => ("On", "mcp-http-off", "true"),
+        McpHttpState::Off => ("Off", "mcp-http-on", "false"),
+        // The marker is odd: /mcp is closed. The switch shows off, and
+        // flipping it on tries to fix it and logs the reason when it cannot.
+        McpHttpState::Unknown(_) => ("unknown (see log)", "mcp-http-on", "false"),
     };
     SETTINGS_HTML_TEMPLATE
         .replace("__VERSION__", version)
         .replace("__MCP_HTTP_STATE__", mcp_text)
         .replace("__MCP_HTTP_TOGGLE_ACTION__", mcp_action)
-        .replace("__MCP_HTTP_TOGGLE_LABEL__", mcp_label)
+        .replace("__MCP_HTTP_CHECKED__", mcp_checked)
         .replace("__START_AT_LOGIN_STATE__", state_text)
         .replace("__START_AT_LOGIN_TOGGLE_ACTION__", toggle_action)
-        .replace("__START_AT_LOGIN_TOGGLE_LABEL__", toggle_label)
+        .replace("__START_AT_LOGIN_CHECKED__", checked)
 }
 
 /// Builds the Settings window: a 420x310, non-resizable, titled "turbofig
@@ -198,13 +198,15 @@ mod tests {
     #[test]
     fn the_mcp_http_row_renders_both_states_and_leaves_no_placeholder() {
         let on = render_settings_html("1.2.3", false, &McpHttpState::On);
-        assert!(on.contains("class=\"state\">On<"));
+        assert!(on.contains("data-state=\"On\""));
+        assert!(on.contains("aria-checked=\"true\""));
         assert!(on.contains("turbofig-action://mcp-http-off"));
         let off = render_settings_html("1.2.3", true, &McpHttpState::Off);
-        assert!(off.contains("class=\"state\">Off<"));
+        assert!(off.contains("data-state=\"Off\""));
+        assert!(off.contains("aria-checked=\"false\""));
         assert!(off.contains("turbofig-action://mcp-http-on"));
         let unknown = render_settings_html("1.2.3", true, &McpHttpState::Unknown("x".into()));
-        assert!(unknown.contains("class=\"state\">unknown (see log)<"));
+        assert!(unknown.contains("data-state=\"unknown (see log)\""));
         for html in [on, off, unknown] {
             assert!(!html.contains("__"));
         }

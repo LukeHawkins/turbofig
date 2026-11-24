@@ -109,10 +109,10 @@ describe("settings.html", () => {
   const rendered = SETTINGS_HTML_TEMPLATE.replace("__VERSION__", "1.2.3")
     .replace("__START_AT_LOGIN_STATE__", "On")
     .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
-    .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off")
+    .replace("__START_AT_LOGIN_CHECKED__", "true")
     .replace("__MCP_HTTP_STATE__", "On")
     .replace("__MCP_HTTP_TOGGLE_ACTION__", "mcp-http-off")
-    .replace("__MCP_HTTP_TOGGLE_LABEL__", "Turn off");
+    .replace("__MCP_HTTP_CHECKED__", "true");
   const { document } = loadPage(rendered);
 
   it("has no script tag and no inline on* handler", () => {
@@ -140,7 +140,12 @@ describe("settings.html", () => {
 
   it("renders the MCP over HTTP row with its toggle link", () => {
     expect(document.body.textContent).toContain("MCP over HTTP");
-    expect(document.querySelector("a[href='turbofig-action://mcp-http-off']")).not.toBeNull();
+    const sw = document.querySelector("a[href='turbofig-action://mcp-http-off']") as unknown as HTMLElement;
+    expect(sw).not.toBeNull();
+    expect(sw.getAttribute("role")).toBe("switch");
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    expect(sw.getAttribute("aria-label")).toBe("MCP over HTTP");
+    expect(sw.getAttribute("data-state")).toBe("On");
   });
 });
 
@@ -152,10 +157,10 @@ describe("both pages", () => {
     const settingsRendered = SETTINGS_HTML_TEMPLATE.replace("__VERSION__", "1.2.3")
       .replace("__START_AT_LOGIN_STATE__", "On")
       .replace("__START_AT_LOGIN_TOGGLE_ACTION__", "start-at-login-off")
-      .replace("__START_AT_LOGIN_TOGGLE_LABEL__", "Turn off")
+    .replace("__START_AT_LOGIN_CHECKED__", "true")
       .replace("__MCP_HTTP_STATE__", "On")
       .replace("__MCP_HTTP_TOGGLE_ACTION__", "mcp-http-off")
-      .replace("__MCP_HTTP_TOGGLE_LABEL__", "Turn off");
+    .replace("__MCP_HTTP_CHECKED__", "true");
     expect(settingsRendered).not.toContain("__MCP_HTTP");
     expect(settingsRendered).not.toContain("__START_AT_LOGIN");
     expect(settingsRendered).not.toContain("__VERSION__");
