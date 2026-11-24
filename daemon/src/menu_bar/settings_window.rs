@@ -12,7 +12,7 @@ use super::activate::activate_app_and_focus;
 use super::link_policy::{decide_navigation, new_window_target, open_external, NavDecision};
 use super::settings_state::{parse_action_link, SettingsAction};
 use super::{clipboard_for_app, opener_for_app};
-use crate::plugin_files::ConnectionMode;
+use crate::plugin_files::{ConnectionMode, ConnectionModeState};
 use std::path::PathBuf;
 use tao::dpi::LogicalSize;
 use tao::event_loop::EventLoopWindowTarget;
@@ -43,11 +43,11 @@ pub struct SettingsWindowContext {
 /// fires, the same lifecycle `AboutWindowHandle` follows.
 pub struct SettingsWindowHandle {
     window: Window,
-    // Never read directly: its only job is to stay alive as long as the
-    // window does (dropping it tears down the webview), since there is no
-    // more `evaluate_script` push to call on it.
-    #[allow(dead_code)]
     webview: WebView,
+    /// The Connection state the page on screen shows, so the health tick
+    /// re-renders only when the marker changed.
+    rendered_mode: std::cell::RefCell<ConnectionModeState>,
+    home: PathBuf,
 }
 
 impl SettingsWindowHandle {
@@ -62,6 +62,27 @@ impl SettingsWindowHandle {
     pub fn id(&self) -> WindowId {
         self.window.id()
     }
+
+    /// Re-renders the page in place from the real current state (the page
+    /// has no JavaScript, so this is the only way it updates). Never
+    /// recreates the window, so it cannot steal focus or reopen a closed
+    /// window.
+    pub fn refresh(&self) {
+        let mode = connection_state(&self.home);
+        let html = render_settings_html(env!("CARGO_PKG_VERSION"), start_at_login_checked(), &mode);
+        *self.rendered_mode.borrow_mut() = mode;
+        if let Err(e) = self.webview.load_html(&html) {
+            eprintln!("turbofig: could not refresh the Settings window: {e}");
+        }
+    }
+
+    /// Re-renders only when the marker differs from what the page shows:
+    /// called on every health tick, so a plugin's change shows up.
+    pub fn refresh_if_mode_changed(&self) {
+        if *self.rendered_mode.borrow() != connection_state(&self.home) {
+            self.refresh();
+        }
+    }
 }
 
 /// Reads "Start at login"'s current, real state (never a cached belief: see
@@ -71,23 +92,35 @@ fn start_at_login_checked() -> bool {
 }
 
 /// Reads Connection (default File bridge) from the marker in the turbofig
-/// home. An odd marker counts as File bridge, like the daemon's gate.
-fn connection_checked(home: &std::path::Path) -> ConnectionMode {
-    crate::plugin_files::connection_mode(home)
+/// home. An odd marker is `Unknown`: the page says so (the daemon treats it
+/// as File bridge).
+fn connection_state(home: &std::path::Path) -> ConnectionModeState {
+    crate::plugin_files::connection_mode_state(home)
 }
 
 /// Renders the page: the version, the "Start at login" switch, and the
 /// "Connection" segmented control. Each is plain state text plus the link
-/// that changes it (there is no JS to drive a live control).
-fn render_settings_html(version: &str, start_at_login_on: bool, mode: ConnectionMode) -> String {
+/// that changes it (there is no JS to drive a live control). The page is refreshed on focus and on a health tick that sees a changed marker.
+fn render_settings_html(
+    version: &str,
+    start_at_login_on: bool,
+    mode: &ConnectionModeState,
+) -> String {
     let (state_text, toggle_action, checked) = if start_at_login_on {
         ("On", "start-at-login-off", "true")
     } else {
         ("Off", "start-at-login-on", "false")
     };
     let (file_state, file_checked, mcp_state, mcp_checked) = match mode {
-        ConnectionMode::File => ("On", "true", "Off", "false"),
-        ConnectionMode::Mcp => ("Off", "false", "On", "true"),
+        ConnectionModeState::File => ("On", "true", "Off", "false"),
+        ConnectionModeState::Mcp => ("Off", "false", "On", "true"),
+        ConnectionModeState::Unknown(_) => ("Off", "false", "Off", "false"),
+    };
+    let note = match mode {
+        ConnectionModeState::Unknown(_) => {
+            "<p class=\"muted-line conn-note\">Can't read the setting. See the log.</p>"
+        }
+        _ => "",
     };
     SETTINGS_HTML_TEMPLATE
         .replace("__VERSION__", version)
@@ -95,6 +128,7 @@ fn render_settings_html(version: &str, start_at_login_on: bool, mode: Connection
         .replace("__CONNECTION_FILE_CHECKED__", file_checked)
         .replace("__CONNECTION_MCP_STATE__", mcp_state)
         .replace("__CONNECTION_MCP_CHECKED__", mcp_checked)
+        .replace("__CONNECTION_NOTE__", note)
         .replace("__START_AT_LOGIN_STATE__", state_text)
         .replace("__START_AT_LOGIN_TOGGLE_ACTION__", toggle_action)
         .replace("__START_AT_LOGIN_CHECKED__", checked)
@@ -102,26 +136,34 @@ fn render_settings_html(version: &str, start_at_login_on: bool, mode: Connection
 
 /// Sets Connection. First asks the running daemon over the verified
 /// `/control` path, so the daemon writes the marker and broadcasts to every
-/// plugin. When that fails (the daemon is not running, or it did not
-/// verify), the app writes the marker itself with the same safe write.
+/// plugin. The app writes the marker itself only when it is sure no daemon
+/// runs: there is no token file, or nothing accepted the connection. On any
+/// other failure (timeout, 401, a daemon that did not verify) it changes
+/// nothing and returns the error, so a busy daemon never serves `/mcp`
+/// while plugins still show File bridge.
 pub(crate) async fn apply_connection_mode(
     home: &std::path::Path,
     mcp_port: u16,
     mode: ConnectionMode,
 ) -> std::io::Result<()> {
-    if let Some(token) = crate::read_token_file(home).await {
-        match crate::daemon_client::send_connection_mode(mcp_port, &token, mode.as_str()).await {
-            Ok(status) if status.is_success() => return Ok(()),
-            Ok(status) => {
-                eprintln!("turbofig: the daemon refused Connection ({status}); writing it here")
-            }
-            Err(_) => {}
-        }
+    let Some(token) = crate::read_token_file(home).await else {
+        return crate::plugin_files::set_connection_mode(home, mode);
+    };
+    match crate::daemon_client::send_connection_mode(mcp_port, &token, mode.as_str()).await {
+        Ok(status) if status.is_success() => Ok(()),
+        Ok(status) => Err(std::io::Error::other(format!(
+            "the daemon refused Connection ({status}); nothing changed"
+        ))),
+        Err(crate::daemon_client::ClientError::Verify(
+            crate::daemon_client::VerifyError::Unreachable,
+        )) => crate::plugin_files::set_connection_mode(home, mode),
+        Err(e) => Err(std::io::Error::other(format!(
+            "could not reach a verified daemon ({e}); nothing changed"
+        ))),
     }
-    crate::plugin_files::set_connection_mode(home, mode)
 }
 
-/// Builds the Settings window: a 420x320, non-resizable, titled "turbofig
+/// Builds the Settings window: a 420x368, non-resizable, titled "turbofig
 /// settings" window hosting a webview over the rendered page. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
@@ -131,7 +173,7 @@ pub fn create_settings_window<T: 'static>(
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig settings")
-        .with_inner_size(LogicalSize::new(420.0, 320.0))
+        .with_inner_size(LogicalSize::new(420.0, 368.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;
@@ -142,7 +184,7 @@ pub fn create_settings_window<T: 'static>(
         .with_html(render_settings_html(
             env!("CARGO_PKG_VERSION"),
             start_at_login_checked(),
-            connection_checked(&ctx.home),
+            &connection_state(&ctx.home),
         ))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |url: String| navigation_is_allowed(&url, &navigation_ctx))
@@ -155,7 +197,12 @@ pub fn create_settings_window<T: 'static>(
         .build(&window)
         .map_err(|e| format!("could not create the webview: {e}"))?;
 
-    let handle = SettingsWindowHandle { window, webview };
+    let handle = SettingsWindowHandle {
+        window,
+        webview,
+        rendered_mode: std::cell::RefCell::new(connection_state(&ctx.home)),
+        home: ctx.home.clone(),
+    };
     handle.focus();
 
     Ok(handle)
@@ -237,8 +284,8 @@ mod tests {
 
     #[test]
     fn the_connection_row_renders_both_modes_and_leaves_no_placeholder() {
-        let file = render_settings_html("1.2.3", false, ConnectionMode::File);
-        let mcp = render_settings_html("1.2.3", true, ConnectionMode::Mcp);
+        let file = render_settings_html("1.2.3", false, &ConnectionModeState::File);
+        let mcp = render_settings_html("1.2.3", true, &ConnectionModeState::Mcp);
         for html in [&file, &mcp] {
             assert!(!html.contains("__"));
             assert!(html.contains("turbofig-action://connection-file"));
@@ -260,16 +307,56 @@ mod tests {
 
     #[test]
     fn the_settings_page_shows_the_crate_version() {
-        let html = render_settings_html(env!("CARGO_PKG_VERSION"), false, ConnectionMode::File);
+        let html =
+            render_settings_html(env!("CARGO_PKG_VERSION"), false, &ConnectionModeState::File);
         assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]
-    fn connection_checked_follows_the_marker() {
+    fn connection_state_follows_the_marker() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        assert_eq!(connection_checked(tmp.path()), ConnectionMode::File);
+        assert_eq!(connection_state(tmp.path()), ConnectionModeState::File);
         crate::plugin_files::set_connection_mode(tmp.path(), ConnectionMode::Mcp).expect("mcp");
-        assert_eq!(connection_checked(tmp.path()), ConnectionMode::Mcp);
+        assert_eq!(connection_state(tmp.path()), ConnectionModeState::Mcp);
+    }
+
+    #[test]
+    fn an_unknown_marker_renders_no_checked_segment_and_a_note() {
+        let unknown = ConnectionModeState::Unknown("why".to_owned());
+        let html = render_settings_html("1.2.3", false, &unknown);
+        assert!(!html.contains("__"));
+        assert!(html.contains("Can't read the setting. See the log."));
+        assert!(!html.contains(
+            "aria-checked=\"true\" data-state=\"On\" href=\"turbofig-action://connection"
+        ));
+        let ok = render_settings_html("1.2.3", false, &ConnectionModeState::File);
+        assert!(!ok.contains("Can't read the setting"));
+    }
+
+    /// A listener that accepts and closes at once: something is there, but
+    /// it is not a verified daemon.
+    fn silent_listener() -> (std::net::TcpListener, u16) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = l.local_addr().expect("addr").port();
+        (l, port)
+    }
+
+    #[tokio::test]
+    async fn apply_connection_mode_changes_nothing_when_a_listener_does_not_verify() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        crate::ensure_token(tmp.path()).expect("token");
+        let (listener, port) = silent_listener();
+        let accept = std::thread::spawn(move || {
+            for _ in 0..4 {
+                if let Ok((s, _)) = listener.accept() {
+                    drop(s);
+                }
+            }
+        });
+        let result = apply_connection_mode(tmp.path(), port, ConnectionMode::Mcp).await;
+        assert!(result.is_err(), "a non-verifying listener is an error");
+        assert_eq!(connection_state(tmp.path()), ConnectionModeState::File);
+        drop(accept);
     }
 
     #[tokio::test]
@@ -282,10 +369,16 @@ mod tests {
         apply_connection_mode(tmp.path(), port, ConnectionMode::Mcp)
             .await
             .expect("mcp");
-        assert_eq!(connection_checked(tmp.path()), ConnectionMode::Mcp);
+        assert_eq!(connection_state(tmp.path()), ConnectionModeState::Mcp);
         apply_connection_mode(tmp.path(), port, ConnectionMode::File)
             .await
             .expect("file");
-        assert_eq!(connection_checked(tmp.path()), ConnectionMode::File);
+        assert_eq!(connection_state(tmp.path()), ConnectionModeState::File);
+        // With a token file but nothing listening, it still writes locally.
+        crate::ensure_token(tmp.path()).expect("token");
+        apply_connection_mode(tmp.path(), port, ConnectionMode::Mcp)
+            .await
+            .expect("mcp with token");
+        assert_eq!(connection_state(tmp.path()), ConnectionModeState::Mcp);
     }
 }

@@ -69,12 +69,32 @@ export function daemonMessageAction(type: string): "welcome" | "mode" | "relay" 
 }
 
 /**
+ * Control types only the UI itself may send to the daemon, or only the daemon
+ * sends. Code run by an EXECUTE job can post any message from the main thread,
+ * so the relay drops these: only the Connection segment click handler sends
+ * SET_CONNECTION_MODE, and only the UI handshake sends AUTH.
+ */
+export function isUiOnlyControlType(type: unknown): boolean {
+  return (
+    type === "SET_CONNECTION_MODE" ||
+    type === "AUTH" ||
+    type === "CONNECTION_MODE" ||
+    type === "WELCOME" ||
+    type === "CHALLENGE"
+  );
+}
+
+/**
  * Decides how the UI handles a message from the main thread.
  * "port": consume it locally to set the port and reconnect (PORT).
  * "fileinfo": store and reflect the file identity (FILE_INFO).
+ * "drop": never relay it (a UI-only control type, see isUiOnlyControlType).
  * "relay": forward it over the socket (RESULT and others).
  */
-export function mainMessageAction(type: string): "port" | "showlog" | "fileinfo" | "relay" {
+export function mainMessageAction(
+  type: string,
+): "port" | "showlog" | "fileinfo" | "drop" | "relay" {
+  if (isUiOnlyControlType(type)) return "drop";
   if (type === "PORT") return "port";
   if (type === "SHOW_LOG") return "showlog";
   if (type === "FILE_INFO") return "fileinfo";
@@ -382,21 +402,27 @@ export function fillAgentPrompt(
     .join(String(mcpPort));
 }
 
-/** Advanced screen height with the activity log hidden (rows only). */
-export const ADV_HEIGHT = 318;
-/** Advanced screen height with the activity log shown. */
-export const ADV_HEIGHT_LOG = 432;
+/** Height of the "Connect to change the Connection setting." hint (text + gap). */
+export const ADV_HINT_HEIGHT = 20;
+/** Advanced screen height with the activity log hidden and the hint shown (rows only). */
+export const ADV_HEIGHT = 369;
+/** Advanced screen height with the activity log shown and the hint shown. */
+export const ADV_HEIGHT_LOG = 483;
 
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 150). advanced: full settings view (ADV_HEIGHT_LOG, or ADV_HEIGHT with the activity log hidden).
+ * main: compact status view (300 x 150). advanced: full settings view (ADV_HEIGHT_LOG, or ADV_HEIGHT with the activity log hidden), minus ADV_HINT_HEIGHT when the hint is hidden (daemon ready).
  * about: project info view (300 x 375).
  */
 export function screenSize(
   name: "main" | "advanced" | "about",
   showLog = true,
+  hintShown = true,
 ): { width: number; height: number } {
-  if (name === "advanced") return { width: 300, height: showLog ? ADV_HEIGHT_LOG : ADV_HEIGHT };
+  if (name === "advanced") {
+    const base = showLog ? ADV_HEIGHT_LOG : ADV_HEIGHT;
+    return { width: 300, height: hintShown ? base : base - ADV_HINT_HEIGHT };
+  }
   if (name === "about") return { width: 300, height: 375 };
   return { width: 300, height: 150 };
 }
@@ -417,6 +443,16 @@ export function modeAfterDaemonFrame(current: ConnectionMode, frame: unknown): C
   if (f.type === "WELCOME") return parseConnectionMode(f.connectionMode);
   if (f.type === "CONNECTION_MODE") return asConnectionMode(f.mode) ?? current;
   return current;
+}
+
+/**
+ * True when a WELCOME frame carries a valid connectionMode. Only then is the
+ * daemon ready to take a mode change (an older daemon sends none).
+ */
+export function welcomeHasValidMode(frame: unknown): boolean {
+  if (typeof frame !== "object" || frame === null) return false;
+  const f = frame as Record<string, unknown>;
+  return f.type === "WELCOME" && asConnectionMode(f.connectionMode) !== null;
 }
 
 /** Picks the connect prompt template that follows the Connection mode. */

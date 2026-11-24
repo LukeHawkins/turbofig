@@ -36,6 +36,7 @@ import {
   staleWarning,
   statusOverride,
   trackActiveJobs,
+  welcomeHasValidMode,
 } from "./ui-logic";
 
 /** Build-time constant injected by build-ui.ts via Bun.build define. */
@@ -163,9 +164,14 @@ for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-open-u
   });
 }
 
-/** True when a verified daemon socket is open, so a mode change can reach the daemon. */
+/** True once the current socket got a WELCOME with a valid connectionMode. Reset on every close. */
+let welcomedSocket = false;
+/** True after any WELCOME: the Connection mode is no longer a guess, so the prompt may be copied. */
+let modeKnown = false;
+
+/** True when a verified, welcomed daemon socket is open, so a mode change can reach the daemon. */
 function daemonReady(): boolean {
-  return Boolean(ws && verified && ws.readyState === 1 /* OPEN */);
+  return Boolean(ws && verified && welcomedSocket && ws.readyState === 1 /* OPEN */);
 }
 
 /** Highlights the active Connection segment and disables the control while the daemon is away. */
@@ -177,7 +183,14 @@ function showConnectionMode(): void {
     el.setAttribute("aria-checked", on ? "true" : "false");
     el.disabled = !ready;
   }
-  if (modeHintEl) modeHintEl.hidden = ready;
+  if (modeHintEl) {
+    const changed = modeHintEl.hidden !== ready;
+    modeHintEl.hidden = ready;
+    if (changed && currentScreen === "advanced") {
+      const { width, height } = screenSize("advanced", showLog, !ready);
+      parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
+    }
+  }
 }
 
 /** Shows or hides the activity log section and fits the advanced panel to it. */
@@ -185,7 +198,7 @@ function showLogSetting(): void {
   if (showLogEl) showLogEl.setAttribute("aria-checked", showLog ? "true" : "false");
   if (logSectionEl) logSectionEl.hidden = !showLog;
   if (currentScreen === "advanced") {
-    const { width, height } = screenSize("advanced", showLog);
+    const { width, height } = screenSize("advanced", showLog, !daemonReady());
     parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
   }
 }
@@ -285,7 +298,7 @@ function showScreen(name: "main" | "advanced" | "about"): void {
   const target = document.getElementById(`screen-${name}`);
   if (target) target.classList.add("active");
   currentScreen = name;
-  const { width, height } = screenSize(name, showLog);
+  const { width, height } = screenSize(name, showLog, !daemonReady());
   parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
 }
 
@@ -308,6 +321,8 @@ if (copyConnectBtn) {
   copyConnectBtn.addEventListener("click", () => {
     if (copyConnectBtn.classList.contains("copied")) return;
     if (!latestFileInfo?.fileKey) return;
+    /* Until a WELCOME says which mode applies, the prompt could be the wrong one. */
+    if (!modeKnown) return;
     const prompt = fillAgentPrompt(
       promptTemplateFor(connectionMode, __AGENT_PROMPT_TEMPLATE__, __AGENT_PROMPT_MCP_TEMPLATE__),
       [{ fileKey: latestFileInfo.fileKey, name: latestFileInfo.name }],
@@ -423,6 +438,7 @@ function connect(): void {
   liveness.newSocket();
   /* The socket carries no job until the daemon proves it knows the token. */
   verified = false;
+  welcomedSocket = false;
   let failed = false;
   let sawChallenge = false;
 
@@ -439,7 +455,10 @@ function connect(): void {
 
   /* Close bookkeeping shared by onclose and an immediate reconnect. It never schedules a retry. */
   const finishClose = (): void => {
-    if (ws === socket) verified = false;
+    if (ws === socket) {
+      verified = false;
+      welcomedSocket = false;
+    }
     showConnectionMode();
     /* No result can arrive on a closed socket: end the working state. */
     activeJobs = new Set();
@@ -507,6 +526,8 @@ function connect(): void {
       daemonBridgeDirCustom =
         typeof parsed.bridgeDirCustom === "string" ? parsed.bridgeDirCustom : "";
       connectionMode = modeAfterDaemonFrame(connectionMode, parsed);
+      modeKnown = true;
+      welcomedSocket = welcomeHasValidMode(parsed);
       showConnectionMode();
       const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
       if (staleWarningEl) {
@@ -580,6 +601,9 @@ window.onmessage = (event: MessageEvent) => {
   if (!msg || typeof msg !== "object") return;
   const m = msg as Record<string, unknown>;
   const action = mainMessageAction(m.type as string);
+  /* UI-only control types (SET_CONNECTION_MODE, AUTH, ...) never ride the relay:
+     code run by an EXECUTE job could otherwise flip the Connection mode. */
+  if (action === "drop") return;
   /* PORT: update the port field, then connect (first arrival) or reconnect
      (port changed after an earlier connect). PORT is a reply to the READY
      handshake sent on load, so this is also the first connect. */

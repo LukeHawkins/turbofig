@@ -205,13 +205,29 @@ pairing token as a Bearer auth header: a request without the correct token
 is rejected with 401 before it can run a job, call a tool, or stop or
 restart the daemon.
 
-The Settings window has an "MCP over HTTP" switch (default on). When it is
-off, `POST`, `GET` and `DELETE` on `/mcp` return 404 with a short JSON body
-(`code: mcp_http_off`), after the token check. The switch is the marker file
-`<home>/mcp-http-off`, created with mode 0600 and removed to turn it on. It
-applies to new requests: an open SSE stream stays open, and a client that
-reconnects gets 404. A marker that is not a regular file owned by you counts
-as off, and Settings shows "unknown (see log)".
+The shared "Connection" setting is File bridge (the default) or MCP. In File
+bridge mode, `POST`, `GET` and `DELETE` on `/mcp` return 404 with a short JSON
+body (`code: mcp_http_off`), after the token check. MCP mode serves `/mcp`.
+The setting is the marker file `<home>/mcp-mode` (present means MCP), created
+with mode 0600 and removed for File bridge. The daemon is the only writer; it
+never follows a symlink. A change applies to new requests: an open SSE stream
+stays open, and a client that reconnects gets 404. A marker that is not a
+regular file owned by you counts as File bridge, and Settings shows a short
+"Can't read the setting" note.
+Two paths change the setting, both through the daemon:
+
+- The plugin sends `SET_CONNECTION_MODE` over its WebSocket. The daemon
+  accepts it only from a socket that finished the AUTH handshake (a verified
+  socket). The plugin UI relays no message from the Figma main thread with
+  that type (or `AUTH`, `CONNECTION_MODE`, `WELCOME`, `CHALLENGE`), so code run
+  by an `EXECUTE` job cannot flip the mode. Only the Connection control's
+  click handler sends it.
+- The menu bar app calls the `/control` action `set_connection_mode`. It needs
+  the pairing token as a Bearer header and no `Origin` header, like every
+  other `/control` action. The app never sends the token to a legacy daemon
+  for this call. It writes the marker itself only when no daemon is
+  reachable. On any other failure it changes nothing.
+
 `/job`, `/health` and `/control` are not affected.
 
 Report a finding that breaks one of these guarantees (for example, a port
@@ -255,10 +271,9 @@ follow the same rules below unless noted otherwise.
   `copy_mcp_json`, `open_docs`, and `page_ready`, rejecting anything else
   (including a reasonable-looking payload like `{"op":"quit"}` or an
   unknown command) with no action taken. The Settings page sends 1 of its
-  own 8: `start_at_login_on`, `start_at_login_off`, `mcp-http-on`,
-  `mcp-http-off`, `copy_manifest_path`,
-  `open_plugin_folder`, `open_log`, `page_ready`
-  (`settings_state::parse_ipc_command`, the same reject-anything-else
+  own 6 fixed action links: `start-at-login-on`, `start-at-login-off`,
+  `connection-file`, `connection-mcp`, `copy-path`, `show-plugin-folder`
+  (`settings_state::parse_action_link`, the same reject-anything-else
   rule). Neither handler ever evaluates or interprets the raw message as
   code; each is a plain string compared against its own fixed literal set.
   `reveal_manifest`/`open_plugin_folder` both run `open -R <manifest

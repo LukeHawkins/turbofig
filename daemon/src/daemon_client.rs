@@ -374,32 +374,36 @@ pub async fn send_control(
     action: &str,
 ) -> Result<reqwest::StatusCode, ClientError> {
     let body = serde_json::json!({ "action": action });
-    send_control_with_lookup(port, token, &body, listener_uid).await
+    send_control_with_lookup(port, token, &body, true, listener_uid).await
 }
 
 /// Asks the verified daemon to set the shared Connection (`"file"` or
-/// `"mcp"`), the same verified `POST /control` path as `send_control`.
+/// `"mcp"`), over the verified `POST /control` path. Unlike `send_control`
+/// it never allows a legacy daemon: the token goes only to a daemon that
+/// proved it holds it.
 pub async fn send_connection_mode(
     port: u16,
     token: &str,
     mode: &str,
 ) -> Result<reqwest::StatusCode, ClientError> {
     let body = serde_json::json!({ "action": "set_connection_mode", "mode": mode });
-    send_control_with_lookup(port, token, &body, listener_uid).await
+    send_control_with_lookup(port, token, &body, false, listener_uid).await
 }
 
 async fn send_control_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
     port: u16,
     token: &str,
     body: &serde_json::Value,
+    allow_legacy: bool,
     lookup: impl Fn(u16) -> Fut,
 ) -> Result<reqwest::StatusCode, ClientError> {
     let url = base_url(port);
     let client =
         build_client(Some(crate::spawn::ADMIN_CLIENT_TIMEOUT)).map_err(ClientError::Http)?;
     // An older same-user daemon may be asked to stop or restart: that is the
-    // upgrade handoff. Nothing else sends the token to such a listener.
-    verify_with_lookup(&client, &url, token, true, lookup)
+    // upgrade handoff (`allow_legacy`). Nothing else sends the token to such
+    // a listener.
+    verify_with_lookup(&client, &url, token, allow_legacy, lookup)
         .await
         .map_err(ClientError::Verify)?;
     let resp = client
@@ -817,6 +821,7 @@ mod tests {
             port,
             TOKEN,
             &serde_json::json!({"action": "restart"}),
+            true,
             |_| async move { Some(my_uid) },
         )
         .await
@@ -829,7 +834,19 @@ mod tests {
             port,
             TOKEN,
             &serde_json::json!({"action": "restart"}),
+            true,
             |_| async move { Some(my_uid + 1) }
+        )
+        .await
+        .is_err());
+        assert_eq!(seen.lock().unwrap().auth.len(), before);
+        // A connection-mode change (allow_legacy = false) never reaches it.
+        assert!(send_control_with_lookup(
+            port,
+            TOKEN,
+            &serde_json::json!({"action": "set_connection_mode", "mode": "mcp"}),
+            false,
+            |_| async move { Some(my_uid) }
         )
         .await
         .is_err());

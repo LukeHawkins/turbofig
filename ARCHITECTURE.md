@@ -610,9 +610,14 @@ from the tray menu's "Settings…"; already open, a second click just calls
   reconnecting client gets 404; a marker that is not a regular file owned by
   you counts as File bridge); `/job`, `/health`, `/control` and the stdio
   proxy are not gated; actions `connection-file` and `connection-mcp`; the
-  app asks the daemon over `/control` `set_connection_mode`, and writes the
-  marker itself only when the daemon is not running; the daemon broadcasts
-  `CONNECTION_MODE` to every plugin),
+  app asks the daemon over `/control` `set_connection_mode` (never to a legacy
+  daemon), and writes the marker itself only when the daemon is unreachable
+  or there is no token file (any other failure changes nothing); the daemon
+  holds one lock across save, read and broadcast, and broadcasts
+  `CONNECTION_MODE` to every plugin; the page has no JS, so the app
+  re-renders it in place on window focus and when a health tick sees a
+  changed marker; an unreadable marker shows "Can't read the setting. See the
+  log."),
   "Copy plugin manifest path", "Open plugin folder" (the same
   `reveal_in_finder` the About window's "Show plugin in Finder" uses), and
   1 small footer line with the version and an "Open log" text link

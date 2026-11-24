@@ -67,7 +67,7 @@ const pairingToken = readLocalToken();
  */
 const agentPromptTemplate = readFileSync(join(scriptDir, "../prompts/agent-prompt.txt"), "utf8");
 
-/** The MCP variant of the connect prompt, chosen by the "Copy prompt for" setting. */
+/** The MCP variant of the connect prompt, chosen by the shared Connection setting (MCP mode). */
 const agentPromptMcpTemplate = readFileSync(
   join(scriptDir, "../prompts/agent-prompt-mcp.txt"),
   "utf8",

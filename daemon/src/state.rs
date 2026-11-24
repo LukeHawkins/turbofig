@@ -216,6 +216,9 @@ pub struct AppState {
     /// Permits for WebSocket connections that have upgraded but not yet
     /// passed AUTH. Bounds how many unauthenticated sockets can exist.
     pub(crate) pending_handshakes: Arc<tokio::sync::Semaphore>,
+    /// Serializes Connection changes: save, read and broadcast happen under
+    /// this one lock.
+    connection_mode_lock: std::sync::Mutex<()>,
     /// Registry of all active WebSocket connections.
     /// One entry per connected plugin. The file_key is empty until FILE_INFO
     /// arrives. Two live connections may hold the same non-empty file_key at
@@ -334,6 +337,7 @@ impl AppState {
         max_inflight: usize,
     ) -> Self {
         Self {
+            connection_mode_lock: std::sync::Mutex::new(()),
             pending_handshakes: Arc::new(tokio::sync::Semaphore::new(
                 crate::ws::MAX_PENDING_HANDSHAKES,
             )),
@@ -440,16 +444,22 @@ impl AppState {
         &self,
         mode: crate::plugin_files::ConnectionMode,
     ) -> std::io::Result<()> {
+        // One lock spans save, read and send, so two concurrent changes
+        // cannot broadcast each other's final mode out of order.
+        let _guard = self
+            .connection_mode_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let result = match self.home.as_deref() {
             Some(home) => crate::plugin_files::set_connection_mode(home, mode),
             None => Err(std::io::Error::other("this state has no home")),
         };
-        self.broadcast_connection_mode();
+        self.send_connection_mode_to_all();
         result
     }
 
     /// Sends `CONNECTION_MODE` with the mode now in effect to every plugin.
-    pub(crate) fn broadcast_connection_mode(&self) {
+    fn send_connection_mode_to_all(&self) {
         let msg = crate::ws::connection_mode_message(self.connection_mode());
         let guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         for conn in guard.values() {
@@ -1506,5 +1516,36 @@ mod tests {
     fn sanitize_name_strips_format_characters() {
         let raw = "a\u{202E}b\u{200B}c\u{2066}d\u{2069}e\u{FEFF}f\u{200F}g";
         assert_eq!(sanitize_name(raw), "abcdefg");
+    }
+
+    #[test]
+    fn concurrent_connection_changes_broadcast_a_final_mode_that_matches_the_marker() {
+        use crate::plugin_files::ConnectionMode;
+        for _ in 0..20 {
+            let home = tempfile::tempdir().expect("tempdir");
+            let state = Arc::new(AppState::new_with_token("t".repeat(64), home.path()));
+            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+            state.add_connection(tx);
+            let threads: Vec<_> = [ConnectionMode::Mcp, ConnectionMode::File]
+                .into_iter()
+                .map(|mode| {
+                    let state = state.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..10 {
+                            state.set_connection_mode(mode).expect("set");
+                        }
+                    })
+                })
+                .collect();
+            for t in threads {
+                t.join().expect("join");
+            }
+            let mut last = String::new();
+            while let Ok(m) = rx.try_recv() {
+                last = m;
+            }
+            let want = crate::ws::connection_mode_message(state.connection_mode());
+            assert_eq!(last, want, "the last broadcast must match the marker");
+        }
     }
 }

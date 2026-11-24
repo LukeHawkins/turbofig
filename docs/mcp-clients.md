@@ -10,8 +10,10 @@ than the file bridge, with no clipboard step.
 **First step: switch Connection to MCP.** Open turbofig Settings (menu bar
 icon, Settings…) and pick MCP in the Connection control, or pick MCP in the
 Figma plugin (gear). Both use the same setting. The default is File bridge.
-In File bridge mode the daemon refuses MCP over HTTP (`/mcp` returns 404).
-The stdio server below (`turbofig mcp`) works in both modes.
+The mode matters only for the HTTP transport (in File bridge mode the daemon
+refuses `/mcp` over HTTP and returns 404) and for which prompt the plugin
+copies. Stdio setups such as the stdio server below (`turbofig mcp`) work in
+either mode, including Claude Desktop.
 
 **Claude Code:**
 

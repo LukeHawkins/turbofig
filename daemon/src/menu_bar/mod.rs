@@ -555,6 +555,10 @@ pub async fn run_menu_bar_app() {
                 if let Ok(mut guard) = current_state.lock() {
                     *guard = new_state;
                 }
+                // A plugin may have changed Connection: show it.
+                if let Some(handle) = settings_window_handle.borrow().as_ref() {
+                    handle.refresh_if_mode_changed();
+                }
                 if let Some(daemon_version) = daemon_version {
                     maybe_relaunch_for_upgrade(&home, &app_lock, &daemon_version);
                 }
@@ -566,8 +570,11 @@ pub async fn run_menu_bar_app() {
                 perform_quit(&home, mcp_port);
             }
             Event::UserEvent(UserEvent::ReloadSettings) => {
-                settings_window_handle.borrow_mut().take();
-                open_or_focus_settings_window(target, &settings_window_handle, &settings_ctx);
+                // Only when the window still exists: a window the user
+                // closed during the daemon call stays closed.
+                if let Some(handle) = settings_window_handle.borrow().as_ref() {
+                    handle.refresh();
+                }
             }
             Event::NewEvents(StartCause::Init) => {
                 if should_auto_open_about {
@@ -631,6 +638,15 @@ fn handle_window_event(
         }
         WindowEvent::CloseRequested => {
             close_window_if_match(window_id, about_window_handle, settings_window_handle);
+        }
+        WindowEvent::Focused(true) => {
+            // Re-render on focus, so a change made elsewhere (a plugin)
+            // shows when the user comes back to the window.
+            if let Some(handle) = settings_window_handle.borrow().as_ref() {
+                if handle.id() == window_id {
+                    handle.refresh();
+                }
+            }
         }
         _ => {}
     }
