@@ -138,6 +138,25 @@ export async function refreshCargoLock(run: typeof execFileSync = execFileSync):
   }
 }
 
+/**
+ * Refresh bun.lock for the new package.json versions.
+ * The release workflow installs with `--frozen-lockfile`, which fails when
+ * bun.lock still carries the old workspace version, so this must run on
+ * every bump. Throws when `bun install` fails.
+ * `run` is injectable for tests; it defaults to the real `execFileSync`.
+ */
+export async function refreshBunLock(run: typeof execFileSync = execFileSync): Promise<void> {
+  try {
+    run("bun", ["install"], { cwd: ROOT, stdio: "pipe" });
+  } catch (err) {
+    const stderr =
+      err && typeof err === "object" && "stderr" in err
+        ? String((err as { stderr: Buffer }).stderr)
+        : String(err);
+    throw new Error(`bun install failed, bun.lock was not refreshed: ${stderr}`);
+  }
+}
+
 async function main() {
   const version = parseTargetVersion(process.argv.slice(2));
   const changed: string[] = [];
@@ -173,6 +192,11 @@ async function main() {
   if (cargoTomlResult.changed) {
     await refreshCargoLock();
     changed.push("Cargo.lock");
+  }
+
+  if (changed.some((path) => path.endsWith("package.json"))) {
+    await refreshBunLock();
+    changed.push("bun.lock");
   }
 
   if (changed.length === 0) {

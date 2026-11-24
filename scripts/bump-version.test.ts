@@ -13,6 +13,7 @@ import {
   bumpPackageJson,
   bumpWorkspaceCargoToml,
   parseTargetVersion,
+  refreshBunLock,
   refreshCargoLock,
 } from "./bump-version.ts";
 
@@ -177,5 +178,31 @@ describe("refreshCargoLock", () => {
     await expect(
       refreshCargoLock(okRun as unknown as typeof import("node:child_process").execFileSync),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("refreshBunLock", () => {
+  test("throws a clear error when bun install fails", async () => {
+    const failingRun = () => {
+      const err = new Error("exit code 1") as Error & { stderr: Buffer };
+      err.stderr = Buffer.from("error: lockfile is broken");
+      throw err;
+    };
+    await expect(
+      refreshBunLock(failingRun as unknown as typeof import("node:child_process").execFileSync),
+    ).rejects.toThrow(/bun install failed/);
+  });
+
+  test("runs bun install at the repo root", async () => {
+    const calls: unknown[][] = [];
+    const okRun = (...args: unknown[]) => {
+      calls.push(args);
+      return Buffer.from("");
+    };
+    await expect(
+      refreshBunLock(okRun as unknown as typeof import("node:child_process").execFileSync),
+    ).resolves.toBeUndefined();
+    expect(calls[0]?.[0]).toBe("bun");
+    expect(calls[0]?.[1]).toEqual(["install"]);
   });
 });
