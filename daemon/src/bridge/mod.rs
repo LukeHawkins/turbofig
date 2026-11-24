@@ -1031,17 +1031,19 @@ mod tests {
         tokio::fs::create_dir_all(&dir)
             .await
             .expect("mkdir custom dir");
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod dir");
+        // 0o755: group and other can read but not write. A group- or
+        // other-writable folder is refused (see secure_fs).
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod dir");
 
         prepare_dirs(&dir, false)
             .await
             .expect("prepare bridge dirs");
 
-        // A custom TURBOFIG_BRIDGE_DIR can be an existing, shared path the
-        // user pointed us at; the daemon does not own its mode.
+        // A custom TURBOFIG_BRIDGE_DIR can be an existing path the user
+        // pointed us at; the daemon does not own its mode.
         assert_eq!(
             mode_bits(&dir),
-            0o777,
+            0o755,
             "a custom bridge dir's own mode must be left untouched"
         );
         assert_eq!(

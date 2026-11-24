@@ -349,13 +349,43 @@ fn shot_target(first_line: &[u8]) -> Option<Option<String>> {
     Some(v.get("result").and_then(find_node_id))
 }
 
-fn no_node_id_line() -> String {
-    json!({
+/// The one stdout JSON line for every failure of the `--shot` screenshot
+/// (line 2). The code already ran (line 1), so this code never means
+/// "resend". `reason` says why: `not_started`, `started_unknown`,
+/// `no_node_id`, `bridge_error`, or the plugin's own error code. `detail` is
+/// the original error text, when there is one.
+fn shot_failed_line(reason: &str, detail: Option<&str>) -> String {
+    let mut v = json!({
         "ok": false,
-        "code": "no_node_id",
-        "error": "--shot found no node id in the result; return the node id",
-    })
-    .to_string()
+        "code": "shot_failed",
+        "reason": reason,
+        "error": "the code already ran (line 1); only the screenshot failed. Do not resend the code; send a screenshot job if needed.",
+    });
+    if let Some(d) = detail {
+        v["detail"] = json!(d);
+    }
+    v.to_string()
+}
+
+/// Turns what the screenshot job returned into line 2: an `ok:true` result as
+/// given, anything else (a failure of `run_job`, or an `ok:false` result from
+/// the plugin) as `shot_failed`.
+fn shot_second_line(raw: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(raw);
+    let parsed: Option<Value> = serde_json::from_str(text.trim()).ok();
+    let line = match &parsed {
+        Some(v) if v.get("ok") == Some(&Value::Bool(true)) => text.trim().to_owned(),
+        Some(v) => shot_failed_line(
+            v.get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("plugin_error"),
+            v.get("error").and_then(Value::as_str),
+        ),
+        None => shot_failed_line("bridge_error", Some(text.trim())),
+    };
+    let mut bytes = line.into_bytes();
+    bytes.push(b'\n');
+    bytes
 }
 
 /// Builds the job, sends it, and with `shot` sends a screenshot job for the
@@ -391,28 +421,29 @@ fn execute(
     let Some(target) = shot_target(&first) else {
         return (out, 0);
     };
-    // Exit rule: 0 when the first result printed and the screenshot job got a
-    // result (even an `ok:false` one from the plugin, or `no_node_id`); 1 when
-    // the screenshot job got no result (`not_started`, `started_unknown`,
-    // `bridge_error`).
-    let mut shot_code = 0;
+    // Exit rule: the exit code reflects line 1 only. Line 1 was a result, so
+    // the code ran and the exit is 0, whatever happens to the screenshot. A
+    // screenshot failure is one `shot_failed` line that never says "resend".
     let second = match target {
-        None => no_node_id_line().into_bytes(),
+        None => {
+            let mut b = shot_failed_line("no_node_id", None).into_bytes();
+            b.push(b'\n');
+            b
+        }
         Some(id) => {
             let mut shot_job = json!({"op": "screenshot", "nodeId": id});
             if let Some(key) = job.get("fileKey") {
                 shot_job["fileKey"] = key.clone();
             }
-            let (line, c) = run_job(dir, &shot_job, wait, alive);
-            shot_code = c;
-            line
+            let (line, _) = run_job(dir, &shot_job, wait, alive);
+            shot_second_line(&line)
         }
     };
     out.extend_from_slice(&second);
     if out.last() != Some(&b'\n') {
         out.push(b'\n');
     }
-    (out, shot_code)
+    (out, 0)
 }
 
 /// How long to wait for a freshly started daemon to hold the lock and make
@@ -432,16 +463,20 @@ const FALLBACK_WAIT: Duration = Duration::from_secs(600);
 enum Mode {
     /// A daemon holds `daemon.lock`: liveness is a lock query.
     Locked,
-    /// A daemon answers on the port but holds no lock (an older version, or a
-    /// filesystem without locks): only the plain timeout applies.
+    /// A daemon runs on a filesystem without locks: it wrote `"locked":false`
+    /// and its pid into `daemon.lock`. Liveness is `kill(pid, 0)`.
+    Unlocked(u32),
+    /// `daemon.lock` does not exist and a daemon answers on the port (a
+    /// version from before the lock): only the plain timeout applies.
     Legacy,
 }
 
-/// True when something accepts a TCP connect on the daemon's MCP port and
-/// the bridge folders exist. This is only the fallback for a daemon that
-/// holds no lock; it sends no bytes.
+/// True for a daemon from before the lock existed: `daemon.lock` does not
+/// exist at all (such a daemon never creates it), the bridge folders exist,
+/// and something accepts a TCP connect on the daemon's MCP port. A folder that
+/// has a lock file is never legacy. It sends no bytes.
 fn legacy_daemon_alive(dir: &Path) -> bool {
-    if checked_dirs(dir).is_err() {
+    if !crate::secure_fs::lock_file_absent(dir) || checked_dirs(dir).is_err() {
         return false;
     }
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], crate::config::port_from_env()));
@@ -464,36 +499,55 @@ fn headless_plist_exists(agents_dir: &Path) -> bool {
 /// Asks launchd to start the headless service if it is not running
 /// (`launchctl kickstart`, no `-k`: a running service is left alone). Best
 /// effort; macOS only.
-fn kickstart_headless_service() {
+/// True when launchctl accepted the request (exit status 0). False when the
+/// service is not loaded or launchctl failed to run.
+fn kickstart_headless_service() -> bool {
     #[cfg(target_os = "macos")]
     if let Ok(uid) = crate::launchd::current_uid() {
-        let _ = std::process::Command::new("/bin/launchctl")
+        return std::process::Command::new("/bin/launchctl")
             .args(["kickstart", &crate::launchd::service_target(&uid)])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .status()
+            .is_ok_and(|s| s.success());
+    }
+    false
+}
+
+/// True when the 30 s wait for launchd's relaunch is worth it: the plist
+/// route applies and `kick` (the kickstart) succeeded. `kick` runs only when
+/// the route applies. A failed kickstart (service not loaded) goes straight
+/// to spawning.
+fn should_wait_for_relaunch(route_applies: bool, kick: impl FnOnce() -> bool) -> bool {
+    route_applies && kick()
+}
+
+/// How a daemon that serves `dir` right now can be watched, or `None`: the
+/// lock is held, or an unlocked daemon (`"locked":false`, live pid) wrote its
+/// lock file. The bridge folders must pass the daemon's own checks; a
+/// refusal is an `Err`.
+fn served_mode(dir: &Path) -> Result<Option<Mode>, String> {
+    let mode = if crate::secure_fs::bridge_lock_held(dir) {
+        Mode::Locked
+    } else if let Some(pid) = crate::secure_fs::unlocked_daemon_pid(dir) {
+        Mode::Unlocked(pid)
+    } else {
+        return Ok(None);
+    };
+    match checked_dirs(dir) {
+        Ok(_) => Ok(Some(mode)),
+        Err(e) if crate::secure_fs::is_refusal(&e) => Err(e.to_string()),
+        Err(_) => Ok(None),
     }
 }
 
-/// Polls until a daemon serves `dir` (the lock is held, or with
-/// `allow_legacy` a daemon answers on the port) and the bridge folders pass
-/// the daemon's own checks. `Ok(None)` is a timeout.
-fn wait_for_daemon(
-    dir: &Path,
-    deadline: Duration,
-    allow_legacy: bool,
-) -> Result<Option<Mode>, String> {
+/// Polls until a daemon serves `dir` (`served_mode`). `Ok(None)` is a timeout.
+fn wait_for_daemon(dir: &Path, deadline: Duration) -> Result<Option<Mode>, String> {
     let until = Instant::now() + deadline;
     loop {
-        if crate::secure_fs::bridge_lock_held(dir) {
-            match checked_dirs(dir) {
-                Ok(_) => return Ok(Some(Mode::Locked)),
-                Err(e) if crate::secure_fs::is_refusal(&e) => return Err(e.to_string()),
-                Err(_) => {}
-            }
-        } else if allow_legacy && legacy_daemon_alive(dir) {
-            return Ok(Some(Mode::Legacy));
+        if let Some(mode) = served_mode(dir)? {
+            return Ok(Some(mode));
         }
         if Instant::now() >= until {
             return Ok(None);
@@ -503,12 +557,13 @@ fn wait_for_daemon(
 }
 
 /// Makes sure a daemon serves `dir` and says how to watch it. Uses no network
-/// connection, except one plain TCP connect to the daemon port when no lock
-/// is held (the older-daemon check, and the start wait on a filesystem
-/// without locks).
+/// connection, except one plain TCP connect to the daemon port when
+/// `daemon.lock` does not exist (the older-daemon check).
 ///
-/// Order: a lock holder means a daemon is up. Else a daemon answering on the
-/// port with the folders present is an older daemon (`Mode::Legacy`). Else,
+/// Order: a lock holder means a daemon is up. Else a lock file that says
+/// `"locked":false` with a live pid is an unlocked daemon (`Mode::Unlocked`).
+/// Else, with no `daemon.lock` at all, a daemon answering on the port with the
+/// folders present is an older daemon (`Mode::Legacy`). Else,
 /// with the default folder and an autostart plist, launchd is asked to start
 /// the supervised service and given `SUPERVISED_RELAUNCH_WAIT` before this
 /// process spawns an unsupervised one (an unsupervised daemon makes the
@@ -520,16 +575,18 @@ fn ensure_daemon(dir: &Path, default_folder: bool) -> Result<Mode, String> {
     crate::secure_fs::check_ancestors(dir).map_err(|e| e.to_string())?;
     crate::secure_fs::check_existing(dir).map_err(|e| e.to_string())?;
     crate::secure_fs::check_not_shared_writable(dir).map_err(|e| e.to_string())?;
-    if crate::secure_fs::bridge_lock_held(dir) {
-        return Ok(Mode::Locked);
+    if let Some(mode) = served_mode(dir)? {
+        return Ok(mode);
     }
     if legacy_daemon_alive(dir) {
         return Ok(Mode::Legacy);
     }
     let plist = headless_plist_exists(&crate::launchd::launch_agents_dir_from_env());
-    if should_wait_for_launchd(plist, default_folder) {
-        kickstart_headless_service();
-        if let Some(mode) = wait_for_daemon(dir, SUPERVISED_RELAUNCH_WAIT, false)? {
+    if should_wait_for_relaunch(
+        should_wait_for_launchd(plist, default_folder),
+        kickstart_headless_service,
+    ) {
+        if let Some(mode) = wait_for_daemon(dir, SUPERVISED_RELAUNCH_WAIT)? {
             return Ok(mode);
         }
     }
@@ -537,7 +594,7 @@ fn ensure_daemon(dir: &Path, default_folder: bool) -> Result<Mode, String> {
         std::env::current_exe().map_err(|e| format!("could not find the turbofig binary: {e}"))?;
     crate::spawn::spawn_detached_daemon(&bin, dir)
         .map_err(|e| format!("could not start the daemon: {e}"))?;
-    match wait_for_daemon(dir, START_DEADLINE, true)? {
+    match wait_for_daemon(dir, START_DEADLINE)? {
         Some(mode) => Ok(mode),
         None => Err(format!(
             "no daemon took over {} within {} s; see {}",
@@ -546,6 +603,16 @@ fn ensure_daemon(dir: &Path, default_folder: bool) -> Result<Mode, String> {
             dir.join("daemon.log").display()
         )),
     }
+}
+
+/// Why the bridge folder could not be resolved.
+#[derive(Debug)]
+enum DirError {
+    /// A bad `--dir` value: exit 2, message on stderr.
+    Usage(String),
+    /// No folder known (`HOME` and `TURBOFIG_BRIDGE_DIR` unset): exit 1 with
+    /// the `bridge_error` JSON line.
+    Bridge(String),
 }
 
 /// Resolves the bridge folder to an absolute path: `--dir` wins over
@@ -557,19 +624,21 @@ fn ensure_daemon(dir: &Path, default_folder: bool) -> Result<Mode, String> {
 /// `$HOME/.turbofig`: a daemon started with the variable set treats the
 /// folder as custom (no chmod, no outbox marker), so the variable is left
 /// unset then. Returns the folder and whether it is the default one.
-fn resolve_dir(dir_arg: Option<&str>) -> Result<(PathBuf, bool), String> {
+fn resolve_dir(dir_arg: Option<&str>) -> Result<(PathBuf, bool), DirError> {
     let raw: PathBuf = match dir_arg {
         Some(raw) => {
             let trimmed = raw.trim_end_matches('/');
             let val = if trimmed.is_empty() { raw } else { trimmed };
             if val.is_empty() {
-                return Err("--dir is empty".to_owned());
+                return Err(DirError::Usage("--dir is empty".to_owned()));
             }
             PathBuf::from(val)
         }
-        None => crate::config::bridge_dir_from_env(),
+        // Not `bridge_dir_from_env`: that one exits the process with stderr only.
+        None => crate::config::try_bridge_dir_from_env().map_err(DirError::Bridge)?,
     };
-    let abs = std::path::absolute(&raw).map_err(|e| format!("bad bridge folder: {e}"))?;
+    let abs = std::path::absolute(&raw)
+        .map_err(|e| DirError::Usage(format!("bad bridge folder: {e}")))?;
     let default = std::env::var("HOME")
         .ok()
         .filter(|h| !h.is_empty())
@@ -628,8 +697,9 @@ fn exit_with_bridge_error(msg: &str) -> i32 {
     1
 }
 
-/// Runs `turbofig js`. Returns the process exit code: 0 a result printed,
-/// 1 no result (always with one JSON line on stdout: `not_started`,
+/// Runs `turbofig js`. Returns the process exit code: 0 a result printed
+/// (with `--shot`, line 1 only: a failed screenshot is a `shot_failed` line
+/// on exit 0), 1 no result (always with one JSON line on stdout: `not_started`,
 /// `started_unknown` or `bridge_error`), 2 a usage error (message on stderr).
 pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
     let stdin = std::io::stdin();
@@ -663,13 +733,6 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
         return 2;
     }
     // Check usage errors before the daemon starts.
-    let (dir, default_folder) = match resolve_dir(dir_arg) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("turbofig js: {e}");
-            return 2;
-        }
-    };
     let probe = build_job(&text, file_key);
     if shot && probe["op"] != json!("execute") {
         eprintln!("turbofig js: --shot works only with JS code or an execute job");
@@ -683,6 +746,14 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
         return 2;
     }
     drop(probe);
+    let (dir, default_folder) = match resolve_dir(dir_arg) {
+        Ok(d) => d,
+        Err(DirError::Usage(e)) => {
+            eprintln!("turbofig js: {e}");
+            return 2;
+        }
+        Err(DirError::Bridge(e)) => return exit_with_bridge_error(&e),
+    };
     let mode = match ensure_daemon(&dir, default_folder) {
         Ok(m) => m,
         Err(e) => return exit_with_bridge_error(&e),
@@ -690,12 +761,16 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
     // The wait follows the timeout the daemon recorded, not this process's
     // environment (an autostart service can carry a different value).
     let wait = match mode {
-        Mode::Locked => crate::secure_fs::read_lock_request_timeout(&dir)
+        Mode::Locked | Mode::Unlocked(_) => crate::secure_fs::read_lock_request_timeout(&dir)
             .map(|t| t + WAIT_MARGIN)
             .unwrap_or(FALLBACK_WAIT),
         Mode::Legacy => crate::config::request_timeout_from_env() + WAIT_MARGIN,
     };
-    let mut alive = || mode == Mode::Legacy || crate::secure_fs::bridge_lock_held(&dir);
+    let mut alive = || match mode {
+        Mode::Legacy => true,
+        Mode::Locked => crate::secure_fs::bridge_lock_held(&dir),
+        Mode::Unlocked(pid) => crate::secure_fs::pid_alive(pid),
+    };
     let (out, code) = execute(&dir, &text, file_key, shot, wait, &mut alive);
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&out);
@@ -1020,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_screenshot_job_makes_the_exit_code_1_but_a_plugin_error_does_not() {
+    fn a_failed_screenshot_job_is_a_shot_failed_line_and_the_exit_code_stays_0() {
         // No node-id screenshot answer: the second job times out.
         let tmp = tempfile::tempdir().unwrap();
         let dir = bridge(tmp.path());
@@ -1034,15 +1109,20 @@ mod tests {
             &mut || true,
         );
         fake.join().unwrap();
-        assert_eq!(c, 1);
+        assert_eq!(c, 0, "line 1 was a result: the code ran");
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
         let v: Value = serde_json::from_str(lines[1]).unwrap();
-        assert!(["not_started", "started_unknown"].contains(&v["code"].as_str().unwrap()));
+        assert_eq!(v["ok"], json!(false));
+        assert_eq!(v["code"], json!("shot_failed"));
+        assert!(["not_started", "started_unknown"].contains(&v["reason"].as_str().unwrap()));
+        let err = v["error"].as_str().unwrap();
+        assert!(err.contains("Do not resend the code"), "{err}");
+        assert!(!text.contains("\"code\":\"not_started\""), "{text}");
         assert_eq!(inbox_count(&dir), 0);
 
-        // The plugin answered the screenshot with ok:false: still exit 0.
+        // The plugin answered the screenshot with ok:false: wrapped, exit 0.
         let tmp = tempfile::tempdir().unwrap();
         let dir = bridge(tmp.path());
         let fake = fake_daemon(
@@ -1052,9 +1132,65 @@ mod tests {
                 "{\"ok\":false,\"code\":\"plugin_disconnected\",\"error\":\"x\"}".into(),
             ],
         );
-        let (_, c) = execute(&dir, "return '1:2';", None, true, WAIT, &mut || true);
+        let (out, c) = execute(&dir, "return '1:2';", None, true, WAIT, &mut || true);
         fake.join().unwrap();
         assert_eq!(c, 0);
+        let text = String::from_utf8(out).unwrap();
+        let v: Value = serde_json::from_str(text.lines().nth(1).unwrap()).unwrap();
+        assert_eq!(v["code"], json!("shot_failed"));
+        assert_eq!(v["reason"], json!("plugin_disconnected"));
+        assert_eq!(v["detail"], json!("x"));
+    }
+
+    #[test]
+    fn a_bridge_error_on_the_screenshot_job_is_shot_failed_with_exit_0() {
+        let v: Value = serde_json::from_slice(&shot_second_line(
+            bridge_error_line("could not write the job: disk full").as_bytes(),
+        ))
+        .unwrap();
+        assert_eq!(v["code"], json!("shot_failed"));
+        assert_eq!(v["reason"], json!("bridge_error"));
+        assert_eq!(v["detail"], json!("could not write the job: disk full"));
+        // An unparseable line is wrapped too.
+        let v: Value = serde_json::from_slice(&shot_second_line(b"junk")).unwrap();
+        assert_eq!(v["reason"], json!("bridge_error"));
+        // An ok:true result passes through unchanged.
+        assert_eq!(
+            shot_second_line(b"{\"ok\":true,\"path\":\"/a.png\"}\n"),
+            b"{\"ok\":true,\"path\":\"/a.png\"}\n"
+        );
+    }
+
+    #[test]
+    fn the_relaunch_wait_needs_the_route_and_a_successful_kickstart() {
+        assert!(should_wait_for_relaunch(true, || true));
+        assert!(!should_wait_for_relaunch(true, || false));
+        // The kickstart never runs when the route does not apply.
+        assert!(!should_wait_for_relaunch(false, || panic!("must not run")));
+    }
+
+    #[test]
+    fn a_folder_with_a_lock_file_is_never_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = bridge(tmp.path());
+        // Whatever listens on the port, a lock file rules legacy mode out.
+        std::fs::write(dir.join("daemon.lock"), "").unwrap();
+        assert!(!legacy_daemon_alive(&dir));
+    }
+
+    #[test]
+    fn an_unlocked_daemon_needs_locked_false_and_a_live_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = bridge(tmp.path());
+        let lock = dir.join("daemon.lock");
+        let me = std::process::id();
+        assert_eq!(served_mode(&dir).unwrap(), None);
+        std::fs::write(&lock, format!("{{\"pid\":{me},\"locked\":false}}")).unwrap();
+        assert_eq!(served_mode(&dir).unwrap(), Some(Mode::Unlocked(me)));
+        std::fs::write(&lock, "{\"pid\":2147483646,\"locked\":false}").unwrap();
+        assert_eq!(served_mode(&dir).unwrap(), None);
+        std::fs::write(&lock, format!("{{\"pid\":{me},\"locked\":true}}")).unwrap();
+        assert_eq!(served_mode(&dir).unwrap(), None);
     }
 
     #[test]
@@ -1178,7 +1314,8 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         let v: Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(v["code"], json!("no_node_id"));
+        assert_eq!(v["code"], json!("shot_failed"));
+        assert_eq!(v["reason"], json!("no_node_id"));
     }
 
     #[test]

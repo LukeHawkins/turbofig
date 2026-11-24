@@ -125,14 +125,21 @@ fn bridge_dir_or(bridge_dir_val: Option<&str>, home_val: Option<&str>) -> Result
     }
 }
 
+/// Read the bridge directory from `TURBOFIG_BRIDGE_DIR`, without exiting.
+/// Default: `~/.turbofig`. `Err` holds the message when both
+/// `TURBOFIG_BRIDGE_DIR` and `HOME` are unset.
+pub fn try_bridge_dir_from_env() -> Result<PathBuf, String> {
+    bridge_dir_or(
+        std::env::var("TURBOFIG_BRIDGE_DIR").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
 /// Read the bridge directory from `TURBOFIG_BRIDGE_DIR`.
 /// Default: `~/.turbofig`. When both `TURBOFIG_BRIDGE_DIR` and `HOME` are
 /// unset, prints an error and exits with status 1.
 pub fn bridge_dir_from_env() -> PathBuf {
-    match bridge_dir_or(
-        std::env::var("TURBOFIG_BRIDGE_DIR").ok().as_deref(),
-        std::env::var("HOME").ok().as_deref(),
-    ) {
+    match try_bridge_dir_from_env() {
         Ok(dir) => dir,
         Err(msg) => {
             // Under launchd a restart cannot fix a missing HOME: exit 0.
