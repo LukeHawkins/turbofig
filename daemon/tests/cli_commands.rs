@@ -13,6 +13,7 @@ async fn start_detaches_a_daemon_when_none_is_running_and_prints_version_and_por
     let mcp_port = free_port();
     let ws_port = free_port();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
 
     let (status, stdout, stderr) = run_turbofig(&["start"], home.path(), mcp_port, ws_port).await;
     assert!(status.success(), "start must exit 0, stderr: {stderr}");
