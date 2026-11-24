@@ -47,6 +47,18 @@ fn fast() -> WsTimings {
     }
 }
 
+/// Short timings with a pong window wide enough that a loaded test machine
+/// (antivirus scans, parallel builds) never starves the reconnected client
+/// past it. A 300 ms window made the reconnect test drop the NEW socket
+/// about 1 run in 6 under load; production uses 15 s / 45 s.
+fn reconnect_timings() -> WsTimings {
+    WsTimings {
+        ping_interval: Duration::from_millis(200),
+        pong_timeout: Duration::from_millis(1_000),
+        heartbeat_interval: Duration::from_millis(200),
+    }
+}
+
 /// A daemon (WS + HTTP) on its own runtime, so dropping it closes every socket.
 struct Daemon {
     rt: Option<tokio::runtime::Runtime>,
@@ -213,7 +225,7 @@ fn the_default_heartbeat_interval_is_15_seconds() {
 #[tokio::test]
 async fn a_client_that_stops_reading_is_dropped_then_reconnects_and_runs_a_job() {
     let token = "t".repeat(64);
-    let daemon = Daemon::start(&token, 0, fast());
+    let daemon = Daemon::start(&token, 0, reconnect_timings());
     let mut ws = handshake(daemon.ws_port, &token).await.unwrap();
     wait_until(
         || !daemon.state.list_connections().is_empty(),
@@ -223,10 +235,10 @@ async fn a_client_that_stops_reading_is_dropped_then_reconnects_and_runs_a_job()
     .await;
 
     // Simulated sleep: the client reads nothing, so it answers no ping.
-    // Drop window is at most pong_timeout + ping_interval = 400 ms.
+    // Drop window is at most pong_timeout + ping_interval = 1.2 s.
     wait_until(
         || daemon.state.list_connections().is_empty(),
-        2_000,
+        5_000,
         "the silent client to be dropped",
     )
     .await;
