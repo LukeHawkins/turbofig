@@ -361,6 +361,28 @@
         color: var(--figma-color-text-warning, #7d4e00);
         border-radius: 4px;
         padding: var(--sp-1) var(--sp-2);
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+      .stale-banner span {
+        flex: 1;
+        min-width: 0;
+      }
+      .reload-btn {
+        flex-shrink: 0;
+        font-size: 12px;
+        font-family: var(--ff-body);
+        color: inherit;
+        background: none;
+        border: 1px solid currentColor;
+        border-radius: 4px;
+        padding: 1px var(--sp-2);
+        cursor: pointer;
+      }
+      .reload-btn:disabled {
+        cursor: default;
+        opacity: 0.5;
       }
 
       /* === ICON BUTTONS ================================================== */
@@ -686,11 +708,12 @@
       </header>
 
       <!-- Stale warning: visible only when daemon and plugin versions differ. -->
-      <div id="stale-warning" class="stale-banner" role="alert" style="display:none"></div>
+      <div id="stale-warning" class="stale-banner" role="alert" style="display:none"><span id="stale-text"></span><button class="reload-btn" type="button">Reload</button></div>
 
       <!-- Connection status and copy buttons. -->
       <div class="file-row">
         <span id="conn-status" role="status" aria-live="polite">Connecting...</span>
+        <button id="reload-reset" class="reload-btn" type="button" style="display:none">Reload</button>
         <span class="header-spacer"></span>
         <button id="copy-filekey" class="icon-btn ghost-btn" type="button" style="display:none" aria-label="Copy file key" data-tooltip="Copy file key">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">

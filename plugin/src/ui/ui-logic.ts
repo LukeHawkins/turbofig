@@ -60,9 +60,12 @@ export function isRequestType(type: string): boolean {
  * Decides how the UI handles a message received from the daemon over the socket.
  * "welcome": consume it locally to read the daemon version (WELCOME).
  * "mode": consume it locally to update the Connection mode (CONNECTION_MODE).
+ * "drop": never forward it (CLOSE_FOR_UPDATE is UI-only).
  * "relay": forward it to the main thread (requests and everything else).
  */
-export function daemonMessageAction(type: string): "welcome" | "mode" | "relay" {
+export function daemonMessageAction(type: string): "welcome" | "mode" | "drop" | "relay" {
+  /* Only the UI's own Reload button may close the plugin: never the daemon. */
+  if (type === "CLOSE_FOR_UPDATE") return "drop";
   if (type === "WELCOME") return "welcome";
   if (type === "CONNECTION_MODE") return "mode";
   return "relay";
@@ -80,7 +83,8 @@ export function isUiOnlyControlType(type: unknown): boolean {
     type === "AUTH" ||
     type === "CONNECTION_MODE" ||
     type === "WELCOME" ||
-    type === "CHALLENGE"
+    type === "CHALLENGE" ||
+    type === "CLOSE_FOR_UPDATE"
   );
 }
 
@@ -153,12 +157,60 @@ export function isDaemonStale(pluginVersion: string, daemonVersion: string): boo
 }
 
 /**
- * Returns a human-readable stale warning when plugin and daemon versions differ.
- * Returns an empty string when versions match or either is unknown.
+ * Returns true when the daemon version is older than the plugin version.
+ * Compares dotted numeric parts. An unparseable version counts as not older,
+ * so the banner then offers Reload instead of a wrong "update turbofig".
+ */
+export function isDaemonOlder(pluginVersion: string, daemonVersion: string): boolean {
+  const parts = (v: string): number[] | null => {
+    const m = /^v?(\d+(?:\.\d+)*)/.exec(v.trim());
+    return m ? (m[1] as string).split(".").map(Number) : null;
+  };
+  const p = parts(pluginVersion);
+  const d = parts(daemonVersion);
+  if (!p || !d) return false;
+  for (let i = 0; i < Math.max(p.length, d.length); i++) {
+    const a = p[i] ?? 0;
+    const b = d[i] ?? 0;
+    if (a !== b) return b < a;
+  }
+  return false;
+}
+
+/** The version banner: its text, and whether it offers the Reload button. */
+export interface StaleBanner {
+  text: string;
+  /** True when the daemon is newer: reopening the plugin fixes it. */
+  canReload: boolean;
+}
+
+/**
+ * Returns the banner for a version difference, or null when versions match or
+ * either is unknown. A newer daemon gets a Reload button. A newer plugin does
+ * not: the user must update turbofig.
+ */
+export function staleBanner(pluginVersion: string, daemonVersion: string): StaleBanner | null {
+  if (!isDaemonStale(pluginVersion, daemonVersion)) return null;
+  if (isDaemonOlder(pluginVersion, daemonVersion)) {
+    return {
+      text: `turbofig ${daemonVersion} is older than this plugin. Update turbofig.`,
+      canReload: false,
+    };
+  }
+  return { text: `turbofig was updated to ${daemonVersion}.`, canReload: true };
+}
+
+/**
+ * Returns the banner text for a version difference, or an empty string when
+ * versions match or either is unknown.
  */
 export function staleWarning(pluginVersion: string, daemonVersion: string): string {
-  if (!isDaemonStale(pluginVersion, daemonVersion)) return "";
-  return `Version mismatch: plugin ${pluginVersion}, daemon ${daemonVersion}. Reload the plugin.`;
+  return staleBanner(pluginVersion, daemonVersion)?.text ?? "";
+}
+
+/** True when the Reload button must be disabled: a job is running. */
+export function reloadDisabled(activeJobCount: number): boolean {
+  return activeJobCount > 0;
 }
 
 /**
@@ -204,7 +256,7 @@ export function hasPairingToken(token: string): boolean {
 }
 
 /** Status text shown when the daemon fails the challenge handshake. */
-export const VERIFY_FAILED_LABEL = "daemon failed verification";
+export const VERIFY_FAILED_LABEL = "turbofig was reset. Close and reopen this plugin.";
 
 export type ChallengeResult = { ok: true; auth: { type: "AUTH"; proof: string } } | { ok: false };
 
@@ -277,7 +329,12 @@ export function decideFrame(
 }
 
 /** Status text for a daemon that accepts the socket but never sends a CHALLENGE (an older daemon). */
-export const DAEMON_OLD_LABEL = "turbofig is older than this plugin: update turbofig";
+export const DAEMON_OLD_LABEL =
+  "Another app may be using turbofig's port, or turbofig is older than this plugin.";
+
+/** Status text when nothing listens on the port. Names the menu bar app and Terminal. */
+export const NOT_RUNNING_LABEL =
+  "turbofig is not running. Open the turbofig app, or run turbofig in Terminal.";
 
 /** Closes in a row with no CHALLENGE before the old-daemon text shows. */
 export const NO_CHALLENGE_LIMIT = 3;
@@ -306,10 +363,10 @@ export function healthAfterClose(
 ): LinkHealth {
   let misses = 0;
   if (!outcome.sawChallenge && outcome.opened) misses = h.misses + 1;
-  return {
-    misses,
-    failed: h.failed || outcome.failedVerification,
-  };
+  /* A socket that never opened means nothing listens: an earlier verify
+     failure is stale, so the not-running label must show. */
+  const failed = outcome.opened ? h.failed || outcome.failedVerification : false;
+  return { misses, failed };
 }
 
 /** Returns the sticky status text to show instead of the normal label, or null. */
