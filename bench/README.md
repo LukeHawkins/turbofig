@@ -294,3 +294,29 @@ bun test bench/
 9. Optional, separate budget: `bun bench/agent.ts --runs 5 --out out/agent-report.json`
    for the real token-cost comparison. This step spends Claude Code usage;
    decide deliberately whether to run it. (5-10 min)
+
+## session-ab
+
+`bench/session-ab.ts` runs real agent design sessions (headless Claude Code,
+file bridge only) and compares turbofig versions. Per run it makes a fresh
+page, runs the brief ("landing4": a 4-step landing page with a screenshot
+check after each step), then records tokens, cost, time, turns, tool calls,
+failed tool calls and success (DONE seen and at least 4 top-level nodes).
+It deletes the bench page after each run. The brief is a new one, not the
+October side-by-side prompt, so compare only runs made with this script.
+
+A/B between Homebrew 0.1.0 and the dev 0.2.0 build:
+
+```
+# A: Homebrew 0.1.0. Stop any daemon, start this one, reopen the Figma plugin.
+turbofig serve
+bun bench/session-ab.ts --label v010 --prompt-ref v0.1.0 --bin "$(command -v turbofig)"
+# B: dev 0.2.0. Stop the daemon, start the dev build, reopen the Figma plugin.
+./target/release/turbofig serve
+bun bench/session-ab.ts --label v020 --prompt-ref HEAD
+bun bench/session-ab.ts --compare /tmp/tf-session-ab/v010.jsonl /tmp/tf-session-ab/v020.jsonl
+```
+
+Add `--dry-run` to print the rendered prompt and the claude command only.
+Keep exactly one Figma file connected. Time is noisy when the machine is
+busy: trust tokens and tool calls more than seconds.
