@@ -122,7 +122,7 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// exiting anyway. Shorter than `STOP_UNREACHABLE_DEADLINE` in `main.rs`
 /// (65s): a stuck quit must never leave the user staring at a tray icon
 /// that refuses to go away.
-const QUIT_WAIT_DEADLINE: Duration = Duration::from_secs(10);
+pub const QUIT_WAIT_DEADLINE: Duration = Duration::from_secs(10);
 
 /// True when a debug build may touch the real desktop (clipboard, Figma,
 /// Console). Mirrors `main.rs`'s own guard of the same name.
@@ -353,9 +353,11 @@ fn set_start_at_login(enabled: bool, home: &Path) -> Result<(), String> {
 /// Quit is stopping.
 static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Starts the daemon through the same spawn helper the startup path uses.
+/// Starts the daemon through the same spawn helper the startup path uses,
+/// from the same binary: the Homebrew one (bundle copy only as fallback), so
+/// a daemon started here also restarts itself onto the next upgrade.
 fn start_daemon_now(home: &Path) -> Result<(), String> {
-    let bin = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bin = crate::upgrade::daemon_start_binary().map_err(|e| e.to_string())?;
     crate::spawn::spawn_detached_daemon(&bin, home).map_err(|e| e.to_string())
 }
 
@@ -368,6 +370,9 @@ fn start_daemon_now(home: &Path) -> Result<(), String> {
 /// launch) or the hidden `turbofig app run` dev command, both already
 /// gated; this function itself does not re-check either.
 pub async fn run_menu_bar_app() {
+    // Pin the build id this app launched with before anything else: a refresh
+    // that lands while the app starts must not change what "launched with" means.
+    let _ = crate::upgrade::running_build_id();
     let home = crate::bridge_dir_from_env();
     let mcp_port = crate::port_from_env();
 
@@ -400,15 +405,24 @@ pub async fn run_menu_bar_app() {
 
     // The daemon is trusted only after it proves it holds the pairing token.
     match crate::daemon_client::verify_allowing_legacy_in_home(mcp_port, &home).await {
-        Ok((_, crate::daemon_client::Listener::LegacySameUser)) => {
-            if let Err(e) = crate::proxy::hand_off_legacy_daemon(mcp_port, &home).await {
-                supervise::show_failure_alert(&e.to_string(), &home);
-                std::process::exit(1);
+        Ok((health, listener)) => {
+            // Any older daemon is restarted onto the build this app belongs
+            // to: one with no proof support (legacy) or a lower version.
+            let older = listener == crate::daemon_client::Listener::LegacySameUser
+                || version_to_accept(Some(&health))
+                    .is_some_and(|v| crate::proxy::daemon_version_is_older(&v));
+            if older {
+                if let Err(e) = crate::proxy::hand_off_older_daemon(mcp_port, &home).await {
+                    supervise::show_failure_alert(&e.to_string(), &home);
+                    std::process::exit(1);
+                }
             }
         }
-        Ok(_) => {}
         Err(crate::daemon_client::VerifyError::Unreachable) => {
-            let turbofig_binary = match std::env::current_exe() {
+            // Start the daemon from the Homebrew binary, not this bundle's
+            // copy: a daemon on the Homebrew path restarts itself onto the
+            // next upgrade. The bundle copy is only the fallback.
+            let turbofig_binary = match crate::upgrade::daemon_start_binary() {
                 Ok(p) => p,
                 Err(e) => {
                     supervise::show_failure_alert(
@@ -438,6 +452,14 @@ pub async fn run_menu_bar_app() {
             std::process::exit(1);
         }
     }
+
+    // The build this app launched with, pinned now (before any refresh can
+    // rewrite the bundle), and the bundle executable whose plist is watched.
+    let mut relaunch_watch =
+        self_update::RelaunchWatch::new(crate::upgrade::running_build_id().map(str::to_owned));
+    let app_exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.canonicalize().unwrap_or(p));
 
     let initial_health = verified_health(mcp_port, &home).await;
     // Resolved once: both read the file system and the environment, which
@@ -603,7 +625,6 @@ pub async fn run_menu_bar_app() {
                 if let Some(icon) = icon::icon_for_state(new_state.icon_state) {
                     let _ = tray.set_icon_templated(Some(icon));
                 }
-                let daemon_version = version_to_accept(health.as_ref());
                 if let Ok(mut guard) = current_state.lock() {
                     *guard = new_state;
                 }
@@ -611,8 +632,14 @@ pub async fn run_menu_bar_app() {
                 if let Some(handle) = settings_window_handle.borrow().as_ref() {
                     handle.refresh_if_mode_changed();
                 }
-                if let Some(daemon_version) = daemon_version {
-                    maybe_relaunch_for_upgrade(&home, &app_lock, &daemon_version);
+                // A refresh (`brew upgrade`, then a new daemon image or the
+                // bare `turbofig` command) changed the build id in the
+                // bundle: relaunch onto it.
+                let on_disk = app_exe.as_deref().and_then(|exe| {
+                    crate::upgrade::bundle_plist_string_of_exe(exe, "TurbofigBuildId")
+                });
+                if relaunch_watch.observe(on_disk.as_deref()) {
+                    relaunch_for_upgrade(&app_lock);
                 }
             }
             Event::UserEvent(UserEvent::OpenAboutWindow) => {
@@ -768,38 +795,13 @@ fn perform_quit(home: &Path, mcp_port: u16) -> ! {
     std::process::exit(0);
 }
 
-/// Checks whether the daemon (`daemon_version`, from `/health`) is newer
-/// than this app binary's own version, and relaunches the bundle once per
-/// daemon version if so (`self_update::should_relaunch_for_upgrade`).
-/// Releases `app_lock` first (so the new instance's own `lock::try_acquire`
-/// can succeed), records the daemon version it relaunched for, reopens the
-/// bundle as a new instance (`open -n`, through the `AppOpener` seam), then
-/// exits. A version string that fails to parse, an unwritable state file,
-/// or a failed reopen are all handled by logging and simply not relaunching
-/// (or, having already released the lock, exiting anyway so the user is not
-/// left with a locked-out tray icon): see the inline comments.
-fn maybe_relaunch_for_upgrade(
-    home: &Path,
-    app_lock: &Rc<RefCell<Option<AppLock>>>,
-    daemon_version: &str,
-) {
-    let app_version = env!("CARGO_PKG_VERSION");
-    let last_relaunched_for = self_update::read_last_relaunched_version(home);
-    if !self_update::should_relaunch_for_upgrade(
-        app_version,
-        daemon_version,
-        last_relaunched_for.as_deref(),
-    ) {
-        return;
-    }
-
-    if let Err(e) = self_update::write_last_relaunched_version(home, daemon_version) {
-        eprintln!("turbofig: could not record the self-update state file, relaunching anyway: {e}");
-    }
-
-    // Release the flock before reopening: the new instance's own
-    // `lock::try_acquire` must succeed, not find this (about to exit) one
-    // still holding it.
+/// Relaunches the app after the bundle on disk got another build id
+/// (`self_update::RelaunchWatch`). Releases `app_lock` first (so the new
+/// instance's own `lock::try_acquire` can succeed), reopens the bundle as a
+/// new instance (`open -n`, through the `AppOpener` seam), then exits. A
+/// failed reopen is logged; the lock is already released, so the process
+/// exits anyway and the user is not left with a locked-out tray icon.
+fn relaunch_for_upgrade(app_lock: &Rc<RefCell<Option<AppLock>>>) {
     app_lock.borrow_mut().take();
 
     let applications_dir = crate::app_bundle::applications_dir_from_env();

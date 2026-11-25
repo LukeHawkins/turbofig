@@ -56,6 +56,8 @@ const MAX_FILE_KEY_BYTES: usize = 256;
 /// How long a nonce client may take to answer CHALLENGE with AUTH.
 /// Maximum number of upgraded sockets that may wait for AUTH at once.
 pub(crate) const MAX_PENDING_HANDSHAKES: usize = 8;
+/// Maximum number of idle sockets of 0.1.0 plugins (`?token=`) held at once.
+const MAX_COMPAT_SOCKETS: usize = 16;
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Per-listener context: the bound WS port and the pending handshakes.
@@ -65,6 +67,8 @@ pub(crate) struct WsContext {
     port: u16,
     timings: WsTimings,
     next_id: std::sync::atomic::AtomicU64,
+    /// Open idle sockets of 0.1.0 plugins (see `handle_compat_socket`).
+    compat_open: std::sync::atomic::AtomicUsize,
     pending: std::sync::Mutex<std::collections::VecDeque<(u64, tokio::sync::oneshot::Sender<()>)>>,
 }
 
@@ -106,6 +110,7 @@ impl WsContext {
             port,
             timings,
             next_id: std::sync::atomic::AtomicU64::new(0),
+            compat_open: std::sync::atomic::AtomicUsize::new(0),
             pending: std::sync::Mutex::new(std::collections::VecDeque::new()),
         })
     }
@@ -331,7 +336,8 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
 }
 
 /// Query parameters read on the WS upgrade. Any other parameter is ignored.
-/// A `token` parameter (the removed 0.1.0 plugin auth) is refused with 401.
+/// A `token` parameter (the removed 0.1.0 plugin auth) gets only a `WELCOME`
+/// when it is valid, and a 401 otherwise.
 #[derive(serde::Deserialize)]
 struct WsAuthQuery {
     #[serde(default)]
@@ -422,12 +428,82 @@ async fn handle_challenge_socket(
     handle_socket(socket, state, timings).await;
 }
 
+/// Holds one of the `MAX_COMPAT_SOCKETS` slots while a compat socket is open.
+struct CompatGuard {
+    ctx: Arc<WsContext>,
+}
+
+impl CompatGuard {
+    fn try_new(ctx: Arc<WsContext>) -> Option<Self> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if ctx.compat_open.fetch_add(1, SeqCst) >= MAX_COMPAT_SOCKETS {
+            ctx.compat_open.fetch_sub(1, SeqCst);
+            return None;
+        }
+        Some(Self { ctx })
+    }
+}
+
+impl Drop for CompatGuard {
+    fn drop(&mut self) {
+        self.ctx
+            .compat_open
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The `WELCOME` frame a 0.1.0 plugin gets: only `type` and `version`. That
+/// is all its version-mismatch banner needs.
+pub(crate) fn compat_welcome_message() -> String {
+    json!({ "type": "WELCOME", "version": crate::mcp::reported_version() }).to_string()
+}
+
+/// Serves a 0.1.0 plugin socket (`?token=` with the valid token). It sends
+/// the one `WELCOME` frame, then keeps the socket idle: every frame the
+/// plugin sends is dropped, nothing is registered in `AppState` (so no job is
+/// ever routed here, and the file never shows as connected), and only
+/// protocol pings go out to keep the link alive. It ends when the plugin
+/// closes it, or stops answering pings; a daemon exit closes it with the
+/// process.
+async fn handle_compat_socket(socket: WebSocket, _guard: CompatGuard, timings: WsTimings) {
+    let (mut sink, mut stream) = socket.split();
+    if sink
+        .send(Message::Text(compat_welcome_message().into()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let mut ping_interval = tokio::time::interval(timings.ping_interval);
+    ping_interval.tick().await;
+    let mut last_pong = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                if last_pong.elapsed() > timings.pong_timeout {
+                    return;
+                }
+                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    return;
+                }
+            }
+            frame = stream.next() => match frame {
+                Some(Ok(Message::Pong(_))) => last_pong = tokio::time::Instant::now(),
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                // Text and binary frames are dropped unread.
+                Some(Ok(_)) => {}
+            },
+        }
+    }
+}
+
 /// axum handler that upgrades an HTTP request to a WebSocket connection.
 ///
 /// Rejects the upgrade with 403 when the Origin header is present and is
 /// neither absent nor "null" (the MCP spec's Origin-validation requirement).
-/// Then rejects with 401 unless the request carries a valid `nonce` and no
-/// `token` parameter. The plugin then proves the pairing token in the
+/// Then rejects with 401 unless the request carries a valid `nonce`, or the
+/// valid pairing `token` of a 0.1.0 plugin (that socket gets a `WELCOME` and
+/// nothing else: `handle_compat_socket`). The plugin then proves the pairing token in the
 /// CHALLENGE/AUTH handshake: Origin alone cannot tell the real
 /// Figma plugin UI apart from a sandboxed `<iframe>` on a malicious web page,
 /// since both report Origin `null` (see `token.rs`).
@@ -462,9 +538,26 @@ async fn upgrade(
     let ws = ws
         .max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES);
-    if auth.token.is_some() {
-        // Old plugins sent the token in the URL. That path is removed.
-        return unauthorized();
+    if let Some(token) = auth.token.as_deref() {
+        // A 0.1.0 plugin sends the token in the URL. That auth path is
+        // removed: such a socket gets no job, no status and no file info. A
+        // valid token only buys one WELCOME frame, so the old plugin shows
+        // its "Version mismatch ... Reload the plugin" banner instead of
+        // reconnecting in silence. A wrong or missing token is a 401.
+        if !crate::token::constant_time_eq(token, state.token()) {
+            return unauthorized();
+        }
+        let Some(guard) = CompatGuard::try_new(ctx.clone()) else {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "too many connections",
+            )
+                .into_response();
+        };
+        let timings = ctx.timings;
+        return ws
+            .on_upgrade(move |socket| handle_compat_socket(socket, guard, timings))
+            .into_response();
     }
     match auth.nonce {
         Some(nonce) if daemon_auth::valid_nonce(&nonce) => {
@@ -570,6 +663,26 @@ mod tests {
             json!(crate::config::bridge_dir_custom()),
             "bridgeDirCustom must equal bridge_dir_custom()"
         );
+    }
+
+    #[test]
+    fn compat_welcome_carries_only_type_and_version() {
+        let v: Value = serde_json::from_str(&compat_welcome_message()).expect("json");
+        let keys: Vec<&String> = v.as_object().expect("object").keys().collect();
+        assert_eq!(keys.len(), 2, "{v}");
+        assert_eq!(v["type"], json!("WELCOME"));
+        assert_eq!(v["version"], json!(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn compat_sockets_are_capped_and_a_closed_one_frees_its_slot() {
+        let ctx = WsContext::new(1);
+        let held: Vec<CompatGuard> = (0..MAX_COMPAT_SOCKETS)
+            .map(|_| CompatGuard::try_new(ctx.clone()).expect("a free slot"))
+            .collect();
+        assert!(CompatGuard::try_new(ctx.clone()).is_none(), "the cap holds");
+        drop(held);
+        assert!(CompatGuard::try_new(ctx).is_some(), "slots come back");
     }
 
     #[test]
@@ -911,8 +1024,8 @@ mod tests {
                 .await
                 .is_err()
         );
-        // The removed legacy token path gets 401, cap or not.
-        let legacy = format!("ws://127.0.0.1:{port}/?token={}", state.token());
+        // A wrong legacy token gets 401, cap or not.
+        let legacy = format!("ws://127.0.0.1:{port}/?token=wrong");
         match tokio_tungstenite::connect_async(legacy).await {
             Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status(), 401),
             other => panic!("expected 401, got {other:?}"),

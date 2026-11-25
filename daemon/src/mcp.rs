@@ -540,7 +540,7 @@ async fn mcp_http_gate(
 /// release binary (`cargo build --release` compiles with
 /// `debug_assertions` off), so a production daemon can never be made to
 /// misreport its own version this way.
-fn reported_version() -> String {
+pub(crate) fn reported_version() -> String {
     #[cfg(debug_assertions)]
     if let Ok(v) = std::env::var("TURBOFIG_TEST_VERSION_OVERRIDE") {
         return v;

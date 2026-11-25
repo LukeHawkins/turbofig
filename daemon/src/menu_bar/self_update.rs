@@ -1,61 +1,52 @@
-//! The app's self-update decision: when the daemon (refreshed by `brew
-//! upgrade` on its next start, see `app_bundle::app_bundle_outdated`)
-//! reports a newer version than this running app binary's own
-//! `CARGO_PKG_VERSION`, the app relaunches itself once, then exits, so the
-//! next launch picks up the refreshed bundle. Guarded against a relaunch
-//! loop by a 1-line state file in the home directory: a given daemon
-//! version only ever triggers 1 relaunch.
+//! The app's self-update decision. `brew upgrade` changes the build of the
+//! binary a refresh copies into `turbofig.app`, and the refresh stamps that
+//! build's id into the bundle's `Info.plist` (`TurbofigBuildId`). The running
+//! app remembers the id it launched with. When the id on disk differs from
+//! it, the app relaunches itself as a new instance (`open -n`) and exits.
+//!
+//! The id is compared, not the version: this also catches a rebuild with the
+//! same version, a formula revision, and a downgrade. There is no state file
+//! and no loop: the new instance launches with the id that is on disk, so it
+//! sees no difference.
+//!
+//! A refresh writes the plist, then the binary, then signs the bundle. The id
+//! must therefore differ on `CONFIRMATIONS` polls in a row before the app
+//! relaunches, so it never starts a bundle that is half written.
 //!
 //! No `tray-icon`/`tao`/`wry` dependency: `mod.rs`'s `maybe_relaunch_for_upgrade`
 //! is the only caller, and the only place this ever actually relaunches
 //! anything.
 
-use std::path::Path;
+/// Consecutive polls that must see a different id before the app relaunches.
+/// The health poll runs every 2 s, so this is a settle time of about 2 s.
+pub const CONFIRMATIONS: u32 = 2;
 
-/// The state file recording the last daemon version this app already
-/// relaunched itself for, directly under the home directory (alongside
-/// `token`, `plugin-seen`, etc.).
-const STATE_FILE: &str = "app-relaunched-for";
+/// Remembers the build id this app launched with and counts consecutive
+/// polls that saw another one on disk.
+#[derive(Debug)]
+pub struct RelaunchWatch {
+    launched_with: Option<String>,
+    differing: u32,
+}
 
-/// True when the app should relaunch itself: the daemon's version is
-/// strictly newer than the app's own (by semver), and the app has not
-/// already relaunched for this exact daemon version before (`last_relaunched_for`,
-/// from `read_last_relaunched_version`).
-///
-/// False for an unparseable version on either side: a version string this
-/// crate itself produces (`env!("CARGO_PKG_VERSION")`, or `/health`'s
-/// `version`, the same `CARGO_PKG_VERSION`-derived value) should always
-/// parse, so a failure here means something is unexpectedly wrong, and
-/// doing nothing is the safe default, not relaunching on a guess.
-pub fn should_relaunch_for_upgrade(
-    app_version: &str,
-    daemon_version: &str,
-    last_relaunched_for: Option<&str>,
-) -> bool {
-    let Ok(app) = semver::Version::parse(app_version) else {
-        return false;
-    };
-    let Ok(daemon) = semver::Version::parse(daemon_version) else {
-        return false;
-    };
-    if daemon <= app {
-        return false;
+impl RelaunchWatch {
+    pub fn new(launched_with: Option<String>) -> Self {
+        Self {
+            launched_with,
+            differing: 0,
+        }
     }
-    last_relaunched_for != Some(daemon_version)
-}
 
-/// Reads the last daemon version this app already relaunched for, if any.
-pub fn read_last_relaunched_version(home: &Path) -> Option<String> {
-    std::fs::read_to_string(home.join(STATE_FILE))
-        .ok()
-        .map(|s| s.trim().to_owned())
-}
-
-/// Records `daemon_version` as the last one this app relaunched for, so a
-/// later health poll for the same version never triggers a second
-/// relaunch (see `should_relaunch_for_upgrade`).
-pub fn write_last_relaunched_version(home: &Path, daemon_version: &str) -> std::io::Result<()> {
-    std::fs::write(home.join(STATE_FILE), daemon_version)
+    /// Records one poll. `on_disk` is the id the bundle's `Info.plist`
+    /// carries now. Returns true when the app must relaunch.
+    pub fn observe(&mut self, on_disk: Option<&str>) -> bool {
+        if crate::upgrade::app_should_relaunch(self.launched_with.as_deref(), on_disk) {
+            self.differing += 1;
+        } else {
+            self.differing = 0;
+        }
+        self.differing >= CONFIRMATIONS
+    }
 }
 
 #[cfg(test)]
@@ -63,57 +54,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relaunches_when_the_daemon_is_newer_and_never_relaunched_before() {
-        assert!(should_relaunch_for_upgrade("1.2.0", "1.3.0", None));
+    fn never_relaunches_while_the_id_on_disk_is_the_launch_id() {
+        let mut w = RelaunchWatch::new(Some("aa-1".into()));
+        for _ in 0..10 {
+            assert!(!w.observe(Some("aa-1")));
+        }
     }
 
     #[test]
-    fn does_not_relaunch_when_versions_match() {
-        assert!(!should_relaunch_for_upgrade("1.2.0", "1.2.0", None));
+    fn relaunches_after_the_id_differs_on_confirmed_polls_in_a_row() {
+        let mut w = RelaunchWatch::new(Some("aa-1".into()));
+        assert!(!w.observe(Some("bb-2")), "one poll is not enough");
+        assert!(w.observe(Some("bb-2")));
     }
 
     #[test]
-    fn does_not_relaunch_when_the_app_is_newer_than_the_daemon() {
-        assert!(!should_relaunch_for_upgrade("1.3.0", "1.2.0", None));
+    fn a_blip_that_goes_back_resets_the_count() {
+        let mut w = RelaunchWatch::new(Some("aa-1".into()));
+        assert!(!w.observe(Some("bb-2")));
+        assert!(!w.observe(Some("aa-1")));
+        assert!(!w.observe(Some("bb-2")), "the count started over");
+        assert!(w.observe(Some("bb-2")));
     }
 
     #[test]
-    fn does_not_relaunch_twice_for_the_same_daemon_version() {
-        assert!(!should_relaunch_for_upgrade(
-            "1.2.0",
-            "1.3.0",
-            Some("1.3.0")
-        ));
+    fn an_unreadable_plist_or_an_unknown_launch_id_never_relaunches() {
+        let mut w = RelaunchWatch::new(Some("aa-1".into()));
+        for _ in 0..5 {
+            assert!(!w.observe(None));
+        }
+        let mut unknown = RelaunchWatch::new(None);
+        for _ in 0..5 {
+            assert!(!unknown.observe(Some("bb-2")));
+        }
     }
 
     #[test]
-    fn relaunches_again_for_a_further_newer_daemon_version() {
-        assert!(should_relaunch_for_upgrade("1.2.0", "1.4.0", Some("1.3.0")));
-    }
-
-    #[test]
-    fn an_unparseable_app_version_never_relaunches() {
-        assert!(!should_relaunch_for_upgrade("not-a-version", "1.3.0", None));
-    }
-
-    #[test]
-    fn an_unparseable_daemon_version_never_relaunches() {
-        assert!(!should_relaunch_for_upgrade("1.2.0", "not-a-version", None));
-    }
-
-    #[test]
-    fn read_last_relaunched_version_is_none_when_the_state_file_is_absent() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(read_last_relaunched_version(dir.path()), None);
-    }
-
-    #[test]
-    fn write_then_read_round_trips_the_version() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_last_relaunched_version(dir.path(), "1.3.0").expect("write");
-        assert_eq!(
-            read_last_relaunched_version(dir.path()),
-            Some("1.3.0".to_owned())
-        );
+    fn a_same_version_rebuild_and_a_downgrade_both_relaunch() {
+        // The ids are opaque: any difference counts, whatever the version.
+        for disk in ["bb-2", "00-0"] {
+            let mut w = RelaunchWatch::new(Some("aa-1".into()));
+            w.observe(Some(disk));
+            assert!(w.observe(Some(disk)));
+        }
     }
 }

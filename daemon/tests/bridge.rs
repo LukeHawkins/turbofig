@@ -1207,3 +1207,41 @@ async fn test_bridge_renamed_job_is_answered_by_the_event_not_the_backstop() {
         }
     }
 }
+
+/// A draining daemon (an upgrade restart under way) claims no job: the file
+/// stays in the inbox, unclaimed and unanswered, and the next daemon (or the
+/// same one, once it accepts work again) claims it. The old behaviour claimed
+/// the job and then failed it with `draining`.
+#[tokio::test]
+async fn a_draining_bridge_leaves_the_job_in_the_inbox_until_it_accepts_work() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(turbofig::AppState::new());
+    state.set_draining(true);
+    spawn_bridge(state.clone(), tmp.path().to_path_buf());
+    // The bridge makes its folders on start.
+    wait_until(
+        || tmp.path().join("inbox").is_dir(),
+        WAIT_DEADLINE_MS,
+        "bridge to create its inbox",
+    )
+    .await;
+
+    let result_path = write_job(&tmp, "drain1", serde_json::json!({"op": "status"})).await;
+    let job_path = tmp.path().join("inbox/drain1.json");
+
+    // Several scan intervals pass: the job is neither claimed nor answered.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        job_path.exists(),
+        "a draining daemon must not claim the job"
+    );
+    assert!(!result_path.exists(), "and must not answer it");
+    assert_eq!(state.jobs_in_flight(), 0);
+
+    // It accepts work again (a failed restart): the job is then served.
+    state.set_draining(false);
+    let body = poll_file(&result_path, 15_000).await;
+    let result: serde_json::Value = serde_json::from_str(&body).expect("result JSON");
+    assert_eq!(result["ok"], serde_json::Value::Bool(true), "{body}");
+    assert!(!job_path.exists(), "the claimed job leaves the inbox");
+}

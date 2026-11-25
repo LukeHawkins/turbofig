@@ -520,17 +520,43 @@ fn legacy_needs_handoff(legacy: bool) -> bool {
     legacy
 }
 
+/// True when the daemon version is older than this binary's own. An
+/// unparseable version is never older: "cannot tell" does nothing.
+pub fn daemon_version_is_older(daemon_version: &str) -> bool {
+    compare_versions(daemon_version, &own_version()) == Some(Ordering::Less)
+}
+
 /// Restarts an older same-user daemon (no proof support) through the
 /// allowed `send_control` path, then waits for a VERIFIED daemon. Shared by
 /// the proxy, the menu bar and `turbofig start`. No `/job` and no full
 /// `/health` goes to the old daemon.
 pub async fn hand_off_legacy_daemon(mcp_port: u16, home: &Path) -> Result<(), String> {
+    hand_off_older_daemon(mcp_port, home).await
+}
+
+/// Restarts a daemon that is older than this binary: one with no proof
+/// support (legacy) or a verified one with a lower version. The caller has
+/// already decided that it is older.
+///
+/// When the headless launchd service owns the daemon, the old daemon exits
+/// with the restart code and launchd starts the new one, so this waits for
+/// that instead of racing it with its own spawn (the launchd `serve` would
+/// then exit "already running" and the service would stay stopped).
+pub async fn hand_off_older_daemon(mcp_port: u16, home: &Path) -> Result<(), String> {
     eprintln!("turbofig: an older turbofig daemon is running; restarting it");
-    let binary = std::env::current_exe()
+    // The Homebrew binary, not an app bundle's copy: see `upgrade::daemon_start_binary`.
+    let binary = crate::upgrade::daemon_start_binary()
         .map_err(|e| format!("failed to determine the running binary's path: {e}"))?;
     let client = crate::spawn::build_admin_client()
         .map_err(|e| format!("could not build the HTTP client: {e}"))?;
-    restart_for_upgrade(&client, mcp_port, home, &binary, false).await
+    restart_for_upgrade(
+        &client,
+        mcp_port,
+        home,
+        &binary,
+        crate::upgrade::headless_service_owns_daemon(),
+    )
+    .await
 }
 
 /// Compares `daemon_version` against this proxy's own version, once, at
@@ -668,9 +694,8 @@ async fn restart_for_upgrade(
 /// own "already running" pre-check (`already_running_health`, `main.rs`)
 /// makes launchd's own `serve` invocation exit 0 at once, so launchd leaves
 /// the daemon stopped (`KeepAlive: {SuccessfulExit: false}`) rather than
-/// supervising it, and there is no longer any upgrade watcher
-/// (`run_supervisor_loop`) running at all. Waiting for the relaunch first
-/// avoids that outright, and only falls back to spawning when nothing
+/// supervising it, and a later crash would leave it down. Waiting for the
+/// relaunch first avoids that outright, and only falls back to spawning when nothing
 /// answers within `SUPERVISED_RELAUNCH_WAIT`: an unsupervised daemon still
 /// needs this caller to spawn it, the same as always.
 fn must_spawn_after_restart(daemon_was_supervised: bool, launchd_relaunch_answered: bool) -> bool {
@@ -742,6 +767,16 @@ mod tests {
         assert_eq!(compare_versions("0.1.0", "0.2.0"), Some(Ordering::Less));
         assert_eq!(compare_versions("0.2.0", "0.1.0"), Some(Ordering::Greater));
         assert_eq!(compare_versions("1.2.3", "1.2.3"), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn daemon_version_is_older_only_for_a_lower_parseable_version() {
+        // Debug builds honour `TURBOFIG_TEST_OWN_VERSION_OVERRIDE`; no test
+        // here sets it, so `own_version()` is the crate version.
+        assert!(daemon_version_is_older("0.0.1"));
+        assert!(!daemon_version_is_older(env!("CARGO_PKG_VERSION")));
+        assert!(!daemon_version_is_older("999.0.0"));
+        assert!(!daemon_version_is_older("not-a-version"));
     }
 
     #[test]

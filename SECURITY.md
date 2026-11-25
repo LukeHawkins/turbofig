@@ -116,8 +116,11 @@ These risks remain. They are known and accepted.
 
 The WebSocket port (18847) needs proof of the pairing token on the upgrade:
 the plugin connects with `?nonce=`, the daemon sends `CHALLENGE` (an HMAC
-proof), the plugin verifies it and answers `AUTH`. A `?token=` upgrade gets
-401: the old URL-token path is removed. The token matches `~/.turbofig/token`.
+proof), the plugin verifies it and answers `AUTH`. A `?token=` upgrade with a
+wrong or missing token gets 401. A valid `?token=` (a 0.1.0 plugin that was
+left open across an upgrade) gets a socket that carries one `WELCOME` frame
+(`type` and `version`) and nothing else: no job, no status, no file info, and
+no entry in the connection registry (`DECISIONS.md` #53). The token matches `~/.turbofig/token`.
 This closes a gap Origin checking
 alone leaves open: a sandboxed `<iframe>` on any web page reports Origin
 `null`, the same value the real Figma plugin UI reports, so a malicious page

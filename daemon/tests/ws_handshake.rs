@@ -167,15 +167,58 @@ async fn invalid_or_missing_nonce_gets_401() {
     }
 }
 
+/// A 0.1.0 plugin connects with `?token=`. A valid token gets one WELCOME
+/// frame (so the old plugin can show its version-mismatch banner) and
+/// nothing else: no job, no status, no file info, and no registered
+/// connection for routing to find.
 #[tokio::test]
-async fn legacy_token_with_the_correct_value_gets_401() {
+async fn legacy_token_with_the_correct_value_gets_only_a_welcome() {
     let (state, port) = start().await;
-    let err = connect_async(format!("ws://127.0.0.1:{port}/?token={}", state.token()))
+    let (mut ws, _) = connect_async(format!("ws://127.0.0.1:{port}/?token={}", state.token()))
         .await
-        .expect_err("must be refused");
-    match err {
-        tokio_tungstenite::tungstenite::Error::Http(r) => assert_eq!(r.status(), 401),
-        e => panic!("unexpected error {e:?}"),
+        .expect("a valid legacy token is accepted");
+    let welcome = next_json(&mut ws).await;
+    assert_eq!(welcome["type"], "WELCOME");
+    assert_eq!(welcome["version"], env!("CARGO_PKG_VERSION"));
+    let keys: Vec<&String> = welcome.as_object().unwrap().keys().collect();
+    assert_eq!(
+        keys.len(),
+        2,
+        "WELCOME carries type and version only: {welcome}"
+    );
+
+    // The old plugin identifies its file. The daemon must ignore it.
+    ws.send(Tt::Text(
+        r#"{"type":"FILE_INFO","fileKey":"abc","name":"Old file","pluginVersion":"0.1.0"}"#.into(),
+    ))
+    .await
+    .unwrap();
+    // No reply of any kind, and nothing registered for routing or status.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(400), ws.next()).await;
+    assert!(quiet.is_err(), "no frame may follow the WELCOME: {quiet:?}");
+    assert!(state.list_connections().is_empty());
+    // A job for that file finds no plugin at all.
+    let result = turbofig::run_execute(&state, None, Some("abc"), "return 1").await;
+    assert_eq!(
+        result["ok"], false,
+        "no job may reach a compat socket: {result}"
+    );
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(200), ws.next()).await;
+    assert!(quiet.is_err(), "no job frame may follow: {quiet:?}");
+}
+
+/// A missing token and a wrong token both stay refused.
+#[tokio::test]
+async fn legacy_token_missing_or_wrong_gets_401() {
+    let (_state, port) = start().await;
+    for q in ["token=", "token=short", "token=wrong"] {
+        let err = connect_async(format!("ws://127.0.0.1:{port}/?{q}"))
+            .await
+            .expect_err("must be refused");
+        match err {
+            tokio_tungstenite::tungstenite::Error::Http(r) => assert_eq!(r.status(), 401, "{q}"),
+            e => panic!("unexpected error {e:?}"),
+        }
     }
 }
 

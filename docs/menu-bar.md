@@ -37,15 +37,20 @@ window to see the setting change take effect.
 brew upgrade turbofig
 ```
 
-The next `turbofig mcp` start (or the next time you open the app) sees an
-older daemon, lets its in-flight jobs finish, then restarts it on the new
-version. An older proxy never restarts a newer daemon. The daemon
-rewrites the plugin files and refreshes `turbofig.app` on every start, so
-the Figma import only happens once: reopen the plugin in Figma after an
-upgrade to pick up the refreshed files. If the app was already open when
-you upgraded, it notices the daemon is now newer and relaunches itself
-once, automatically, to pick up the refreshed bundle; it never relaunches
-twice for the same upgrade.
+A running daemon notices the upgrade by itself, within about 30 seconds. It
+stops taking new jobs, lets its in-flight jobs finish, then restarts in
+place on the new build. You do not need to stop it. The daemon rewrites the
+plugin files and refreshes `turbofig.app` when it restarts, so the Figma
+import only happens once: reopen the plugin in Figma after an upgrade to
+pick up the refreshed files (a plugin you left open shows a "Reload the
+plugin" notice). If the app was already open, it notices that its bundle
+changed and relaunches itself, automatically, to pick up the refreshed
+bundle. This also works for a rebuild with the same version.
+
+If a daemon from an older turbofig is still running (one that cannot restart
+itself), opening the app, running `turbofig`, running `turbofig mcp` or
+running `turbofig js` restarts it once on the new version. An older proxy
+never restarts a newer daemon.
 
 **Uninstalling:** run `turbofig uninstall` before `brew uninstall
 turbofig`. It quits a running app first (if any), stops the running

@@ -698,6 +698,55 @@ fn ensure_daemon(dir: &Path, default_folder: bool) -> Result<Mode, String> {
     }
 }
 
+/// Longest to wait for an older daemon to go away after the restart request.
+/// The daemon's own drain waits up to 60 s for in-flight jobs.
+const RESTART_GONE_WAIT: Duration = Duration::from_secs(75);
+
+/// Restarts the daemon ONCE when it is older than this binary, then returns
+/// the mode of the daemon that serves `dir` afterwards. A daemon is older when
+/// its lock info (`daemon.lock`, no network) has no `version`, or a lower one
+/// than this binary: it was started before the upgrade and `brew upgrade` did
+/// not reach it (a 0.2.0 daemon has no in-place restart). The one request goes
+/// through the authenticated `/control` path (`daemon_client::send_control`,
+/// which verifies the daemon first). Any failure leaves the old daemon in use:
+/// the job still runs, it is only not upgraded.
+fn restart_older_daemon(dir: &Path, default_folder: bool, mode: Mode) -> Result<Mode, String> {
+    if mode != Mode::Locked {
+        return Ok(mode);
+    }
+    let Some(info) = crate::secure_fs::read_lock_info(dir) else {
+        return Ok(mode);
+    };
+    if !crate::upgrade::daemon_needs_restart(info.version.as_deref(), env!("CARGO_PKG_VERSION")) {
+        return Ok(mode);
+    }
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return Ok(mode);
+    };
+    let port = crate::config::port_from_env();
+    let accepted = rt.block_on(async {
+        let token = crate::token::read_token_file(dir).await?;
+        crate::daemon_client::send_control(port, &token, "restart")
+            .await
+            .ok()
+            .filter(|status| status.is_success())
+    });
+    if accepted.is_none() {
+        return Ok(mode);
+    }
+    let until = Instant::now() + RESTART_GONE_WAIT;
+    while crate::secure_fs::bridge_lock_held(dir) {
+        if Instant::now() >= until {
+            return Ok(mode);
+        }
+        std::thread::sleep(SLOW_POLL);
+    }
+    ensure_daemon(dir, default_folder)
+}
+
 /// Why the bridge folder could not be resolved.
 #[derive(Debug)]
 enum DirError {
@@ -896,7 +945,9 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>, guide: boo
         }
         Err(DirError::Bridge(e)) => return exit_with_bridge_error(&e),
     };
-    let mode = match ensure_daemon(&dir, default_folder) {
+    let mode = match ensure_daemon(&dir, default_folder)
+        .and_then(|m| restart_older_daemon(&dir, default_folder, m))
+    {
         Ok(m) => m,
         Err(e) => return exit_with_bridge_error(&e),
     };
