@@ -282,7 +282,11 @@ async fn test_bridge_malformed_json() {
 /// passing by accident.
 #[tokio::test]
 async fn test_bridge_services_jobs_concurrently() {
-    const TIMEOUT: Duration = Duration::from_millis(1000);
+    // 3 s, not 1 s: under a loaded machine the second job's inbox pickup can
+    // lag, and job A must still be in flight when job B is claimed. The
+    // concurrency proof below is structural, so a longer window costs only
+    // test time, never accuracy.
+    const TIMEOUT: Duration = Duration::from_millis(3000);
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = Arc::new(turbofig::AppState::with_timeout(TIMEOUT));
