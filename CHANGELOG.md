@@ -12,6 +12,14 @@ recorded under Unreleased.
 
 ### Added
 
+- `turbofig js --guide`: prints the full agent guide for the installed version
+  (version, binary, bridge folder, connected files with keys, run line,
+  `tf.*` helpers, every error code) and exits 0, also with 0 files. It reads
+  no stdin and covers the same allow rule as every `js` call. The files come
+  from a new `files` job op that reads the daemon's registry, so the guide
+  never waits on a plugin.
+- `<bridge>/guide.md`: the same guide for agents with file tools only, written
+  on every daemon start next to `tf-api.md` (mode 0600).
 - `turbofig js`: runs JS or a job JSON from stdin through the file bridge and
   prints the result. The connect prompt uses it instead of the shell recipe.
   WELCOME carries `binPath` so the prompt names the daemon binary.
@@ -38,6 +46,10 @@ recorded under Unreleased.
 
 ### Changed
 
+- The plugin and menu-bar connect prompt is a 3-line pointer to
+  `turbofig js --guide` (about 46 tokens, was about 435). The MCP prompt is
+  shorter (about 216 tokens, was 306) and names `invalid_job`,
+  `ambiguous_target` and `script_error`.
 - MCP `turbofig_screenshot` with `return: inline` sends an image content block (plus a text block with the metadata) instead of base64 text, so Claude Desktop sees it.
 - The connect prompt says to use turbofig for all Figma work and never other Figma tools, so an agent does not pick Figma's own connector ("claude.ai Figma"). docs/troubleshooting.md explains how to switch that connector off in Claude Code.
 - When the daemon is not running, the plugin says "turbofig is not running. Open Terminal and run: turbofig". It wrongly said to update turbofig before.

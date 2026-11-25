@@ -80,6 +80,10 @@ pub enum Command {
         /// Use this bridge folder (wins over TURBOFIG_BRIDGE_DIR and the default).
         #[arg(long)]
         dir: Option<String>,
+        /// Print the agent guide (live version, binary, bridge folder and
+        /// connected files) and exit. Reads no stdin.
+        #[arg(long, conflicts_with_all = ["file", "shot"])]
+        guide: bool,
     },
     /// Assemble (or refresh) the macOS app bundle. Manual-testing surface
     /// for the menu-bar app, built from inside the app bundle itself in a

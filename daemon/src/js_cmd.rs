@@ -794,6 +794,40 @@ fn stdin_wait() -> Duration {
         .unwrap_or(STDIN_FIRST_BYTE_WAIT)
 }
 
+/// Sends one job text to the daemon that serves `dir` (`mode` says how to
+/// watch it) and returns the stdout bytes and the exit code.
+fn serve(dir: &Path, mode: Mode, text: &str, file_key: Option<&str>, shot: bool) -> (Vec<u8>, i32) {
+    // The wait follows the timeout the daemon recorded, not this process's
+    // environment (an autostart service can carry a different value).
+    let wait = match mode {
+        Mode::Locked | Mode::Unlocked(_) => crate::secure_fs::read_lock_request_timeout(dir)
+            .map(|t| t + WAIT_MARGIN)
+            .unwrap_or(FALLBACK_WAIT),
+        Mode::Legacy => crate::config::request_timeout_from_env() + WAIT_MARGIN,
+    };
+    // An unlocked daemon is watched by pid and by its port. The pid alone can
+    // be reused. The port connect is cached for `PORT_CHECK_EVERY`.
+    let port = crate::config::port_from_env();
+    let mut last_port: Option<(Instant, bool)> = None;
+    let mut alive = || match mode {
+        Mode::Legacy => true,
+        Mode::Locked => crate::secure_fs::bridge_lock_held(dir),
+        Mode::Unlocked(pid) => {
+            crate::secure_fs::pid_alive(pid)
+                && match last_port {
+                    Some((at, up)) if at.elapsed() < PORT_CHECK_EVERY => up,
+                    _ => {
+                        let up = tcp_up(port);
+                        last_port = Some((Instant::now(), up));
+                        up
+                    }
+                }
+        }
+    };
+    let claim_grace = (mode == Mode::Legacy).then_some(LEGACY_CLAIM_GRACE);
+    execute_with(dir, text, file_key, shot, wait, &mut alive, claim_grace)
+}
+
 /// Prints the one JSON line every exit 1 carries, then returns 1.
 fn exit_with_bridge_error(msg: &str) -> i32 {
     let mut stdout = std::io::stdout().lock();
@@ -806,7 +840,10 @@ fn exit_with_bridge_error(msg: &str) -> i32 {
 /// (with `--shot`, line 1 only: a failed screenshot is a `shot_failed` line
 /// on exit 0), 1 no result (always with one JSON line on stdout: `not_started`,
 /// `started_unknown` or `bridge_error`), 2 a usage error (message on stderr).
-pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
+pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>, guide: bool) -> i32 {
+    if guide {
+        return run_guide(dir_arg);
+    }
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
         eprintln!("{USAGE}");
@@ -863,39 +900,79 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>) -> i32 {
         Ok(m) => m,
         Err(e) => return exit_with_bridge_error(&e),
     };
-    // The wait follows the timeout the daemon recorded, not this process's
-    // environment (an autostart service can carry a different value).
-    let wait = match mode {
-        Mode::Locked | Mode::Unlocked(_) => crate::secure_fs::read_lock_request_timeout(&dir)
-            .map(|t| t + WAIT_MARGIN)
-            .unwrap_or(FALLBACK_WAIT),
-        Mode::Legacy => crate::config::request_timeout_from_env() + WAIT_MARGIN,
-    };
-    // An unlocked daemon is watched by pid and by its port. The pid alone can
-    // be reused. The port connect is cached for `PORT_CHECK_EVERY`.
-    let port = crate::config::port_from_env();
-    let mut last_port: Option<(Instant, bool)> = None;
-    let mut alive = || match mode {
-        Mode::Legacy => true,
-        Mode::Locked => crate::secure_fs::bridge_lock_held(&dir),
-        Mode::Unlocked(pid) => {
-            crate::secure_fs::pid_alive(pid)
-                && match last_port {
-                    Some((at, up)) if at.elapsed() < PORT_CHECK_EVERY => up,
-                    _ => {
-                        let up = tcp_up(port);
-                        last_port = Some((Instant::now(), up));
-                        up
-                    }
-                }
-        }
-    };
-    let claim_grace = (mode == Mode::Legacy).then_some(LEGACY_CLAIM_GRACE);
-    let (out, code) = execute_with(&dir, &text, file_key, shot, wait, &mut alive, claim_grace);
+    let (out, code) = serve(&dir, mode, &text, file_key, shot);
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&out);
     let _ = stdout.flush();
     code
+}
+
+/// The connected files in the reply to a `files` job, or why the list is
+/// unknown (a failed job, or a daemon from before the `files` op).
+fn parse_files(out: &[u8]) -> Result<Vec<crate::agent_prompt::ConnectedFile>, String> {
+    let line = out.split(|b| *b == b'\n').next().unwrap_or_default();
+    let v: Value = serde_json::from_slice(line).map_err(|_| "no reply".to_owned())?;
+    if v.get("ok") != Some(&Value::Bool(true)) {
+        let why = ["error", "code"]
+            .iter()
+            .find_map(|k| v.get(*k).and_then(Value::as_str));
+        return Err(why.unwrap_or("files failed").to_owned());
+    }
+    let text = |f: &Value, k: &str| f.get(k).and_then(Value::as_str).map(str::to_owned);
+    Ok(v.get("plugins")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| {
+                    Some(crate::agent_prompt::ConnectedFile {
+                        file_key: text(f, "fileKey")?,
+                        name: text(f, "name").unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// `turbofig js --guide`: starts the daemon like any js call, asks it for the
+/// connected files (registry only, no plugin round trip), prints the guide on
+/// stdout and returns 0. Only an unusable bridge folder or a daemon that does
+/// not start fails (exit 1 with the `bridge_error` line, exit 2 for a bad `--dir`).
+fn run_guide(dir_arg: Option<&str>) -> i32 {
+    let (dir, default_folder) = match resolve_dir(dir_arg) {
+        Ok(d) => d,
+        Err(DirError::Usage(e)) => {
+            eprintln!("turbofig js: {e}");
+            return 2;
+        }
+        Err(DirError::Bridge(e)) => return exit_with_bridge_error(&e),
+    };
+    let mode = match ensure_daemon(&dir, default_folder) {
+        Ok(m) => m,
+        Err(e) => return exit_with_bridge_error(&e),
+    };
+    let (out, _) = serve(&dir, mode, "{\"op\":\"files\"}", None, false);
+    let listed = parse_files(&out);
+    let dir_text = dir.display().to_string();
+    let custom = if default_folder {
+        ""
+    } else {
+        dir_text.as_str()
+    };
+    let guide = crate::agent_prompt::render_guide(
+        env!("CARGO_PKG_VERSION"),
+        &crate::agent_prompt::turbofig_bin_path(),
+        custom,
+        &dir_text,
+        match &listed {
+            Ok(files) => Ok(files.as_slice()),
+            Err(why) => Err(why.as_str()),
+        },
+    );
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(guide.as_bytes());
+    let _ = stdout.flush();
+    0
 }
 
 #[cfg(test)]
@@ -904,6 +981,25 @@ mod tests {
 
     /// Tests that touch process environment variables run one at a time.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn parse_files_reads_the_plugins_list_or_says_why_not() {
+        let ok = br#"{"ok":true,"plugins":[{"fileKey":"k1","name":"A"},{"fileKey":"k2"}]}"#;
+        let files = parse_files(ok).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            (files[0].file_key.as_str(), files[0].name.as_str()),
+            ("k1", "A")
+        );
+        assert!(parse_files(br#"{"ok":true,"plugins":[]}"#)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            parse_files(br#"{"ok":false,"code":"bridge_error","error":"bad"}"#).unwrap_err(),
+            "bad"
+        );
+        assert_eq!(parse_files(b"").unwrap_err(), "no reply");
+    }
 
     #[test]
     fn plain_js_becomes_an_execute_job() {

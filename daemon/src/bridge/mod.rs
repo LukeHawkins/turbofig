@@ -91,6 +91,9 @@ pub async fn serve_bridge(state: Arc<AppState>, dir: PathBuf) -> std::io::Result
     if let Err(e) = write_helper_doc(&dir).await {
         eprintln!("turbofig bridge: could not write {HELPER_DOC_NAME}: {e}");
     }
+    if let Err(e) = write_guide_doc(&dir).await {
+        eprintln!("turbofig bridge: could not write {GUIDE_DOC_NAME}: {e}");
+    }
 
     // The watcher callback runs on its own thread. It signals the async loop
     // through an unbounded channel. A signal means "something changed, rescan".
@@ -645,6 +648,7 @@ pub(crate) async fn process_job(
     output_dir: Option<&Path>,
 ) -> serde_json::Value {
     match job {
+        Job::Files => crate::ops::run_files(state),
         Job::Status(p) => crate::ops::run_status(state, session_id, p.file_key.as_deref()).await,
         Job::Execute(p) => {
             crate::ops::run_execute(state, session_id, p.file_key.as_deref(), &p.code).await
@@ -751,13 +755,29 @@ const HELPER_DOC_NAME: &str = "tf-api.md";
 /// read it from the bridge dir.
 const HELPER_DOC: &str = include_str!("../../../helpers/tf-api.md");
 
+/// File name of the file-tools guide inside the bridge dir.
+const GUIDE_DOC_NAME: &str = "guide.md";
+
 /// Write the embedded helper doc to `<dir>/tf-api.md` on every bridge start,
-/// so the copy always matches the daemon version. Atomic: write a `.tmp`
-/// with `create_new` (mode 0600), then rename over the old copy.
+/// so the copy always matches the daemon version.
 async fn write_helper_doc(dir: &Path) -> std::io::Result<()> {
+    write_doc(dir, HELPER_DOC_NAME, HELPER_DOC).await
+}
+
+/// Write the guide for agents with file tools only to `<dir>/guide.md` on
+/// every bridge start (version and folder path filled in).
+async fn write_guide_doc(dir: &Path) -> std::io::Result<()> {
+    let text =
+        crate::agent_prompt::render_guide_md(env!("CARGO_PKG_VERSION"), &dir.display().to_string());
+    write_doc(dir, GUIDE_DOC_NAME, &text).await
+}
+
+/// Atomic doc write: a `.tmp` with `create_new` (mode 0600), then rename over
+/// the old copy.
+async fn write_doc(dir: &Path, name: &str, text: &str) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
-    let tmp = dir.join(format!("{HELPER_DOC_NAME}.tmp"));
-    let dest = dir.join(HELPER_DOC_NAME);
+    let tmp = dir.join(format!("{name}.tmp"));
+    let dest = dir.join(name);
     let _ = tokio::fs::remove_file(&tmp).await;
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
@@ -765,7 +785,7 @@ async fn write_helper_doc(dir: &Path) -> std::io::Result<()> {
         .mode(0o600)
         .open(&tmp)
         .await?;
-    let written = match file.write_all(HELPER_DOC.as_bytes()).await {
+    let written = match file.write_all(text.as_bytes()).await {
         Ok(()) => file.flush().await,
         Err(e) => Err(e),
     };
@@ -1457,6 +1477,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&doc).expect("read"), HELPER_DOC);
         assert_eq!(mode_bits(&doc), 0o600);
         assert!(!tmp.path().join("tf-api.md.tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn guide_doc_is_written_owner_only_and_refreshed() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        std::fs::write(tmp.path().join("guide.md"), b"old guide").expect("old");
+
+        write_guide_doc(tmp.path()).await.expect("write guide");
+
+        let doc = tmp.path().join("guide.md");
+        let text = std::fs::read_to_string(&doc).expect("read");
+        assert_ne!(text, "old guide");
+        assert!(text.starts_with(&format!("turbofig {} guide", env!("CARGO_PKG_VERSION"))));
+        assert!(text.contains(&format!("{}/inbox/<unique-id>.json", tmp.path().display())));
+        assert_eq!(mode_bits(&doc), 0o600);
+        assert!(!tmp.path().join("guide.md.tmp").exists());
     }
 
     #[test]

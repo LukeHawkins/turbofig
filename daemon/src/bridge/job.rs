@@ -21,6 +21,9 @@ pub(crate) enum Job {
     Execute(ExecuteParams),
     GetSelection(SelectionParams),
     Screenshot(ScreenshotParams),
+    /// The connected files, read from the daemon's registry with no plugin
+    /// round trip (`turbofig js --guide` uses it; `status` pings a plugin).
+    Files,
 }
 
 impl Job {
@@ -64,6 +67,12 @@ mod tests {
             }
             _ => panic!("expected Screenshot"),
         }
+    }
+
+    #[test]
+    fn parses_the_files_job() {
+        let job = Job::parse(&json!({"op": "files"})).expect("parse");
+        assert!(matches!(job, Job::Files));
     }
 
     #[test]

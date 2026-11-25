@@ -325,7 +325,6 @@ if (copyConnectBtn) {
     if (!modeKnown) return;
     const prompt = fillAgentPrompt(
       promptTemplateFor(connectionMode, __AGENT_PROMPT_TEMPLATE__, __AGENT_PROMPT_MCP_TEMPLATE__),
-      [{ fileKey: latestFileInfo.fileKey, name: latestFileInfo.name }],
       daemonBridgeHome,
       daemonMcpPort,
       daemonBinPath,

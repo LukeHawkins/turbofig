@@ -13,4 +13,4 @@ mod status;
 pub use execute::run_execute;
 pub use screenshot::run_screenshot;
 pub use selection::run_get_selection;
-pub use status::run_status;
+pub use status::{run_files, run_status};
