@@ -149,6 +149,10 @@ async fn run_bridge_loop(
     let in_flight: Arc<std::sync::Mutex<HashSet<String>>> =
         Arc::new(std::sync::Mutex::new(HashSet::new()));
 
+    // A job written while no daemon ran may be hours old: the Figma file can
+    // have changed since. Answer it with not_started instead of running it.
+    expire_stale_jobs(inbox, outbox, state.request_timeout).await;
+
     // Scan once at startup for any job left in inbox before the watch began.
     scan_and_service(
         inbox,
@@ -177,6 +181,7 @@ async fn run_bridge_loop(
         // Coalesce a burst of events into one scan.
         while rx.try_recv().is_ok() {}
         if is_backstop {
+            state.restore_token_if_missing();
             prune_outbox_if_safe(outbox).await;
         }
         scan_and_service(
@@ -189,6 +194,63 @@ async fn run_bridge_loop(
         )
         .await;
     }
+}
+
+/// Startup only. Any regular inbox job file older than `max_age` (by mtime)
+/// is removed and answered with a `not_started` result that says it was too
+/// old and never ran. A job file of another owner, or with an id too long to
+/// name a result, is left to the normal scan.
+async fn expire_stale_jobs(inbox: &Path, outbox: &Path, max_age: Duration) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(mut entries) = tokio::fs::read_dir(inbox).await else {
+        return;
+    };
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else {
+            continue;
+        };
+        if id.len() > MAX_ID_BYTES {
+            continue;
+        }
+        let Ok(meta) = tokio::fs::symlink_metadata(&path).await else {
+            continue;
+        };
+        if !meta.is_file() || meta.uid() != euid {
+            continue;
+        }
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|m| SystemTime::now().duration_since(m).ok())
+            .unwrap_or_default();
+        if age <= max_age {
+            continue;
+        }
+        if tokio::fs::remove_file(&path).await.is_err() {
+            continue;
+        }
+        delete_stale_result(outbox, &id).await;
+        write_result(outbox, &id, stale_job_result(age)).await;
+    }
+}
+
+/// `not_started` result for an inbox job that waited longer than the request
+/// timeout while no daemon ran.
+fn stale_job_result(age: Duration) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "code": "not_started",
+        "error": format!(
+            "the job was {} s old when the daemon started, so it was too old and never ran; resend it",
+            age.as_secs()
+        ),
+    })
 }
 
 /// Convert a `notify` error into an `io::Error` so `serve_bridge` can use `?`.
@@ -690,8 +752,46 @@ async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
             .await;
     match outcome {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => eprintln!("turbofig bridge: write failed for {job_id}: {e}"),
+        Ok(Err(e)) => {
+            eprintln!("turbofig bridge: write failed for {job_id}: {e}");
+            write_failure_notice(outbox, job_id, &e).await;
+        }
         Err(e) => eprintln!("turbofig bridge: write task failed for {job_id}: {e}"),
+    }
+}
+
+/// The result could not be written (a full disk is the usual cause). Say so
+/// in the log, then try one tiny error result: it can still fit where the
+/// real result did not, and it turns a ~30 s wait for `started_unknown`
+/// into an answer that names the cause.
+async fn write_failure_notice(outbox: &Path, job_id: &str, e: &std::io::Error) {
+    let full = e.raw_os_error() == Some(libc::ENOSPC);
+    if full {
+        eprintln!(
+            "turbofig bridge: DISK FULL: cannot write results to {}. Free disk space.",
+            outbox.display()
+        );
+    }
+    let cause = if full {
+        "the disk is full".to_owned()
+    } else {
+        e.to_string()
+    };
+    let notice = serde_json::json!({
+        "ok": false,
+        "code": "bridge_error",
+        "error": format!(
+            "the daemon could not write the result file ({cause}); the job may have run, check before resending"
+        ),
+    });
+    let out_tmp = outbox.join(format!("{job_id}.json.tmp"));
+    let out_final = outbox.join(format!("{job_id}.json"));
+    let bytes = notice.to_string().into_bytes();
+    let retried =
+        tokio::task::spawn_blocking(move || write_result_blocking(&out_tmp, &out_final, &bytes))
+            .await;
+    if !matches!(retried, Ok(Ok(()))) {
+        eprintln!("turbofig bridge: could not write an error result for {job_id} either");
     }
 }
 

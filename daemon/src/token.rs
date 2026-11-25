@@ -138,10 +138,19 @@ pub fn ensure_token(home: &Path) -> io::Result<String> {
 /// could not even be opened, in which case there is nothing to remove.
 #[cfg(unix)]
 fn create_token_file(path: &Path) -> io::Result<String> {
+    let token = random_token_hex();
+    write_token_file(path, &token)?;
+    Ok(token)
+}
+
+/// Writes `token` to `path` with the safe path described on
+/// `create_token_file`: temp file, fsync, `hard_link` (fails if `path`
+/// exists), mode 0600.
+#[cfg(unix)]
+fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
-    let token = random_token_hex();
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".tmp.{}", random_suffix_hex()));
     let tmp_path = std::path::PathBuf::from(tmp_name);
@@ -162,7 +171,7 @@ fn create_token_file(path: &Path) -> io::Result<String> {
     })();
 
     let _ = std::fs::remove_file(&tmp_path);
-    result.map(|()| token)
+    result
 }
 
 /// Generates a short random hex suffix for a temp filename. Not a security
@@ -178,15 +187,39 @@ fn random_suffix_hex() -> String {
 /// Non-Unix fallback: no POSIX mode to set at creation; still exclusive-create.
 #[cfg(not(unix))]
 fn create_token_file(path: &Path) -> io::Result<String> {
-    use std::io::Write;
     let token = random_token_hex();
+    write_token_file(path, &token)?;
+    Ok(token)
+}
+
+#[cfg(not(unix))]
+fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
+    use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
     file.write_all(token.as_bytes())?;
-    file.sync_all()?;
-    Ok(token)
+    file.sync_all()
+}
+
+/// Writes the daemon's in-memory `token` back to `<home>/token` when the file
+/// is gone (a user or a cleanup tool deleted it while the daemon ran).
+/// Returns `Ok(true)` when it wrote the file, `Ok(false)` when something
+/// already sits at the path (a file, or a symlink: never touched). The home
+/// folder is checked first, and the write uses the same exclusive 0600 path as
+/// the original write.
+pub fn restore_token_file(home: &Path, token: &str) -> io::Result<bool> {
+    let path = home.join("token");
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Ok(false);
+    }
+    crate::secure_fs::check_existing(home)?;
+    match write_token_file(&path, token) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Reads an existing token file, trimming whitespace.
@@ -318,6 +351,27 @@ mod tests {
     fn constant_time_eq_rejects_different_lengths() {
         assert!(!constant_time_eq("abc", "abcd"));
         assert!(!constant_time_eq("", "a"));
+    }
+
+    #[test]
+    fn restore_token_file_rewrites_a_deleted_token_with_mode_0600() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tok = ensure_token(dir.path()).expect("ensure");
+        std::fs::remove_file(dir.path().join("token")).expect("rm");
+        assert!(restore_token_file(dir.path(), &tok).expect("restore"));
+        assert_eq!(ensure_token(dir.path()).expect("read"), tok);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("token"))
+                .expect("meta")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A present token is never touched.
+        assert!(!restore_token_file(dir.path(), "other").expect("noop"));
+        assert_eq!(ensure_token(dir.path()).expect("read"), tok);
     }
 
     #[test]

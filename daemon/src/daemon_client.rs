@@ -40,12 +40,14 @@ impl fmt::Display for VerifyError {
             VerifyError::Unreachable => write!(f, "no turbofig daemon is reachable"),
             VerifyError::Unverified { addr } => write!(
                 f,
-                "a process that is not your turbofig daemon is listening on {addr}. \
-                 If this is an older turbofig, quit it (pkill -x turbofig) and retry."
+                "a process that is not your turbofig daemon is listening on {addr}. {}",
+                foreign_listener_advice(port_of(addr), None, 0)
             ),
             VerifyError::NoToken { addr } => write!(
                 f,
-                "a process is listening on {addr}, but there is no pairing token file to verify it against"
+                "a process is listening on {addr}, but there is no pairing token file to verify it against. \
+                 A running daemon rewrites a deleted token file within a second, so retry. \
+                 If it persists, quit turbofig from the menu bar and start it again."
             ),
         }
     }
@@ -140,6 +142,20 @@ pub fn classify_listener(proof_ok: bool, listener_uid: Option<u32>, my_uid: u32)
     }
 }
 
+/// What to tell the user when a listener that is not their daemon holds
+/// `port`. An owner that is another uid, or unknown, means another Mac user's
+/// turbofig: no command of this user can stop it, so point at the port
+/// settings. Only a same-user owner (an older turbofig) can be quit here.
+pub fn foreign_listener_advice(port: u16, owner_uid: Option<u32>, my_uid: u32) -> String {
+    if owner_uid == Some(my_uid) {
+        return "If this is an older turbofig, quit it (pkill -x turbofig) and retry.".to_owned();
+    }
+    format!(
+        "Another Mac user is running turbofig on port {port}. Set TURBOFIG_MCP_PORT and \
+         TURBOFIG_WS_PORT to free ports (see docs/configuration.md)."
+    )
+}
+
 /// Reads the owner uid from `lsof -Fu` output. `None` when there is no `u`
 /// field, or when the sockets have more than one owner.
 pub fn parse_lsof_uid(output: &str) -> Option<u32> {
@@ -192,6 +208,76 @@ async fn listener_uid(port: u16) -> Option<u32> {
         "-Fu",
     ]);
     parse_lsof_uid(&run_with_timeout(cmd, LSOF_TIMEOUT).await?)
+}
+
+/// The process that listens on a port, as far as `lsof` can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortOwner {
+    pub pid: u32,
+    pub command: String,
+    pub uid: u32,
+}
+
+/// Reads the first listener from `lsof -Fpcu` output. `None` when a field is
+/// missing.
+pub fn parse_lsof_owner(output: &str) -> Option<PortOwner> {
+    let (mut pid, mut command, mut uid) = (None, None, None);
+    for line in output.lines() {
+        if let Some(r) = line.strip_prefix('p') {
+            if pid.is_some() {
+                break;
+            }
+            pid = r.trim().parse().ok();
+        } else if let Some(r) = line.strip_prefix('c') {
+            if command.is_none() {
+                command = Some(r.trim().to_owned());
+            }
+        } else if let Some(r) = line.strip_prefix('u') {
+            if uid.is_none() {
+                uid = r.trim().parse().ok();
+            }
+        }
+    }
+    Some(PortOwner {
+        pid: pid?,
+        command: command?,
+        uid: uid?,
+    })
+}
+
+/// Who listens on `127.0.0.1:<port>`, from `lsof`. `None` when `lsof` fails,
+/// times out, or cannot see the socket (another user's sockets are invisible
+/// to a non-root `lsof`).
+pub async fn port_owner(port: u16) -> Option<PortOwner> {
+    let mut cmd = tokio::process::Command::new("/usr/sbin/lsof");
+    cmd.args([
+        "-nP",
+        "-b",
+        "-w",
+        &format!("-iTCP@127.0.0.1:{port}"),
+        "-sTCP:LISTEN",
+        "-Fpcu",
+    ]);
+    parse_lsof_owner(&run_with_timeout(cmd, LSOF_TIMEOUT).await?)
+}
+
+/// The startup error when `port` (`label` is "MCP" or "WS") is busy. It
+/// names the port and, when `lsof` could tell, the process. An owner that is
+/// another uid, or unknown, gets the settings advice: no command of this user
+/// can stop it.
+pub fn busy_port_message(label: &str, port: u16, owner: Option<&PortOwner>, my_uid: u32) -> String {
+    let by = owner
+        .map(|o| format!(" by {} (pid {})", o.command, o.pid))
+        .unwrap_or_default();
+    let tail = match owner {
+        Some(o) if o.uid == my_uid => "Quit that process, or set TURBOFIG_MCP_PORT and \
+             TURBOFIG_WS_PORT to free ports (see docs/configuration.md)."
+            .to_owned(),
+        _ => "It may belong to another Mac user. Set TURBOFIG_MCP_PORT and TURBOFIG_WS_PORT \
+             to free ports (see docs/configuration.md)."
+            .to_owned(),
+    };
+    format!("{label} port {port} is already in use{by}. {tail}")
 }
 
 fn port_of(base_url: &str) -> u16 {
@@ -740,7 +826,7 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(matches!(err, VerifyError::Unverified { .. }));
-            assert!(err.to_string().contains("pkill -x turbofig"));
+            assert!(err.to_string().contains("Another Mac user"));
         }
         let strict =
             verify_with_lookup(&client, &url, TOKEN, false, |_| async move { Some(my_uid) }).await;
@@ -867,5 +953,61 @@ mod tests {
         echo.arg("u501");
         let out = run_with_timeout(echo, Duration::from_secs(2)).await;
         assert_eq!(out.as_deref().map(str::trim), Some("u501"));
+    }
+
+    #[test]
+    fn foreign_listener_advice_names_the_port_settings_for_another_or_unknown_owner() {
+        for owner in [None, Some(999)] {
+            let m = foreign_listener_advice(18846, owner, 501);
+            assert!(m.contains("Another Mac user is running turbofig on port 18846."));
+            assert!(m.contains("TURBOFIG_MCP_PORT and TURBOFIG_WS_PORT"));
+            assert!(m.contains("docs/configuration.md"));
+            assert!(!m.contains("pkill"));
+        }
+        assert!(foreign_listener_advice(18846, Some(501), 501).contains("pkill"));
+    }
+
+    #[test]
+    fn unverified_error_never_advises_pkill() {
+        let m = VerifyError::Unverified {
+            addr: "127.0.0.1:18846".into(),
+        }
+        .to_string();
+        assert!(m.contains("not your turbofig daemon"));
+        assert!(m.contains("port 18846"));
+        assert!(!m.contains("pkill"));
+    }
+
+    #[test]
+    fn parse_lsof_owner_reads_pid_command_and_uid() {
+        let o = parse_lsof_owner("p123\nu501\ncnode\n").expect("owner");
+        assert_eq!(
+            o,
+            PortOwner {
+                pid: 123,
+                command: "node".into(),
+                uid: 501
+            }
+        );
+        assert!(parse_lsof_owner("").is_none());
+        assert!(parse_lsof_owner("p1\nu5\n").is_none());
+    }
+
+    #[test]
+    fn busy_port_message_names_the_port_and_the_process() {
+        let mine = PortOwner {
+            pid: 42,
+            command: "node".into(),
+            uid: 501,
+        };
+        let m = busy_port_message("WS", 18847, Some(&mine), 501);
+        assert!(m.contains("WS port 18847 is already in use by node (pid 42)"));
+        assert!(m.contains("Quit that process"));
+        let other = PortOwner { uid: 7, ..mine };
+        let m = busy_port_message("MCP", 18846, Some(&other), 501);
+        assert!(m.contains("another Mac user"));
+        let m = busy_port_message("MCP", 18846, None, 501);
+        assert!(m.contains("MCP port 18846 is already in use."));
+        assert!(m.contains("TURBOFIG_MCP_PORT"));
     }
 }

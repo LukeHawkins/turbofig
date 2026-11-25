@@ -5,7 +5,7 @@ use crate::ops::budget::{inline_screenshot_warning, with_warning};
 use crate::plugin_call::{
     busy_json, call_plugin, idempotency_error_json, plugin_disconnected_json, CallOutcome,
 };
-use crate::routing::{resolve_route, route_error_to_json};
+use crate::routing::{resolve_route_graced, route_error_to_json};
 use crate::state::{try_admit, AppState};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -45,7 +45,7 @@ pub async fn run_screenshot(
     max_dim: u32,
     full_res: bool,
 ) -> Value {
-    let (conn_id, tx, _, _) = match resolve_route(state, session_id, file_key) {
+    let (conn_id, tx, _, _) = match resolve_route_graced(state, session_id, file_key).await {
         Ok(r) => r,
         Err(e) => return route_error_to_json(e),
     };

@@ -2,7 +2,14 @@
 
 use crate::state::AppState;
 use serde_json::{json, Value};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+/// The daemon counts as "just started" for this long after startup.
+pub(crate) const COLD_START_WINDOW: Duration = Duration::from_secs(5);
+/// Longest a job waits for the first plugin connection on a young daemon.
+pub(crate) const COLD_START_WAIT: Duration = Duration::from_secs(3);
+const COLD_START_POLL: Duration = Duration::from_millis(50);
 
 /// Routing error returned by resolve_route.
 #[derive(Debug)]
@@ -129,6 +136,28 @@ pub(crate) fn resolve_route(
         _ => {
             let fks: Vec<String> = named.into_iter().map(|(_, _, fk, _, _)| fk).collect();
             Err(RouteError::Ambiguous(fks))
+        }
+    }
+}
+
+/// `resolve_route`, plus a cold-start grace. While the daemon is young and no
+/// plugin has ever connected, a missing plugin or file is retried for up to
+/// `COLD_START_WAIT` before the error is returned. Once any plugin has
+/// connected, the call never waits.
+pub(crate) async fn resolve_route_graced(
+    state: &AppState,
+    session_id: Option<&str>,
+    explicit: Option<&str>,
+) -> Result<(u64, mpsc::UnboundedSender<String>, String, String), RouteError> {
+    let deadline = Instant::now() + COLD_START_WAIT;
+    loop {
+        match resolve_route(state, session_id, explicit) {
+            Err(RouteError::NoPlugin | RouteError::NotFound(..))
+                if state.in_cold_start_grace() && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(COLD_START_POLL).await;
+            }
+            other => return other,
         }
     }
 }
@@ -369,5 +398,53 @@ mod tests {
             }
             other => panic!("expected Ambiguous, got ok={}", other.is_ok()),
         }
+    }
+
+    #[tokio::test]
+    async fn graced_route_waits_for_a_plugin_that_connects_during_the_grace() {
+        let state = std::sync::Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let s2 = state.clone();
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let id = s2.add_connection(tx);
+            s2.set_connection_info(id, "fk1".to_owned(), "F".to_owned());
+        });
+        let got = resolve_route_graced(&state, None, None)
+            .await
+            .expect("must route once the plugin connects");
+        assert_eq!(got.2, "fk1");
+    }
+
+    #[tokio::test]
+    async fn graced_route_never_waits_after_a_plugin_has_connected() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let id = state.add_connection(tx);
+        state.set_connection_info(id, "fk1".to_owned(), "F".to_owned());
+        state.remove_connection(id);
+        let t = Instant::now();
+        assert!(matches!(
+            resolve_route_graced(&state, None, None).await,
+            Err(RouteError::NoPlugin)
+        ));
+        assert!(matches!(
+            resolve_route_graced(&state, None, Some("fk1")).await,
+            Err(RouteError::NoPlugin)
+        ));
+        assert!(t.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn graced_route_gives_up_after_the_wait_when_no_plugin_comes() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let t = Instant::now();
+        assert!(matches!(
+            resolve_route_graced(&state, None, None).await,
+            Err(RouteError::NoPlugin)
+        ));
+        let waited = t.elapsed();
+        assert!(waited >= COLD_START_WAIT - Duration::from_millis(100));
+        assert!(waited < COLD_START_WAIT + Duration::from_secs(1));
     }
 }

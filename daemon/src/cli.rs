@@ -429,6 +429,34 @@ pub fn autostart_off_message(removed: &[PathBuf]) -> String {
 pub struct UninstallOutcome {
     pub home: PathBuf,
     pub purged: bool,
+    /// Entries `--purge` really removed (empty without `--purge`).
+    pub removed: Vec<String>,
+    /// Entries still in `home` after `--purge` (the folder is then kept).
+    pub left: Vec<String>,
+}
+
+impl UninstallOutcome {
+    /// True when `--purge` ran and the home folder itself is gone.
+    pub fn home_removed(&self) -> bool {
+        self.purged && self.left.is_empty()
+    }
+}
+
+/// What `--purge` printed to the user, built from what really happened.
+pub fn uninstall_purge_message(outcome: &UninstallOutcome) -> String {
+    let home = outcome.home.display();
+    if outcome.home_removed() {
+        return format!("turbofig: removed {home}");
+    }
+    let removed = if outcome.removed.is_empty() {
+        "nothing to remove".to_owned()
+    } else {
+        format!("removed {}", outcome.removed.join(", "))
+    };
+    format!(
+        "turbofig: {removed} from {home}. Kept {home} because it still holds: {}.",
+        outcome.left.join(", ")
+    )
 }
 
 /// Turns autostart off: unloads both the app and the headless launchd
@@ -495,13 +523,17 @@ pub fn run_uninstall(
     run_autostart_off(launch_agents_dir, launchctl, uid)?;
     remove_app_bundle_best_effort(applications_dir);
 
-    if purge {
-        purge_home(home)?;
-    }
+    let (removed, left) = if purge {
+        purge_home(home)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     Ok(UninstallOutcome {
         home: home.to_path_buf(),
         purged: purge,
+        removed,
+        left,
     })
 }
 
@@ -539,13 +571,19 @@ const PURGE_ENTRIES: &[&str] = &[
     "daemon.lock",
     "mcp-mode",
     "mcp-http-off",
+    "tf-api.md",
+    "guide.md",
+    "app.lock",
+    "app.sock",
+    "app-relaunched-for",
 ];
 
 /// Deletes the known turbofig entries inside `home`, then removes `home`
 /// itself only if it is left empty. Anything else in `home` (a file the user
 /// put there, or one a future version of turbofig did not know to list) is
 /// left in place, and the directory is not removed with it still inside.
-fn purge_home(home: &Path) -> io::Result<()> {
+fn purge_home(home: &Path) -> io::Result<(Vec<String>, Vec<String>)> {
+    let mut removed = Vec::new();
     for entry in PURGE_ENTRIES {
         let path = home.join(entry);
         let metadata = match std::fs::symlink_metadata(&path) {
@@ -558,11 +596,17 @@ fn purge_home(home: &Path) -> io::Result<()> {
         } else {
             ignore_not_found(std::fs::remove_file(&path))?;
         }
+        removed.push((*entry).to_owned());
     }
 
+    let mut left = Vec::new();
     match std::fs::read_dir(home) {
-        Ok(mut entries) => {
-            if entries.next().is_none() {
+        Ok(entries) => {
+            for e in entries.flatten() {
+                left.push(e.file_name().to_string_lossy().into_owned());
+            }
+            left.sort();
+            if left.is_empty() {
                 ignore_not_found(std::fs::remove_dir(home))?;
             }
         }
@@ -570,7 +614,7 @@ fn purge_home(home: &Path) -> io::Result<()> {
         Err(e) => return Err(e),
     }
 
-    Ok(())
+    Ok((removed, left))
 }
 
 /// Returns `Ok(())` for a successful result or a `NotFound` error; propagates
@@ -677,9 +721,10 @@ pub fn stop_autostart_restart_hint() -> &'static str {
 /// this one is a real failure (the daemon stays up) and exits 1.
 pub fn token_trouble_stop_message() -> &'static str {
     "turbofig is running but its token file is missing or changed, so it cannot be stopped \
-     cleanly. Restore the token, or end it with: pkill -f 'turbofig serve'. If autostart is \
-     on, run `turbofig autostart off` first: pkill counts as a crash for launchd, which \
-     restarts the daemon."
+     cleanly. A running daemon rewrites a deleted token file within a second, so retry \
+     `turbofig stop` first. If it still fails, quit turbofig from the menu bar. As a last \
+     resort, end it with: pkill -f 'turbofig serve'. If autostart is on, run `turbofig \
+     autostart off` first: pkill counts as a crash for launchd, which restarts the daemon."
 }
 
 #[cfg(test)]
@@ -1586,5 +1631,75 @@ mod tests {
         assert!(msg.contains("token file is missing or changed"));
         assert!(msg.contains("pkill -f 'turbofig serve'"));
         assert!(msg.contains("turbofig autostart off"));
+    }
+
+    #[test]
+    fn purge_removes_every_listed_entry_and_the_message_says_so() {
+        let home = unique_temp_dir("purge-all");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        for e in PURGE_ENTRIES {
+            let p = home.join(e);
+            if matches!(*e, "figma-plugin" | "inbox" | "outbox") {
+                std::fs::create_dir_all(p.join("sub")).expect("dir");
+            } else {
+                std::fs::write(&p, b"x").expect("file");
+            }
+        }
+        let launch_agents_dir = unique_temp_dir("agents-purge-all");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &unique_temp_dir("apps-purge-all"),
+            &FakeLaunchctl::new(),
+            "501",
+            true,
+        )
+        .expect("uninstall");
+        assert!(!home.exists());
+        assert_eq!(outcome.removed.len(), PURGE_ENTRIES.len());
+        assert!(outcome.home_removed());
+        assert_eq!(
+            uninstall_purge_message(&outcome),
+            format!("turbofig: removed {}", home.display())
+        );
+        for must in [
+            "tf-api.md",
+            "guide.md",
+            "app.lock",
+            "app.sock",
+            "app-relaunched-for",
+        ] {
+            assert!(PURGE_ENTRIES.contains(&must), "{must} missing");
+        }
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+
+    #[test]
+    fn purge_message_is_truthful_when_a_foreign_file_keeps_the_folder() {
+        let home = unique_temp_dir("purge-keep");
+        std::fs::create_dir_all(&home).expect("mkdir");
+        std::fs::write(home.join("token"), b"x").expect("token");
+        std::fs::write(home.join("notes.txt"), b"mine").expect("notes");
+        let launch_agents_dir = unique_temp_dir("agents-purge-keep");
+        std::fs::create_dir_all(&launch_agents_dir).expect("mkdir agents");
+        let outcome = run_uninstall(
+            &home,
+            &launch_agents_dir,
+            &unique_temp_dir("apps-purge-keep"),
+            &FakeLaunchctl::new(),
+            "501",
+            true,
+        )
+        .expect("uninstall");
+        assert!(home.join("notes.txt").exists());
+        assert!(!outcome.home_removed());
+        let msg = uninstall_purge_message(&outcome);
+        assert!(msg.contains("removed token"), "{msg}");
+        assert!(msg.contains("Kept"), "{msg}");
+        assert!(msg.contains("notes.txt"), "{msg}");
+        assert!(!msg.starts_with(&format!("turbofig: removed {}", home.display())));
+        std::fs::remove_dir_all(&home).ok();
+        std::fs::remove_dir_all(&launch_agents_dir).ok();
     }
 }

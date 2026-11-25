@@ -89,9 +89,23 @@ async fn stop_with_a_missing_token_file_reports_trouble_not_nothing_running() {
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
     wait_for_health(&client, mcp_port).await;
 
-    tokio::fs::remove_file(home.path().join("token"))
+    // A deleted token is rewritten by the daemon within a second, so this
+    // test swaps in a different (changed) token to keep the trouble case.
+    let token_path = home.path().join("token");
+    tokio::fs::remove_file(&token_path)
         .await
-        .expect("remove the token file to simulate it going missing");
+        .expect("remove the token file");
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&token_path)
+            .expect("write a different token");
+        f.write_all("0".repeat(64).as_bytes()).expect("write");
+    }
 
     let (status, stdout, stderr) = run_turbofig(&["stop"], home.path(), mcp_port, ws_port).await;
     assert_eq!(status.code(), Some(1), "stop must exit 1, stdout: {stdout}");

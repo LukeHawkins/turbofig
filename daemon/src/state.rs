@@ -257,6 +257,9 @@ pub struct AppState {
     /// When this `AppState` was constructed, i.e. daemon startup. Used only
     /// by `/health` and `turbofig_status`'s uptime figure.
     started_at: Instant,
+    /// Set once any connection has announced a file (FILE_INFO). Ends the
+    /// cold-start routing grace (`in_cold_start_grace`).
+    plugin_named_once: std::sync::atomic::AtomicBool,
     /// Set by the supervised-restart loop (`main.rs`, `TURBOFIG_SUPERVISED=1`)
     /// once it detects a Homebrew upgrade. While true, `resolve_route`
     /// refuses every new job with `RouteError::Draining`, so the old process
@@ -350,6 +353,7 @@ impl AppState {
             screenshot_dir,
             token,
             started_at: Instant::now(),
+            plugin_named_once: std::sync::atomic::AtomicBool::new(false),
             draining: std::sync::atomic::AtomicBool::new(false),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             job_counter: Arc::new(AtomicUsize::new(0)),
@@ -630,10 +634,42 @@ impl AppState {
         let name = sanitize_name(&name);
         let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = guard.get_mut(&conn_id) {
+            if !file_key.is_empty() {
+                self.plugin_named_once.store(true, Ordering::Relaxed);
+            }
             conn.file_key = file_key;
             conn.name = name;
             conn.plugin_version = plugin_version;
         }
+    }
+
+    /// Writes the in-memory pairing token back to `<home>/token` when the
+    /// file was deleted while the daemon runs. No-op without a home.
+    pub(crate) fn restore_token_if_missing(&self) {
+        let Some(home) = self.home.as_deref() else {
+            return;
+        };
+        match crate::token::restore_token_file(home, &self.token) {
+            Ok(true) => eprintln!("turbofig: the pairing token file was missing; restored it"),
+            Ok(false) => {}
+            Err(e) => eprintln!("turbofig: could not restore the pairing token file: {e}"),
+        }
+    }
+
+    /// Ends the cold-start routing grace at once. For tests that expect an
+    /// immediate `plugin_disconnected` from a fresh state.
+    #[doc(hidden)]
+    pub fn skip_cold_start_grace(&self) {
+        self.plugin_named_once.store(true, Ordering::Relaxed);
+    }
+
+    /// True while the daemon is young and no plugin has ever announced a file.
+    /// A plugin that was open before a daemon (re)start needs up to ~2 s to
+    /// reconnect, so routing waits for it (`routing::resolve_route_graced`)
+    /// instead of failing at once. False for good after the first plugin.
+    pub(crate) fn in_cold_start_grace(&self) -> bool {
+        self.started_at.elapsed() < crate::routing::COLD_START_WINDOW
+            && !self.plugin_named_once.load(Ordering::Relaxed)
     }
 
     /// Remove a connection from the registry. Call this when the socket closes.

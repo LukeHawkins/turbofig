@@ -143,6 +143,20 @@ async fn ensure_verified_daemon(
     }
 }
 
+/// For a bind failure: the busy-port advice (which port, which process when
+/// `lsof` can tell). Empty-safe: other errors get a short generic hint.
+async fn bind_failure_hint(label: &str, port: u16, e: &std::io::Error) -> String {
+    if e.kind() != std::io::ErrorKind::AddrInUse {
+        return "Set TURBOFIG_MCP_PORT and TURBOFIG_WS_PORT to other ports if it persists \
+                (see docs/configuration.md)."
+            .to_owned();
+    }
+    let owner = turbofig::daemon_client::port_owner(port).await;
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    let my_uid = unsafe { libc::geteuid() };
+    turbofig::daemon_client::busy_port_message(label, port, owner.as_ref(), my_uid)
+}
+
 /// What `ensure_verified_daemon` does after its first check.
 #[derive(Debug, PartialEq)]
 enum Startup {
@@ -494,7 +508,9 @@ async fn cmd_uninstall(purge: bool) {
     // Best-effort: uninstall must still succeed when nothing was running, or
     // when the stop request itself fails for some other reason. The plist
     // removal and purge below are what uninstall is really responsible for.
-    let _ = stop_running_daemon(&client, mcp_port, &home).await;
+    if let Err(msg) = stop_running_daemon(&client, mcp_port, &home).await {
+        eprintln!("turbofig uninstall: warning: could not stop the running daemon: {msg}");
+    }
 
     let launchctl = RealLaunchctl;
     let uid = match current_uid() {
@@ -518,7 +534,7 @@ async fn cmd_uninstall(purge: bool) {
             if !outcome.purged {
                 println!("{}", uninstall_kept_home_message(&outcome.home));
             } else {
-                println!("turbofig: removed {}", outcome.home.display());
+                println!("{}", turbofig::cli::uninstall_purge_message(&outcome));
             }
         }
         Err(e) => {
@@ -852,7 +868,7 @@ async fn cmd_start() {
     let ws_port = turbofig::ws_port_from_env();
     let home = turbofig::bridge_dir_from_env();
     let (health, was_running) =
-        ensure_verified_daemon("turbofig start", mcp_port, &home, false).await;
+        ensure_verified_daemon("turbofig start", mcp_port, &home, true).await;
     if was_running {
         println!(
             "{}",
@@ -1188,7 +1204,10 @@ async fn run_daemon() {
             if e.kind() == std::io::ErrorKind::AddrInUse {
                 exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
             }
-            eprintln!("turbofig daemon: failed to bind MCP port {mcp_addr}: {e}");
+            eprintln!(
+                "turbofig daemon: failed to bind MCP port {mcp_addr}: {e}. {}",
+                bind_failure_hint("MCP", mcp_port, &e).await
+            );
             std::process::exit(1);
         }
     };
@@ -1199,7 +1218,10 @@ async fn run_daemon() {
             // The MCP port is already bound by this process, so no other
             // daemon can run: the WS port is taken by something else. Report
             // the WS port itself, not the MCP port.
-            eprintln!("turbofig daemon: failed to bind WS port {ws_addr}: {e}");
+            eprintln!(
+                "turbofig daemon: failed to bind WS port {ws_addr}: {e}. {}",
+                bind_failure_hint("WS", ws_port, &e).await
+            );
             std::process::exit(1);
         }
     };
