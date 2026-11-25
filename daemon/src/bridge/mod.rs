@@ -1749,6 +1749,10 @@ mod tests {
         let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
             100,
         )));
+        // A real upgrade drain happens on a daemon past its cold-start window;
+        // this fresh test state is "young", so turn the grace off or `files`
+        // would first wait up to 3 s for a plugin that never comes.
+        state.skip_cold_start_grace();
         state.set_draining(true);
         let mut first_seen = HashMap::new();
         let mut given_up = HashSet::new();
