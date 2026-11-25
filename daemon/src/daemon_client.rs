@@ -28,8 +28,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub enum VerifyError {
     /// Nothing accepted the connection.
     Unreachable,
-    /// A listener answered, but it did not prove it holds the token.
+    /// A listener answered, but it did not prove it holds the token. The
+    /// owner is unknown, or is this Mac user (an older daemon, another app,
+    /// or a replaced token file).
     Unverified { addr: String },
+    /// Like `Unverified`, and `lsof` showed the listener belongs to another
+    /// Mac user.
+    OtherUser { addr: String, owner_uid: u32 },
     /// A listener answered, but there is no token file to check it against.
     NoToken { addr: String },
 }
@@ -42,6 +47,11 @@ impl fmt::Display for VerifyError {
                 f,
                 "a process that is not your turbofig daemon is listening on {addr}. {}",
                 foreign_listener_advice(port_of(addr), None, 0)
+            ),
+            VerifyError::OtherUser { addr, .. } => write!(
+                f,
+                "a process that is not your turbofig daemon is listening on {addr}. {}",
+                another_user_advice(port_of(addr))
             ),
             VerifyError::NoToken { addr } => write!(
                 f,
@@ -142,18 +152,33 @@ pub fn classify_listener(proof_ok: bool, listener_uid: Option<u32>, my_uid: u32)
     }
 }
 
-/// What to tell the user when a listener that is not their daemon holds
-/// `port`. An owner that is another uid, or unknown, means another Mac user's
-/// turbofig: no command of this user can stop it, so point at the port
-/// settings. Only a same-user owner (an older turbofig) can be quit here.
-pub fn foreign_listener_advice(port: u16, owner_uid: Option<u32>, my_uid: u32) -> String {
-    if owner_uid == Some(my_uid) {
-        return "If this is an older turbofig, quit it (pkill -x turbofig) and retry.".to_owned();
-    }
+/// What to tell the user when `lsof` shows another Mac user owns the listener
+/// on `port`: no command of this user can stop it, so point at the port settings.
+pub fn another_user_advice(port: u16) -> String {
     format!(
         "Another Mac user is running turbofig on port {port}. Set TURBOFIG_MCP_PORT and \
          TURBOFIG_WS_PORT to free ports (see docs/configuration.md)."
     )
+}
+
+/// What to tell the user when a listener that is not their daemon holds
+/// `port`. Only an owner that is another uid is called "another Mac user":
+/// a non-root `lsof` cannot see their sockets, so an unknown owner gets a
+/// neutral message. A same-user owner may be an older turbofig, which can be
+/// quit here.
+pub fn foreign_listener_advice(port: u16, owner_uid: Option<u32>, my_uid: u32) -> String {
+    match owner_uid {
+        Some(uid) if uid == my_uid => {
+            "If this is an older turbofig, quit it (pkill -x turbofig) and retry.".to_owned()
+        }
+        Some(_) => another_user_advice(port),
+        None => format!(
+            "Something else answers on port {port} that is not this turbofig. Check what uses \
+             the port (lsof -nP -iTCP:{port} -sTCP:LISTEN). If it is an app you can quit, quit \
+             it and retry. Otherwise set TURBOFIG_MCP_PORT and TURBOFIG_WS_PORT to free ports \
+             (see docs/configuration.md)."
+        ),
+    }
 }
 
 /// Reads the owner uid from `lsof -Fu` output. `None` when there is no `u`
@@ -354,8 +379,20 @@ async fn verify_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
     lookup: impl Fn(u16) -> Fut,
 ) -> Result<(serde_json::Value, Listener), VerifyError> {
     let addr = addr_of(base_url);
-    let unverified = || VerifyError::Unverified { addr: addr.clone() };
     let port = port_of(base_url);
+    // The owner is looked up only on this failure path. Another uid is
+    // reported as such; an unknown or same-user owner stays `Unverified`.
+    let unverified = || async {
+        // SAFETY: `geteuid` takes no arguments and cannot fail.
+        let my_uid = unsafe { libc::geteuid() };
+        match lookup(port).await {
+            Some(uid) if uid != my_uid => VerifyError::OtherUser {
+                addr: addr.clone(),
+                owner_uid: uid,
+            },
+            _ => VerifyError::Unverified { addr: addr.clone() },
+        }
+    };
     let nonce = new_nonce();
     let resp = match client
         .get(format!("{}/health", base_url.trim_end_matches('/')))
@@ -367,10 +404,10 @@ async fn verify_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
         Ok(r) => r,
         Err(e) if e.is_connect() => return Err(VerifyError::Unreachable),
         // Connected, then no valid answer: a listener that is not the daemon.
-        Err(_) => return Err(unverified()),
+        Err(_) => return Err(unverified().await),
     };
     if !resp.status().is_success() {
-        return Err(unverified());
+        return Err(unverified().await);
     }
     // The proof names the port this client connected to, so a proof from a
     // daemon on another port does not verify here.
@@ -385,22 +422,22 @@ async fn verify_with_lookup<Fut: std::future::Future<Output = Option<u32>>>(
         // No cache: every unproven answer is classified again, so a process
         // that binds right after an old daemon exits is never taken for it.
         if !allow_legacy {
-            return Err(unverified());
+            return Err(unverified().await);
         }
         // SAFETY: `geteuid` takes no arguments and cannot fail.
         let my_uid = unsafe { libc::geteuid() };
         listener = classify_listener(false, lookup(port).await, my_uid);
         if listener != Listener::LegacySameUser {
-            return Err(unverified());
+            return Err(unverified().await);
         }
         static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !LOGGED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             eprintln!("turbofig: an older turbofig daemon is running");
         }
     }
-    let body = read_json_capped(resp, HEALTH_BODY_CAP)
-        .await
-        .ok_or_else(unverified)?;
+    let Some(body) = read_json_capped(resp, HEALTH_BODY_CAP).await else {
+        return Err(unverified().await);
+    };
     Ok((body, listener))
 }
 
@@ -825,8 +862,16 @@ mod tests {
             let err = verify_with_lookup(&client, &url, TOKEN, true, |_| async move { other })
                 .await
                 .unwrap_err();
-            assert!(matches!(err, VerifyError::Unverified { .. }));
-            assert!(err.to_string().contains("Another Mac user"));
+            match other {
+                Some(_) => {
+                    assert!(matches!(err, VerifyError::OtherUser { .. }));
+                    assert!(err.to_string().contains("Another Mac user"));
+                }
+                None => {
+                    assert!(matches!(err, VerifyError::Unverified { .. }));
+                    assert!(!err.to_string().contains("Another Mac user"));
+                }
+            }
         }
         let strict =
             verify_with_lookup(&client, &url, TOKEN, false, |_| async move { Some(my_uid) }).await;
@@ -864,7 +909,7 @@ mod tests {
             |_| async move { Some(my_uid + 1) },
         )
         .await;
-        assert!(matches!(r, Err(VerifyError::Unverified { .. })));
+        assert!(matches!(r, Err(VerifyError::OtherUser { .. })));
     }
 
     #[test]
@@ -956,25 +1001,29 @@ mod tests {
     }
 
     #[test]
-    fn foreign_listener_advice_names_the_port_settings_for_another_or_unknown_owner() {
-        for owner in [None, Some(999)] {
-            let m = foreign_listener_advice(18846, owner, 501);
-            assert!(m.contains("Another Mac user is running turbofig on port 18846."));
-            assert!(m.contains("TURBOFIG_MCP_PORT and TURBOFIG_WS_PORT"));
-            assert!(m.contains("docs/configuration.md"));
-            assert!(!m.contains("pkill"));
-        }
+    fn foreign_listener_advice_says_another_mac_user_only_for_another_uid() {
+        let m = foreign_listener_advice(18846, Some(999), 501);
+        assert!(m.contains("Another Mac user is running turbofig on port 18846."));
+        assert!(m.contains("TURBOFIG_MCP_PORT and TURBOFIG_WS_PORT"));
+        assert!(m.contains("docs/configuration.md"));
+        assert!(!m.contains("pkill"));
+        let unknown = foreign_listener_advice(18846, None, 501);
+        assert!(!unknown.contains("Another Mac user"));
+        assert!(unknown.contains("not this turbofig"));
+        assert!(unknown.contains("lsof -nP -iTCP:18846"));
+        assert!(!unknown.contains("pkill"));
         assert!(foreign_listener_advice(18846, Some(501), 501).contains("pkill"));
     }
 
     #[test]
-    fn unverified_error_never_advises_pkill() {
+    fn unverified_error_is_neutral_and_never_advises_pkill() {
         let m = VerifyError::Unverified {
             addr: "127.0.0.1:18846".into(),
         }
         .to_string();
         assert!(m.contains("not your turbofig daemon"));
         assert!(m.contains("port 18846"));
+        assert!(!m.contains("Another Mac user"));
         assert!(!m.contains("pkill"));
     }
 
