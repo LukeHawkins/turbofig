@@ -26,14 +26,16 @@ import {
   mainMessageAction,
   modeAfterDaemonFrame,
   NO_TOKEN_LABEL,
+  NOT_RUNNING_LABEL,
   parseConnectionMode,
   parsePort,
   parseShowLog,
   portMessageAction,
   promptTemplateFor,
+  reloadDisabled,
   screenSize,
   shouldRenderLog,
-  staleWarning,
+  staleBanner,
   statusOverride,
   trackActiveJobs,
   welcomeHasValidMode,
@@ -92,6 +94,9 @@ const sessionLineEl = document.getElementById("session-line") as HTMLElement;
 const sessionRowEl = document.getElementById("session-row") as HTMLElement;
 const pluginVersionEl = document.getElementById("plugin-version") as HTMLElement;
 const staleWarningEl = document.getElementById("stale-warning") as HTMLElement;
+const staleTextEl = document.getElementById("stale-text") as HTMLElement;
+const reloadBtns = Array.from(document.querySelectorAll<HTMLButtonElement>(".reload-btn"));
+const resetReloadEl = document.getElementById("reload-reset") as HTMLElement;
 const activityLogEl = document.getElementById("activity-log") as HTMLElement;
 const portFieldEl = document.getElementById("port-field") as HTMLInputElement;
 const portHintEl = document.getElementById("port-hint") as HTMLElement;
@@ -128,7 +133,7 @@ let hasConnectedOnce = false;
 
 const CONN_LABELS: Record<string, string> = {
   connected: "Connected to daemon",
-  offline: "turbofig is not running. Open Terminal and run: turbofig",
+  offline: NOT_RUNNING_LABEL,
   connecting: "Connecting...",
   reconnecting: "Reconnecting...",
 };
@@ -142,6 +147,7 @@ const ACTIVITY_FADE_MS = 500;
 /** Shows the activity squares while at least 1 job runs. CSS block: "ACTIVITY SQUARES". */
 function setWorking(): void {
   const working = activeJobs.size > 0;
+  refreshReload();
   document.body.classList.toggle("working", working);
   if (!activityEl) return;
   if (fadeTimer !== undefined) clearTimeout(fadeTimer);
@@ -203,6 +209,21 @@ function showLogSetting(): void {
   }
 }
 
+/** Shows or hides both Reload buttons and disables them while a job runs. */
+function refreshReload(): void {
+  const banner = staleBanner(__PLUGIN_VERSION__, daemonVersion);
+  const bannerOn = Boolean(banner) && ws !== null && verified;
+  if (staleWarningEl) {
+    staleTextEl.textContent = bannerOn && banner ? banner.text : "";
+    staleWarningEl.style.display = bannerOn ? "flex" : "none";
+    const bannerBtn = staleWarningEl.querySelector<HTMLButtonElement>(".reload-btn");
+    if (bannerBtn) bannerBtn.style.display = banner?.canReload ? "" : "none";
+  }
+  /* The token was reset: the open plugin can never verify again. */
+  if (resetReloadEl) resetReloadEl.style.display = linkHealth.failed && !verified ? "" : "none";
+  for (const btn of reloadBtns) btn.disabled = reloadDisabled(activeJobs.size);
+}
+
 /** Updates the connection status element from a WS lifecycle event. */
 /** Handshake health across reconnects (sticky status text). */
 let linkHealth: LinkHealth = INITIAL_LINK_HEALTH;
@@ -215,6 +236,7 @@ function setConnStatus(event: "open" | "close" | "error" | "attempt"): void {
     connStatusEl.textContent = override ?? CONN_LABELS[state] ?? state;
     connStatusEl.className = state;
   }
+  refreshReload();
 }
 
 /** Refreshes the copy buttons from the latest FILE_INFO. */
@@ -524,6 +546,8 @@ function connect(): void {
     if (!isDaemonMessage(candidate)) return;
     const parsed = candidate as unknown as Record<string, unknown>;
     const action = daemonMessageAction(parsed.type as string);
+    /* UI-only types (CLOSE_FOR_UPDATE) never come from the daemon. */
+    if (action === "drop") return;
     /* Consume WELCOME: store the daemon version and MCP port; check for a stale mismatch. */
     if (action === "welcome") {
       daemonVersion = typeof parsed.version === "string" ? parsed.version : "";
@@ -536,11 +560,7 @@ function connect(): void {
       modeKnown = true;
       welcomedSocket = welcomeHasValidMode(parsed);
       showConnectionMode();
-      const warning = staleWarning(__PLUGIN_VERSION__, daemonVersion);
-      if (staleWarningEl) {
-        staleWarningEl.textContent = warning;
-        staleWarningEl.style.display = warning ? "block" : "none";
-      }
+      refreshReload();
       return;
     }
     /* Consume CONNECTION_MODE: the daemon's mode is the truth. */
@@ -660,6 +680,15 @@ window.onmessage = (event: MessageEvent) => {
     ws.send(JSON.stringify(m));
   }
 };
+
+/* Reload: the plugin cannot reload itself. Ask the main thread to close it
+   with a toast that says how to reopen it. Only these buttons send this. */
+for (const btn of reloadBtns) {
+  btn.addEventListener("click", () => {
+    if (reloadDisabled(activeJobs.size)) return;
+    parent.postMessage({ pluginMessage: { type: "CLOSE_FOR_UPDATE" } }, "*");
+  });
+}
 
 // Show the plugin version immediately on load.
 if (pluginVersionEl) pluginVersionEl.textContent = __PLUGIN_VERSION__;

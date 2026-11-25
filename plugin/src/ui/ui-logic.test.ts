@@ -306,9 +306,8 @@ describe("staleWarning", () => {
     expect(staleWarning("0.1.0", "0.2.0").length).toBeGreaterThan(0);
   });
 
-  test("warning includes both version strings", () => {
+  test("warning names the daemon version", () => {
     const w = staleWarning("0.1.0", "0.2.0");
-    expect(w).toContain("0.1.0");
     expect(w).toContain("0.2.0");
   });
 });

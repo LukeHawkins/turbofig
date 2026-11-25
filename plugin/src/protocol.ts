@@ -116,6 +116,20 @@ export interface OpenUrlMessage {
   url: string;
 }
 
+/** Toast the main thread shows when the UI asks to close the plugin after an update. */
+export const CLOSE_FOR_UPDATE_TOAST = "turbofig was updated. Press \u2325\u2318P to reopen it.";
+
+/**
+ * Sent by the plugin UI iframe when the user clicks Reload. A plugin cannot
+ * reload itself, so the main thread calls figma.closePlugin with
+ * CLOSE_FOR_UPDATE_TOAST; the user presses Option+Command+P to run it again.
+ * Only the UI's own button sends it. Never forwarded over the WebSocket, and
+ * the UI drops it when it arrives from the daemon.
+ */
+export interface CloseForUpdateMessage {
+  type: "CLOSE_FOR_UPDATE";
+}
+
 /**
  * Sent by the plugin UI iframe to the plugin main thread once, on load.
  * The main thread replies with FILE_INFO and PORT. This handshake replaces an
@@ -288,7 +302,8 @@ export type InboundMessage =
   | SetShowLogMessage
   | ResizeMessage
   | OpenUrlMessage
-  | ReadyMessage;
+  | ReadyMessage
+  | CloseForUpdateMessage;
 
 /** Returns true when `x` is an array whose members are all strings. */
 function isStringArray(x: unknown): x is string[] {
@@ -335,6 +350,7 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
     case "OPEN_URL":
       return typeof msg.url === "string";
     case "READY":
+    case "CLOSE_FOR_UPDATE":
       return true;
     default:
       return false;

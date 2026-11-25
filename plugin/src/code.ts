@@ -14,6 +14,7 @@ import {
   buildScreenshot,
   buildSelection,
   buildStarted,
+  CLOSE_FOR_UPDATE_TOAST,
   capResultMessage,
   isAllowedExternalUrl,
   isInboundMessage,
@@ -484,6 +485,8 @@ export function createDispatcher(
 ): (raw: unknown) => void {
   // Chained promise: each queued job runs only after the previous one settles.
   let queueTail: Promise<void> = Promise.resolve();
+  // Jobs queued or running. The Reload close request waits until this is 0.
+  let pendingJobs = 0;
 
   async function runQueuedJob(
     requestId: number,
@@ -514,6 +517,7 @@ export function createDispatcher(
     const budget =
       typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : DEFAULT_QUEUE_TIMEOUT_MS;
     const deadline = Date.now() + clampTimeoutMs(budget);
+    pendingJobs += 1;
     queueTail = queueTail
       .then(() => runQueuedJob(requestId, deadline, job))
       .then((reply) => post(capResultMessage(reply)))
@@ -523,6 +527,9 @@ export function createDispatcher(
         // queueTail permanently rejected and every later .then() in the
         // chain (i.e. every later queued job) is skipped and silently
         // dropped instead of running.
+      })
+      .then(() => {
+        pendingJobs -= 1;
       });
   }
 
@@ -578,6 +585,10 @@ export function createDispatcher(
         if (msg.width > 0 && msg.height > 0) {
           figma.ui.resize(msg.width, msg.height);
         }
+        break;
+      case "CLOSE_FOR_UPDATE":
+        /* The UI's Reload button. Refuse while a job is queued or running. */
+        if (pendingJobs === 0) figma.closePlugin(CLOSE_FOR_UPDATE_TOAST);
         break;
       default:
         break;
