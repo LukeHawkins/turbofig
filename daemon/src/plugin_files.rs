@@ -100,13 +100,34 @@ pub fn plugin_files_outdated(home: &Path, token: &str) -> bool {
 }
 
 /// Builds the marker file contents for `token`: the daemon version on one
-/// line, a hash of the token on the next. Never writes the token itself.
+/// line, a hash of the token on the next, and a hash of the embedded plugin
+/// bundle on the third. Never writes the token itself.
+///
+/// The bundle hash makes any change to the plugin files count as outdated,
+/// not only a version bump: a rebuilt plugin under the same version (a dev
+/// build, a re-cut release) is rewritten on the next daemon start, so an old
+/// UI can never sit under a current marker. A marker in the older two-line
+/// format never matches, so the first start of this build rewrites the files.
 fn marker_contents(token: &str) -> String {
     format!(
-        "{}\n{:016x}\n",
+        "{}\n{:016x}\n{:016x}\n",
         env!("CARGO_PKG_VERSION"),
-        hash_token(token)
+        hash_token(token),
+        hash_plugin_bundle()
     )
+}
+
+/// A stable (same-build) hash of the embedded plugin files before the token
+/// is injected. Zero inputs (a build with no embedded plugin) hash to a fixed
+/// value; `write_plugin_files` refuses that build anyway.
+fn hash_plugin_bundle() -> u64 {
+    let mut hasher = DefaultHasher::new();
+    if let Some(plugin) = embedded_plugin() {
+        plugin.manifest.hash(&mut hasher);
+        plugin.code_js.hash(&mut hasher);
+        plugin.ui_html.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// A stable (same-process-build), non-cryptographic hash of the token, used
@@ -444,6 +465,36 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         write_plugin_files(tmp.path(), "tok-a").expect("write_plugin_files");
         assert!(plugin_files_outdated(tmp.path(), "tok-b"));
+    }
+
+    /// The case seen on 2026-11-25: a dev build wrote an old plugin UI under
+    /// a marker with the current version and token, so every later build of
+    /// the same version skipped the rewrite. The bundle hash catches it.
+    #[test]
+    fn plugin_files_outdated_is_true_when_the_bundle_changed_under_the_same_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_plugin_files(tmp.path(), "tok").expect("write_plugin_files");
+        let marker = tmp.path().join("figma-plugin").join(MARKER_FILE);
+
+        let other_bundle = format!(
+            "{}\n{:016x}\n{:016x}\n",
+            env!("CARGO_PKG_VERSION"),
+            hash_token("tok"),
+            hash_plugin_bundle() ^ 1
+        );
+        std::fs::write(&marker, other_bundle).expect("write marker");
+        assert!(plugin_files_outdated(tmp.path(), "tok"));
+
+        let two_line_format = format!(
+            "{}\n{:016x}\n",
+            env!("CARGO_PKG_VERSION"),
+            hash_token("tok")
+        );
+        std::fs::write(&marker, two_line_format).expect("write marker");
+        assert!(plugin_files_outdated(tmp.path(), "tok"));
+
+        write_plugin_files(tmp.path(), "tok").expect("rewrite");
+        assert!(!plugin_files_outdated(tmp.path(), "tok"));
     }
 
     #[test]
