@@ -209,6 +209,25 @@ pub fn first_run_text(
     figma_opened: bool,
     clipboard_copied: bool,
 ) -> String {
+    format!(
+        "turbofig {version} is running (HTTP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).\n\n{steps}",
+        steps = setup_steps_text(manifest_path, figma_opened, clipboard_copied),
+    )
+}
+
+/// Where to get Figma Desktop. Printed when the Figma launch failed.
+const FIGMA_INSTALL_LINE: &str = "   Install Figma Desktop: https://www.figma.com/downloads/ (the web app has no Import plugin menu).";
+
+/// The 2 Figma steps and the agent lines, shared by the app path and the
+/// text fallback (one source of truth for the step wording). Starts with
+/// "1. " and ends with a newline. See `first_run_text` for the meaning of
+/// `figma_opened` and `clipboard_copied`. When `figma_opened` is false, a
+/// line after the manifest path says where to install Figma Desktop.
+pub fn setup_steps_text(
+    manifest_path: &Path,
+    figma_opened: bool,
+    clipboard_copied: bool,
+) -> String {
     let figma_line = if figma_opened {
         "Figma is opening now."
     } else {
@@ -219,8 +238,13 @@ pub fn first_run_text(
     } else {
         "copy this path"
     };
+    let install_line = if figma_opened {
+        String::new()
+    } else {
+        format!("{FIGMA_INSTALL_LINE}\n")
+    };
     format!(
-        "turbofig {version} is running (HTTP 127.0.0.1:{mcp_port}, plugin 127.0.0.1:{ws_port}).\n\n1. Add the Figma plugin (once). {figma_line}\n   Plugins > Development > Import plugin from manifest...\n   Press Cmd+Shift+G, paste the path ({clipboard_hint}), then press Return:\n   {manifest}\n\n2. Connect your agent: run the turbofig plugin in a Figma file, click the link icon\n   next to the file name (\"Copy connect prompt\"), and paste the prompt into your agent.\n   This is the file bridge. It needs no MCP setup.\n\nAI agents: setup is done. Ask the user to do steps 1 and 2.\nAdd an MCP server only if the user asks for MCP:\nhttps://github.com/LukeHawkins/turbofig/blob/main/docs/mcp-clients.md\n",
+        "1. Add the Figma plugin (once). {figma_line}\n   Plugins > Development > Import plugin from manifest...\n   Press Cmd+Shift+G, paste the path ({clipboard_hint}), then press Return:\n   {manifest}\n{install_line}\n2. Connect your agent: run the turbofig plugin in a Figma file, click the link icon\n   next to the file name (\"Copy connect prompt\"), and paste the prompt into your agent.\n   This is the file bridge. It needs no MCP setup.\n\nAI agents: setup is done. Ask the user to do steps 1 and 2.\nAdd an MCP server only if the user asks for MCP:\nhttps://github.com/LukeHawkins/turbofig/blob/main/docs/mcp-clients.md\n",
         manifest = manifest_path.display(),
     )
 }
@@ -251,46 +275,70 @@ Plugin manifest: {manifest}\n",
     )
 }
 
-/// The 2-line text the bare `turbofig` command prints on macOS once
-/// `turbofig.app` is installed/refreshed, the daemon is running, and the
-/// bundle has been opened: the app itself (its tray icon, and the About
-/// window behind "About turbofig…") is now the onboarding surface, so the
-/// terminal only needs to point at it.
+/// What the bare `turbofig` command does with an installed app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AboutAction {
+    /// A running app took the OpenAbout signal: it re-opened About.
+    ReopenAbout,
+    /// No app was listening: launch the bundle.
+    LaunchApp,
+}
+
+/// Pure decision: `signal_delivered` is whether a running app accepted the
+/// OpenAbout signal on `<home>/app.sock`.
+pub fn about_action(signal_delivered: bool) -> AboutAction {
+    if signal_delivered {
+        AboutAction::ReopenAbout
+    } else {
+        AboutAction::LaunchApp
+    }
+}
+
+/// The text the bare `turbofig` command prints on macOS once
+/// `turbofig.app` is installed/refreshed and running: 2 lines that point at
+/// the menu bar icon, then (`steps` is `Some`) a blank line and the shared
+/// Figma steps from `setup_steps_text`, so an agent has the steps to relay.
 ///
-/// `used_home_fallback` names the real install location: `false` (the
-/// common case, an admin account) names the Applications folder Finder's
-/// sidebar shows; `true` (a non-admin account on a managed Mac, see
-/// `app_bundle::applications_dir_from_env`) names the per-user fallback
-/// instead, so a user who goes looking in Finder's own Applications never
-/// wonders why it is not there.
-pub fn app_first_run_text(used_home_fallback: bool) -> String {
+/// `used_home_fallback` names the real install location: `false` names the
+/// Applications folder; `true` (a non-admin account, see
+/// `app_bundle::applications_dir_from_env`) names the per-user fallback.
+/// `about_reopened` adds a line saying a running app was told to re-open
+/// its About window.
+pub fn app_first_run_text(
+    used_home_fallback: bool,
+    about_reopened: bool,
+    steps: Option<&str>,
+) -> String {
     let location = if used_home_fallback {
         "in Applications in your home folder"
     } else {
         "in your Applications folder"
     };
-    format!(
+    let mut text = format!(
         "turbofig is {location} and your menu bar (look for the tf icon).\n\
-         Click it and choose About turbofig… to get started. No icon? Run: turbofig status\n"
-    )
+         Click it and choose About turbofig… to get started. No icon? Run turbofig again to reopen About.\n"
+    );
+    if about_reopened {
+        text.push_str("turbofig was already running: I re-opened the About window.\n");
+    }
+    if let Some(steps) = steps {
+        text.push('\n');
+        text.push_str(steps);
+    }
+    text
 }
 
 /// Combines the macOS app-bundle path's 2 fallible steps (installing the
-/// bundle, then opening it) into either the short app-first-run text
-/// (`Ok`) or a 1-line failure reason (`Err`) for the caller to print before
-/// falling back to the ordinary text walkthrough (`first_run_text`/
-/// `status_text`).
-///
-/// `bundle_install_err` is `Some(reason)` when `install_app_bundle` itself
-/// failed (the caller never attempts to open a bundle that was not
-/// installed); `opened` is whether the `AppOpener` seam's `open_url` (on
-/// the bundle path) succeeded, only ever checked when the install
-/// succeeded; `used_home_fallback` is passed straight through to
-/// `app_first_run_text`.
+/// bundle, then opening it) into either the app text (`Ok`) or a 1-line
+/// failure reason (`Err`) for the caller to print before falling back to
+/// the text walkthrough. `opened` is only checked when the install
+/// succeeded; the other arguments pass straight to `app_first_run_text`.
 pub fn app_first_run_outcome(
     bundle_install_err: Option<String>,
     opened: bool,
     used_home_fallback: bool,
+    about_reopened: bool,
+    steps: Option<&str>,
 ) -> Result<String, String> {
     if let Some(reason) = bundle_install_err {
         return Err(format!("could not install turbofig.app: {reason}"));
@@ -298,7 +346,11 @@ pub fn app_first_run_outcome(
     if !opened {
         return Err("could not open turbofig.app".to_owned());
     }
-    Ok(app_first_run_text(used_home_fallback))
+    Ok(app_first_run_text(
+        used_home_fallback,
+        about_reopened,
+        steps,
+    ))
 }
 
 #[cfg(test)]
@@ -556,44 +608,90 @@ mod tests {
     }
 
     #[test]
-    fn app_first_run_text_is_exactly_2_lines_naming_the_tray_icon_and_fallback_status() {
-        let text = app_first_run_text(false);
+    fn app_first_run_text_without_steps_is_2_lines_naming_the_tray_icon_and_rerun() {
+        let text = app_first_run_text(false, false, None);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "must be exactly 2 lines: {text:?}");
-        assert!(lines[0].contains("menu bar"));
         assert!(lines[0].contains("tf icon"));
         assert!(lines[1].contains("About turbofig"));
-        assert!(lines[1].contains("turbofig status"));
+        assert!(lines[1].contains("Run turbofig again"));
+        assert!(!text.contains("turbofig status"));
+    }
+
+    #[test]
+    fn app_first_run_text_with_steps_carries_the_shared_steps_and_agent_lines() {
+        let manifest = Path::new("/Users/dev/.turbofig/figma-plugin/manifest.json");
+        let steps = setup_steps_text(manifest, true, true);
+        let text = app_first_run_text(false, false, Some(&steps));
+        assert!(text.ends_with(&steps));
+        assert!(text.contains("1. Add the Figma plugin"));
+        assert!(text.contains("2. Connect your agent"));
+        assert!(text.contains(&manifest.display().to_string()));
+        assert!(text.contains("AI agents: setup is done. Ask the user to do steps 1 and 2."));
+        assert!(text.contains("Add an MCP server only if the user asks for MCP:"));
+        assert!(!text.contains("claude mcp add"));
+    }
+
+    #[test]
+    fn app_first_run_text_says_when_about_was_reopened() {
+        assert!(app_first_run_text(false, true, None).contains("re-opened the About window"));
+        assert!(!app_first_run_text(false, false, None).contains("re-opened"));
+    }
+
+    #[test]
+    fn setup_steps_text_prints_the_install_line_only_when_figma_did_not_open() {
+        let manifest = Path::new("/tmp/manifest.json");
+        let missing = setup_steps_text(manifest, false, true);
+        assert!(missing.contains("Open Figma Desktop."));
+        assert!(missing.contains(
+            "Install Figma Desktop: https://www.figma.com/downloads/ (the web app has no Import plugin menu)."
+        ));
+        let opened = setup_steps_text(manifest, true, true);
+        assert!(!opened.contains("Install Figma Desktop"));
+    }
+
+    #[test]
+    fn app_text_and_fallback_text_share_the_same_steps() {
+        let manifest = Path::new("/tmp/manifest.json");
+        let steps = setup_steps_text(manifest, false, false);
+        assert!(first_run_text("1.2.3", 1, 2, manifest, false, false).ends_with(&steps));
+        assert!(app_first_run_text(false, false, Some(&steps)).ends_with(&steps));
+    }
+
+    #[test]
+    fn about_action_reopens_when_the_signal_was_delivered_and_launches_otherwise() {
+        assert_eq!(about_action(true), AboutAction::ReopenAbout);
+        assert_eq!(about_action(false), AboutAction::LaunchApp);
     }
 
     #[test]
     fn app_first_run_text_names_the_global_applications_folder_by_default() {
-        let text = app_first_run_text(false);
+        let text = app_first_run_text(false, false, None);
         assert!(text.contains("in your Applications folder"));
         assert!(!text.contains("home folder"));
     }
 
     #[test]
     fn app_first_run_text_names_the_home_fallback_when_asked() {
-        let text = app_first_run_text(true);
+        let text = app_first_run_text(true, false, None);
         assert!(text.contains("in Applications in your home folder"));
     }
 
     #[test]
     fn app_first_run_outcome_succeeds_when_installed_and_opened() {
-        let result = app_first_run_outcome(None, true, false);
-        assert_eq!(result, Ok(app_first_run_text(false)));
+        let result = app_first_run_outcome(None, true, false, false, Some("S\n"));
+        assert_eq!(result, Ok(app_first_run_text(false, false, Some("S\n"))));
     }
 
     #[test]
     fn app_first_run_outcome_carries_the_home_fallback_into_the_text() {
-        let result = app_first_run_outcome(None, true, true);
-        assert_eq!(result, Ok(app_first_run_text(true)));
+        let result = app_first_run_outcome(None, true, true, false, None);
+        assert_eq!(result, Ok(app_first_run_text(true, false, None)));
     }
 
     #[test]
     fn app_first_run_outcome_fails_with_the_install_reason_when_install_fails() {
-        let result = app_first_run_outcome(Some("disk full".to_owned()), true, false);
+        let result = app_first_run_outcome(Some("disk full".to_owned()), true, false, false, None);
         assert_eq!(
             result,
             Err("could not install turbofig.app: disk full".to_owned())
@@ -602,15 +700,14 @@ mod tests {
 
     #[test]
     fn app_first_run_outcome_fails_when_open_fails_even_though_install_succeeded() {
-        let result = app_first_run_outcome(None, false, false);
+        let result = app_first_run_outcome(None, false, false, false, None);
         assert_eq!(result, Err("could not open turbofig.app".to_owned()));
     }
 
     #[test]
     fn app_first_run_outcome_never_checks_open_when_install_already_failed() {
-        // opened=true here would be misleading if install failed; the
-        // install error must still win.
-        let result = app_first_run_outcome(Some("no space left".to_owned()), true, false);
+        let result =
+            app_first_run_outcome(Some("no space left".to_owned()), true, false, false, None);
         assert_eq!(
             result,
             Err("could not install turbofig.app: no space left".to_owned())

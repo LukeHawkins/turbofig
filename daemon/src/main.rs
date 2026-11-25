@@ -828,13 +828,49 @@ fn try_app_first_run() -> Option<String> {
         }
     }
 
+    // On a first run (no plugin-seen marker) the app path also does what the
+    // text fallback does: copy the manifest path and open Figma Desktop, and
+    // print the Figma steps for the user (or the agent) to relay.
+    let steps = if bundle_install_err.is_none() && !home.join("plugin-seen").exists() {
+        let manifest_path = home.join("figma-plugin").join("manifest.json");
+        let clipboard_copied = clipboard_for_run().copy(&manifest_path.display().to_string());
+        let figma_opened = opener_for_run().open_figma();
+        Some(turbofig::first_run::setup_steps_text(
+            &manifest_path,
+            figma_opened,
+            clipboard_copied,
+        ))
+    } else {
+        None
+    };
+
+    // A running app takes the OpenAbout signal (so a hidden menu bar icon is
+    // no dead end); otherwise launch the bundle.
+    let mut about_reopened = false;
     let opened = if bundle_install_err.is_none() {
-        opener_for_run().open_url(&bundle_dir.display().to_string())
+        let delivered = matches!(
+            turbofig::menu_bar::signal_open_about_running_app(&home),
+            Ok(true)
+        );
+        match turbofig::first_run::about_action(delivered) {
+            turbofig::first_run::AboutAction::ReopenAbout => {
+                about_reopened = true;
+                true
+            }
+            turbofig::first_run::AboutAction::LaunchApp => {
+                opener_for_run().open_url(&bundle_dir.display().to_string())
+            }
+        }
     } else {
         false
     };
-    match turbofig::first_run::app_first_run_outcome(bundle_install_err, opened, used_home_fallback)
-    {
+    match turbofig::first_run::app_first_run_outcome(
+        bundle_install_err,
+        opened,
+        used_home_fallback,
+        about_reopened,
+        steps.as_deref(),
+    ) {
         Ok(text) => Some(text),
         Err(reason) => {
             eprintln!("turbofig: {reason}; falling back to the manual walkthrough");

@@ -44,6 +44,16 @@ pub fn signal_quit_running_app(home: &Path) -> std::io::Result<bool> {
     second_instance::send(&home.join("app.sock"), second_instance::SignalMessage::Quit)
 }
 
+/// Asks a running app instance (if any) to open its About window, over
+/// `<home>/app.sock`. `Ok(true)`: an app accepted the signal. `Ok(false)`:
+/// no app was listening. Used by the bare `turbofig` command.
+pub fn signal_open_about_running_app(home: &Path) -> std::io::Result<bool> {
+    second_instance::send(
+        &home.join("app.sock"),
+        second_instance::SignalMessage::OpenAbout,
+    )
+}
+
 /// Asks a running app instance (if any) to quit, then waits until
 /// `<home>/app.lock` is free or `deadline` elapses. Used by the bare
 /// `turbofig` command after it refreshes an outdated `turbofig.app`
