@@ -218,11 +218,18 @@ fn main() {
         cmd_check_embedded();
     }
     // `js` runs before any async runtime or other start-up: it must stay fast.
-    if let Some(Command::Js { file, shot, dir }) = &cli.command {
+    if let Some(Command::Js {
+        file,
+        shot,
+        dir,
+        guide,
+    }) = &cli.command
+    {
         std::process::exit(turbofig::js_cmd::run(
             file.as_deref(),
             *shot,
             dir.as_deref(),
+            *guide,
         ));
     }
     tokio::runtime::Builder::new_multi_thread()

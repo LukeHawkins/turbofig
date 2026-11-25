@@ -134,7 +134,9 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
    Copilot, or any other agent with local file access. This needs no MCP
    setup. See
    [docs/agents.md](docs/agents.md) for an agent-neutral version of the
-   same prompt. Chat apps that run in a browser cannot reach your Mac, so
+   same prompt. The prompt is tiny: it tells the agent to run
+   `turbofig js --guide`, which prints the full guide for your installed
+   version. Chat apps that run in a browser cannot reach your Mac, so
    they cannot use turbofig.
 
    **Claude Code tip:** to stop it asking before every Figma job, type

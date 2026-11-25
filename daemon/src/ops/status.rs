@@ -24,6 +24,13 @@ fn shape(mut v: Value) -> Value {
     v
 }
 
+/// The connected files from the daemon's own registry. It sends nothing to
+/// any plugin, so it never waits on a slow or silent one. `plugins` is always
+/// present, empty when no file is connected.
+pub fn run_files(state: &Arc<AppState>) -> Value {
+    json!({"ok": true, "plugins": state.named_connections_json()})
+}
+
 /// Run the status check and return a JSON value.
 ///
 /// Resolves the target connection via session_id and file_key.
@@ -169,6 +176,25 @@ mod tests {
             }
         });
         run_status(&state, None, None).await
+    }
+
+    #[test]
+    fn files_lists_the_registry_without_any_plugin_round_trip() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        assert_eq!(run_files(&state), json!({"ok": true, "plugins": []}));
+        // The plugin never reads its channel: a `status` call would time out.
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        let conn = state.add_connection(tx);
+        state.set_connection_info_with_version(
+            conn,
+            "fk1".to_owned(),
+            "File 1".to_owned(),
+            env!("CARGO_PKG_VERSION").to_owned(),
+        );
+        assert_eq!(
+            run_files(&state),
+            json!({"ok": true, "plugins": [{"fileKey": "fk1", "name": "File 1"}]})
+        );
     }
 
     #[tokio::test]

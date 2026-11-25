@@ -3,7 +3,7 @@
 //! needs to show. No tray-icon, no tao, no I/O: `mod.rs` is the only caller,
 //! and it is the only place this ever touches a real tray icon or menu.
 
-use crate::agent_prompt::{fill_agent_prompt, ConnectedFile, TEMPLATE};
+use crate::agent_prompt::{fill_agent_prompt, TEMPLATE};
 
 /// Which of the 2 checked-in tray-icon PNGs to show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,16 +105,8 @@ pub fn build_menu_state(
         }
     };
 
-    let prompt_files: Vec<ConnectedFile> = connected
-        .iter()
-        .map(|f| ConnectedFile {
-            file_key: f.file_key.clone(),
-            name: f.name.clone(),
-        })
-        .collect();
     let agent_prompt = fill_agent_prompt(
         TEMPLATE,
-        &prompt_files,
         bridge_dir,
         mcp_port,
         turbofig_bin,
@@ -206,38 +198,18 @@ mod tests {
     }
 
     #[test]
-    fn agent_prompt_reflects_the_connected_files() {
-        let zero = build_menu_state(
-            Some(&health_with_files(&[])),
-            "/tmp/bridge",
-            18846,
-            "/opt/homebrew/bin/turbofig",
-            "",
-        );
-        assert!(zero.agent_prompt.contains("Run the status op first"));
-
-        let one = build_menu_state(
+    fn agent_prompt_names_the_binary_and_the_bridge_folder() {
+        let state = build_menu_state(
             Some(&health_with_files(&[("key1", "Design A")])),
             "/tmp/bridge",
             18846,
             "/opt/homebrew/bin/turbofig",
-            "",
+            "/srv/bridge",
         );
-        assert!(one.agent_prompt.contains("\"fileKey\":\"key1\""));
-
-        let many = build_menu_state(
-            Some(&health_with_files(&[
-                ("key1", "Design A"),
-                ("key2", "Design B"),
-            ])),
-            "/tmp/bridge",
-            18846,
-            "/opt/homebrew/bin/turbofig",
-            "",
-        );
-        assert!(many
+        assert!(state
             .agent_prompt
-            .contains("Connected files: Design A (key1), Design B (key2)."));
+            .contains("run first: /opt/homebrew/bin/turbofig js --dir /srv/bridge --guide"));
+        assert!(state.agent_prompt.contains("read /tmp/bridge/guide.md"));
     }
 
     #[test]

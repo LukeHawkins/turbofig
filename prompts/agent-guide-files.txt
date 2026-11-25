@@ -1,0 +1,9 @@
+turbofig {{VERSION}} guide (file tools)
+send: write {{BRIDGE_DIR}}/inbox/<unique-id>.json, read outbox/<id>.json. poll 2 s, max 60 s
+first {"op":"status"} → .plugins[] name,fileKey. none → ask user: Figma > Plugins > Development > turbofig, then resend. else reply "Ready"
+job: {"op":"execute","fileKey":KEY,"code":"<async js; figma, tf in scope; return ids not nodes>"}
+fileKey: if files>1. other ops: status get_selection screenshot (→ .path)
+{{RULES}}
+ok:false → act on .code:
+not_started→resend, new id | started_unknown, no result in 60 s→query nodes | busy→wait retryAfterMs | plugin_disconnected, file_not_connected→ask user open plugin | ambiguous_target→fileKey | draining→wait, resend | invalid_job→fix | io_error→resend | result_too_large→return less | script_error→partial edits possible, inspect
+job<=30MiB
