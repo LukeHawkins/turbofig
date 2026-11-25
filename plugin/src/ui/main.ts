@@ -141,25 +141,42 @@ const CONN_LABELS: Record<string, string> = {
 const activityEl = document.getElementById("activity");
 let fadeTimer: ReturnType<typeof setTimeout> | undefined;
 
-/** How long the sweep keeps running after the last job, so the fade-out is smooth (ms). */
-const ACTIVITY_FADE_MS = 500;
+/**
+ * How long the squares stay on after the last job ends (ms). Most jobs take
+ * 50 to 100 ms, shorter than the 0.45 s fade-in, so without this linger a
+ * job never visibly shows. An agent sends jobs every few seconds, so 3 s
+ * keeps the squares on for a whole working session.
+ */
+const ACTIVITY_LINGER_MS = 3000;
 
-/** Shows the activity squares while at least 1 job runs. CSS block: "ACTIVITY SQUARES". */
+/** How long the fade-out runs after the linger; matches the CSS opacity transition (ms). */
+const ACTIVITY_FADE_MS = 700;
+
+/** Shows the activity squares while a job runs and for a while after. CSS block: "ACTIVITY SQUARES". */
 function setWorking(): void {
   const working = activeJobs.size > 0;
   refreshReload();
   document.body.classList.toggle("working", working);
   if (!activityEl) return;
-  if (fadeTimer !== undefined) clearTimeout(fadeTimer);
-  fadeTimer = undefined;
   if (working) {
+    if (fadeTimer !== undefined) clearTimeout(fadeTimer);
+    fadeTimer = undefined;
     activityEl.classList.remove("fading");
     activityEl.classList.add("on");
-  } else if (activityEl.classList.contains("on")) {
+    return;
+  }
+  /* Off already, or fading out: let it finish. */
+  if (!activityEl.classList.contains("on")) return;
+  /* Linger, then fade. A later job end restarts the linger. */
+  if (fadeTimer !== undefined) clearTimeout(fadeTimer);
+  fadeTimer = setTimeout(() => {
     activityEl.classList.remove("on");
     activityEl.classList.add("fading");
-    fadeTimer = setTimeout(() => activityEl.classList.remove("fading"), ACTIVITY_FADE_MS);
-  }
+    fadeTimer = setTimeout(() => {
+      activityEl.classList.remove("fading");
+      fadeTimer = undefined;
+    }, ACTIVITY_FADE_MS);
+  }, ACTIVITY_LINGER_MS);
 }
 
 /* External links: ask the main thread to open them (figma.openExternal).
