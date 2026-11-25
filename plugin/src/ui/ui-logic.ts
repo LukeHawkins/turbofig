@@ -256,7 +256,8 @@ export function hasPairingToken(token: string): boolean {
 }
 
 /** Status text shown when the daemon fails the challenge handshake. */
-export const VERIFY_FAILED_LABEL = "turbofig was reset. Close and reopen this plugin.";
+export const VERIFY_FAILED_LABEL =
+  "turbofig was reset, or another turbofig uses its port. Close and reopen this plugin.";
 
 export type ChallengeResult = { ok: true; auth: { type: "AUTH"; proof: string } } | { ok: false };
 

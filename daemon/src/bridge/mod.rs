@@ -717,7 +717,7 @@ pub(crate) async fn process_job(
     output_dir: Option<&Path>,
 ) -> serde_json::Value {
     match job {
-        Job::Files => crate::ops::run_files(state),
+        Job::Files => crate::ops::run_files(state).await,
         Job::Status(p) => crate::ops::run_status(state, session_id, p.file_key.as_deref()).await,
         Job::Execute(p) => {
             crate::ops::run_execute(state, session_id, p.file_key.as_deref(), &p.code).await

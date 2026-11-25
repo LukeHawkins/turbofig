@@ -34,7 +34,7 @@ pub(crate) fn version_mismatch_warning(plugin_version: &str) -> Option<String> {
 /// True for the Unicode format characters (category Cf) that can hide or
 /// reorder text: soft hyphen, Arabic letter mark, Mongolian vowel separator,
 /// zero-width and bidi controls, word joiners, and the byte order mark.
-fn is_format_char(c: char) -> bool {
+pub(crate) fn is_format_char(c: char) -> bool {
     matches!(
         c,
         '\u{00AD}'
@@ -257,9 +257,12 @@ pub struct AppState {
     /// When this `AppState` was constructed, i.e. daemon startup. Used only
     /// by `/health` and `turbofig_status`'s uptime figure.
     started_at: Instant,
-    /// Set once any connection has announced a file (FILE_INFO). Ends the
-    /// cold-start routing grace (`in_cold_start_grace`).
-    plugin_named_once: std::sync::atomic::AtomicBool,
+    /// Milliseconds since startup of the first FILE_INFO, plus one. Zero
+    /// means no file has announced itself yet. Ends the "no plugin" cold-start
+    /// grace (`in_cold_start_grace`) and starts the settle period.
+    first_named_ms: std::sync::atomic::AtomicU64,
+    /// Set by `skip_cold_start_grace`: every cold-start wait is off.
+    grace_skipped: std::sync::atomic::AtomicBool,
     /// Set by the upgrade watcher (`upgrade.rs`, every daemon mode)
     /// once it detects a Homebrew upgrade. While true, `resolve_route`
     /// refuses every new job with `RouteError::Draining`, so the old process
@@ -295,6 +298,11 @@ pub struct AppState {
     /// `new_with_token`. `None` means MCP mode (an in-process test state has
     /// no home to persist a mode in, and `/mcp` stays open for it).
     home: Option<std::path::PathBuf>,
+    /// The last token-restore failure text that was logged. Repeats of the
+    /// same failure stay silent (`restore_token_if_missing`).
+    token_restore_last_error: Mutex<Option<String>>,
+    /// Set once the home folder is gone: the token restore stops for good.
+    token_restore_gave_up: std::sync::atomic::AtomicBool,
     /// Per-connection EXECUTE/SCREENSHOT admission-control lanes. See `Lane`
     /// and `try_admit`.
     lanes: Mutex<HashMap<u64, Lane>>,
@@ -353,12 +361,15 @@ impl AppState {
             screenshot_dir,
             token,
             started_at: Instant::now(),
-            plugin_named_once: std::sync::atomic::AtomicBool::new(false),
+            first_named_ms: std::sync::atomic::AtomicU64::new(0),
+            grace_skipped: std::sync::atomic::AtomicBool::new(false),
             draining: std::sync::atomic::AtomicBool::new(false),
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             job_counter: Arc::new(AtomicUsize::new(0)),
             plugin_seen_path,
             home: None,
+            token_restore_last_error: Mutex::new(None),
+            token_restore_gave_up: std::sync::atomic::AtomicBool::new(false),
             lanes: Mutex::new(HashMap::new()),
             max_inflight,
             last_disconnect: Mutex::new(None),
@@ -635,7 +646,13 @@ impl AppState {
         let mut guard = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(conn) = guard.get_mut(&conn_id) {
             if !file_key.is_empty() {
-                self.plugin_named_once.store(true, Ordering::Relaxed);
+                let ms = self.started_at.elapsed().as_millis() as u64 + 1;
+                let _ = self.first_named_ms.compare_exchange(
+                    0,
+                    ms,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
             }
             conn.file_key = file_key;
             conn.name = name;
@@ -649,10 +666,48 @@ impl AppState {
         let Some(home) = self.home.as_deref() else {
             return;
         };
-        match crate::token::restore_token_file(home, &self.token) {
-            Ok(true) => eprintln!("turbofig: the pairing token file was missing; restored it"),
-            Ok(false) => {}
-            Err(e) => eprintln!("turbofig: could not restore the pairing token file: {e}"),
+        if self.token_restore_gave_up.load(Ordering::Relaxed) {
+            return;
+        }
+        // The home folder is gone (purged): no write can work. Say so once, stop.
+        if !home.is_dir() {
+            self.token_restore_gave_up.store(true, Ordering::Relaxed);
+            eprintln!(
+                "turbofig: the home folder {} is gone; no longer restoring the pairing token file",
+                home.display()
+            );
+            return;
+        }
+        let outcome =
+            crate::token::restore_token_file(home, &self.token).map_err(|e| e.to_string());
+        if let Some(line) = self.token_restore_log_line(outcome) {
+            eprintln!("{line}");
+        }
+    }
+
+    /// Maps one restore outcome to the line to log, or `None` when the line
+    /// would only repeat the last failure. A success or a present file
+    /// resets the failure memory, so a later failure logs again.
+    fn token_restore_log_line(&self, outcome: Result<bool, String>) -> Option<String> {
+        let mut last = self
+            .token_restore_last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match outcome {
+            Ok(restored) => {
+                *last = None;
+                restored
+                    .then(|| "turbofig: the pairing token file was missing; restored it".to_owned())
+            }
+            Err(msg) => {
+                if last.as_deref() == Some(msg.as_str()) {
+                    None
+                } else {
+                    let line = format!("turbofig: could not restore the pairing token file: {msg}");
+                    *last = Some(msg);
+                    Some(line)
+                }
+            }
         }
     }
 
@@ -660,16 +715,34 @@ impl AppState {
     /// immediate `plugin_disconnected` from a fresh state.
     #[doc(hidden)]
     pub fn skip_cold_start_grace(&self) {
-        self.plugin_named_once.store(true, Ordering::Relaxed);
+        self.grace_skipped.store(true, Ordering::Relaxed);
+    }
+
+    /// True while the daemon is younger than the cold-start window.
+    /// A plugin that was open before a daemon (re)start needs up to ~2 s to
+    /// reconnect, and several files reconnect one after another.
+    pub(crate) fn daemon_is_young(&self) -> bool {
+        !self.grace_skipped.load(Ordering::Relaxed)
+            && self.started_at.elapsed() < crate::routing::COLD_START_WINDOW
     }
 
     /// True while the daemon is young and no plugin has ever announced a file.
-    /// A plugin that was open before a daemon (re)start needs up to ~2 s to
-    /// reconnect, so routing waits for it (`routing::resolve_route_graced`)
+    /// Routing waits for the first plugin (`routing::resolve_route_graced`)
     /// instead of failing at once. False for good after the first plugin.
     pub(crate) fn in_cold_start_grace(&self) -> bool {
-        self.started_at.elapsed() < crate::routing::COLD_START_WINDOW
-            && !self.plugin_named_once.load(Ordering::Relaxed)
+        self.daemon_is_young() && self.first_named_ms.load(Ordering::Relaxed) == 0
+    }
+
+    /// True while the daemon is young and the first file announced itself
+    /// less than `COLD_START_SETTLE` ago. A job with no target does not
+    /// auto-pick a single file yet: other open files may still reconnect.
+    pub(crate) fn in_cold_start_settle(&self) -> bool {
+        let first = self.first_named_ms.load(Ordering::Relaxed);
+        if first == 0 || !self.daemon_is_young() {
+            return false;
+        }
+        let now = self.started_at.elapsed().as_millis() as u64 + 1;
+        now.saturating_sub(first) < crate::routing::COLD_START_SETTLE.as_millis() as u64
     }
 
     /// Remove a connection from the registry. Call this when the socket closes.
@@ -1257,6 +1330,34 @@ mod tests {
         let json = state.named_connections_json();
         let serialized = serde_json::to_string(&json).expect("serialize");
         assert!(!serialized.contains(state.token()));
+    }
+
+    #[test]
+    fn token_restore_logs_a_repeated_failure_once_and_again_after_a_success() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let fail = || Err::<bool, String>("denied".to_owned());
+        assert!(state.token_restore_log_line(fail()).is_some());
+        assert!(state.token_restore_log_line(fail()).is_none());
+        assert!(state
+            .token_restore_log_line(Err("other".to_owned()))
+            .is_some());
+        assert!(state.token_restore_log_line(Ok(true)).is_some());
+        assert!(state.token_restore_log_line(fail()).is_some());
+    }
+
+    #[test]
+    fn token_restore_gives_up_when_the_home_folder_is_gone() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        std::fs::create_dir(&home).expect("mkdir");
+        let state = AppState::new_with_token("t".repeat(64), &home);
+        std::fs::remove_dir_all(&home).expect("rm");
+        state.restore_token_if_missing();
+        assert!(state.token_restore_gave_up.load(Ordering::Relaxed));
+        // A recreated home is not touched: the restore stopped for good.
+        std::fs::create_dir(&home).expect("mkdir");
+        state.restore_token_if_missing();
+        assert!(!home.join("token").exists());
     }
 
     #[test]

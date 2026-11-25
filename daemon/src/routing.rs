@@ -9,7 +9,11 @@ use tokio::sync::mpsc;
 pub(crate) const COLD_START_WINDOW: Duration = Duration::from_secs(5);
 /// Longest a job waits for the first plugin connection on a young daemon.
 pub(crate) const COLD_START_WAIT: Duration = Duration::from_secs(3);
-const COLD_START_POLL: Duration = Duration::from_millis(50);
+pub(crate) const COLD_START_POLL: Duration = Duration::from_millis(50);
+/// After the first file announces itself on a young daemon, a job with no
+/// target waits this long before it auto-picks a single file: other open
+/// files may still be reconnecting.
+pub(crate) const COLD_START_SETTLE: Duration = Duration::from_secs(1);
 
 /// Routing error returned by resolve_route.
 #[derive(Debug)]
@@ -140,20 +144,43 @@ pub(crate) fn resolve_route(
     }
 }
 
-/// `resolve_route`, plus a cold-start grace. While the daemon is young and no
-/// plugin has ever connected, a missing plugin or file is retried for up to
-/// `COLD_START_WAIT` before the error is returned. Once any plugin has
-/// connected, the call never waits.
+/// `resolve_route`, plus a cold-start grace. While the daemon is young:
+/// - a missing plugin is retried until the first file announces itself;
+/// - a named file that is not connected yet is retried for as long as the
+///   daemon is young, because other files may reconnect after the first;
+/// - a job with no target waits `COLD_START_SETTLE` after the first file
+///   before it auto-picks a single file.
+///
+/// No wait lasts longer than `COLD_START_WAIT`. An older daemon never waits.
 pub(crate) async fn resolve_route_graced(
     state: &AppState,
     session_id: Option<&str>,
     explicit: Option<&str>,
 ) -> Result<(u64, mpsc::UnboundedSender<String>, String, String), RouteError> {
     let deadline = Instant::now() + COLD_START_WAIT;
+    // Pin the target once: a failed lookup clears the session pairing, and a
+    // retry must keep asking for the same file.
+    let pinned: Option<String> = explicit
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| session_id.and_then(|sid| state.session_lookup(sid)));
     loop {
-        match resolve_route(state, session_id, explicit) {
-            Err(RouteError::NoPlugin | RouteError::NotFound(..))
+        if pinned.is_none()
+            && state.in_cold_start_settle()
+            && state.connections_named().len() == 1
+            && Instant::now() < deadline
+        {
+            tokio::time::sleep(COLD_START_POLL).await;
+            continue;
+        }
+        match resolve_route(state, session_id, pinned.as_deref()) {
+            Err(RouteError::NoPlugin)
                 if state.in_cold_start_grace() && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(COLD_START_POLL).await;
+            }
+            Err(RouteError::NotFound(..))
+                if state.daemon_is_young() && Instant::now() < deadline =>
             {
                 tokio::time::sleep(COLD_START_POLL).await;
             }
@@ -446,5 +473,73 @@ mod tests {
         let waited = t.elapsed();
         assert!(waited >= COLD_START_WAIT - Duration::from_millis(100));
         assert!(waited < COLD_START_WAIT + Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn graced_route_waits_for_file_b_when_file_a_reconnects_first() {
+        let state = std::sync::Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let (txa, _rxa) = mpsc::unbounded_channel::<String>();
+        let ida = state.add_connection(txa);
+        state.set_connection_info(ida, "fkA".to_owned(), "A".to_owned());
+        let s2 = state.clone();
+        let (txb, _rxb) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let id = s2.add_connection(txb);
+            s2.set_connection_info(id, "fkB".to_owned(), "B".to_owned());
+        });
+        let got = resolve_route_graced(&state, None, Some("fkB"))
+            .await
+            .expect("file B must route once it reconnects");
+        assert_eq!(got.2, "fkB");
+    }
+
+    #[tokio::test]
+    async fn graced_route_no_key_is_ambiguous_when_a_second_file_joins_in_the_settle_period() {
+        let state = std::sync::Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+        let (txa, _rxa) = mpsc::unbounded_channel::<String>();
+        let ida = state.add_connection(txa);
+        state.set_connection_info(ida, "fkA".to_owned(), "A".to_owned());
+        let s2 = state.clone();
+        let (txb, _rxb) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let id = s2.add_connection(txb);
+            s2.set_connection_info(id, "fkB".to_owned(), "B".to_owned());
+        });
+        assert!(matches!(
+            resolve_route_graced(&state, None, None).await,
+            Err(RouteError::Ambiguous(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn graced_route_picks_a_single_file_after_the_settle_period() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (txa, _rxa) = mpsc::unbounded_channel::<String>();
+        let ida = state.add_connection(txa);
+        state.set_connection_info(ida, "fkA".to_owned(), "A".to_owned());
+        let t = Instant::now();
+        let got = resolve_route_graced(&state, None, None)
+            .await
+            .expect("routes");
+        assert_eq!(got.2, "fkA");
+        assert!(t.elapsed() >= COLD_START_SETTLE - Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn graced_route_never_waits_when_grace_is_skipped() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        state.skip_cold_start_grace();
+        let (txa, _rxa) = mpsc::unbounded_channel::<String>();
+        let ida = state.add_connection(txa);
+        state.set_connection_info(ida, "fkA".to_owned(), "A".to_owned());
+        let t = Instant::now();
+        assert!(resolve_route_graced(&state, None, None).await.is_ok());
+        assert!(matches!(
+            resolve_route_graced(&state, None, Some("fkB")).await,
+            Err(RouteError::NotFound(..))
+        ));
+        assert!(t.elapsed() < Duration::from_millis(300));
     }
 }

@@ -1,7 +1,7 @@
 //! `turbofig_status`: daemon and plugin liveness.
 
 use crate::plugin_call::{call_plugin, CallOutcome};
-use crate::routing::{resolve_route_graced, RouteError};
+use crate::routing::{resolve_route_graced, RouteError, COLD_START_POLL, COLD_START_WAIT};
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -27,7 +27,15 @@ fn shape(mut v: Value) -> Value {
 /// The connected files from the daemon's own registry. It sends nothing to
 /// any plugin, so it never waits on a slow or silent one. `plugins` is always
 /// present, empty when no file is connected.
-pub fn run_files(state: &Arc<AppState>) -> Value {
+///
+/// On a young daemon with an empty registry it first waits, for at most
+/// `COLD_START_WAIT`, for the first file: a plugin that was open before the
+/// daemon started needs up to ~2 s to reconnect. An older daemon never waits.
+pub async fn run_files(state: &Arc<AppState>) -> Value {
+    let deadline = std::time::Instant::now() + COLD_START_WAIT;
+    while state.in_cold_start_grace() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(COLD_START_POLL).await;
+    }
     json!({"ok": true, "plugins": state.named_connections_json()})
 }
 
@@ -178,10 +186,34 @@ mod tests {
         run_status(&state, None, None).await
     }
 
-    #[test]
-    fn files_lists_the_registry_without_any_plugin_round_trip() {
+    #[tokio::test]
+    async fn files_waits_in_the_cold_start_window_for_the_first_file() {
         let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
-        assert_eq!(run_files(&state), json!({"ok": true, "plugins": []}));
+        let s2 = state.clone();
+        let (tx, _rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let id = s2.add_connection(tx);
+            s2.set_connection_info(id, "fk1".to_owned(), "File 1".to_owned());
+        });
+        let v = run_files(&state).await;
+        assert_eq!(v["plugins"][0]["fileKey"], json!("fk1"));
+    }
+
+    #[tokio::test]
+    async fn files_never_waits_once_the_cold_start_grace_is_off() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        state.skip_cold_start_grace();
+        let t = std::time::Instant::now();
+        assert_eq!(run_files(&state).await, json!({"ok": true, "plugins": []}));
+        assert!(t.elapsed() < Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn files_lists_the_registry_without_any_plugin_round_trip() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        state.skip_cold_start_grace();
+        assert_eq!(run_files(&state).await, json!({"ok": true, "plugins": []}));
         // The plugin never reads its channel: a `status` call would time out.
         let (tx, _rx) = mpsc::unbounded_channel::<String>();
         let conn = state.add_connection(tx);
@@ -192,7 +224,7 @@ mod tests {
             env!("CARGO_PKG_VERSION").to_owned(),
         );
         assert_eq!(
-            run_files(&state),
+            run_files(&state).await,
             json!({"ok": true, "plugins": [{"fileKey": "fk1", "name": "File 1"}]})
         );
     }

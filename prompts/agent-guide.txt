@@ -1,6 +1,6 @@
 turbofig {{VERSION}} guide
 files: {{FILES}}
-now: files>=1 → reply "Ready"; else ask user: Figma > Plugins > Development > turbofig, rerun --guide
+now: files>=1 → reply "Ready"; unknown → run a status job, ok → "Ready"; none → ask user: Figma > Plugins > Development > turbofig, rerun --guide
 run: {{TURBOFIG_BIN}} js{{BRIDGE_FLAG}} [--file KEY] [--shot] <<'EOF'
 <async js; figma, tf in scope; return ids not nodes>
 EOF
@@ -8,5 +8,5 @@ EOF
 other ops: stdin {"op":"status|get_selection|screenshot"}
 {{RULES}}
 ok:false → act on .code, any exit:
-not_started→resend | started_unknown→read .outbox, else query nodes | busy→wait retryAfterMs | plugin_disconnected, file_not_connected→ask user open plugin | draining→wait, resend | invalid_job→fix | result_too_large→return less | script_error→partial edits possible, inspect | shot_failed→code ran, no resend | bridge_error→read .error
+not_started→resend | started_unknown→read .outbox, else query nodes | busy→wait retryAfterMs | plugin_disconnected, file_not_connected→ask user open plugin | draining→wait, resend | invalid_job→fix | result_too_large→return less | script_error→partial edits possible, inspect | shot_failed→code ran, no resend | io_error→resend | bridge_error→read .error
 exit 2=usage error (stderr). job<=30MiB. never write inbox files

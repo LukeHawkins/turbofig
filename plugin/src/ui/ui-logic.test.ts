@@ -701,6 +701,7 @@ describe("MCP prompt template", () => {
       "plugin_disconnected",
       "file_not_connected",
       "ambiguous_target",
+      "draining",
       "invalid_job",
       "result_too_large",
       "script_error",

@@ -66,7 +66,10 @@ describe("Reload button", () => {
 
 describe("status labels", () => {
   test("token reset label says what to do", () => {
-    expect(VERIFY_FAILED_LABEL).toBe("turbofig was reset. Close and reopen this plugin.");
+    expect(VERIFY_FAILED_LABEL).toBe(
+      "turbofig was reset, or another turbofig uses its port. Close and reopen this plugin.",
+    );
+    expect(VERIFY_FAILED_LABEL.length).toBeLessThanOrEqual(100);
     expect(statusOverride({ misses: 0, failed: true })).toBe(VERIFY_FAILED_LABEL);
   });
   test("port taken or old daemon label covers both causes", () => {
