@@ -8,6 +8,33 @@ recorded under Unreleased.
 
 ## [Unreleased]
 
+### Changed
+
+- `brew upgrade turbofig` now converges with no user action except reopening
+  the Figma plugin when it asks. Every daemon (not only a launchd-supervised
+  one) watches the stable Homebrew binary and, on a new build, drains and
+  restarts in place (`exec`, same pid, bridge folder lock never dropped). A
+  daemon that runs from the app bundle watches the Homebrew path the bundle
+  records (`TurbofigSourcePath`). The app starts the daemon from the Homebrew
+  path, hands off any older daemon, and relaunches when the build id in its
+  bundle changes (a same-version rebuild too). The bare `turbofig` command
+  waits for the app to quit, reopens it with `open -n`, and makes sure a
+  daemon runs.
+- The bridge folder lock is taken after both ports are bound. `daemon.lock`
+  records `version` and `buildId`. `turbofig js` restarts an older daemon once
+  (a 0.2.0 daemon, which cannot restart itself in place).
+- A draining daemon leaves new job files in the inbox instead of claiming
+  them and failing them.
+
+### Fixed
+
+- A 0.1.0 plugin left open across an upgrade (it connects with `?token=`)
+  now gets a `WELCOME` and shows its "Reload the plugin" banner, instead of
+  reconnecting in silence. It still gets no job, status or file info. A wrong
+  token still gets 401.
+- The legacy daemon hand-off treats a launchd-supervised daemon as supervised,
+  so it no longer races launchd's own restart.
+
 ## [0.2.0] - 2026-11-10
 
 ### Added

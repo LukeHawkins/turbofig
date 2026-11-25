@@ -14,24 +14,8 @@ use turbofig::cli::{
 #[cfg(target_os = "macos")]
 use turbofig::cli::{run_autostart_on_app_after_stopping_existing, AppAction};
 use turbofig::launchd::{current_uid, RealLaunchctl};
-use turbofig::supervisor::{
-    installed_target, should_log_binary_gone, upgrade_detected, wait_for_drain,
-};
 use turbofig::AppState;
 
-/// How often the supervised-restart loop checks whether the stable binary
-/// path now resolves somewhere else (a Homebrew upgrade landed).
-const SUPERVISOR_CHECK_INTERVAL: Duration = Duration::from_secs(30);
-/// Longest the supervised-restart loop waits for in-flight jobs to finish
-/// before exiting anyway.
-const SUPERVISOR_DRAIN_MAX_WAIT: Duration = Duration::from_secs(60);
-const SUPERVISOR_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// Grace wait after the job count reaches 0, before the process actually
-/// exits. `jobs_in_flight` reaching 0 means the daemon has finished writing
-/// its own in-memory result, but an outbound HTTP response or a bridge
-/// result-file rename can still be a few scheduler ticks from landing;
-/// this gives those a moment to flush before launchd restarts the process.
-const SUPERVISOR_EXIT_GRACE: Duration = Duration::from_millis(250);
 /// Longest `turbofig stop` (and `uninstall`'s best-effort stop) waits for
 /// `/health` to go unreachable after an authenticated restart request. The
 /// daemon's own drain wait is up to 60s; this comfortably outlasts that.
@@ -102,9 +86,16 @@ async fn ensure_verified_daemon(
                 kind == turbofig::daemon_client::Listener::LegacySameUser,
             )
         });
-    // An older same-user daemon is restarted, then a VERIFIED one must answer.
-    if matches!(first, Ok((_, true))) {
-        if let Err(e) = turbofig::proxy::hand_off_legacy_daemon(mcp_port, home).await {
+    // An older daemon (no proof support, or a lower version) is restarted
+    // onto this build, then a VERIFIED one must answer.
+    let older = match &first {
+        Ok((health, legacy)) => {
+            *legacy || turbofig::proxy::daemon_version_is_older(health_version(health))
+        }
+        Err(_) => false,
+    };
+    if older {
+        if let Err(e) = turbofig::proxy::hand_off_older_daemon(mcp_port, home).await {
             fail(e);
         }
         first = turbofig::daemon_client::verify_daemon_in_home(mcp_port, home)
@@ -213,6 +204,9 @@ fn nofile_target(soft: libc::rlim_t, hard: libc::rlim_t) -> libc::rlim_t {
 }
 
 fn main() {
+    // Before any thread exists: read and remove the variables an in-place
+    // restart (`upgrade::exec_in_place`) passed to this image.
+    turbofig::upgrade::capture_reexec_env();
     let cli = Cli::parse();
     if cli.check_embedded {
         cmd_check_embedded();
@@ -596,6 +590,10 @@ async fn cmd_run() {
     // below only if either step fails.
     #[cfg(target_os = "macos")]
     if let Some(text) = try_app_first_run() {
+        // A refresh asks the old app to quit, and the app's quit stops the
+        // daemon. The new app starts one again: make sure, so the user is
+        // never left with no app and no daemon.
+        ensure_daemon_after_app_open(mcp_port, &home).await;
         print!("{text}");
         return;
     }
@@ -660,12 +658,37 @@ async fn cmd_run() {
 
 /// Longest the bare `turbofig` command waits, after asking a running app
 /// instance to quit, for `<home>/app.lock` to be released before reopening
-/// a just-refreshed `turbofig.app` anyway. See `try_app_first_run`.
+/// a just-refreshed `turbofig.app` anyway. The app's own quit takes up to
+/// `menu_bar::QUIT_WAIT_DEADLINE` (it waits for the daemon to stop), so this
+/// is longer than that. See `try_app_first_run`.
 #[cfg(target_os = "macos")]
-const APP_REFRESH_RESTART_DEADLINE: Duration = Duration::from_secs(5);
+fn app_refresh_restart_deadline() -> Duration {
+    turbofig::upgrade::app_quit_wait(turbofig::menu_bar::QUIT_WAIT_DEADLINE)
+}
 /// How often that wait re-checks the lock.
 #[cfg(target_os = "macos")]
 const APP_REFRESH_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// After the bare command opened the app: waits for a verified daemon (the
+/// app starts one), and starts one itself when none answers. A headless
+/// launchd service that the app's quit stopped (exit 0 keeps it stopped) is
+/// kickstarted first.
+#[cfg(target_os = "macos")]
+async fn ensure_daemon_after_app_open(mcp_port: u16, home: &Path) {
+    let wait = |secs| {
+        turbofig::daemon_client::wait_for_verified_daemon(mcp_port, home, Duration::from_secs(secs))
+    };
+    if wait(6).await.is_ok() {
+        return;
+    }
+    if turbofig::upgrade::headless_service_owns_daemon()
+        && turbofig::upgrade::kickstart_headless_service()
+        && wait(10).await.is_ok()
+    {
+        return;
+    }
+    let _ = ensure_verified_daemon("turbofig", mcp_port, home, true).await;
+}
 
 /// Moves an existing `~/Applications/turbofig.app` to `/Applications` when
 /// `/Applications` has become writable (the user gained admin rights, or
@@ -816,20 +839,30 @@ fn try_app_first_run() -> Option<String> {
         .err()
         .map(|e| e.to_string());
 
+    let mut app_was_running = false;
     if bundle_install_err.is_none() && was_outdated {
-        let restarted = turbofig::menu_bar::quit_running_app_and_wait_for_exit(
+        app_was_running = turbofig::menu_bar::quit_running_app_and_wait_for_exit(
             &home,
-            APP_REFRESH_RESTART_DEADLINE,
+            app_refresh_restart_deadline(),
             APP_REFRESH_RESTART_POLL_INTERVAL,
             &|d| std::thread::sleep(d),
         );
-        if restarted {
+        if app_was_running {
             println!("Updated turbofig.app and restarted it.");
         }
     }
 
+    // After a refresh quit an app, open a NEW instance (`open -n`): a plain
+    // `open` can re-activate the old instance while it is still exiting.
     let opened = if bundle_install_err.is_none() {
-        opener_for_run().open_url(&bundle_dir.display().to_string())
+        match turbofig::upgrade::open_mode_after_refresh(was_outdated, app_was_running) {
+            turbofig::upgrade::OpenMode::NewInstance => {
+                opener_for_run().open_new_instance(&bundle_dir)
+            }
+            turbofig::upgrade::OpenMode::Plain => {
+                opener_for_run().open_url(&bundle_dir.display().to_string())
+            }
+        }
     } else {
         false
     };
@@ -1105,8 +1138,7 @@ fn exit_for_startup_error(e: &std::io::Error) -> ! {
 /// launchd for a folder refusal, like the other startup checks) when another
 /// daemon holds it.
 /// Returns true when the filesystem has no file locks (`Unsupported`): the
-/// caller then writes the lock info only after both listeners are bound, so
-/// a daemon that loses the port race never leaves its pid behind.
+/// caller then writes `"locked":false` with `write_unlocked_lock_info`.
 fn take_bridge_lock(bridge_dir: &Path) -> bool {
     fn request_timeout_ms() -> u64 {
         turbofig::request_timeout_from_env()
@@ -1121,8 +1153,7 @@ fn take_bridge_lock(bridge_dir: &Path) -> bool {
         }
         Ok(turbofig::LockOutcome::Unsupported) => {
             // `turbofig js` accepts this folder only with `"locked":false`
-            // and a live pid in the lock file. `run_daemon` writes them after
-            // both ports are bound (see `write_unlocked_lock_info`).
+            // and a live pid in the lock file (`write_unlocked_lock_info`).
             eprintln!(
                 "turbofig daemon: the filesystem of {} has no file locks; running without the bridge folder lock",
                 bridge_dir.display()
@@ -1154,10 +1185,34 @@ fn write_unlocked_lock_info() {
     turbofig::write_lock_info(ms, false);
 }
 
+/// Binds `addr`. With `patient`, an address still in use is retried for about
+/// 5 s.
+async fn bind_listener(addr: &str, patient: bool) -> std::io::Result<tokio::net::TcpListener> {
+    let attempts = if patient { 50 } else { 1 };
+    let mut last = None;
+    for attempt in 0..attempts {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempt + 1 < attempts => {
+                last = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("bind failed")))
+}
+
 async fn run_daemon() {
     let mcp_port = turbofig::port_from_env();
     let ws_port = turbofig::ws_port_from_env();
     let bridge_dir = turbofig::bridge_dir_from_env();
+
+    // Hash this binary now, off the startup path: the lock info and the
+    // upgrade watcher need its build id, and a debug build is slow to hash.
+    std::thread::spawn(|| {
+        let _ = turbofig::upgrade::running_build_id();
+    });
 
     // `spawn_detached_daemon`'s own log rotation only ever runs in the
     // process that (re)spawns a daemon, so a long-running launchd-supervised
@@ -1171,13 +1226,16 @@ async fn run_daemon() {
     // port): a second `turbofig serve` while one is already healthy on this
     // port must exit at once with a clear message, not silently fail later.
     exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
-    let unlocked = take_bridge_lock(&bridge_dir);
     raise_nofile_limit();
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
     let ws_addr = format!("127.0.0.1:{ws_port}");
 
-    let mcp_listener = match tokio::net::TcpListener::bind(&mcp_addr).await {
+    // After an in-place restart (`upgrade::exec_in_place`) this process still
+    // holds the bridge folder lock, and the ports were free only for a moment:
+    // a short race with a second `serve` is waited out, not fatal.
+    let patient = turbofig::upgrade::reexec_info().is_some();
+    let mcp_listener = match bind_listener(&mcp_addr, patient).await {
         Ok(l) => l,
         Err(e) => {
             // The health check above can still lose a tight startup race
@@ -1193,7 +1251,7 @@ async fn run_daemon() {
         }
     };
 
-    let ws_listener = match tokio::net::TcpListener::bind(&ws_addr).await {
+    let ws_listener = match bind_listener(&ws_addr, patient).await {
         Ok(l) => l,
         Err(e) => {
             // The MCP port is already bound by this process, so no other
@@ -1204,7 +1262,10 @@ async fn run_daemon() {
         }
     };
 
-    if unlocked {
+    // The folder lock is taken only now, after both ports are bound: a daemon
+    // that fails to bind never holds it, not even for a moment. A second
+    // daemon on the same folder still stops here (`LockOutcome::Busy`).
+    if take_bridge_lock(&bridge_dir) {
         write_unlocked_lock_info();
     }
 
@@ -1254,8 +1315,12 @@ async fn run_daemon() {
     // Keep an existing app bundle current across a `brew upgrade`: never
     // create one here (step 4 decides when a bundle is first created), only
     // refresh one that is already there and out of date.
+    //
+    // Never from the bundle's own copy: it would compare the bundle with
+    // itself. A daemon that runs from the bundle restarts onto the Homebrew
+    // binary first (`upgrade::run_upgrade_watcher`), and that image refreshes.
     #[cfg(target_os = "macos")]
-    {
+    if !turbofig::app_bundle::running_inside_app_bundle() {
         let own_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
         migrate_app_bundle_to_global_if_possible(&own_exe, &launch_agents_dir());
         let applications_dir = turbofig::app_bundle::applications_dir_from_env();
@@ -1298,16 +1363,13 @@ async fn run_daemon() {
         }
     });
 
-    // Under launchd supervision (set by the plist `turbofig autostart on`
-    // writes), watch for a Homebrew upgrade and hand off cleanly instead of
-    // letting KeepAlive kill an in-flight job. See supervisor.rs and
-    // ARCHITECTURE.md.
-    if turbofig::supervisor::is_supervised() {
-        let supervised_state = state.clone();
-        tokio::spawn(async move {
-            run_supervisor_loop(supervised_state).await;
-        });
-    }
+    // In every daemon mode, supervised or not: watch the stable Homebrew
+    // binary and restart in place onto a new build, so no in-flight job is
+    // killed and no user action is needed. See upgrade.rs and ARCHITECTURE.md.
+    let watcher_state = state.clone();
+    tokio::spawn(async move {
+        turbofig::upgrade::run_upgrade_watcher(watcher_state).await;
+    });
 
     // A healthy daemon runs forever. Any handle that completes (whether by a
     // normal return, unexpected for a server; by an Err path that did not call
@@ -1334,99 +1396,6 @@ async fn run_daemon() {
         }
     }
     std::process::exit(1);
-}
-
-/// The supervised-restart loop: every `SUPERVISOR_CHECK_INTERVAL`, resolve
-/// the stable binary path and compare it to the one captured at startup. On
-/// a change, stop accepting new jobs, wait up to `SUPERVISOR_DRAIN_MAX_WAIT`
-/// for in-flight jobs to finish, then exits
-/// `supervisor::SUPERVISED_RESTART_EXIT_CODE` (non-zero) so launchd's
-/// `KeepAlive: {SuccessfulExit: false}` restarts the new binary. Exits 0
-/// instead if a `/control` stop landed during the drain (`state.
-/// stop_requested`), so a stop always overrides a restart. Never returns.
-async fn run_supervisor_loop(state: Arc<AppState>) -> ! {
-    // The stable path (for example /opt/homebrew/bin/turbofig) never changes
-    // across an upgrade. Its resolved target (the versioned Cellar binary) does.
-    let stable = stable_path_for_running_binary();
-    let baseline = match installed_target(&stable) {
-        Some(target) => target,
-        // No baseline could be resolved at startup either; fall back to the
-        // stable path itself so later comparisons still have something to
-        // compare against. Once the path resolves to a real target, that
-        // target will differ from this unresolved baseline, so the first
-        // resolution after startup fires one restart, not never.
-        None => stable.clone(),
-    };
-    let mut interval = tokio::time::interval(SUPERVISOR_CHECK_INTERVAL);
-    interval.tick().await; // first tick fires immediately; consume it
-    let mut consecutive_unresolved: u32 = 0;
-
-    loop {
-        interval.tick().await;
-        let current = installed_target(&stable);
-        if current.is_none() {
-            consecutive_unresolved += 1;
-            if should_log_binary_gone(consecutive_unresolved) {
-                eprintln!(
-                    "turbofig daemon: the turbofig binary is gone; run `turbofig uninstall` or reinstall"
-                );
-            }
-            continue;
-        }
-        consecutive_unresolved = 0;
-        if upgrade_detected(&baseline, current.as_deref()) {
-            let current = current.expect("checked is_none above");
-            println!(
-                "turbofig daemon: detected an upgrade ({} -> {}); draining and restarting",
-                baseline.display(),
-                current.display()
-            );
-            state.set_draining(true);
-            let drained = wait_for_drain(
-                || state.jobs_in_flight(),
-                SUPERVISOR_DRAIN_MAX_WAIT,
-                SUPERVISOR_DRAIN_POLL_INTERVAL,
-            )
-            .await;
-            if !drained {
-                eprintln!(
-                    "turbofig daemon: {} job(s) still in flight after {:?}; restarting anyway",
-                    state.jobs_in_flight(),
-                    SUPERVISOR_DRAIN_MAX_WAIT
-                );
-            }
-            // Give a just-finished job's HTTP response or bridge result-file
-            // rename a moment to flush before the process actually exits.
-            tokio::time::sleep(SUPERVISOR_EXIT_GRACE).await;
-            // Non-zero, not 0: this loop only ever runs under supervision
-            // (the `is_supervised()` check above it), and the plist's
-            // `KeepAlive: {SuccessfulExit: false}` (`launchd.rs`) restarts
-            // the daemon only on a non-zero exit, picking up the upgraded
-            // binary. See `supervisor::SUPERVISED_RESTART_EXIT_CODE`.
-            //
-            // Unless a `/control` stop landed while this drain was under
-            // way (`state.request_stop`, `control.rs`): a stop always
-            // overrides a restart, so exit 0 instead and leave the daemon
-            // stopped.
-            let code = if state.stop_requested() {
-                0
-            } else {
-                turbofig::supervisor::SUPERVISED_RESTART_EXIT_CODE
-            };
-            std::process::exit(code);
-        }
-    }
-}
-
-/// The stable binary path for the currently running process: the Homebrew
-/// `<prefix>/bin/turbofig` symlink when running from the Cellar, otherwise
-/// the running binary itself.
-fn stable_path_for_running_binary() -> PathBuf {
-    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
-    let canonical = current_exe
-        .canonicalize()
-        .unwrap_or_else(|_| current_exe.clone());
-    turbofig::launchd::stable_binary_path(&canonical)
 }
 
 #[cfg(test)]

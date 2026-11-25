@@ -247,6 +247,102 @@ pub(crate) const DAEMON_LOCK: &str = "daemon.lock";
 #[cfg(unix)]
 static HELD_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
 
+/// True when `HELD_LOCK` really holds an `fcntl` lock (false on a filesystem
+/// with no locks: the fd is kept only to write the lock info).
+#[cfg(unix)]
+static LOCK_IS_REAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The fd of the lock file, when this process really holds the folder lock.
+/// The in-place restart hands it to the new image (`upgrade::exec_in_place`).
+#[cfg(unix)]
+pub(crate) fn held_lock_fd() -> Option<std::os::unix::io::RawFd> {
+    use std::os::unix::io::AsRawFd;
+    if !LOCK_IS_REAL.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
+    HELD_LOCK.get().map(AsRawFd::as_raw_fd)
+}
+
+/// Sets or clears close-on-exec on the lock fd. Cleared only right before
+/// the in-place restart `exec`s: the fd then survives into the new image and
+/// the lock stays held. It is never cleared at any other time, so no child
+/// process inherits it.
+#[cfg(unix)]
+pub(crate) fn set_lock_fd_inheritable(inherit: bool) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let Some(file) = HELD_LOCK.get() else {
+        return Err(io::Error::other("no bridge folder lock is held"));
+    };
+    set_cloexec(file.as_raw_fd(), !inherit)
+}
+
+#[cfg(unix)]
+fn set_cloexec(fd: std::os::unix::io::RawFd, on: bool) -> io::Result<()> {
+    // SAFETY: `fcntl` on an fd number only reads or sets its flags.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let wanted = if on {
+            flags | libc::FD_CLOEXEC
+        } else {
+            flags & !libc::FD_CLOEXEC
+        };
+        if libc::fcntl(fd, libc::F_SETFD, wanted) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Takes over the lock fd an in-place restart left open. The lock itself
+/// never moved: it belongs to this process and survives `exec` while the fd
+/// stays open. Returns `None` unless the handoff is whole and checks out:
+/// the fd is a regular file of this user, it is the very file `<dir>/daemon.lock`
+/// names now (same device and inode, no symlink), and the pid in its lock
+/// info is this process's pid (an `exec` keeps the pid). The file is read
+/// through the fd itself: opening `daemon.lock` again, even once, would drop
+/// the lock when that second fd closed.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)] // `st_dev` and `st_ino` differ in width by platform
+fn adopt_inherited_lock(dir: &Path) -> Option<std::fs::File> {
+    use std::os::unix::fs::{FileExt, MetadataExt};
+    use std::os::unix::io::FromRawFd;
+    let fd = crate::upgrade::reexec_info()?.lock_fd?;
+    // SAFETY: only `fstat` runs on the fd before it is proven to be ours.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut st) } != 0 {
+        return None;
+    }
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    let regular = (st.st_mode & libc::S_IFMT) == libc::S_IFREG;
+    let named = std::fs::symlink_metadata(dir.join(DAEMON_LOCK)).ok()?;
+    if !regular
+        || st.st_uid != euid
+        || !named.is_file()
+        || named.dev() != st.st_dev as u64
+        || named.ino() != st.st_ino as u64
+    {
+        return None;
+    }
+    // SAFETY: the fd is open (fstat succeeded) and nothing else in this
+    // process owns it: it came through `exec` from the previous image. The
+    // `ManuallyDrop` keeps a failed check from closing it.
+    let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let mut buf = [0u8; 4096];
+    let n = file.read_at(&mut buf, 0).ok()?;
+    let info: serde_json::Value = serde_json::from_slice(&buf[..n]).ok()?;
+    if info.get("pid").and_then(serde_json::Value::as_u64) != Some(u64::from(std::process::id())) {
+        return None;
+    }
+    set_cloexec(fd, true).ok()?;
+    let file = std::mem::ManuallyDrop::into_inner(file);
+    LOCK_IS_REAL.store(true, std::sync::atomic::Ordering::SeqCst);
+    Some(file)
+}
+
 #[cfg(unix)]
 fn flock_struct(l_type: libc::c_short) -> libc::flock {
     // SAFETY: `flock` is plain data; all zero is a valid value.
@@ -304,6 +400,20 @@ pub fn lock_bridge_dir(
     // `turbofig js` refuses such a folder, so the daemon must too: it would
     // serve a folder no agent can use, and another account could queue jobs.
     check_not_shared_writable(dir)?;
+    // After an in-place restart the lock is already held: adopt the open fd
+    // instead of opening the file (see `adopt_inherited_lock`).
+    if let Some(file) = adopt_inherited_lock(dir) {
+        return match HELD_LOCK.set(file) {
+            Ok(()) => Ok(LockOutcome::Held),
+            Err(file) => {
+                // Closing it would release the lock: leak it instead.
+                std::mem::forget(file);
+                Err(io::Error::other(
+                    "this process already holds a bridge folder lock",
+                ))
+            }
+        };
+    }
     let path = dir.join(DAEMON_LOCK);
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -329,6 +439,7 @@ pub fn lock_bridge_dir(
         let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &fl) };
         if rc == 0 {
             // Keep the only fd open for the life of the process.
+            LOCK_IS_REAL.store(true, std::sync::atomic::Ordering::SeqCst);
             return match HELD_LOCK.set(file) {
                 Ok(()) => Ok(LockOutcome::Held),
                 Err(file) => {
@@ -358,7 +469,8 @@ pub fn lock_bridge_dir(
     }
 }
 
-/// Writes `{"pid":..,"requestTimeoutMs":..,"locked":..}` into the lock file,
+/// Writes `{"pid":..,"requestTimeoutMs":..,"locked":..,"version":..,"buildId":..}`
+/// into the lock file,
 /// in place, through the held fd (no second fd is ever opened: that would
 /// drop the lock). `locked` is false when the filesystem has no locks
 /// (`LockOutcome::Unsupported`). The new body goes in first and the file is
@@ -370,10 +482,17 @@ pub fn write_lock_info(request_timeout_ms: u64, locked: bool) {
     let Some(file) = HELD_LOCK.get() else {
         return;
     };
-    let body = format!(
-        "{{\"pid\":{},\"requestTimeoutMs\":{request_timeout_ms},\"locked\":{locked}}}\n",
-        std::process::id()
-    );
+    // `version` and `buildId` let `turbofig js` see that the daemon is older
+    // than itself without any network call.
+    let mut body = serde_json::json!({
+        "pid": std::process::id(),
+        "requestTimeoutMs": request_timeout_ms,
+        "locked": locked,
+        "version": crate::mcp::reported_version(),
+        "buildId": crate::upgrade::running_build_id(),
+    })
+    .to_string();
+    body.push('\n');
     if file.write_all_at(body.as_bytes(), 0).is_ok() {
         let _ = file.set_len(body.len() as u64);
     }
@@ -388,6 +507,11 @@ pub(crate) struct LockInfo {
     /// False when the daemon runs without a lock (a filesystem with no
     /// locks). A file without the field counts as locked.
     pub locked: bool,
+    /// The daemon's version. Absent in the lock file of a daemon from before
+    /// the lock info carried it.
+    pub version: Option<String>,
+    /// The build id the daemon runs as. Absent for the same reason.
+    pub build_id: Option<String>,
 }
 
 #[cfg(unix)]
@@ -426,6 +550,14 @@ fn read_lock_info_once(dir: &Path) -> LockRead {
             .get("locked")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
+        version: v
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        build_id: v
+            .get("buildId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     })
 }
 

@@ -257,7 +257,7 @@ pub struct AppState {
     /// When this `AppState` was constructed, i.e. daemon startup. Used only
     /// by `/health` and `turbofig_status`'s uptime figure.
     started_at: Instant,
-    /// Set by the supervised-restart loop (`main.rs`, `TURBOFIG_SUPERVISED=1`)
+    /// Set by the upgrade watcher (`upgrade.rs`, every daemon mode)
     /// once it detects a Homebrew upgrade. While true, `resolve_route`
     /// refuses every new job with `RouteError::Draining`, so the old process
     /// accepts no more work while it waits for in-flight jobs to finish
@@ -266,7 +266,7 @@ pub struct AppState {
     /// Set once a `stop` has been requested, by `/control`'s `stop` action
     /// (`control.rs`). A `stop` always overrides a restart already in
     /// progress: both the `/control` background exit task and the
-    /// supervised-restart loop (`main.rs`) read this right before they call
+    /// upgrade watcher (`upgrade.rs`) read this right before they call
     /// `std::process::exit`, and exit 0 whenever it is set, even if a
     /// restart (not a stop) is the one that is actually draining. Without
     /// this, a `stop` that lands while a restart's drain is already under
@@ -543,13 +543,13 @@ impl AppState {
 
     /// True once `request_stop` has been called. Checked right before every
     /// exit point that would otherwise use a restart's exit code
-    /// (`/control`'s background task and the supervised-restart loop).
+    /// (`/control`'s background task and the upgrade watcher).
     pub fn stop_requested(&self) -> bool {
         self.stop_requested.load(Ordering::SeqCst)
     }
 
     /// Number of whole tool calls (MCP and bridge) currently in progress.
-    /// Used by the supervised-restart loop to know when it is safe to exit.
+    /// Used by the upgrade watcher to know when it is safe to restart.
     pub fn jobs_in_flight(&self) -> usize {
         self.job_counter.load(Ordering::SeqCst)
     }

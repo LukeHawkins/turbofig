@@ -767,3 +767,58 @@ async fn an_empty_bridge_dir_env_is_a_bridge_error_with_exit_1() {
     .await;
     assert_eq!(status.code(), Some(2), "{stdout}");
 }
+
+fn read_lock_info(home: &Path) -> Value {
+    let text = std::fs::read_to_string(home.join("daemon.lock")).expect("daemon.lock");
+    serde_json::from_str(text.trim()).expect("lock info JSON")
+}
+
+/// A daemon that is older than `turbofig js` (the 0.2.0 to 0.2.1 transition:
+/// it has no in-place restart) is restarted ONCE by the first `js` call, which
+/// then runs its job on the new daemon. A later call restarts nothing.
+#[tokio::test]
+async fn js_restarts_an_older_daemon_once_and_runs_the_job() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    // An old daemon: its lock info reports 0.0.1.
+    let mut old = common::spawn_daemon(home.path(), mcp_port, ws_port, Some("0.0.1"));
+    wait_for_health(&client, mcp_port).await;
+    common::wait_until(
+        || {
+            std::fs::read_to_string(home.path().join("daemon.lock"))
+                .is_ok_and(|t| t.contains("\"version\":\"0.0.1\""))
+        },
+        5_000,
+        "the old daemon's lock info",
+    )
+    .await;
+    let old_pid = read_lock_info(home.path())["pid"].as_u64().unwrap();
+
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}\n").await;
+    assert!(status.success(), "{stdout} {stderr}");
+    let v: Value = serde_json::from_str(stdout.trim()).expect("result JSON");
+    assert_eq!(v["ok"], Value::Bool(true), "{stdout}");
+
+    // The old daemon is gone and a new one, at js's own version, serves.
+    tokio::time::timeout(Duration::from_secs(10), old.wait())
+        .await
+        .expect("the old daemon must have exited")
+        .expect("wait");
+    wait_for_health(&client, mcp_port).await;
+    let info = read_lock_info(home.path());
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"), "{info}");
+    assert!(info["buildId"].is_string(), "{info}");
+    let new_pid = info["pid"].as_u64().unwrap();
+    assert_ne!(new_pid, old_pid, "the daemon was restarted");
+
+    // A second call finds a current daemon and restarts nothing.
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}\n").await;
+    assert!(status.success(), "{stdout} {stderr}");
+    assert_eq!(read_lock_info(home.path())["pid"].as_u64(), Some(new_pid));
+}

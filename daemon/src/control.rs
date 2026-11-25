@@ -49,12 +49,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Longest the control path waits for in-flight jobs to finish before
-/// exiting anyway. Mirrors `main.rs`'s supervised-restart drain wait.
+/// exiting anyway. Mirrors `upgrade.rs`'s drain wait.
 const CONTROL_DRAIN_MAX_WAIT: Duration = Duration::from_secs(60);
 const CONTROL_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Delay between the HTTP response going out and the process actually
 /// exiting, so the caller's response has time to flush before the process
-/// dies. Mirrors `main.rs`'s `SUPERVISOR_EXIT_GRACE`.
+/// dies. Mirrors `upgrade.rs`'s `EXIT_GRACE`.
 const CONTROL_EXIT_GRACE: Duration = Duration::from_millis(250);
 
 /// The exit grace in effect. A debug build honours
@@ -100,7 +100,7 @@ pub(crate) enum ControlAction {
 /// an unauthenticated caller must never leak a 400/422 instead of 401). On
 /// success, replies `202` with `{"ok":true,"action":...,
 /// "draining":true}` at once, then drains in-flight jobs (the same
-/// `wait_for_drain` logic the supervised-restart loop uses) and exits in a
+/// `wait_for_drain` logic the upgrade watcher uses) and exits in a
 /// background task. Never logs the token, win or lose.
 ///
 /// Race-safe against two concurrent callers (e.g. two proxies both deciding

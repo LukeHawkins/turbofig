@@ -2151,32 +2151,6 @@ async fn test_ws_upgrade_with_wrong_length_token_is_rejected() {
     );
 }
 
-/// The legacy `?token=` upgrade is gone: even the correct token gets 401.
-/// Plugins must use the nonce CHALLENGE/AUTH handshake.
-#[tokio::test]
-async fn test_ws_upgrade_with_correct_legacy_token_gets_401() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral WS port");
-    let addr = listener.local_addr().expect("read local addr");
-    let state = Arc::new(turbofig::AppState::new());
-    let token = state.token().to_owned();
-
-    tokio::spawn(async move {
-        turbofig::serve_ws(listener, state)
-            .await
-            .expect("serve_ws error in test");
-    });
-
-    let err = connect_async(format!("ws://127.0.0.1:{}/?token={token}", addr.port()))
-        .await
-        .expect_err("a legacy ?token= upgrade must be refused");
-    match err {
-        tokio_tungstenite::tungstenite::Error::Http(r) => assert_eq!(r.status(), 401),
-        e => panic!("unexpected error {e:?}"),
-    }
-}
-
 /// The pairing token never appears in turbofig_status output, even when a
 /// plugin is connected. The daemon has no HTTP /health endpoint; status is
 /// the equivalent surface to check.

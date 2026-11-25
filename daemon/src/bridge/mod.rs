@@ -336,6 +336,13 @@ async fn scan_and_service(
     let mut seen_this_scan: HashSet<String> = HashSet::new();
 
     loop {
+        // A draining daemon (an upgrade restart is under way) claims no new
+        // job: the files stay in the inbox for the daemon that starts next.
+        // Routing would refuse them anyway (`RouteError::Draining`), and a
+        // job claimed now would fail instead of waiting.
+        if state.is_draining() {
+            return;
+        }
         match entries.next_entry().await {
             Ok(Some(entry)) => {
                 let path = entry.path();

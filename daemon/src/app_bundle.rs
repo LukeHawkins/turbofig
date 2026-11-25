@@ -240,8 +240,21 @@ fn refuse_real_applications_dir(_applications_dir: &Path) -> io::Result<()> {
 /// `LSApplicationCategoryType` are both here because Spotlight/Launchpad
 /// indexing (via `lsregister`, see `install_app_bundle_with_signer`) wants
 /// them to treat the bundle as a real, categorized app.
-fn info_plist_contents(build_id: &str) -> String {
+fn info_plist_contents(build_id: &str, source_path: Option<&Path>) -> String {
     let version = env!("CARGO_PKG_VERSION");
+    // `TurbofigSourcePath`: the Homebrew binary this bundle was copied from.
+    // A daemon that runs from the bundle watches that path for an upgrade
+    // (`upgrade::watch_path`), and the app starts the daemon from it.
+    let source_entry = source_path
+        .map(|p| {
+            let escaped = p
+                .to_string_lossy()
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!("\t<key>TurbofigSourcePath</key>\n\t<string>{escaped}</string>\n")
+        })
+        .unwrap_or_default();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -267,7 +280,7 @@ fn info_plist_contents(build_id: &str) -> String {
 	<string>{version}</string>
 	<key>TurbofigBuildId</key>
 	<string>{build_id}</string>
-	<key>LSApplicationCategoryType</key>
+{source_entry}	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>LSUIElement</key>
 	<true/>
@@ -296,12 +309,9 @@ fn info_plist_contents(build_id: &str) -> String {
 /// the running binary (the installed copy's id is already sitting in its
 /// `Info.plist`, no second read needed).
 fn build_id_for_bytes(bytes: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for &b in bytes {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}-{}", bytes.len())
+    // One definition for the bundle and the running daemon: `upgrade.rs`
+    // compares the id this stamps against the id of the binary on disk.
+    crate::upgrade::build_id_for_bytes(bytes)
 }
 
 /// Writes `contents` to `path` atomically: a sibling `.tmp` file (mode
@@ -435,10 +445,24 @@ pub fn install_app_bundle_with_signer(
     let resolved_exe = own_exe.canonicalize()?;
     let exe_bytes = std::fs::read(&resolved_exe)?;
     let build_id = build_id_for_bytes(&exe_bytes);
+    // The Homebrew path this binary came from. Installing from the bundle's
+    // own copy keeps the path the bundle already records.
+    let source_path = if resolved_exe
+        .to_string_lossy()
+        .contains(".app/Contents/MacOS/")
+    {
+        crate::upgrade::bundle_plist_string_of_exe(
+            &macos_dir.join("turbofig"),
+            "TurbofigSourcePath",
+        )
+        .map(PathBuf::from)
+    } else {
+        Some(crate::launchd::stable_binary_path(&resolved_exe))
+    };
 
     write_atomic(
         &contents_dir.join("Info.plist"),
-        info_plist_contents(&build_id).as_bytes(),
+        info_plist_contents(&build_id, source_path.as_deref()).as_bytes(),
         0o644,
     )?;
     write_atomic(&resources_dir.join("AppIcon.icns"), APP_ICON_BYTES, 0o644)?;
@@ -546,11 +570,7 @@ pub fn migrate_legacy_bundle_name(
 /// Only ever reads a plist this module itself wrote, so this narrow scan
 /// (not a general XML/plist parser) is enough.
 fn extract_plist_string(xml: &str, key: &str) -> Option<String> {
-    let key_tag = format!("<key>{key}</key>");
-    let after_key = &xml[xml.find(&key_tag)? + key_tag.len()..];
-    let value_start = after_key.find("<string>")? + "<string>".len();
-    let value_end = after_key[value_start..].find("</string>")?;
-    Some(after_key[value_start..value_start + value_end].to_owned())
+    crate::upgrade::plist_string(xml, key)
 }
 
 /// True when `<applications_dir>/turbofig.app` exists but is stale against
@@ -898,6 +918,50 @@ mod tests {
 
         assert!(app_bundle_outdated(&applications_dir, &own_exe));
 
+        std::fs::remove_dir_all(&applications_dir).ok();
+    }
+
+    #[test]
+    fn the_bundle_records_its_source_binary_and_keeps_it_when_reinstalled_from_itself() {
+        let applications_dir = unique_temp_dir("source-path");
+        let own_exe = std::env::current_exe().expect("current_exe");
+        let bundle_dir = install_app_bundle_with_signer(
+            &applications_dir,
+            &own_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("install");
+        let bundled_exe = app_bundle_executable_path(&applications_dir);
+
+        // A non-Homebrew binary records its own resolved path.
+        let expected = crate::launchd::stable_binary_path(&own_exe.canonicalize().unwrap());
+        assert_eq!(
+            crate::upgrade::bundle_plist_string_of_exe(&bundled_exe, "TurbofigSourcePath")
+                .as_deref(),
+            Some(expected.to_string_lossy().as_ref())
+        );
+        // The id the daemon reads back for a bundled exe is the stamped one.
+        assert_eq!(
+            crate::upgrade::bundle_plist_string_of_exe(&bundled_exe, "TurbofigBuildId"),
+            Some(build_id_for_bytes(&std::fs::read(&own_exe).unwrap()))
+        );
+
+        // Reinstalling from the bundle's own copy must not replace the
+        // recorded Homebrew path with the bundle path.
+        install_app_bundle_with_signer(
+            &applications_dir,
+            &bundled_exe,
+            &NoopCodeSigner,
+            &NoopLaunchServicesRegistrar,
+        )
+        .expect("reinstall from the bundle");
+        assert_eq!(
+            crate::upgrade::bundle_plist_string_of_exe(&bundled_exe, "TurbofigSourcePath")
+                .as_deref(),
+            Some(expected.to_string_lossy().as_ref())
+        );
+        let _ = bundle_dir;
         std::fs::remove_dir_all(&applications_dir).ok();
     }
 

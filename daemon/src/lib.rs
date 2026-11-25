@@ -32,6 +32,7 @@ pub mod menu_bar;
 pub mod proxy;
 pub mod spawn;
 pub mod supervisor;
+pub mod upgrade;
 
 mod bridge;
 mod config;

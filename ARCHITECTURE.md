@@ -42,7 +42,7 @@ reachable (see "Daemon lifecycle" below). See `DECISIONS.md` item 15 and
 The daemon is a single Rust process. It runs three servers as three `tokio::spawn` tasks that share one `Arc<AppState>`:
 
 - **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. Each tool reads the `mcp-session-id` from the HTTP request parts and maps the session to a plugin connection by `fileKey`. `allowed_hosts` is pinned explicitly to `localhost`, `127.0.0.1`, `::1` rather than left to `rmcp`'s default, so a future crate upgrade cannot silently widen the daemon's DNS-rebinding guard.
-- **WebSocket server** (port 18847): authenticates the plugin with a challenge handshake, checked after the Origin and Host checks. The plugin connects with `?nonce=<hex>`, so the pairing token never goes on the wire. The daemon sends `CHALLENGE` (its own nonce plus an HMAC proof over the plugin's nonce and the daemon's bound port). The plugin verifies the proof, then answers `AUTH` with its own proof. A pending handshake has 2 s to finish. At most 8 handshakes may be pending: a ninth closes the oldest pending one. A `?token=` upgrade gets 401: the old URL-token path is removed (see `DECISIONS.md` #48). A missing or invalid nonce also gets 401. This closes a gap Origin checking alone leaves: a sandboxed `<iframe>` on a malicious web page reports Origin `null`, the same value the real Figma plugin UI reports. See `DECISIONS.md` #39 and `SECURITY.md`. Holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect, and again whenever it re-announces (e.g. a detected file rename). The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000, clamped to 600000) stops a silent plugin from hanging a call; `EXECUTE`, `GET_SELECTION`, and `SCREENSHOT` all carry that timeout to the plugin as `timeoutMs`, and the daemon itself waits `timeoutMs + 1000ms` for `EXECUTE`, so the plugin's own "I gave up" reply usually beats the daemon's bare timeout (see `DECISIONS.md`). The daemon holds one connection per open file in a `conn_id`-keyed registry. Two live connections may hold the same `fileKey` at once (a reconnect, or a second window on the same file): neither evicts the other, so neither one's in-flight jobs are ever cancelled by the other connecting, and a later FILE_INFO from either connection can never knock the other out of the registry. Routing (`connections_named`/`resolve_route`) dedupes a shared `fileKey` down to the newest (highest conn_id) live connection, so a caller never sees Ambiguous for a single logical file; if that newest connection closes, routing falls back to an older one still open. A frame from a conn_id no longer in the registry is ignored outright. A `RESULT` only resolves the pending request if it arrives on the same connection the request was sent to, so one connection can never forge another's reply. Message and frame size are capped at 32 MiB; a connection with no upgrade in 10 s is closed by the listener (see "Daemon authentication and connection limits"); a keepalive ping goes out every 15s and a connection with no pong in 45s is dropped. On socket close the daemon drops only that connection and fails only that connection's in-flight requests at once, so other files keep working.
+- **WebSocket server** (port 18847): authenticates the plugin with a challenge handshake, checked after the Origin and Host checks. The plugin connects with `?nonce=<hex>`, so the pairing token never goes on the wire. The daemon sends `CHALLENGE` (its own nonce plus an HMAC proof over the plugin's nonce and the daemon's bound port). The plugin verifies the proof, then answers `AUTH` with its own proof. A pending handshake has 2 s to finish. At most 8 handshakes may be pending: a ninth closes the oldest pending one. A `?token=` upgrade with a wrong token gets 401. A valid `?token=` (a 0.1.0 plugin left open across an upgrade) is accepted only to send it one `WELCOME` frame (`type` and `version`, so it shows its version-mismatch banner): `handle_compat_socket` keeps that socket idle, registers nothing, routes no job and answers no frame (at most 16 such sockets; see `DECISIONS.md` #48 and #52). A missing or invalid nonce also gets 401. This closes a gap Origin checking alone leaves: a sandboxed `<iframe>` on a malicious web page reports Origin `null`, the same value the real Figma plugin UI reports. See `DECISIONS.md` #39 and `SECURITY.md`. Holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect, and again whenever it re-announces (e.g. a detected file rename). The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000, clamped to 600000) stops a silent plugin from hanging a call; `EXECUTE`, `GET_SELECTION`, and `SCREENSHOT` all carry that timeout to the plugin as `timeoutMs`, and the daemon itself waits `timeoutMs + 1000ms` for `EXECUTE`, so the plugin's own "I gave up" reply usually beats the daemon's bare timeout (see `DECISIONS.md`). The daemon holds one connection per open file in a `conn_id`-keyed registry. Two live connections may hold the same `fileKey` at once (a reconnect, or a second window on the same file): neither evicts the other, so neither one's in-flight jobs are ever cancelled by the other connecting, and a later FILE_INFO from either connection can never knock the other out of the registry. Routing (`connections_named`/`resolve_route`) dedupes a shared `fileKey` down to the newest (highest conn_id) live connection, so a caller never sees Ambiguous for a single logical file; if that newest connection closes, routing falls back to an older one still open. A frame from a conn_id no longer in the registry is ignored outright. A `RESULT` only resolves the pending request if it arrives on the same connection the request was sent to, so one connection can never forge another's reply. Message and frame size are capped at 32 MiB; a connection with no upgrade in 10 s is closed by the listener (see "Daemon authentication and connection limits"); a keepalive ping goes out every 15s and a connection with no pong in 45s is dropped. On socket close the daemon drops only that connection and fails only that connection's in-flight requests at once, so other files keep working.
 - **File-bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It parses each job into the same typed parameter structs the MCP tools use (one `#[serde(tag = "op")]` enum, so a bad field fails to parse the same way for both transports): a file that reads and parses as JSON but fails the Job schema (a bad field, an unknown op) is rejected at once with a clear error, never held for the parse-grace window that exists only for a half-written file. A valid job is claimed (removes the inbox file), gets any stale same-id outbox result deleted, and runs in its own task so one slow job never blocks the loop. Job ids are a documented client contract: unique per job, never reused while the first job with that id may still be in flight (`skills/file-bridge.md`, `helpers/tf-api.md`, the plugin's connect prompt). A duplicate id that arrives while its twin is still running is left untouched in the inbox (not claimed, not answered) until the first finishes, so neither job's `.tmp` file or result is ever touched by the other. The ops are `status`, `execute`, `get_selection`, and `screenshot`. Screenshot file-mode writes the PNG into `outbox/<requestId>-<base36 millis>.png` (`AppState.screenshot_dir`) and returns its path; a subagent reads it. The outbox is a drop box, not storage: a backstop sweep deletes results and PNGs older than 24h. An inbox entry that never reads or parses (a bad write, an unreadable file, a non-UTF-8 name) gets one error result after a short grace window and is then left alone, instead of being retried and re-logged forever. Job reads open the file with `O_NOFOLLOW|O_NONBLOCK`, and the daemon rejects a FIFO or a symlink in `inbox/` with `invalid_job`. A job over 30 MiB or an id over 200 bytes is rejected too. A duplicate id is held before the daemon parses the file. The daemon writes results and PNGs with mode 0600, and creates each `.tmp` file with `O_EXCL`, so it never writes through a symlink. The 24 h prune touches only daemon-named regular files. A read or write failure returns `io_error`. On start the daemon writes `tf-api.md` to `<bridge>/tf-api.md`.
 
 Each capability has one shared `run_*` routine, all funnelled through one send/await/timeout/cancel helper (`plugin_call::call_plugin`). Both the MCP tool and the file-bridge op call the same routine: `run_status`, `run_execute`, `run_get_selection`, and `run_screenshot`.
@@ -54,7 +54,7 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | Module | Holds |
 |---|---|
 | `lib.rs` | Crate docs, `mod` declarations, re-exports only |
-| `main.rs` | The `turbofig` binary: dispatches `Cli::command` to `cmd_run` (bare), `run_daemon` (`serve`), `cmd_start`, `cmd_stop`, `cmd_status`, `cmd_autostart`, `cmd_uninstall`, `cmd_mcp`; the supervised-restart loop |
+| `main.rs` | The `turbofig` binary: dispatches `Cli::command` to `cmd_run` (bare), `run_daemon` (`serve`), `cmd_start`, `cmd_stop`, `cmd_status`, `cmd_autostart`, `cmd_uninstall`, `cmd_mcp`; starts the upgrade watcher |
 | `config.rs` | Env-driven settings: ports, request timeout, bridge dir |
 | `state.rs` | `AppState`, the connection registry, session pairing, the pending-request map, `begin_job`/`JobGuard` (whole-call job counting), `mark_plugin_seen` |
 | `routing.rs` | `RouteError`, `resolve_route` |
@@ -77,7 +77,8 @@ The daemon is always-on. A launchd service starts it at login and `KeepAlive` re
 | `first_run.rs` | `first_run_text`, `status_text` (the two texts `turbofig`, the bare command, prints), the `Clipboard`/`AppOpener` seams (`RealClipboard`/`FakeClipboard`, `RealAppOpener`/`FakeOpener`) |
 | `cli.rs` | The `clap` `Cli`/`Command` types, `run_autostart_on`/`run_autostart_off`, `run_uninstall`, `format_health`, and the other pure/testable halves of the CLI (`main.rs` wires these to the real filesystem, `launchctl`, and HTTP client) |
 | `launchd.rs` | `stable_binary_path`, `plist_contents`, the `Launchctl` trait and its real/fake implementations |
-| `supervisor.rs` | `installed_target`, `upgrade_detected`, `should_log_binary_gone`, `wait_for_drain`: the supervised-restart decision logic, seamed off the real clock and path resolver |
+| `supervisor.rs` | `is_supervised`, the restart exit code, `should_log_binary_gone`, `wait_for_drain`: the shared restart pieces |
+| `upgrade.rs` | Upgrade convergence: build ids, the watcher that runs in every daemon mode (`run_upgrade_watcher`), the in-place `exec` restart, and the pure decisions the app, the bare command and `js` use. See "Upgrade restart" below |
 | `app_bundle.rs` | macOS-only: assembles and tracks `turbofig.app`. See "`app_bundle.rs` in detail" below |
 | `agent_prompt.rs` | Not macOS-only: the agent-connect prompt's fill logic (`fill_agent_prompt`), shared byte-for-byte with the plugin's own copy via `prompts/agent-prompt.txt` (`include_str!` here, inlined by `plugin/build-ui.ts` there). A golden test on each side checks the same inputs give identical text |
 | `menu_bar/` | macOS-only: the menu-bar app, its tray icon, the About and Settings windows, and single-instance/self-update logic. See "Menu-bar app" below |
@@ -254,7 +255,7 @@ and writes its own files on every start.
   reaches a long-running daemon without the user restarting it by hand. An
   older proxy never restarts a newer daemon, so sessions started before the
   upgrade cannot downgrade it. See `DECISIONS.md` and the
-  "Supervised restart" section below for the launchd side of the same idea.
+  "Upgrade restart" section below for the daemon side of the same idea.
 - **Launchd autostart is optional.** `turbofig autostart on`/`off` write or
   remove the `eu.lukehawkins.turbofig.plist`, so the daemon also starts at
   login and survives a crash via `KeepAlive`. Nothing above depends on
@@ -364,7 +365,7 @@ come from `clap`.
   `<prefix>/bin/turbofig` (everything before `/Cellar`), the stable symlink
   Homebrew repoints on every `brew upgrade`. Any other path (a source
   checkout, a non-Cellar symlink target) is used as-is. This is also the
-  path the supervised-restart loop below polls.
+  path the upgrade watcher ("Upgrade restart" below) polls.
 - **`turbofig uninstall [--purge]`**: `bootout`s the service and removes
   the plist. Without `--purge`, `<home>` (the token, the plugin files, the
   bridge inbox/outbox) is left in place and the command says so. With
@@ -488,20 +489,25 @@ resolves any of them.
   no bundle in place, for manual testing. A debug build refuses it unless
   `TURBOFIG_DEV_REAL_DESKTOP=1` is set, since it shows a real tray icon and
   menu; a release build (what `turbofig.app` itself launches) always runs it.
-- **Self-update (`self_update.rs`).** Every health poll also compares the
-  daemon's reported `version` against this app binary's own
-  `CARGO_PKG_VERSION` (semver). A `brew upgrade` refreshes `turbofig.app`
-  from the newly installed daemon's next start (`app_bundle::app_bundle_outdated`),
-  but the already-running app process is still the old binary until it
-  relaunches itself: once the daemon is strictly newer,
-  `maybe_relaunch_for_upgrade` records the daemon version in
-  `<home>/app-relaunched-for` (so the same version never triggers a second
-  relaunch: `self_update::should_relaunch_for_upgrade`), drops `app.lock`
-  (so the new instance's own `lock::try_acquire` can succeed), reopens the
+- **Self-update (`self_update.rs`).** The app pins the build id it launched
+  with (`upgrade::running_build_id`: the bundle's `TurbofigBuildId`). Every
+  health poll re-reads that key from the bundle's `Info.plist`. When it
+  differs on 2 polls in a row (`RelaunchWatch`, so a bundle that is still
+  being written is never started), the app drops `app.lock`, reopens the
   bundle as a new instance (`AppOpener::open_new_instance`, `open -n`), and
-  exits. The app never relaunches when it is the same version or newer than
-  the daemon: the version handoff (`proxy.rs`) already covers the daemon
-  side of an upgrade.
+  exits. The id is compared, not the version, so a same-version rebuild, a
+  formula revision and a downgrade all relaunch. There is no state file and
+  no loop: the new instance launches with the id on disk. A refresh writes the
+  plist when the daemon restarts onto a new build (`run_daemon`) or when the
+  bare `turbofig` command runs.
+- **Daemon start and hand-off.** At start the app verifies the daemon. A daemon
+  with no proof support, or with a lower version than the app, is handed off
+  (`proxy::hand_off_older_daemon`, the same restart `turbofig mcp` uses). With
+  no daemon the app starts one from the Homebrew binary
+  (`upgrade::daemon_start_binary`: the `TurbofigSourcePath` the bundle
+  records, else `/opt/homebrew/bin/turbofig`, else `/usr/local/bin/turbofig`),
+  and only falls back to its own bundle copy. A daemon on the Homebrew path
+  restarts itself onto the next upgrade.
 - **`turbofig uninstall` quits a running app first.** `main.rs`'s
   `cmd_uninstall` calls `menu_bar::signal_quit_running_app`, which sends
   `second_instance::SignalMessage::Quit` over `<home>/app.sock`; a listening
@@ -668,45 +674,82 @@ The plugin proves the token to the daemon, and the daemon proves the token to ev
 - **Startup refusals** (`secure_fs.rs`). The daemon refuses to start when the bridge dir, `inbox/`, `outbox/`, `token` or `figma-plugin/` is a symlink or belongs to another user, when `token` has group or other bits, or when `HOME` is unset. Under launchd a refusal exits 0, so launchd does not restart the daemon in a loop.
 - **App bundle.** The daemon trusts `turbofig.app` only when the user or root owns it. It never overwrites a foreign `turbofig.app`. It calls system binaries by absolute path and maps a Homebrew Cellar path only under a real prefix. The dev build writes `dist/ui.html` with mode 0600, because it embeds the token.
 
-## Supervised restart (`TURBOFIG_SUPERVISED=1`)
+## Upgrade restart
 
-The plist `turbofig autostart on` writes sets `TURBOFIG_SUPERVISED=1`. When
-set, `main.rs` spawns a loop (`run_supervisor_loop`) that every 30s resolves
-the stable binary path (the same rule `autostart on` used to build the plist) and
-compares its canonical target to the one captured at startup
-(`supervisor::upgrade_detected`, a pure path comparison). `supervisor::
-installed_target` returns `Option<PathBuf>`, `None` when `canonicalize`
-fails (mid-upgrade, or after `brew uninstall` removed the binary
-entirely); `upgrade_detected` treats `None` as "skip this check", never as
-a difference from the baseline, so neither case causes a spurious restart
-or a restart-loop-forever. After 3 consecutive unresolved checks
-(`supervisor::should_log_binary_gone`), the daemon logs a line saying the
-binary is gone. A real path difference means `brew upgrade` repointed the
-Cellar symlink. On detection the daemon: calls
-`AppState::set_draining(true)`, so `resolve_route` refuses every new job
-with `RouteError::Draining` across all three transports (MCP, WS-routed
-ops, file-bridge; they all call `resolve_route`); waits up to 60s
-(`supervisor::wait_for_drain`, polling `AppState::jobs_in_flight`) for
-in-flight jobs to finish; then waits a further 250ms grace
-(`SUPERVISOR_EXIT_GRACE`) so a just-finished response can flush; then exits
-`supervisor::SUPERVISED_RESTART_EXIT_CODE` (75), a non-zero code, so
-launchd's `KeepAlive: {SuccessfulExit: false}` (above) restarts it with the
-new binary rather than leaving it stopped the way a clean `turbofig stop`
-(always exit 0) does. `/control`'s own `restart` action exits the same code
-under supervision, for the same reason (`control.rs`'s `exit_code_for`).
-The clock and the
-path resolver are pure/seamed (`supervisor.rs`) so the decision logic is
-unit tested without a real 30s wait or a real Homebrew upgrade.
+Every daemon, supervised or not, runs the upgrade watcher
+(`upgrade::run_upgrade_watcher`). Every 30s it resolves the file to watch:
+the stable Homebrew path (`launchd::stable_binary_path`), or, for a daemon
+that runs from the app bundle, the `TurbofigSourcePath` key of the bundle's
+`Info.plist` (older bundles: `/opt/homebrew/bin/turbofig`, then
+`/usr/local/bin/turbofig`). It stats that file (`BinarySig`: resolved path,
+device, inode, size, mtime) and only when the signature changed does it
+hash the file (`build_id_for_file`, FNV-1a of the bytes plus the length, the
+same id `app_bundle` stamps as `TurbofigBuildId`). A build id that differs
+from the running one (`running_build_id`: the hash of the running binary, or
+the bundle's `TurbofigBuildId` when the daemon runs from the bundle, because
+the bundle copy is re-signed and hashes differently) is an upgrade. The same
+build id at a new path (`brew reinstall`) is not. A file that cannot be
+resolved or read is "cannot tell", never an upgrade; after 3 such checks the
+daemon logs that the binary is gone.
 
-`AppState::jobs_in_flight` counts whole tool calls, not plugin-reply waits:
-`AppState::begin_job` returns an RAII `JobGuard` that increments a shared
-counter on creation and decrements it on drop. Both the 4 MCP tool
-handlers (`mcp.rs`) and the bridge's per-job spawned task (`bridge/mod.rs`)
-hold one guard from entry to their final response or result write, so the
-drain wait above covers the whole call (routing, the plugin round trip,
-and any work after the reply: a screenshot resize, a file write, building
-the response), not just the earlier narrower window of "waiting on the
-`pending` map".
+On an upgrade the daemon: waits 1s and re-stats (a file still being written is
+left for the next poll); runs `<new> --version` (a binary that cannot start is
+never `exec`ed into, because that would kill the daemon and leave nothing to
+restart it); calls `AppState::try_begin_draining` (a `/control` stop or
+restart that is already draining wins). Draining makes `resolve_route`
+refuse new MCP/WS jobs with `RouteError::Draining`, and makes the file bridge
+stop claiming: a job file stays in `inbox/` for the next image. It then
+waits up to 60s for in-flight jobs (`supervisor::wait_for_drain`) plus a
+250ms grace, exits 0 if a `/control` stop landed meanwhile, and calls
+`upgrade::exec_in_place`.
+
+`exec_in_place` runs `<new> serve` in the same process (same pid) with the
+same environment plus `TURBOFIG_REEXEC_FROM=<old build id>` and
+`TURBOFIG_INHERITED_LOCK_FD=<n>`. The bridge folder lock is a POSIX `fcntl`
+lock: it belongs to the process and survives `exec` while an fd to
+`daemon.lock` stays open, and it is dropped when any fd to that file closes.
+So `exec_in_place` clears close-on-exec on the lock fd only (`secure_fs::
+set_lock_fd_inheritable`) and the new image adopts that fd
+(`secure_fs::adopt_inherited_lock`: it checks the fd is the file
+`daemon.lock` names now, owned by this user, with this pid in its lock info;
+it reads the info through the fd, never by opening the file again; then it
+sets close-on-exec again). No second daemon can take the folder at any point.
+Listening sockets close at `exec` and are rebound: the new image retries an
+address that is in use for 5s (a second `serve` may bind the free ports in
+the gap and then exits at the lock). `main` reads and removes the two
+variables before any thread starts (`upgrade::capture_reexec_env`).
+
+Loop guard: if the new image runs as the same build id it was `exec`ed from
+(`TURBOFIG_REEXEC_FROM`), the restart changed nothing, so it never `exec`s
+again (a launcher script that always starts the same build cannot loop). If
+`exec` fails the daemon accepts work again (`set_draining(false)`) and tries on
+a later poll; under launchd it exits `supervisor::SUPERVISED_RESTART_EXIT_CODE`
+(75) instead, and `KeepAlive: {SuccessfulExit: false}` restarts it with the
+new binary. `/control`'s own `restart` still exits (75 under supervision, 0
+otherwise): its callers wait for the port to go away.
+
+`run_daemon` takes the folder lock after both ports are bound, so a daemon
+that fails to bind never holds it, not even for a moment. The lock info
+(`daemon.lock`) records `pid`, `requestTimeoutMs`, `locked`, `version` and
+`buildId`. `turbofig js` reads it with no network call: a lock holder with no
+`version`, or a lower one than `js` itself (a 0.2.0 daemon), gets exactly one
+authenticated `/control restart` (`js_cmd::restart_older_daemon`), then `js`
+waits for the old daemon to go and starts or finds the new one.
+
+A daemon started from the app bundle compares itself against the Homebrew
+binary, so it restarts onto that on its first check. A daemon that runs from
+the bundle never refreshes the bundle from its own copy (it would compare
+the bundle with itself): the image it restarts into does the refresh, the app
+sees the new `TurbofigBuildId` and relaunches (see "Self-update"). The bare
+`turbofig` command waits for a running app to quit for the app's own quit
+deadline plus 3s (`upgrade::app_quit_wait`), reopens it with `open -n`
+(`upgrade::open_mode_after_refresh`), and then makes sure a verified daemon
+runs (it kickstarts the headless service, or starts one).
+
+The clock, the path resolver and the hash are seams
+(`Watcher::check`, `BinarySig`), so the decision logic is unit tested with no
+real 30s wait and no Homebrew upgrade. `daemon/tests/upgrade_exec.rs` tests
+the real `exec` with a stand-in "new build" script.
 
 ## Message contract: plugin version reporting
 
@@ -736,5 +779,6 @@ name the real inbox/outbox paths even under a custom
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result. Clamped to 600000 (10 min); a larger value is logged and clamped, since it would otherwise overflow a JS `setTimeout` on the plugin side |
 | `TURBOFIG_MAX_INFLIGHT` | 4 | Per-connection admission-control cap for `EXECUTE`/`SCREENSHOT` jobs (clamped 1-32). A job beyond the cap gets an immediate `busy` error instead of queueing; see `state::try_admit` |
 | `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |
-| `TURBOFIG_SUPERVISED` | unset | Set by the launchd plist `turbofig autostart on` writes; enables the supervised-restart loop above |
+| `TURBOFIG_SUPERVISED` | unset | Set by the launchd plist `turbofig autostart on` writes; marks the launchd-supervised daemon: `/control restart` and a failed in-place `exec` exit 75 so launchd restarts it |
+| `TURBOFIG_REEXEC_FROM`, `TURBOFIG_INHERITED_LOCK_FD` | unset | Internal. The old image sets them for the new one in an in-place upgrade restart: the build id it ran as (the loop guard) and the fd number of the open `daemon.lock` that holds the folder lock. `main` removes both at start. Never set them by hand |
 | `TURBOFIG_LAUNCH_AGENTS_DIR` | `~/Library/LaunchAgents` | Overrides where `autostart`/`uninstall` read and write the plist; a test seam, not meant for normal use |
