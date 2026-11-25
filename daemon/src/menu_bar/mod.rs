@@ -28,6 +28,7 @@ mod self_update;
 mod settings_state;
 mod settings_window;
 mod state;
+mod supervise;
 
 pub use lock::{try_acquire, AppLock};
 pub use quit::{quit_sequence, DaemonStopper};
@@ -233,7 +234,8 @@ enum UserEvent {
 /// (so `mod.rs` can hand it to the tray builder), and the item ids.
 ///
 /// The menu is exactly: the disabled status line, a separator, "About
-/// turbofig…", "Settings…", a separator, "Quit turbofig". Every other
+/// turbofig…", "Settings…", "Start turbofig" (enabled only while the
+/// daemon is down), a separator, "Quit turbofig". Every other
 /// action (copying the agent prompt or the manifest path, revealing the
 /// plugin in Finder, opening Figma, Start at Login, Open Log) moved into
 /// the About or Settings window; "Open Figma" was removed entirely. See
@@ -243,6 +245,7 @@ struct MenuHandles {
     status_item: MenuItem,
     about_item: MenuItem,
     settings_item: MenuItem,
+    start_item: MenuItem,
     quit_item: MenuItem,
 }
 
@@ -251,6 +254,8 @@ fn build_menu(status_text: &str) -> MenuHandles {
     let status_item = MenuItem::new(status_text, false, None);
     let about_item = MenuItem::new("About turbofig\u{2026}", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
+    // Enabled only while the daemon is down (see `UserEvent::Health`).
+    let start_item = MenuItem::new("Start turbofig", false, None);
     let quit_item = MenuItem::new("Quit turbofig", true, None);
 
     let _ = menu.append_items(&[
@@ -258,6 +263,7 @@ fn build_menu(status_text: &str) -> MenuHandles {
         &PredefinedMenuItem::separator(),
         &about_item,
         &settings_item,
+        &start_item,
         &PredefinedMenuItem::separator(),
         &quit_item,
     ]);
@@ -267,6 +273,7 @@ fn build_menu(status_text: &str) -> MenuHandles {
         status_item,
         about_item,
         settings_item,
+        start_item,
         quit_item,
     }
 }
@@ -322,27 +329,34 @@ fn open_or_focus_settings_window(
 /// cached belief, so the 2 checkboxes (and a plain `turbofig autostart`
 /// CLI run) can never silently disagree with the real plist on disk.
 fn set_start_at_login(enabled: bool, home: &Path) -> Result<(), String> {
+    // Never `launchctl`: this runs inside the app, which may itself be the
+    // app LaunchAgent, and next to a daemon that may be the headless one.
+    // See `supervise::enable_login_item`/`disable_login_item`.
     let agents_dir = crate::launchd::launch_agents_dir_from_env();
-    let launchctl = crate::launchd::RealLaunchctl;
-    let uid = crate::launchd::current_uid().map_err(|e| e.to_string())?;
     if enabled {
         let applications_dir = crate::app_bundle::applications_dir_from_env();
-        let own_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        crate::cli::run_autostart_on_app(
+        let bundle_exe = crate::app_bundle::app_bundle_executable_path(&applications_dir);
+        supervise::enable_login_item(
             &agents_dir,
-            &applications_dir,
-            &launchctl,
-            &uid,
-            &own_exe,
+            &bundle_exe,
             home,
+            &crate::launchd::carry_over_turbofig_env(),
         )
         .map(|_| ())
         .map_err(|e| e.to_string())
     } else {
-        crate::cli::run_autostart_off(&agents_dir, &launchctl, &uid)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        supervise::disable_login_item(&agents_dir).map_err(|e| e.to_string())
     }
+}
+
+/// Set once Quit begins, so the health poller never restarts the daemon
+/// Quit is stopping.
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Starts the daemon through the same spawn helper the startup path uses.
+fn start_daemon_now(home: &Path) -> Result<(), String> {
+    let bin = std::env::current_exe().map_err(|e| e.to_string())?;
+    crate::spawn::spawn_detached_daemon(&bin, home).map_err(|e| e.to_string())
 }
 
 /// Runs the menu-bar app: acquires the single-instance lock, ensures the
@@ -376,7 +390,10 @@ pub async fn run_menu_bar_app() {
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("turbofig: could not acquire the single-instance lock: {e}");
+            supervise::show_failure_alert(
+                &format!("could not acquire the single-instance lock: {e}"),
+                &home,
+            );
             std::process::exit(1);
         }
     }
@@ -385,7 +402,7 @@ pub async fn run_menu_bar_app() {
     match crate::daemon_client::verify_allowing_legacy_in_home(mcp_port, &home).await {
         Ok((_, crate::daemon_client::Listener::LegacySameUser)) => {
             if let Err(e) = crate::proxy::hand_off_legacy_daemon(mcp_port, &home).await {
-                eprintln!("turbofig: {e}");
+                supervise::show_failure_alert(&e.to_string(), &home);
                 std::process::exit(1);
             }
         }
@@ -394,12 +411,15 @@ pub async fn run_menu_bar_app() {
             let turbofig_binary = match std::env::current_exe() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("turbofig: failed to determine the running binary's path: {e}");
+                    supervise::show_failure_alert(
+                        &format!("failed to determine the running binary's path: {e}"),
+                        &home,
+                    );
                     std::process::exit(1);
                 }
             };
             if let Err(e) = crate::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
-                eprintln!("turbofig: could not start the daemon: {e}");
+                supervise::show_failure_alert(&format!("could not start the daemon: {e}"), &home);
                 std::process::exit(1);
             }
             if let Err(e) = crate::daemon_client::wait_for_verified_daemon(
@@ -409,12 +429,12 @@ pub async fn run_menu_bar_app() {
             )
             .await
             {
-                eprintln!("turbofig: {e}");
+                supervise::show_failure_alert(&e.to_string(), &home);
                 std::process::exit(1);
             }
         }
         Err(e) => {
-            eprintln!("turbofig: {e}");
+            supervise::show_failure_alert(&e.to_string(), &home);
             std::process::exit(1);
         }
     }
@@ -437,6 +457,7 @@ pub async fn run_menu_bar_app() {
         status_item,
         about_item,
         settings_item,
+        start_item,
         quit_item,
     } = build_menu(&initial_state.status_text);
 
@@ -483,8 +504,27 @@ pub async fn run_menu_bar_app() {
                 return;
             }
         };
+        let mut tracker = supervise::RespawnTracker::default();
         loop {
             let health = rt.block_on(verified_health(mcp_port, &poll_home));
+            if health.is_none() {
+                // Only "nothing listens" counts as a dead daemon: a foreign
+                // or unverified listener must not trigger a spawn.
+                let unreachable = matches!(
+                    rt.block_on(crate::daemon_client::verify_allowing_legacy_in_home(
+                        mcp_port, &poll_home
+                    )),
+                    Err(crate::daemon_client::VerifyError::Unreachable)
+                );
+                let quitting = QUITTING.load(std::sync::atomic::Ordering::SeqCst);
+                if tracker.observe(unreachable, quitting) {
+                    if let Err(e) = start_daemon_now(&poll_home) {
+                        eprintln!("turbofig: could not restart the daemon: {e}");
+                    }
+                }
+            } else {
+                tracker.observe(false, false);
+            }
             if poll_proxy.send_event(UserEvent::Health(health)).is_err() {
                 return; // the event loop is gone; stop polling.
             }
@@ -536,13 +576,14 @@ pub async fn run_menu_bar_app() {
     let tray = match tray_builder.build() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("turbofig: could not create the tray icon: {e}");
+            supervise::show_failure_alert(&format!("could not create the tray icon: {e}"), &home);
             std::process::exit(1);
         }
     };
 
     let about_id = about_item.id().clone();
     let settings_id = settings_item.id().clone();
+    let start_id = start_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     event_loop.run(move |event, target, control_flow| {
@@ -558,6 +599,7 @@ pub async fn run_menu_bar_app() {
                     &custom_bridge_dir,
                 );
                 status_item.set_text(&new_state.status_text);
+                start_item.set_enabled(health.is_none());
                 if let Some(icon) = icon::icon_for_state(new_state.icon_state) {
                     let _ = tray.set_icon_templated(Some(icon));
                 }
@@ -610,6 +652,10 @@ pub async fn run_menu_bar_app() {
                 open_or_focus_about_window(target, &about_window_handle, &about_ctx);
             } else if event.id == settings_id {
                 open_or_focus_settings_window(target, &settings_window_handle, &settings_ctx);
+            } else if event.id == start_id {
+                if let Err(e) = start_daemon_now(&home) {
+                    eprintln!("turbofig: could not start the daemon: {e}");
+                }
             } else if event.id == quit_id {
                 perform_quit(&home, mcp_port);
             }
@@ -714,6 +760,7 @@ fn version_to_accept(health: Option<&serde_json::Value>) -> Option<String> {
 /// `turbofig uninstall` signal over `<home>/app.sock`), so all 3 paths quit
 /// identically. Never returns.
 fn perform_quit(home: &Path, mcp_port: u16) -> ! {
+    QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
     let stopper = RealDaemonStopper::new(home.to_path_buf(), mcp_port);
     if !quit_sequence(&stopper) {
         eprintln!("turbofig: the daemon was still answering after Quit's stop request");

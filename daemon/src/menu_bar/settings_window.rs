@@ -86,9 +86,9 @@ impl SettingsWindowHandle {
 }
 
 /// Reads "Start at login"'s current, real state (never a cached belief: see
-/// `cli::app_autostart_plist_exists`'s own doc comment).
+/// `supervise::login_item_on` (app or headless plist)'s own doc comment).
 fn start_at_login_checked() -> bool {
-    crate::cli::app_autostart_plist_exists(&crate::launchd::launch_agents_dir_from_env())
+    super::supervise::login_item_on(&crate::launchd::launch_agents_dir_from_env())
 }
 
 /// Reads Connection (default File bridge) from the marker in the turbofig
