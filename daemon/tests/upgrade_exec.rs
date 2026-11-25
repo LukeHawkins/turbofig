@@ -311,3 +311,238 @@ async fn a_daemon_that_fails_to_bind_never_takes_the_folder_lock() {
     assert!(!env.lock_held());
     drop(squatter);
 }
+
+/// A "new build" that passes the `--version` preflight and then makes its own
+/// file non-executable, so the later `exec` of it fails.
+fn write_unexecable_build_script(path: &Path) {
+    std::fs::write(
+        path,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"--version\" ]; then chmod -x \"$0\"; echo turbofig; exit 0; fi\n\
+         exit 3\n",
+    )
+    .expect("write script");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+fn token_of(env: &Env) -> String {
+    std::fs::read_to_string(env.bridge.join("token"))
+        .expect("token")
+        .trim()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_failed_exec_is_retried_a_few_times_then_the_build_is_skipped_and_the_daemon_serves() {
+    let _serial = common::serial_process_test().await;
+    let env = Env::new();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let script = env.tmp.path().join("unexecable-turbofig");
+    write_unexecable_build_script(&script);
+
+    let mut cmd = env.command(env.mcp, env.ws);
+    cmd.env("TURBOFIG_TEST_UPGRADE_WATCH", &script)
+        .env("TURBOFIG_TEST_UPGRADE_CHECK_MS", "100");
+    let mut daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
+    wait_healthy(&client, env.mcp, 10).await;
+    wait_until(
+        || env.log_text().contains("could not start"),
+        15_000,
+        "the exec to fail",
+    )
+    .await;
+    // The failing signature is remembered: the watcher gives up on it and
+    // never drains again for that file.
+    wait_until(
+        || env.log_text().contains("giving up on build"),
+        15_000,
+        "the watcher to give up on the build",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let log = env.log_text();
+    assert_eq!(log.matches("giving up on build").count(), 1, "{log}");
+    assert_eq!(log.matches("detected an upgrade").count(), 1, "{log}");
+    // The daemon serves on, and the lock is still held.
+    wait_healthy(&client, env.mcp, 2).await;
+    assert!(env.lock_held());
+    assert!(daemon.0.try_wait().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_control_restart_that_joined_the_drain_is_honored_after_a_failed_exec() {
+    let _serial = common::serial_process_test().await;
+    let env = Env::new();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let script = env.tmp.path().join("unexecable-turbofig");
+    write_unexecable_build_script(&script);
+
+    let mut cmd = env.command(env.mcp, env.ws);
+    cmd.env("TURBOFIG_TEST_UPGRADE_WATCH", &script)
+        .env("TURBOFIG_TEST_UPGRADE_CHECK_MS", "100")
+        // A wide window between the drain and the `exec`.
+        .env("TURBOFIG_TEST_UPGRADE_EXIT_GRACE_MS", "2500");
+    let mut daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
+    wait_healthy(&client, env.mcp, 10).await;
+    wait_until(
+        || env.log_text().contains("detected an upgrade"),
+        15_000,
+        "the drain to start",
+    )
+    .await;
+    // The upgrade drain is running: this restart joins it and gets a 202.
+    let resp = client
+        .post(format!("http://127.0.0.1:{}/control", env.mcp))
+        .bearer_auth(token_of(&env))
+        .json(&serde_json::json!({"action": "restart"}))
+        .send()
+        .await
+        .expect("send /control");
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+
+    // The `exec` fails. The daemon must not serve on: the restart it
+    // promised ends the process (exit 0, unsupervised: the caller starts the
+    // next daemon).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(s) = daemon.0.try_wait().expect("try_wait") {
+            break s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never honored the restart: {}",
+            env.log_text()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(status.code(), Some(0), "{}", env.log_text());
+    assert!(
+        env.log_text().contains("honoring the /control restart"),
+        "{}",
+        env.log_text()
+    );
+}
+
+#[tokio::test]
+async fn an_in_place_restart_survives_a_passing_listener_on_the_port() {
+    let _serial = common::serial_process_test().await;
+    let env = Env::new();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // Something unrelated holds the MCP port for about a second, as a
+    // passing process can right after the old image closed it.
+    // It answers like a web server that is not turbofig, so a startup check
+    // would see an unverified listener and exit 1.
+    let intruder = std::net::TcpListener::bind(("127.0.0.1", env.mcp)).expect("hold the port");
+    intruder.set_nonblocking(true).expect("nonblocking");
+    let stop_intruder = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let intruder_thread = {
+        let stop = stop_intruder.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Ok((mut conn, _)) = intruder.accept() {
+                    let mut buf = [0u8; 1024];
+                    let _ = conn.set_read_timeout(Some(Duration::from_millis(200)));
+                    let _ = conn.read(&mut buf);
+                    let _ = conn.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi",
+                    );
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        })
+    };
+
+    let mut cmd = env.command(env.mcp, env.ws);
+    // What the old image sets for the new one (`upgrade::exec_in_place`).
+    cmd.env("TURBOFIG_REEXEC_FROM", "0123abcd-1");
+    let mut daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert!(
+        daemon.0.try_wait().unwrap().is_none(),
+        "the daemon exited at the startup check: {}",
+        env.log_text()
+    );
+    stop_intruder.store(true, std::sync::atomic::Ordering::SeqCst);
+    intruder_thread.join().expect("intruder thread");
+    wait_healthy(&client, env.mcp, 15).await;
+    assert!(env.lock_held());
+}
+
+/// A restart request that arrives while the upgrade watcher already drains
+/// ends in an `exec`, so the folder lock is never released. `turbofig js`
+/// must see the new build in the lock info and go on, not wait out the
+/// 75 s it gives a daemon that exits.
+#[tokio::test]
+async fn js_does_not_wait_out_a_restart_that_joined_an_upgrade_drain() {
+    let _serial = common::serial_process_test().await;
+    let env = Env::new();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    // The new build runs the real daemon without the old-version override,
+    // so its lock info says it is current.
+    let script = env.tmp.path().join("new-turbofig");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"--version\" ]; then exec \"$TF_REAL\" --version; fi\n\
+         unset TURBOFIG_TEST_VERSION_OVERRIDE\n\
+         exec \"$TF_REAL\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut cmd = env.command(env.mcp, env.ws);
+    cmd.env("TURBOFIG_TEST_VERSION_OVERRIDE", "0.0.1")
+        .env("TURBOFIG_TEST_UPGRADE_WATCH", &script)
+        .env("TURBOFIG_TEST_UPGRADE_CHECK_MS", "100")
+        .env("TURBOFIG_TEST_UPGRADE_EXIT_GRACE_MS", "6000")
+        .env("TF_REAL", BIN);
+    let daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
+    let pid = u64::from(daemon.0.id());
+    wait_healthy(&client, env.mcp, 10).await;
+    wait_until(
+        || env.log_text().contains("detected an upgrade"),
+        15_000,
+        "the upgrade drain to start",
+    )
+    .await;
+
+    let started = Instant::now();
+    let mut js = Command::new(BIN);
+    js.arg("js")
+        .env("HOME", env.tmp.path())
+        .env("TURBOFIG_BRIDGE_DIR", &env.bridge)
+        .env("TURBOFIG_MCP_PORT", env.mcp.to_string())
+        .env("TURBOFIG_WS_PORT", env.ws.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = js.spawn().expect("spawn js");
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"op\":\"status\"}\n")
+            .unwrap();
+    }
+    let out = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .unwrap()
+        .expect("js output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout} {}", env.log_text());
+    assert!(
+        started.elapsed() < Duration::from_secs(40),
+        "js waited {:?} for a daemon that restarted in place",
+        started.elapsed()
+    );
+    let v: Value = serde_json::from_str(stdout.trim()).expect("result JSON");
+    assert_eq!(v["ok"], Value::Bool(true), "{stdout}");
+    // Same process, now a current build.
+    let info = env.lock_info().expect("lock info");
+    assert_eq!(info["pid"].as_u64(), Some(pid), "{info}");
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"), "{info}");
+}

@@ -699,27 +699,100 @@ fn ensure_daemon(dir: &Path, default_folder: bool) -> Result<Mode, String> {
 }
 
 /// Longest to wait for an older daemon to go away after the restart request.
-/// The daemon's own drain waits up to 60 s for in-flight jobs.
+/// The daemon's own drain waits up to 60 s for in-flight jobs; a longer
+/// request timeout in the lock info makes this longer too
+/// (`upgrade::restart_wait`).
 const RESTART_GONE_WAIT: Duration = Duration::from_secs(75);
+
+/// True when a daemon that answers with no lock file needs a restart. A
+/// listener that gave no proof (a 0.1.0 daemon) always does. One that proved
+/// the token is a 0.2.0 or newer daemon caught before it wrote its lock file
+/// (it binds the ports first): it is restarted only when its own version is
+/// older than this binary.
+fn legacy_needs_restart(verified: bool, health_version: Option<&str>, own_version: &str) -> bool {
+    !verified || crate::upgrade::daemon_needs_restart(health_version, own_version)
+}
+
+/// The key `js` remembers for a daemon it asked to restart: the build id the
+/// daemon recorded, else its version, else (no lock file) its `/health`
+/// version.
+fn restart_key(build_id: Option<&str>, version: Option<&str>, legacy: bool) -> String {
+    if legacy {
+        return format!("legacy:{}", version.unwrap_or("unknown"));
+    }
+    match build_id {
+        Some(id) => format!("build:{id}"),
+        None => format!("version:{}", version.unwrap_or("unknown")),
+    }
+}
+
+/// True when the remembered key (the content of `restart-asked`) is the key
+/// of the daemon that runs now: `js` already asked this one. It never asks
+/// twice. A binary that `launchd` or the app starts can be older than the
+/// `js` that asked for the restart, and a version-only rule would then ask
+/// again on every run.
+fn already_asked(remembered: Option<&str>, key: &str) -> bool {
+    remembered.map(str::trim) == Some(key)
+}
+
+/// Polls `done` until it is true or `limit` passes. `sleep` is the pause
+/// between polls (a seam for tests). True when `done` was.
+fn wait_until(limit: Duration, mut done: impl FnMut() -> bool, sleep: impl Fn()) -> bool {
+    let until = Instant::now() + limit;
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= until {
+            return false;
+        }
+        sleep();
+    }
+}
+
+/// What `restart_older_daemon` decided to ask for.
+struct RestartPlan {
+    key: String,
+    /// The build id in the lock info when the restart was asked.
+    asked_build_id: Option<String>,
+    wait: Duration,
+}
+
+/// The `/health` answer of a daemon that has no lock file: a restart plan, or
+/// `None` when it needs none (or cannot be read as a daemon at all).
+async fn legacy_restart_plan(dir: &Path, port: u16) -> Option<RestartPlan> {
+    let (health, listener) = crate::daemon_client::verify_allowing_legacy_in_home(port, dir)
+        .await
+        .ok()?;
+    let version = health.get("version").and_then(Value::as_str);
+    let verified = listener == crate::daemon_client::Listener::Verified;
+    if !legacy_needs_restart(verified, version, env!("CARGO_PKG_VERSION")) {
+        return None;
+    }
+    Some(RestartPlan {
+        key: restart_key(None, version, true),
+        asked_build_id: None,
+        wait: RESTART_GONE_WAIT,
+    })
+}
 
 /// Restarts the daemon ONCE when it is older than this binary, then returns
 /// the mode of the daemon that serves `dir` afterwards. A daemon is older when
 /// its lock info (`daemon.lock`, no network) has no `version`, or a lower one
-/// than this binary: it was started before the upgrade and `brew upgrade` did
-/// not reach it (a 0.2.0 daemon has no in-place restart). The one request goes
-/// through the authenticated `/control` path (`daemon_client::send_control`,
-/// which verifies the daemon first). Any failure leaves the old daemon in use:
-/// the job still runs, it is only not upgraded.
+/// than this binary, or when it has no lock file at all (a 0.1.0 daemon,
+/// `Mode::Legacy`). The one request goes through the authenticated `/control`
+/// path (`daemon_client::send_control`, which verifies the daemon, or accepts
+/// a same-user older one: the upgrade handoff). Any failure leaves the old
+/// daemon in use: the job still runs, it is only not upgraded.
+///
+/// The wait ends when the lock is released, when the port goes down (legacy),
+/// or when the lock info shows the daemon restarted in place (the upgrade
+/// watcher was already draining and `exec`ed: the lock is never released
+/// then, `upgrade::restart_took_effect`). `restart-asked` in the bridge
+/// folder holds the key of the daemon asked last: the same daemon is never
+/// asked twice (`already_asked`).
 fn restart_older_daemon(dir: &Path, default_folder: bool, mode: Mode) -> Result<Mode, String> {
-    if mode != Mode::Locked {
-        return Ok(mode);
-    }
-    let Some(info) = crate::secure_fs::read_lock_info(dir) else {
-        return Ok(mode);
-    };
-    if !crate::upgrade::daemon_needs_restart(info.version.as_deref(), env!("CARGO_PKG_VERSION")) {
-        return Ok(mode);
-    }
+    let own = env!("CARGO_PKG_VERSION");
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -727,6 +800,33 @@ fn restart_older_daemon(dir: &Path, default_folder: bool, mode: Mode) -> Result<
         return Ok(mode);
     };
     let port = crate::config::port_from_env();
+    let plan = match mode {
+        Mode::Locked => {
+            let Some(info) = crate::secure_fs::read_lock_info(dir) else {
+                return Ok(mode);
+            };
+            if !crate::upgrade::daemon_needs_restart(info.version.as_deref(), own) {
+                return Ok(mode);
+            }
+            RestartPlan {
+                key: restart_key(info.build_id.as_deref(), info.version.as_deref(), false),
+                asked_build_id: info.build_id.clone(),
+                wait: crate::upgrade::restart_wait(RESTART_GONE_WAIT, info.request_timeout),
+            }
+        }
+        Mode::Legacy => match rt.block_on(legacy_restart_plan(dir, port)) {
+            Some(plan) => plan,
+            None => return Ok(mode),
+        },
+        Mode::Unlocked(_) => return Ok(mode),
+    };
+    let asked_file = dir.join(crate::secure_fs::RESTART_ASKED);
+    if already_asked(
+        crate::secure_fs::read_private_file(&asked_file).as_deref(),
+        &plan.key,
+    ) {
+        return Ok(mode);
+    }
     let accepted = rt.block_on(async {
         let token = crate::token::read_token_file(dir).await?;
         crate::daemon_client::send_control(port, &token, "restart")
@@ -737,12 +837,30 @@ fn restart_older_daemon(dir: &Path, default_folder: bool, mode: Mode) -> Result<
     if accepted.is_none() {
         return Ok(mode);
     }
-    let until = Instant::now() + RESTART_GONE_WAIT;
-    while crate::secure_fs::bridge_lock_held(dir) {
-        if Instant::now() >= until {
-            return Ok(mode);
-        }
-        std::thread::sleep(SLOW_POLL);
+    // Remember the daemon only after it accepted: a refused or failed request
+    // may succeed on a later run.
+    let _ = crate::secure_fs::write_private_file(&asked_file, plan.key.as_bytes());
+    let gone = wait_until(
+        plan.wait,
+        || match mode {
+            Mode::Legacy => {
+                // A 0.1.0 daemon never has a lock file: one that appears is a
+                // newer daemon, even if the port never looked down.
+                !tcp_up(port) || !crate::secure_fs::lock_file_absent(dir)
+            }
+            _ => {
+                !crate::secure_fs::bridge_lock_held(dir)
+                    || crate::upgrade::restart_took_effect(
+                        plan.asked_build_id.as_deref(),
+                        crate::secure_fs::read_lock_info(dir).as_ref(),
+                        own,
+                    )
+            }
+        },
+        || std::thread::sleep(SLOW_POLL),
+    );
+    if !gone {
+        return Ok(mode);
     }
     ensure_daemon(dir, default_folder)
 }
@@ -1780,5 +1898,105 @@ mod tests {
         );
         // Checks alternate false/true, never 2 false in a row: a timeout.
         assert_eq!(c, 1);
+    }
+
+    #[test]
+    fn a_listener_with_no_proof_is_always_restarted_and_a_verified_one_only_when_older() {
+        // A 0.1.0 daemon: no proof support, whatever it says.
+        assert!(legacy_needs_restart(false, Some("0.2.0"), "0.2.0"));
+        assert!(legacy_needs_restart(false, None, "0.2.0"));
+        // A 0.2.0 daemon caught before it wrote its lock file.
+        assert!(!legacy_needs_restart(true, Some("0.2.0"), "0.2.0"));
+        assert!(!legacy_needs_restart(true, Some("0.3.0"), "0.2.0"));
+        assert!(legacy_needs_restart(true, Some("0.1.9"), "0.2.0"));
+    }
+
+    #[test]
+    fn the_restart_key_names_the_daemon_and_the_same_one_is_never_asked_twice() {
+        let a = restart_key(Some("aa-1"), Some("0.2.0"), false);
+        let b = restart_key(Some("bb-2"), Some("0.2.0"), false);
+        assert_ne!(a, b);
+        assert_eq!(restart_key(None, Some("0.1.9"), false), "version:0.1.9");
+        assert_eq!(restart_key(None, Some("0.1.0"), true), "legacy:0.1.0");
+        assert_eq!(restart_key(None, None, true), "legacy:unknown");
+        assert!(already_asked(Some(&a), &a));
+        assert!(already_asked(Some(&format!("{a}\n")), &a));
+        assert!(!already_asked(Some(&a), &b));
+        assert!(!already_asked(None, &a));
+    }
+
+    #[test]
+    fn the_restart_wait_stops_when_done_and_is_bounded() {
+        let mut polls = 0;
+        assert!(wait_until(
+            Duration::from_secs(5),
+            || {
+                polls += 1;
+                polls >= 3
+            },
+            || {}
+        ));
+        assert_eq!(polls, 3);
+        let started = Instant::now();
+        assert!(!wait_until(
+            Duration::from_millis(40),
+            || false,
+            || std::thread::sleep(Duration::from_millis(5))
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn an_unlocked_or_locked_daemon_that_is_not_older_is_never_restarted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // No lock info at all: nothing to decide on.
+        assert_eq!(
+            restart_older_daemon(dir.path(), false, Mode::Locked),
+            Ok(Mode::Locked)
+        );
+        // An unlocked daemon is left alone.
+        assert_eq!(
+            restart_older_daemon(dir.path(), false, Mode::Unlocked(1)),
+            Ok(Mode::Unlocked(1))
+        );
+        // A lock file of the current version: left alone.
+        std::fs::write(
+            dir.path().join("daemon.lock"),
+            format!(
+                "{{\"pid\":1,\"locked\":true,\"version\":\"{}\",\"buildId\":\"aa-1\"}}\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            restart_older_daemon(dir.path(), false, Mode::Locked),
+            Ok(Mode::Locked)
+        );
+    }
+
+    #[test]
+    fn a_daemon_already_asked_for_this_build_is_not_asked_again() {
+        // The lock info says "older", the remembered key matches: no request
+        // (no token file exists, so a request could not be sent anyway: the
+        // marker must be what stops it, and it must stay untouched).
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("daemon.lock"),
+            "{\"pid\":1,\"locked\":true,\"version\":\"0.0.1\",\"buildId\":\"aa-1\"}\n",
+        )
+        .unwrap();
+        let key = restart_key(Some("aa-1"), Some("0.0.1"), false);
+        crate::secure_fs::write_private_file(
+            &dir.path().join(crate::secure_fs::RESTART_ASKED),
+            key.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            restart_older_daemon(dir.path(), false, Mode::Locked),
+            Ok(Mode::Locked)
+        );
+        let kept =
+            crate::secure_fs::read_private_file(&dir.path().join(crate::secure_fs::RESTART_ASKED));
+        assert_eq!(kept.as_deref(), Some(key.as_str()));
     }
 }

@@ -57,6 +57,35 @@ const CONTROL_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// dies. Mirrors `upgrade.rs`'s `EXIT_GRACE`.
 const CONTROL_EXIT_GRACE: Duration = Duration::from_millis(250);
 
+/// The bridge folder the daemon writes its `stopped-by-user` marker into
+/// (`secure_fs::write_stop_marker`). Set once by `run_daemon`. Unset in an
+/// in-process test, so a test never writes into a real home.
+static MARKER_HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Tells `/control stop` where the `stopped-by-user` marker goes. Called once
+/// at daemon start; a second call changes nothing.
+pub fn set_marker_home(home: &std::path::Path) {
+    let _ = MARKER_HOME.set(home.to_path_buf());
+}
+
+/// Set when a `restart` arrived while another drain (the upgrade watcher's)
+/// was already running. The `202` reply promised that restart, so if the
+/// other drain ends without exiting (a failed `exec`), the daemon must still
+/// honor it. See `take_restart_during_drain`.
+static RESTART_DURING_DRAIN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Records a `restart` that joined a drain already under way.
+fn note_restart_during_drain() {
+    RESTART_DURING_DRAIN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// True once, if a `restart` joined a drain: the caller (the upgrade watcher
+/// after a failed `exec`) then exits instead of serving on.
+pub(crate) fn take_restart_during_drain() -> bool {
+    RESTART_DURING_DRAIN.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The exit grace in effect. A debug build honours
 /// `TURBOFIG_TEST_CONTROL_EXIT_GRACE_MS`, so a test can hold the window open
 /// long enough for a slow CI runner. Release builds always use
@@ -166,8 +195,23 @@ pub(crate) async fn control_handler(
         // below then returns false for this caller): a stop must always win
         // over a restart's exit code. See `AppState::request_stop`.
         state.request_stop();
+        // The stop is a user decision: leave the marker that keeps the
+        // menu-bar app from starting the daemon again. Written before the
+        // reply, so a caller that sees the 202 can rely on it.
+        if let Some(home) = MARKER_HOME.get() {
+            if let Err(e) = crate::secure_fs::write_stop_marker(home) {
+                eprintln!("turbofig daemon: could not write the stop marker: {e}");
+            }
+        }
     }
-    if state.try_begin_draining() {
+    let began = state.try_begin_draining();
+    if !began && action == ControlAction::Restart {
+        // Another drain is under way (the upgrade watcher). It `exec`s the new
+        // build, which satisfies this restart. If its `exec` fails, the
+        // watcher honors the restart through `take_restart_during_drain`.
+        note_restart_during_drain();
+    }
+    if began {
         // Drain and exit in the background: the caller never waits on this,
         // only on /health going unreachable (see this module's doc comment).
         tokio::spawn(async move {
@@ -309,6 +353,10 @@ mod tests {
         assert_eq!(body["ok"], json!(true));
         assert_eq!(body["action"], json!("restart"));
         assert_eq!(body["draining"], json!(true));
+        // The restart that joined the drain is remembered, once, so a failed
+        // `exec` of the upgrade watcher can still honor it.
+        assert!(take_restart_during_drain());
+        assert!(!take_restart_during_drain());
     }
 
     // The first-caller path (a fresh `try_begin_draining` success) always

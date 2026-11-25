@@ -580,6 +580,8 @@ const PURGE_ENTRIES: &[&str] = &[
     "app.lock",
     "app.sock",
     "app-relaunched-for",
+    "stopped-by-user",
+    "restart-asked",
 ];
 
 /// Deletes the known turbofig entries inside `home`, then removes `home`
@@ -1673,6 +1675,8 @@ mod tests {
             "app.lock",
             "app.sock",
             "app-relaunched-for",
+            "stopped-by-user",
+            "restart-asked",
         ] {
             assert!(PURGE_ENTRIES.contains(&must), "{must} missing");
         }

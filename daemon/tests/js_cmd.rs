@@ -822,3 +822,157 @@ async fn js_restarts_an_older_daemon_once_and_runs_the_job() {
     assert!(status.success(), "{stdout} {stderr}");
     assert_eq!(read_lock_info(home.path())["pid"].as_u64(), Some(new_pid));
 }
+
+/// A stand-in for a 0.1.0 daemon: it answers `GET /health` with no proof
+/// header and no lock file, and exits (closes its port) after it accepts one
+/// `POST /control`. Returns the thread and the count of control calls.
+fn fake_0_1_0_daemon(
+    port: u16,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).expect("bind the old port");
+    listener.set_nonblocking(true).unwrap();
+    let controls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = controls.clone();
+    let handle = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            let Ok((mut conn, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            conn.set_nonblocking(false).unwrap();
+            conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let (status, body, exit) = if head.starts_with("POST /control") {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ("202 Accepted", "{\"ok\":true,\"draining\":true}", true)
+            } else {
+                ("200 OK", "{\"ok\":true,\"version\":\"0.1.0\"}", false)
+            };
+            let _ = conn.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            drop(conn);
+            if exit {
+                return; // the "daemon" exits: the listener closes with it
+            }
+        }
+    });
+    (handle, controls)
+}
+
+/// A real 0.1.0 daemon has no `daemon.lock`, so `js` once ran its job on it
+/// and never restarted it. `js` now sends it `/control restart` through the
+/// same-user legacy path, waits for the port to go down and starts a current
+/// daemon.
+#[tokio::test]
+async fn js_restarts_a_0_1_0_daemon_that_has_no_lock_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    std::fs::create_dir_all(home.path().join("inbox")).unwrap();
+    std::fs::create_dir_all(home.path().join("outbox")).unwrap();
+    let token = home.path().join("token");
+    std::fs::write(&token, "ab".repeat(32)).unwrap();
+    std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let (old, controls) = fake_0_1_0_daemon(mcp_port);
+
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}\n").await;
+    old.join().expect("the old daemon thread");
+    assert!(status.success(), "{stdout} {stderr}");
+    assert_eq!(
+        controls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "exactly one restart request"
+    );
+    let v: Value = serde_json::from_str(stdout.trim()).expect("result JSON");
+    assert_eq!(v["ok"], Value::Bool(true), "{stdout}");
+    // A current daemon took the folder.
+    wait_for_health(&client, mcp_port).await;
+    let info = read_lock_info(home.path());
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"), "{info}");
+    let remembered = std::fs::read_to_string(home.path().join("restart-asked")).unwrap();
+    assert_eq!(remembered.trim(), "legacy:0.1.0");
+}
+
+/// `js` asks for a restart of a given daemon once. A launcher that starts the
+/// same old build again (launchd or the app run the older Homebrew binary
+/// while `js` comes from a newer install) must not make every `js` call ask
+/// again.
+#[tokio::test]
+async fn js_never_asks_the_same_old_daemon_build_twice() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    let old_lock_info = |home: &Path| {
+        let home = home.to_path_buf();
+        async move {
+            common::wait_until(
+                || {
+                    std::fs::read_to_string(home.join("daemon.lock"))
+                        .is_ok_and(|t| t.contains("\"version\":\"0.0.1\""))
+                },
+                5_000,
+                "the old daemon's lock info",
+            )
+            .await;
+            read_lock_info(&home)
+        }
+    };
+
+    // First run: an old daemon is restarted, and js remembers which one.
+    let mut old = common::spawn_daemon(home.path(), mcp_port, ws_port, Some("0.0.1"));
+    wait_for_health(&client, mcp_port).await;
+    let first = old_lock_info(home.path()).await;
+    let key = format!("build:{}", first["buildId"].as_str().unwrap());
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}\n").await;
+    assert!(status.success(), "{stdout} {stderr}");
+    tokio::time::timeout(Duration::from_secs(10), old.wait())
+        .await
+        .expect("the old daemon must have exited")
+        .expect("wait");
+    let asked = std::fs::read_to_string(home.path().join("restart-asked")).unwrap();
+    assert_eq!(asked.trim(), key);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(home.path().join("restart-asked"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    wait_for_health(&client, mcp_port).await;
+    stop_daemon(&client, mcp_port, home.path()).await;
+
+    // The launcher starts the same old build again: js leaves it alone.
+    let mut again = common::spawn_daemon(home.path(), mcp_port, ws_port, Some("0.0.1"));
+    wait_for_health(&client, mcp_port).await;
+    let second = old_lock_info(home.path()).await;
+    let pid = second["pid"].as_u64().unwrap();
+    let started = Instant::now();
+    let (status, stdout, stderr) =
+        run_js(home.path(), mcp_port, ws_port, &[], "{\"op\":\"status\"}\n").await;
+    assert!(status.success(), "{stdout} {stderr}");
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(again.try_wait().unwrap().is_none(), "not restarted");
+    assert_eq!(read_lock_info(home.path())["pid"].as_u64(), Some(pid));
+    let _ = again.kill().await;
+}

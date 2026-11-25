@@ -199,6 +199,10 @@ pub fn spawn_proxy(
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
         .env("TURBOFIG_WS_PORT", ws_port.to_string())
         .env("TURBOFIG_BRIDGE_DIR", home)
+        // A real LaunchAgents folder must never decide a test: the proxy asks
+        // launchd (`launchctl kickstart`) only when a headless plist exists
+        // in this folder, and a test must never touch the user's services.
+        .env("TURBOFIG_LAUNCH_AGENTS_DIR", home.join("no-launch-agents"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

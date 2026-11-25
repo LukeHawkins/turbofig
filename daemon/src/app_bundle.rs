@@ -467,6 +467,12 @@ pub fn install_app_bundle_with_signer(
     )?;
     write_atomic(&resources_dir.join("AppIcon.icns"), APP_ICON_BYTES, 0o644)?;
 
+    // The order below is a contract: plist (above), then the binary, then the
+    // code signature. The running app relaunches only when the binary and
+    // `_CodeSignature/CodeResources` are at least as new as the plist
+    // (`menu_bar::self_update::refresh_settled`), so a new step that writes
+    // into the bundle must come before the plist or be covered there.
+    //
     // This write happens last and atomically: a crash between the
     // plist/icon write above and this one leaves a bundle with no
     // executable at all, which macOS simply refuses to launch, never a
