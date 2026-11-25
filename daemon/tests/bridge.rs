@@ -1172,6 +1172,9 @@ async fn test_bridge_long_id_reply_does_not_overwrite_a_short_id_result() {
 async fn test_bridge_renamed_job_is_answered_by_the_event_not_the_backstop() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_secs(5)));
+    // The status job below finds no plugin. Skip the cold-start wait so the
+    // answer time measures only the event path.
+    state.skip_cold_start_grace();
     spawn_bridge(state.clone(), tmp.path().to_path_buf());
     let inbox = tmp.path().join("inbox");
     let outbox = tmp.path().join("outbox");

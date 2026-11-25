@@ -1,7 +1,7 @@
 //! `turbofig_status`: daemon and plugin liveness.
 
 use crate::plugin_call::{call_plugin, CallOutcome};
-use crate::routing::{resolve_route, RouteError};
+use crate::routing::{resolve_route_graced, RouteError};
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -48,7 +48,7 @@ pub async fn run_status(
     session_id: Option<&str>,
     file_key: Option<&str>,
 ) -> Value {
-    let (conn_id, tx, fk, name) = match resolve_route(state, session_id, file_key) {
+    let (conn_id, tx, fk, name) = match resolve_route_graced(state, session_id, file_key).await {
         Ok(r) => r,
         Err(RouteError::NoPlugin) => {
             // No plugin connected at all: name why, and how long ago one was

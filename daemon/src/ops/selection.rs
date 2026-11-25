@@ -4,7 +4,7 @@ use crate::ops::budget::{read_budget_warning, with_warning};
 use crate::plugin_call::{
     call_plugin, idempotency_error_json, plugin_disconnected_json, CallOutcome,
 };
-use crate::routing::{resolve_route, route_error_to_json};
+use crate::routing::{resolve_route_graced, route_error_to_json};
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -34,7 +34,7 @@ pub async fn run_get_selection(
     fields: Option<&[String]>,
     depth: Option<u32>,
 ) -> Value {
-    let (conn_id, tx, _, _) = match resolve_route(state, session_id, file_key) {
+    let (conn_id, tx, _, _) = match resolve_route_graced(state, session_id, file_key).await {
         Ok(r) => r,
         Err(e) => return route_error_to_json(e),
     };
