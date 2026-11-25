@@ -107,6 +107,15 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
         "stdout must carry the MCP-only-on-request line: {stdout}"
     );
 
+    assert!(
+        stdout.contains("AI agents: setup is done. Ask the user to do steps 1 and 2."),
+        "stdout must carry the agent line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Install Figma Desktop"),
+        "Figma opened, so no install line: {stdout}"
+    );
+
     let recorded = tokio::fs::read_to_string(&clipboard_record)
         .await
         .expect("the fake clipboard must have recorded the copied text");
@@ -119,6 +128,32 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
     assert!(
         !home.path().join("plugin-seen").exists(),
         "the bare command itself never writes plugin-seen: only a real plugin connect does"
+    );
+
+    stop_daemon(&client, mcp_port, home.path()).await;
+}
+
+#[tokio::test]
+async fn bare_turbofig_first_run_prints_the_figma_install_line_when_figma_will_not_open() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let mcp_port = free_port();
+    let ws_port = free_port();
+    let clipboard_record = home.path().join("clipboard-record.txt");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let _guard = common::DaemonGuard::new(home.path(), mcp_port);
+
+    let (status, stdout) =
+        run_bare_turbofig(home.path(), mcp_port, ws_port, &clipboard_record, false).await;
+    assert!(status.success(), "a first run must exit 0: {stdout}");
+    wait_for_health(&client, mcp_port).await;
+
+    assert!(stdout.contains("Open Figma Desktop."), "{stdout}");
+    assert!(
+        stdout.contains(
+            "Install Figma Desktop: https://www.figma.com/downloads/ (the web app has no Import plugin menu)."
+        ),
+        "stdout must say where to install Figma: {stdout}"
     );
 
     stop_daemon(&client, mcp_port, home.path()).await;
