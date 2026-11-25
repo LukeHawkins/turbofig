@@ -8,7 +8,7 @@ Claude / AI client
     |  one of four inbound transports to the daemon:
     |   1. HTTP POST /mcp   (port 18846, MCP streamable-http, SSE response)
     |   2. stdio MCP        (`turbofig mcp`, a proxy forwarding onto POST /job)
-    |   3. file-bridge      (~/.turbofig/inbox -> outbox; write and read files)
+    |   3. file bridge      (~/.turbofig/inbox -> outbox; write and read files)
     |   4. curl on 18846    (the same HTTP endpoint, as a fallback)
     |
 Rust daemon  (daemon/)
@@ -27,7 +27,7 @@ Figma document
 ```
 
 All four inbound transports converge on one shared `AppState`, so a call from
-any of them routes to the plugin the same way. The file-bridge exists for
+any of them routes to the plugin the same way. The file bridge exists for
 locked-down clients that cannot use curl or a native MCP server. The stdio
 proxy (`turbofig mcp`) exists for a native MCP client (such as Claude Code's
 `claude mcp add`) that speaks stdio, not HTTP: it forwards every tool call
@@ -43,9 +43,9 @@ The daemon is a single Rust process. It runs three servers as three `tokio::spaw
 
 - **MCP HTTP server** (port 18846): speaks the MCP streamable-http protocol via `rmcp`. Uses `legacy_session_mode` so that clients on the 2025-03-26 spec can supply an `mcp-session-id` header. Each MCP session is stateful. Each tool reads the `mcp-session-id` from the HTTP request parts and maps the session to a plugin connection by `fileKey`. `allowed_hosts` is pinned explicitly to `localhost`, `127.0.0.1`, `::1` rather than left to `rmcp`'s default, so a future crate upgrade cannot silently widen the daemon's DNS-rebinding guard.
 - **WebSocket server** (port 18847): authenticates the plugin with a challenge handshake, checked after the Origin and Host checks. The plugin connects with `?nonce=<hex>`, so the pairing token never goes on the wire. The daemon sends `CHALLENGE` (its own nonce plus an HMAC proof over the plugin's nonce and the daemon's bound port). The plugin verifies the proof, then answers `AUTH` with its own proof. A pending handshake has 2 s to finish. At most 8 handshakes may be pending: a ninth closes the oldest pending one. A `?token=` upgrade with a wrong token gets 401. A valid `?token=` (a 0.1.0 plugin left open across an upgrade) is accepted only to send it one `WELCOME` frame (`type` and `version`, so it shows its version-mismatch banner): `handle_compat_socket` keeps that socket idle, registers nothing, routes no job and answers no frame (at most 16 such sockets; see `DECISIONS.md` #48 and #53). A missing or invalid nonce also gets 401. This closes a gap Origin checking alone leaves: a sandboxed `<iframe>` on a malicious web page reports Origin `null`, the same value the real Figma plugin UI reports. See `DECISIONS.md` #39 and `SECURITY.md`. Holds the persistent connection from the Figma plugin. The plugin sends `FILE_INFO` (`fileKey` + name) on connect, and again whenever it re-announces (e.g. a detected file rename). The daemon routes a tool call to the plugin by sending a request over this socket and awaiting a `RESULT`. A per-request timeout (`TURBOFIG_REQUEST_TIMEOUT_MS`, default 30000, clamped to 600000) stops a silent plugin from hanging a call; `EXECUTE`, `GET_SELECTION`, and `SCREENSHOT` all carry that timeout to the plugin as `timeoutMs`, and the daemon itself waits `timeoutMs + 1000ms` for `EXECUTE`, so the plugin's own "I gave up" reply usually beats the daemon's bare timeout (see `DECISIONS.md`). The daemon holds one connection per open file in a `conn_id`-keyed registry. Two live connections may hold the same `fileKey` at once (a reconnect, or a second window on the same file): neither evicts the other, so neither one's in-flight jobs are ever cancelled by the other connecting, and a later FILE_INFO from either connection can never knock the other out of the registry. Routing (`connections_named`/`resolve_route`) dedupes a shared `fileKey` down to the newest (highest conn_id) live connection, so a caller never sees Ambiguous for a single logical file; if that newest connection closes, routing falls back to an older one still open. A frame from a conn_id no longer in the registry is ignored outright. A `RESULT` only resolves the pending request if it arrives on the same connection the request was sent to, so one connection can never forge another's reply. Message and frame size are capped at 32 MiB; a connection with no upgrade in 10 s is closed by the listener (see "Daemon authentication and connection limits"); a keepalive ping goes out every 15s and a connection with no pong in 45s is dropped. On socket close the daemon drops only that connection and fails only that connection's in-flight requests at once, so other files keep working.
-- **File-bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It parses each job into the same typed parameter structs the MCP tools use (one `#[serde(tag = "op")]` enum, so a bad field fails to parse the same way for both transports): a file that reads and parses as JSON but fails the Job schema (a bad field, an unknown op) is rejected at once with a clear error, never held for the parse-grace window that exists only for a half-written file. A valid job is claimed (removes the inbox file), gets any stale same-id outbox result deleted, and runs in its own task so one slow job never blocks the loop. Job ids are a documented client contract: unique per job, never reused while the first job with that id may still be in flight (`skills/file-bridge.md`, `helpers/tf-api.md`, the plugin's connect prompt). A duplicate id that arrives while its twin is still running is left untouched in the inbox (not claimed, not answered) until the first finishes, so neither job's `.tmp` file or result is ever touched by the other. The ops are `status`, `execute`, `get_selection`, and `screenshot`. Screenshot file-mode writes the PNG into `outbox/<requestId>-<base36 millis>.png` (`AppState.screenshot_dir`) and returns its path; a subagent reads it. The outbox is a drop box, not storage: a backstop sweep deletes results and PNGs older than 24h. An inbox entry that never reads or parses (a bad write, an unreadable file, a non-UTF-8 name) gets one error result after a short grace window and is then left alone, instead of being retried and re-logged forever. Job reads open the file with `O_NOFOLLOW|O_NONBLOCK`, and the daemon rejects a FIFO or a symlink in `inbox/` with `invalid_job`. A job over 30 MiB or an id over 200 bytes is rejected too. A duplicate id is held before the daemon parses the file. The daemon writes results and PNGs with mode 0600, and creates each `.tmp` file with `O_EXCL`, so it never writes through a symlink. The 24 h prune touches only daemon-named regular files. A read or write failure returns `io_error`. On start the daemon writes `tf-api.md` and `guide.md` to the bridge folder (same atomic 0600 write). A fifth op, `files`, lists the connected files from the registry with no plugin round trip; `turbofig js --guide` uses it so the guide never waits on a plugin.
+- **File bridge** (default `~/.turbofig`): watches `inbox/` and writes `outbox/`. A client writes a job file and reads the result file, so no curl and no MCP connection are needed. This is the primary transport for locked-down Claude Enterprise accounts. It parses each job into the same typed parameter structs the MCP tools use (one `#[serde(tag = "op")]` enum, so a bad field fails to parse the same way for both transports): a file that reads and parses as JSON but fails the Job schema (a bad field, an unknown op) is rejected at once with a clear error, never held for the parse-grace window that exists only for a half-written file. A valid job is claimed (removes the inbox file), gets any stale same-id outbox result deleted, and runs in its own task so one slow job never blocks the loop. Job ids are a documented client contract: unique per job, never reused while the first job with that id may still be in flight (`skills/file-bridge.md`, `helpers/tf-api.md`, the plugin's connect prompt). A duplicate id that arrives while its twin is still running is left untouched in the inbox (not claimed, not answered) until the first finishes, so neither job's `.tmp` file or result is ever touched by the other. The ops are `status`, `execute`, `get_selection`, and `screenshot`. Screenshot file-mode writes the PNG into `outbox/<requestId>-<base36 millis>.png` (`AppState.screenshot_dir`) and returns its path; a subagent reads it. The outbox is a drop box, not storage: a backstop sweep deletes results and PNGs older than 24h. An inbox entry that never reads or parses (a bad write, an unreadable file, a non-UTF-8 name) gets one error result after a short grace window and is then left alone, instead of being retried and re-logged forever. Job reads open the file with `O_NOFOLLOW|O_NONBLOCK`, and the daemon rejects a FIFO or a symlink in `inbox/` with `invalid_job`. A job over 30 MiB or an id over 200 bytes is rejected too. A duplicate id is held before the daemon parses the file. The daemon writes results and PNGs with mode 0600, and creates each `.tmp` file with `O_EXCL`, so it never writes through a symlink. The 24 h prune touches only daemon-named regular files. A read or write failure returns `io_error`. On start the daemon writes `tf-api.md` and `guide.md` to the bridge folder (same atomic 0600 write). A fifth op, `files`, lists the connected files from the registry with no plugin round trip; `turbofig js --guide` uses it so the guide never waits on a plugin.
 
-Each capability has one shared `run_*` routine, all funnelled through one send/await/timeout/cancel helper (`plugin_call::call_plugin`). Both the MCP tool and the file-bridge op call the same routine: `run_status`, `run_execute`, `run_get_selection`, and `run_screenshot`.
+Each capability has one shared `run_*` routine, all funnelled through one send/await/timeout/cancel helper (`plugin_call::call_plugin`). Both the MCP tool and the file bridge op call the same routine: `run_status`, `run_execute`, `run_get_selection`, and `run_screenshot`.
 
 The daemon is always-on. A launchd service starts it at login and `KeepAlive` restarts it on crash. It is decoupled from any client session, so a client disconnect or session end never stops it.
 
@@ -172,7 +172,7 @@ Idempotency pattern for re-runnable sections: `findOrCreate(parent, name, factor
 
 ## Skill layer
 
-`skills/` holds the client recipes for the file-bridge transport. See `skills/file-bridge.md`.
+`skills/` holds the client recipes for the file bridge transport. See `skills/file-bridge.md`.
 
 ## Ports
 
@@ -426,8 +426,8 @@ resolves any of them.
 - **`state::MenuState`** is the pure translation from a `/health` body (or
   `None`) into everything the menu shows: the disabled status line, which of
   the 2 tray-icon states to show, and the filled agent-connect prompt
-  (`agent_prompt::fill_agent_prompt`, see above, used by the About window's
-  "Copy agent prompt" button, not the tray menu itself any more). Status
+  (`agent_prompt::fill_agent_prompt`, see above, used by
+  the plugin's "Copy connect prompt" button, not the tray menu itself). Status
   line and icon:
 
   | `/health` | Status line | Icon |
@@ -445,7 +445,7 @@ resolves any of them.
   turbofig…" (opens, or focuses, the About window below), "Settings…"
   (opens, or focuses, the Settings window below), a separator, "Quit
   turbofig". Every other action that used to sit in the menu (copying the
-  agent prompt or the manifest path, revealing the plugin in Finder,
+  manifest path, revealing the plugin in Finder,
   opening Figma, Start at Login, Open Log) now lives in the About or
   Settings window instead, and "Open Figma" was removed outright: the menu
   stayed small on purpose. Clicks are read each event-loop tick from
@@ -461,9 +461,8 @@ resolves any of them.
   reverted on failure; its initial state is re-read from the plist
   (`cli::app_autostart_plist_exists`) each time the window opens, and again
   whenever its own `page_ready` IPC arrives.
-- **Clipboard and opener.** "Copy agent prompt" and "Copy plugin manifest
-  path" (now in the About and Settings windows respectively, see below) go
-  through `first_run::Clipboard`; "Open plugin folder"/"Show plugin in
+- **Clipboard and opener.** "Copy path" (in the About and Settings windows,
+  see below) goes through `first_run::Clipboard`; "Open plugin folder"/"Show plugin in
   Finder" and "Open log" go through `first_run::AppOpener`
   (`reveal_in_finder`/`open_app_with_path`). Both seams carry the same
   debug-build guard as the bare command: a debug build only touches the
@@ -512,13 +511,12 @@ resolves any of them.
   `cmd_uninstall` calls `menu_bar::signal_quit_running_app`, which sends
   `second_instance::SignalMessage::Quit` over `<home>/app.sock`; a listening
   app's `UserEvent::QuitRequested` runs the same `perform_quit` as its own
-  "Quit turbofig" menu item and the About window's `quit` IPC command, so
-  all 3 quit identically. Best-effort: no app running at all (the ordinary
+  "Quit turbofig" menu item, so both quit identically. Best-effort: no app running at all (the ordinary
   case for a headless install) is not an error.
 
 ### About window (`about_window.rs`, `about_state.rs`, `second_instance.rs`)
 
-A real `tao` window (420x520, not resizable, titled "turbofig") hosting 1
+A real `tao` window (420x480, not resizable, titled "turbofig") hosting 1
 `wry` webview over exactly 1 embedded page
 (`daemon/assets/about/about.html`, `include_str!`'d, never a URL; see
 `SECURITY.md`'s "Menu-bar app: the About window's webview"). Opens
@@ -527,64 +525,31 @@ automatically on first use (`about_state::should_auto_open_about_window`:
 second instance's signal; already open, any of those 3 just calls
 `AboutWindowHandle::focus` instead of building a second window.
 
-- **The page** reuses the plugin panel's CSS tokens and ghost-wordmark trick
-  (`plugin/src/ui/template.html`'s `--figma-color-*`-named custom
-  properties and the `.wordmark` text-shadow), with its own light/dark
-  values (no Figma host to inject them here) switched by
-  `prefers-color-scheme`. Header: the wordmark alone on its own line (its
-  ghost trail has its own reserved padding, so it never overlaps anything
-  else), then the tagline "Bridge any AI to Figma". Below that, 1 quiet
-  status line with 2 small dots ("Bridge running"/"Bridge not running",
-  and the Figma chip text). Two tabs: "How to use" (3 compact steps, each
-   at most 1 button: add the plugin, with Show plugin in Finder
-  (`reveal_manifest`, for a Figma file picker that cannot browse into the
-  hidden `~/.turbofig/figma-plugin/`) and a small "Copy path" text link;
-  run it in a file, with muted "Waiting…" turning into a green check and
-  "Connected to `<name>`" once a file connects; connect the agent, with a
-  primary "Copy agent prompt" button) and "Claude Code / MCP" (the `claude
-  mcp add` command and the other-clients JSON, both with Copy, plus the
-  one-line "Blocked by your company? Use How to use, it works everywhere."
-  fallback note; the 2 commands are the same 2 strings
-  `first_run::first_run_text` already shows in the bare command's
-  first-run walkthrough, kept in sync by hand today, not a shared
-  constant). Footer: only "Docs" (the GitHub repo) and the version; "Start
-  at login" moved to the Settings window below, and "Quit turbofig" is not
-  repeated here (it is already 1 click away in the tray menu).
-- **IPC**: the page only ever calls `window.ipc.postMessage("<command>")`
-  with 1 of 6 fixed strings; `about_state::parse_ipc_command` parses them
-  into an `IpcCommand`, rejecting anything else.
-  `about_window::handle_ipc_message` dispatches each to the same
-  `Clipboard`/`AppOpener` seams the Settings window and the bare command
-  use (`copy_mcp_command`/`copy_mcp_json` build their own text directly,
-  from the stable binary path, rather than reading anything back from the
-  DOM); `page_ready` re-pushes the latest status and static fields (see
-  below).
+- **The page** has no `<script>` at all. It reuses the plugin panel's CSS
+  tokens and ghost-wordmark trick (`plugin/src/ui/template.html`), with its
+  own light and dark values switched by `prefers-color-scheme`. Header: the
+  wordmark and the tagline "Bridge any AI to Figma". Three steps: (1) add
+  the plugin, with "Copy path" and "Show plugin folder" text links and the
+  hint to press Cmd+Shift+G in the file picker; (2) run it in a file
+  (Plugins > Development > turbofig; several files can connect at once);
+  (3) connect the agent: press the link icon in the plugin panel (an inline,
+  non-clickable copy of the button, "Copy connect prompt"). The prompt is
+  copied from the plugin, not from this window. Footer: links to
+  lukehawkins.eu and GitHub, and the version. There is no "Claude Code /
+  MCP" card: MCP setup lives in `docs/mcp-clients.md`.
+- **Actions** are plain links, `<a href="turbofig-action://copy-path">` and
+  `show-plugin-folder`. `about_state::parse_action_link` accepts only the
+  known names. `about_window::navigation_is_allowed` runs the action through
+  the same `Clipboard`/`AppOpener` seams the Settings window uses and
+  cancels the navigation, so the webview never follows these URLs.
 - **Navigation** is blocked everywhere except the initial load; see
   `about_window::navigation_is_allowed` and `SECURITY.md`.
-- **Live status, and the page-ready race.** The same background health
-  poller that updates the tray (`UserEvent::Health`) also calls
-  `AboutWindowHandle::push_status`, which runs `window.turbofigSetStatus(...)`
-  (`WebView::evaluate_script`) with the status text
-  (`about_state::chips_from_connected_files`, the same
-  bridge-reachable/connected-file-names shape `MenuState` is built from)
-  and whether the "add the plugin" checkmark should show; `push_static` does the same
-  for the version and MCP json. A real race exists here: `evaluate_script`
-  can run before the page's own `<script>` has defined the real,
-  DOM-touching versions of those 2 functions (WebKit parses/runs the page
-  asynchronously relative to the Rust call, even though the HTML itself is
-  an in-process string, not a network load). 2 independent fixes cover it:
-  a tiny pending-state shim (`about_window::PENDING_STATE_SHIM`, installed
-  with `WebViewBuilder::with_initialization_script` so it runs before the
-  page's own script) that records an early call instead of hitting an
-  undefined function, which the page's own script drains once on its first
-  run; and a `page_ready` IPC message the page sends once that draining is
-  done, on which `handle_ipc_message` re-pushes whatever Rust currently
-  holds (`AboutWindowContext::last_health`, and the version/MCP json)
-  through `AboutWindowContext::handle`, a reference to the window's own
-  handle set right after it is created.
+- **Static content.** The page is rendered once, at window creation
+  (`render_about_html` substitutes `__VERSION__`). There is no script to push
+  a live status into it, so it shows no status line.
 - **Devtools** (the Web Inspector) are enabled in debug builds
-  (`WebViewBuilder::with_devtools(cfg!(debug_assertions))`), so the page's
-  script can be debugged directly; a release build never ships this.
+  (`WebViewBuilder::with_devtools(cfg!(debug_assertions))`); a release build
+  never ships this.
 - **Second instance** (`second_instance.rs`): a Unix socket at
   `<home>/app.sock`, mode `0600`, carrying 1 of exactly 2 fixed
   `SignalMessage`s. A second launch, once `lock::try_acquire` finds
@@ -642,7 +607,7 @@ token>`, enforced by `mcp.rs`'s `require_bearer_token` middleware, the same
 check `/control` already used. A missing or wrong token gives 401 before
 the request runs a job or reaches a tool. This closes the gap that another
 local macOS account, also able to reach `127.0.0.1`, could otherwise drive
-the Figma plugin through the HTTP port. The file-bridge is unaffected: it
+the Figma plugin through the HTTP port. The file bridge is unaffected: it
 stays tokenless, protected instead by its `~/.turbofig` directory mode
 (0700).
 
@@ -763,9 +728,9 @@ warning when it differs from the daemon's own version, in both
 `turbofig_status` and `/health` (see above).
 
 `WELCOME` (daemon to plugin) comes after the handshake and the plugin's `FILE_INFO`. It carries `version`, `mcpPort`, and
-`bridgeHome`: the file-bridge home directory (`config::bridge_dir_display`),
+`bridgeHome`: the file bridge home directory (`config::bridge_dir_display`),
 shown with the real `$HOME` prefix replaced by `~` for the default install.
-The plugin panel's copy-prompt button (`formatConnectPrompt`) uses it to
+The plugin panel's "Copy connect prompt" button (`formatConnectPrompt`) uses it to
 name the real inbox/outbox paths even under a custom
 `TURBOFIG_BRIDGE_DIR`, falling back to `~/.turbofig` before the first
 `WELCOME` arrives or against an older daemon that never sent it.
@@ -778,7 +743,7 @@ name the real inbox/outbox paths even under a custom
 | `TURBOFIG_WS_PORT` | 18847 | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | 30000 | Wait for a plugin reply before returning a timeout result. Clamped to 600000 (10 min); a larger value is logged and clamped, since it would otherwise overflow a JS `setTimeout` on the plugin side |
 | `TURBOFIG_MAX_INFLIGHT` | 4 | Per-connection admission-control cap for `EXECUTE`/`SCREENSHOT` jobs (clamped 1-32). A job beyond the cap gets an immediate `busy` error instead of queueing; see `state::try_admit` |
-| `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge inbox and outbox root |
+| `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File bridge inbox and outbox root |
 | `TURBOFIG_SUPERVISED` | unset | Set by the launchd plist `turbofig autostart on` writes; marks the launchd-supervised daemon: `/control restart` and a failed in-place `exec` exit 75 so launchd restarts it |
 | `TURBOFIG_REEXEC_FROM`, `TURBOFIG_INHERITED_LOCK_FD` | unset | Internal. The old image sets them for the new one in an in-place upgrade restart: the build id it ran as (the loop guard) and the fd number of the open `daemon.lock` that holds the folder lock. `main` removes both at start. Never set them by hand |
 | `TURBOFIG_LAUNCH_AGENTS_DIR` | `~/Library/LaunchAgents` | Overrides where `autostart`/`uninstall` read and write the plist; a test seam, not meant for normal use |

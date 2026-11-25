@@ -8,7 +8,7 @@ an absent, unparsable, or zero value.
 | `TURBOFIG_MCP_PORT` | `18846` | HTTP MCP port |
 | `TURBOFIG_WS_PORT` | `18847` | Plugin WebSocket port |
 | `TURBOFIG_REQUEST_TIMEOUT_MS` | `30000` | Wait for a plugin reply before returning a timeout result. Clamped to `600000` |
-| `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File-bridge home: the pairing token, the plugin files, and the inbox/outbox |
+| `TURBOFIG_BRIDGE_DIR` | `~/.turbofig` | File bridge home: the pairing token, the plugin files, and the inbox/outbox |
 
 **Startup refusals.** The daemon refuses to start when `TURBOFIG_BRIDGE_DIR`
 (or `~/.turbofig`), its `inbox/` or `outbox/`, or the `token` file is a

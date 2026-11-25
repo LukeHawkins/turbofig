@@ -13,8 +13,8 @@ connects. Its menu:
 | Settings… | Opens the Settings window: Start at login, Connection (File bridge or MCP), Copy path, Show plugin folder |
 | Quit turbofig | Stops the daemon and quits the app |
 
-The menu is kept small on purpose: the agent prompt is copied from the
-Figma plugin (the link-icon button next to the file name); copying the
+The menu is kept small on purpose: the connect prompt is copied from the
+Figma plugin (the link icon next to the file name, "Copy connect prompt"); copying the
 manifest path, revealing the plugin in Finder, Start at login and Connection
 live in the Settings window. Both windows are plain
 pages with no script: every button is a link Rust intercepts and runs, so

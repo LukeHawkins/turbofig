@@ -20,7 +20,8 @@ pub enum AboutAction {
     CopyPath,
     /// "Show plugin folder": reveals the plugin manifest in Finder.
     ShowPluginFolder,
-    /// "Copy agent prompt": copies the current agent connect prompt.
+    /// "Copy connect prompt": copies the current connect prompt. The plugin's
+    /// link-icon button uses this name; the About page has no such link.
     CopyAgentPrompt,
 }
 

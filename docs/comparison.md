@@ -6,8 +6,9 @@ How turbofig, a file bridge with an optional MCP mode, compares with two
 Figma MCP servers: figma-console-mcp (NPX and Cloud Mode) and Figma for
 Agents, Figma's own. Tool size, speed, cost, limits and setup.
 
-Facts below are from each project's own docs, checked 2026-10-07. Sources
-are listed in the Sources section at the end.
+Facts below are from each project's own docs, checked 2026-10-07. Figma's
+own MCP server facts (seats, plans, limits) were rechecked on 2026-11-25.
+Sources are listed in the Sources section at the end.
 
 ## turbofig
 
@@ -48,11 +49,14 @@ are listed in the Sources section at the end.
 
 ## Figma for Agents (Figma's MCP server)
 
-- **Needs a paid seat to edit.** "You need a Full seat to write to Figma
-  files with agents. Dev seat holders can use the Figma MCP server for
-  read-only workflows." (Write to canvas)
-- **Read tools are rate limited; write tools are exempt** (Rate limits and
-  access):
+- **Needs a paid seat to edit (checked 2026-11-25).** A Full seat can
+  write to files outside your drafts. A Dev seat can write only in your
+  drafts. Write to canvas is for the Professional, Education, Organization
+  and Enterprise plans, so a free Starter plan cannot write. turbofig works
+  on a free Starter team (tested 2026-10-10). (Write to canvas; Rate limits
+  and access)
+- **Read tools are rate limited; some tools are exempt, including tools that
+  write to Figma files** (Rate limits and access, checked 2026-11-25):
   - View or Collab seat, on every plan (Starter, Professional,
     Organization, Enterprise): 20 tool calls a month.
   - Full or Dev seat on Professional: 200 a day, 10 a minute.
@@ -63,9 +67,12 @@ are listed in the Sources section at the end.
   modify frames, components, variables, and auto layout (on a Full seat).
 - **Desktop server:** needs the Figma desktop app and a Dev or Full seat
   on a paid plan.
-- **Write-to-canvas limits:** 20 KB output per call, no image or asset
-  support, no custom fonts, and components must be published manually.
-  Write tools are exempt from the rate limits above.
+- **Write-to-canvas limits (checked 2026-11-25):** output per call is up to
+  20 KB on Figma's help FAQ and up to 48,000 UTF-8 bytes on the developer
+  page (Figma's pages differ). It cannot add new images on its own, so
+  agents use upload tools. Fonts must be uploaded to the Figma account.
+  Components must be published manually only before Code Connect mappings
+  exist.
 - **Pricing status, from Figma's own FAQ:** "This will eventually be a
   usage-based paid feature, but is currently available for free during the
   beta period."
@@ -84,9 +91,9 @@ are listed in the Sources section at the end.
 |---|---|---|---|---|
 | Tool list size, as a share of AI memory (if loaded up front) | **0.3%** (about 600 tokens) | 18% (about 36,600 tokens) | 14.5% est. (96 tools, scaled from the measured NPX tokens) | 10.3% (about 20,600 tokens, 41 tools; measured through Copilot CLI, see below) |
 | Ready when your agent starts | **Under 0.1 s** (always running) | About 2 s (about 30 s on a first run) | Hosted, no local start | Hosted, no local start |
-| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Yes | Partly: no images or custom fonts, 20 KB output per call |
-| Cost | **Free** | Free | Free (no Cloud-specific pricing or limits stated) | Editing needs a paid Full seat; write tools free in beta, later usage-based |
-| Usage limits | **None** | None stated | None stated | Read tools: 20 calls a month on a View or Collab seat, on every plan including Enterprise; 200 to 600 a day on a Dev or Full seat |
+| Runs any Figma plugin script (advanced work) | **Yes** | Yes | Yes | Partly: no new images on its own, fonts must be uploaded, about 20 to 48 KB output per call (Figma's pages differ) |
+| Cost | **Free** | Free | Free (no Cloud-specific pricing or limits stated) | Editing needs a paid seat (Full, or Dev in your drafts only), not on a free Starter plan; free in beta, later usage-based |
+| Usage limits | **None** | None stated | None stated | Read tools: 20 calls a month on a View or Collab seat, on every plan including Starter; 200 to 600 a day on a Dev or Full seat; some tools, including tools that write to files, are exempt |
 | Setup | Homebrew + one plugin import | Node.js, a Figma access token, the Desktop Bridge plugin | No Node.js; still needs Figma Desktop, the Desktop Bridge plugin paired once, and a Figma access token | Sign in with Figma |
 | Several files at once | Yes | Yes | Yes | Not stated |
 | Comments | No | Yes | Yes | Not stated |
@@ -120,7 +127,8 @@ table.
 
 ## Sources
 
-Dated 2026-10-07. Figma for Agents tool size and rate limits: 2026-10-08.
+Dated 2026-10-07. Figma for Agents tool size: 2026-10-08. Figma for Agents
+seats, plans, rate limits and write-to-canvas limits: 2026-11-25.
 
 - **Tool tokens.** turbofig 597 tokens (680 at the 0.1.0 release), figma-console-mcp
   (NPX) about 36,600 tokens, counted with `o200k_base` (`cl100k_base` for
@@ -149,13 +157,17 @@ Dated 2026-10-07. Figma for Agents tool size and rate limits: 2026-10-08.
   as accurate to a few percent. The earlier docs-based lower bound (0.7%)
   was about 13 times too small. Method and raw data:
   [bench/results/figma-for-agents-copilot-20261008-185755.md](../bench/results/figma-for-agents-copilot-20261008-185755.md).
-- **Figma for Agents write-to-canvas limits:** 20 KB output per call, no
-  image or asset support, no custom fonts, components must be published
-  manually, write tools exempt from rate limits.
-  [developers.figma.com/docs/figma-mcp-server/write-to-canvas](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas)
-- **Figma for Agents rate limits and access:**
-  [developers.figma.com/docs/figma-mcp-server/rate-limits-access](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access)
-- **Figma's MCP server FAQ**, on pricing: "This will eventually be a
+- **Figma for Agents write-to-canvas limits (2026-11-25):** up to 48,000
+  UTF-8 bytes of output per call on the developer page (20 KB on the help
+  FAQ), no new images on its own, fonts uploaded to the account, components
+  published manually only before Code Connect mappings, and which plans and
+  seats can write.
+  [developers.figma.com/docs/figma-mcp-server/write-to-canvas](https://developers.figma.com/docs/figma-mcp-server/write-to-canvas/)
+- **Figma for Agents rate limits and access (2026-11-25):** per-seat limits,
+  and the note that some tools, including tools that write to Figma files,
+  are exempt.
+  [developers.figma.com/docs/figma-mcp-server/rate-limits-access](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/)
+- **Figma's MCP server FAQ**, on pricing (2026-11-25): "This will eventually be a
   usage-based paid feature, but is currently available for free during the
   beta period."
   [help.figma.com/hc/en-us/articles/39252411778583-Figma-MCP-server-FAQs](https://help.figma.com/hc/en-us/articles/39252411778583-Figma-MCP-server-FAQs)
@@ -174,7 +186,7 @@ Dated 2026-10-07. Figma for Agents tool size and rate limits: 2026-10-08.
   `figma_execute` ("Run any Figma Plugin API code"), and
   `figma_execute_across_files`:
   [github.com/southleft/figma-console-mcp](https://github.com/southleft/figma-console-mcp)
-- **turbofig's own file-bridge protocol:** [skills/file-bridge.md](../skills/file-bridge.md).
+- **turbofig's own file bridge protocol:** [skills/file-bridge.md](../skills/file-bridge.md).
 - **turbofig's own screenshot defaults:** `daemon/src/mcp.rs`.
 - **Anthropic, "Advanced tool use"** (72K-token figure for loading 50+ MCP
   tools): [anthropic.com/engineering/advanced-tool-use](https://www.anthropic.com/engineering/advanced-tool-use)

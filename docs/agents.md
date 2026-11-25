@@ -10,7 +10,7 @@ Prefer the file bridge. It loads no MCP tool definitions. Run `turbofig js --gui
 
 Best with an agent that has a shell, such as Claude Code: one short command per job, `--shot` builds and screenshots in 1 call, and no MCP config is needed. Chat apps use MCP instead.
 
-The paths there assume `~/.turbofig`. If the daemon runs with a custom `TURBOFIG_BRIDGE_DIR`, use that folder. The copy-prompt in the plugin panel shows the real path.
+The paths there assume `~/.turbofig`. If the daemon runs with a custom `TURBOFIG_BRIDGE_DIR`, use that folder. The connect prompt (the link icon next to the file name in the plugin panel, "Copy connect prompt") shows the real path.
 
 ## MCP (fallback)
 
@@ -27,7 +27,7 @@ curl -X POST http://127.0.0.1:18846/mcp \
   -d '...'
 ```
 
-The 4 tools mirror the file-bridge ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. Each takes an optional `fileKey`.
+The 4 tools mirror the file bridge ops: `turbofig_execute`, `turbofig_get_selection`, `turbofig_screenshot`, `turbofig_status`. Each takes an optional `fileKey`.
 
 ## Writing turbofig_execute code
 

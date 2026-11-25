@@ -47,7 +47,7 @@ Install in 2 Terminal lines, no coding needed. See [Get started](#get-started).
 
 - **Easy.** A small native app, with no Node. One Homebrew command
   installs it, and `brew upgrade turbofig` updates it. Import the plugin
-  into Figma once, paste the copy-prompt into your agent, and you are done. No Figma token, no sign-in, no
+  into Figma once, paste the connect prompt into your agent, and you are done. No Figma token, no sign-in, no
   shared billing, so a whole team or class can run it side by side.
 - **Connects by itself, stays connected.** Open the plugin and it finds
   turbofig. No restarting plugins or gateways to get a connection. If the
@@ -122,38 +122,57 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
      <img src="docs/about-window.png" alt="The turbofig About window" width="442" valign="top">
    </p>
 
-2. **Add the plugin to Figma (once).** In the About window, click **Show
-   plugin folder**. In Figma Desktop, choose **Plugins > Development >
-   Import plugin from manifest…**, then drag `manifest.json` from the
-   Finder window onto the dialog. This menu item exists only in Figma
-   Desktop, not the web app. Then open a file and run turbofig from the
-   Plugins menu once, and leave the panel open.
+   Seeing `turbofig: command not found` right after installing? Open a
+   new Terminal window, or run the PATH line Homebrew printed.
 
-3. **Connect your agent.** In the plugin panel, press the link-icon button
-   next to the file name, and paste the prompt into Claude Code, Cursor,
-   Copilot, or any other agent with local file access. This needs no MCP
-   setup. See
+2. **Add the plugin to Figma (once).** In the About window, click **Copy
+   path**. In Figma Desktop, choose **Plugins > Development > Import
+   plugin from manifest…**. In the file picker, press Cmd+Shift+G, paste
+   the path, and press Return. This menu item exists only in Figma
+   Desktop, not the web app. Then open a file and run turbofig from
+   **Plugins > Development > turbofig** once, and leave the panel open.
+   (Instead of Copy path, **Show plugin folder** opens the folder in
+   Finder.)
+
+3. **Connect your agent.** In the plugin panel, press the link icon next
+   to the file name (Copy connect prompt), and paste the prompt into Claude
+   Code, Cursor, Copilot, or any other agent with local file access. This
+   needs no MCP setup. Using Claude Desktop? Use its Code tab (the file
+   bridge), or set up MCP with [docs/mcp-clients.md](docs/mcp-clients.md). See
    [docs/agents.md](docs/agents.md) for an agent-neutral version of the
    same prompt. The prompt is tiny: it tells the agent to run
    `turbofig js --guide`, which prints the full guide for your installed
    version. Chat apps that run in a browser cannot reach your Mac, so
    they cannot use turbofig.
 
-   **Claude Code tip:** to stop it asking before every Figma job, type
-   `/permissions` and add the allow rule `Bash(/opt/homebrew/bin/turbofig js *)`
-   (Intel Mac: `/usr/local/bin/turbofig`). This lets the agent edit your open
-   Figma file without asking each time.
+   **Claude Code tip:** to stop it asking before every Figma job, run
+   `which turbofig` in the Terminal. Then type `/permissions` in Claude Code
+   and add the allow rule `Bash(<path> js *)`, with that path. On Apple
+   Silicon the path is `/opt/homebrew/bin/turbofig`. On Intel it is
+   `/usr/local/bin/turbofig`. This lets the agent edit your open Figma file
+   without asking each time.
 
 4. **Verify.** In the Terminal, run `turbofig status`. It prints
    `turbofig daemon: version X, up Ns`, then `- <file name> (<file key>)
    plugin X` for each connected Figma file. If it prints `No Figma file
    connected.`, run the plugin in your file.
 
+**Update.** Run `brew upgrade turbofig`. turbofig restarts itself on the new
+version within about 30 seconds. You do not need Terminal, and the menu bar
+app follows. Figma reloads the plugin by itself, or the plugin shows
+"turbofig was updated" with a **Reload** button (press ⌥⌘P to reopen it). If
+you added the HTTP MCP transport by hand, switch **Connection** to MCP once.
+
+**Uninstall.** Run `turbofig uninstall` (add `--purge` to remove settings),
+then `brew uninstall turbofig`. Homebrew alone leaves the app and the login
+item.
+
 <sub>Coding agent? Steps 2 and 3 need GUI clicks, so stop and ask the user
 to do them. Use the prompt in [docs/agents.md](docs/agents.md).</sub>
 
 **Let your AI install it.** Give your agent this prompt. It installs
-turbofig the right way and adds no MCP server.
+turbofig the right way and adds no MCP server. The bare `turbofig` command
+prints the Figma steps and an "AI agents" line.
 
 ```text
 Install turbofig for me. Run `brew install LukeHawkins/tap/turbofig`, then run `turbofig` and tell me the Figma steps it prints. Do not add an MCP server.
@@ -176,17 +195,17 @@ Set up MCP only when the user asks for it. The default needs no MCP setup.
 | Approval prompts in a 4-job test (tester's usual settings) | ✓ **0** | ✗ 6 | Not tested | Not tested |
 | AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | ✗ 10.3% (41 tools) |
 | Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | Hosted, no local start | Hosted, no local start |
-| Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid Full seat to edit, read quotas, usage-based pricing coming |
+| Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid seat to edit (Full, or Dev in your drafts only), no writing on free Starter, read quotas, usage-based pricing coming (Figma's docs, 2026-11-25) |
 | Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files (an MCP server is there too, if you prefer) | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
 | Needs a Figma access token | ✓ **No** | ✗ Yes, you create one | ✗ Yes, you create one | Sign in with Figma |
 | Extra setup | ✓ **None after one plugin import** | ✗ Node.js, MCP config, Desktop Bridge plugin | ✗ Pair the Desktop Bridge plugin | Connect your AI client |
-| Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no images or custom fonts |
+| Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no new images on its own, fonts must be uploaded |
 
 **Bottom line:** if you work in Figma Desktop, turbofig is the only option
 in this table that needs no MCP server, no token and no extra setup. It gives your
 AI full scripting power with the lightest load, for free.
 
-<sub>Measured: one run each, same prompts and model; time spent recovering from tool failures is left out on both sides; the cost gap is smaller than the token gap because both re-read a similar fixed context on every call; see [Benchmark](#benchmark). est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer (`o200k_base`), used as a proxy for Claude's; Figma for Agents measured through Copilot CLI. Facts checked 2026-10-07 (Figma for Agents: 2026-10-08). Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
+<sub>Measured: one run each, same prompts and model; time spent recovering from tool failures is left out on both sides; the cost gap is smaller than the token gap because both re-read a similar fixed context on every call; see [Benchmark](#benchmark). est. = the measured work plus each tool list re-read on each of 10 AI calls. Repeated tool lists are cached, so the cost gap is smaller than the token gap, and Claude Code [looks tools up on demand](https://code.claude.com/docs/en/agent-sdk/tool-search) once they pass 10% of its memory. AI memory = share of a 200K-token context, counted with an OpenAI tokenizer (`o200k_base`), used as a proxy for Claude's; Figma for Agents measured through Copilot CLI. Facts checked 2026-10-07 (Figma for Agents tool size: 2026-10-08; its seats, plans and limits: 2026-11-25). Methods and dated sources: [docs/comparison.md](docs/comparison.md).</sub>
 
 ## Benchmark
 
@@ -222,7 +241,7 @@ private because they contain unrelated personal context.
 ### How do I get Claude Code or Cursor to design in Figma, with no Figma token?
 
 Install turbofig, import the plugin into Figma Desktop once, then paste
-the copy-prompt into your agent. It drives Figma through plain files, with
+the connect prompt into your agent. It drives Figma through plain files, with
 no Figma token and no MCP setup. Then ask in plain English, for example
 for a landing page from a written brief. Prefer MCP? See
 [docs/mcp-clients.md](docs/mcp-clients.md). See also
@@ -255,17 +274,21 @@ script cannot read other files on your Mac. See [SECURITY.md](SECURITY.md).
 
 ### Is there a free alternative to Figma's MCP server?
 
-Yes. turbofig needs no MCP server. Figma's MCP server needs a paid Full seat
-to edit. turbofig needs no paid seat and has no quota. In MCP mode, its tool
+Yes. turbofig needs no MCP server. Figma's MCP server needs a paid seat to
+edit: a Full seat, or a Dev seat in your own drafts only. A free Starter plan
+cannot write with it (Figma's docs, checked 2026-11-25). turbofig works on a
+free Starter team (tested 2026-10-10), needs no paid seat and has no quota. In MCP mode, its tool
 list is about 61× smaller (597 against about 36,600 tokens, against
 figma-console-mcp in NPX mode). See [docs/comparison.md](docs/comparison.md).
 
 ### Does Figma's MCP server have a rate limit?
 
-Yes, for read tools. View or Collab seats get 20 read calls a month, on every
-plan. Full or Dev seats get 200 to 600 read calls a day, by plan. Write tools
-are exempt. Limits checked 2026-10-08. See
-[docs/comparison.md](docs/comparison.md).
+Yes, for read tools. View or Collab seats get up to 20 tool calls a month, on
+every plan including Starter. Full or Dev seats get 200 to 600 calls a day, by
+plan. Figma says some tools are exempt, including tools that write to Figma
+files. Limits checked 2026-11-25 on Figma's
+[rate limits page](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/).
+See [docs/comparison.md](docs/comparison.md).
 
 ### How is turbofig different from figma-console-mcp?
 
@@ -278,7 +301,7 @@ session it used far fewer tokens and finished sooner. See
 
 Yes. Any agent that can read and write files on your Mac can use the file
 bridge, and any MCP client can use `turbofig mcp`. See
-[MCP client setup](docs/mcp-clients.md) and [agent prompt](docs/agents.md).
+[MCP client setup](docs/mcp-clients.md) and [agent guide](docs/agents.md).
 
 ### Which agent is best with turbofig?
 
@@ -332,7 +355,7 @@ No. turbofig needs Figma Desktop on macOS.
 - [docs/comparison.md](docs/comparison.md): the full comparison, with
   sources.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [DECISIONS.md](DECISIONS.md): the module layout, data flow, and the design reasoning.
-- [skills/file-bridge.md](skills/file-bridge.md): the file-bridge protocol.
+- [skills/file-bridge.md](skills/file-bridge.md): the file bridge protocol.
 - [docs/discoverability](docs/discoverability/README.md): MCP directory listing files and the agent snippet.
 
 ## For teams
@@ -340,7 +363,7 @@ No. turbofig needs Figma Desktop on macOS.
 - MIT license. Everything runs locally: there is no turbofig server.
 - Release binaries are not notarized. The Homebrew formula pins a SHA256
   checksum, and `brew install` verifies it.
-- To remove it, run `turbofig uninstall` first (see Security below).
+- To remove it, see **Uninstall** in [Get started](#get-started).
 - Read the threat model in [SECURITY.md](SECURITY.md).
 
 ## Security
@@ -352,9 +375,6 @@ that allows only one port. Release binaries are not notarized; Homebrew
 checks a SHA256 checksum before installing. See
 [SECURITY.md](SECURITY.md) for the full threat model and how to report a
 vulnerability.
-
-Run `turbofig uninstall` before `brew uninstall turbofig`. Homebrew alone
-leaves `turbofig.app` and the login item in place.
 
 ## Roadmap
 

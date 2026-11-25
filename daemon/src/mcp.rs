@@ -319,9 +319,9 @@ pub const HELP_TEXT: &str = "\
 turbofig: always-on Figma design daemon
 =========================================
 
-Two transports. Prefer the file-bridge. Use MCP only when it is not available.
+Two transports. Prefer the file bridge. Use MCP only when it is not available.
 
-File-bridge (recommended, dialog-free)
+File bridge (recommended, dialog-free)
 --------------------------------------
 With a shell: run `turbofig js <<'EOF'` with the JS on stdin and a closing
 EOF. It prints the result JSON. --shot also screenshots the returned node. Add --file <fileKey> if several files are open.

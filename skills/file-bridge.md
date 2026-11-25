@@ -1,4 +1,4 @@
-# turbofig file-bridge
+# turbofig file bridge
 
 Drive the turbofig daemon with local files. No network call, no confirmation dialog, no MCP tool definitions. The daemon must run. `turbofig js` starts it when needed.
 

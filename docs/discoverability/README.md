@@ -2,7 +2,7 @@
 
 `mcp-config.json` is for an MCP client with an allowlisted native MCP config that starts its own server process. Merge its `mcpServers` block into your config; it runs `turbofig mcp` over stdio, with the absolute path to the `turbofig` binary (a GUI app does not have `/opt/homebrew/bin` on its `PATH`).
 
-The default connection is the file-bridge: run the turbofig plugin in Figma, copy its prompt, and paste it into your agent. Agents write jobs to `~/.turbofig/inbox/` and read results from `~/.turbofig/outbox/`.
+The default connection is the file bridge: run the turbofig plugin in Figma, press the link icon next to the file name (Copy connect prompt), and paste the prompt into your agent. Agents write jobs to `~/.turbofig/inbox/` and read results from `~/.turbofig/outbox/`.
 
 MCP is optional. Set it up only when the user asks for it. See `docs/mcp-clients.md`.
 

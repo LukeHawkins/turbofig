@@ -32,7 +32,7 @@ const ABOUT_HTML_TEMPLATE: &str = include_str!("../../assets/about/about.html");
 #[derive(Clone)]
 pub struct AboutWindowContext {
     pub home: PathBuf,
-    /// Read by the "Copy agent prompt" action for the current agent
+    /// Read by the "Copy connect prompt" action for the current
     /// connect prompt text.
     pub current_state: Arc<Mutex<MenuState>>,
 }

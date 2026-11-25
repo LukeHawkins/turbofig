@@ -23,7 +23,7 @@ and what is a bug.
 - **Both ports bind to `127.0.0.1` only.** The HTTP MCP endpoint and the
   WebSocket server never listen on a network-reachable interface.
 - **The HTTP MCP port rejects any request carrying an `Origin` header with
-  403.** A real MCP client (curl, a native MCP client, the file-bridge)
+  403.** A real MCP client (curl, a native MCP client, the file bridge)
   never sends an `Origin` header; only a browser does. This stops a
   malicious web page from calling the daemon over `fetch()`. The `Host`
   header is also allow-listed to `localhost`, `127.0.0.1`, and `::1`, which
@@ -52,7 +52,7 @@ and what is a bug.
   group or other writable unless it has the sticky bit. The bridge skips a
   job file that another user owns. It prunes the outbox only when it is a
   real folder, owned by the user, with the `.turbofig-outbox` marker.
-- **The file-bridge rejects hostile inbox entries.** Job reads use
+- **The file bridge rejects hostile inbox entries.** Job reads use
   `O_NOFOLLOW|O_NONBLOCK`. A FIFO or a symlink is rejected. Jobs are capped
   at 30 MiB and ids at 200 bytes. Results and PNGs are mode `0600`. The
   daemon creates `.tmp` files with `O_EXCL`, and the 24 h prune touches only
@@ -78,7 +78,7 @@ and what is a bug.
   local MCP servers: the token stops a different account or a sandboxed
   process from reading it, not a process that already runs as the owner
   and can read `~/.turbofig/token` for itself.
-- **The file-bridge directories are mode `0700`.** The default home
+- **The file bridge directories are mode `0700`.** The default home
   `~/.turbofig` is created and corrected to `0700` on every daemon start,
   because job and result files can carry arbitrary eval code and its output.
   A custom `TURBOFIG_BRIDGE_DIR` folder keeps whatever mode it already has;
@@ -166,7 +166,7 @@ could otherwise open the socket and receive the AI's jobs.
   request from inside Figma. turbofig itself still sends nothing off the
   machine; narrowing the allowed domain to the daemon's configured port is
   planned.
-- **The file-bridge inbox and outbox hold job and result files, including
+- **The file bridge inbox and outbox hold job and result files, including
   eval code and its output.** The daemon prunes outbox entries (results and
   file-mode screenshot PNGs) older than 24 hours; a result nobody reads in
   that window is deleted, not kept.
@@ -235,7 +235,7 @@ Two paths change the setting, both through the daemon:
 
 Report a finding that breaks one of these guarantees (for example, a port
 that becomes reachable from the network, an `Origin` check that can be
-bypassed, or a file-bridge directory with loose permissions). A report that
+bypassed, or a file bridge directory with loose permissions). A report that
 only restates "the execute tool runs arbitrary code" is not a vulnerability;
 that is the documented design.
 
