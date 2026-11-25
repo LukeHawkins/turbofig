@@ -223,3 +223,93 @@ async fn control_stop_during_a_supervised_restart_drain_overrides_the_exit_code(
         "a stop during a restart's drain must still exit 0, got {status:?}"
     );
 }
+
+fn marker_in(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("stopped-by-user")
+}
+
+async fn post_control(client: &reqwest::Client, mcp_port: u16, token: &str, action: &str) {
+    let resp = client
+        .post(format!("http://127.0.0.1:{mcp_port}/control"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({"action": action}))
+        .send()
+        .await
+        .expect("send POST /control");
+    assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
+}
+
+/// `/control stop` leaves `<home>/stopped-by-user` (0600) so the menu-bar app
+/// does not start the daemon again. A restart leaves none, and a new daemon
+/// deletes a marker that an earlier stop left.
+#[tokio::test]
+async fn control_stop_leaves_the_stop_marker_and_a_new_daemon_deletes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().expect("temp home");
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("build http client");
+
+    // A restart is not a user stop: no marker.
+    {
+        let (mcp, ws) = (free_port(), free_port());
+        let mut daemon = spawn_daemon(home.path(), mcp, ws).await;
+        wait_for_health(&client, mcp).await;
+        let token = std::fs::read_to_string(home.path().join("token"))
+            .unwrap()
+            .trim()
+            .to_owned();
+        post_control(&client, mcp, &token, "restart").await;
+        let status = tokio::task::spawn_blocking(move || daemon.0.wait().expect("wait"))
+            .await
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            !marker_in(home.path()).exists(),
+            "a restart leaves no marker"
+        );
+    }
+
+    // A stop leaves it, owner-only.
+    {
+        let (mcp, ws) = (free_port(), free_port());
+        let mut daemon = spawn_daemon(home.path(), mcp, ws).await;
+        wait_for_health(&client, mcp).await;
+        let token = std::fs::read_to_string(home.path().join("token"))
+            .unwrap()
+            .trim()
+            .to_owned();
+        post_control(&client, mcp, &token, "stop").await;
+        // Written before the 202 reply.
+        assert!(
+            marker_in(home.path()).exists(),
+            "stop must leave the marker"
+        );
+        let mode = std::fs::metadata(marker_in(home.path()))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let status = tokio::task::spawn_blocking(move || daemon.0.wait().expect("wait"))
+            .await
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            marker_in(home.path()).exists(),
+            "the marker outlives the daemon"
+        );
+    }
+
+    // The next daemon (turbofig start, the menu's Start item, login) deletes it.
+    {
+        let (mcp, ws) = (free_port(), free_port());
+        let _daemon = spawn_daemon(home.path(), mcp, ws).await;
+        wait_for_health(&client, mcp).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while marker_in(home.path()).exists() {
+            assert!(Instant::now() < deadline, "the new daemon kept the marker");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}

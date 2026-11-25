@@ -630,6 +630,16 @@ async fn restart_for_upgrade(
         return Ok(());
     };
 
+    // What the lock info says now (no network): a restart that ends as an
+    // in-place `exec` never frees the port or the lock for good, so it is
+    // recognized by a new build id or a version that is no longer older.
+    let before = crate::secure_fs::read_lock_info(home);
+    let asked_build_id = before.as_ref().and_then(|i| i.build_id.clone());
+    let wait = crate::upgrade::restart_wait(
+        UNREACHABLE_DEADLINE,
+        before.as_ref().and_then(|i| i.request_timeout),
+    );
+
     // `send_control` verifies the daemon before it sends the token.
     match crate::daemon_client::send_control(mcp_port, &token, "restart").await {
         Ok(status) if status.is_success() => {}
@@ -651,26 +661,69 @@ async fn restart_for_upgrade(
         }
     }
 
-    if !crate::spawn::wait_for_unreachable(health_client, mcp_port, UNREACHABLE_DEADLINE).await {
-        eprintln!(
-            "turbofig mcp: the daemon was still answering {UNREACHABLE_DEADLINE:?} after the restart request; leaving it running"
-        );
-        return Ok(());
+    let own = own_version();
+    match wait_for_old_daemon_to_leave(
+        wait,
+        RESTART_POLL_INTERVAL,
+        || async {
+            crate::spawn::wait_for_unreachable(health_client, mcp_port, Duration::ZERO).await
+        },
+        || {
+            crate::upgrade::restart_took_effect(
+                asked_build_id.as_deref(),
+                crate::secure_fs::read_lock_info(home).as_ref(),
+                &own,
+            )
+        },
+    )
+    .await
+    {
+        RestartWait::Gone => {}
+        RestartWait::RestartedInPlace => {
+            // The upgrade watcher was already draining and `exec`ed the new
+            // build: a daemon runs already, so nothing is spawned and no
+            // relaunch is waited for.
+            return crate::daemon_client::wait_for_verified_daemon(
+                mcp_port,
+                home,
+                crate::spawn::HEALTH_DEADLINE,
+            )
+            .await
+            .map(|_| ());
+        }
+        RestartWait::TimedOut => {
+            eprintln!(
+                "turbofig mcp: the daemon was still answering {wait:?} after the restart request; leaving it running"
+            );
+            return Ok(());
+        }
     }
 
-    // The old daemon is gone. If it was supervised, give launchd a chance to
-    // relaunch it on its own first, rather than racing it with our own spawn
-    // (see `must_spawn_after_restart`'s doc comment for why that race was a
-    // problem).
-    let launchd_relaunch_answered = daemon_was_supervised
+    // The old daemon is gone. If it was supervised, ask launchd to start the
+    // service (`kickstart`, no `-k`: a running service is left alone) and give
+    // it a chance to answer on its own first, rather than racing it with our
+    // own spawn (see `must_spawn_after_restart`'s doc comment for why that
+    // race was a problem). A kickstart that fails means the service is not
+    // loaded: launchd will not relaunch anything, so spawn at once instead of
+    // waiting 30 s for nothing.
+    let relies = relies_on_launchd(
+        daemon_was_supervised,
+        crate::upgrade::headless_plist_exists(),
+        crate::upgrade::kickstart_headless_service,
+    );
+    let launchd_relaunch_answered = relies
         && crate::daemon_client::wait_for_verified_daemon(mcp_port, home, SUPERVISED_RELAUNCH_WAIT)
             .await
             .is_ok();
 
-    if must_spawn_after_restart(daemon_was_supervised, launchd_relaunch_answered) {
-        if daemon_was_supervised {
+    if must_spawn_after_restart(relies, launchd_relaunch_answered) {
+        if relies {
             eprintln!(
                 "turbofig mcp: launchd did not relaunch the daemon within {SUPERVISED_RELAUNCH_WAIT:?}; starting one ourselves"
+            );
+        } else if daemon_was_supervised {
+            eprintln!(
+                "turbofig mcp: the launchd service is not loaded; starting the daemon ourselves"
             );
         }
         if let Err(e) = crate::spawn::spawn_detached_daemon(turbofig_binary, home) {
@@ -683,6 +736,70 @@ async fn restart_for_upgrade(
     crate::daemon_client::wait_for_verified_daemon(mcp_port, home, crate::spawn::HEALTH_DEADLINE)
         .await
         .map(|_| ())
+}
+
+/// True when the caller may wait for launchd to start the next daemon.
+/// - Not supervised: false, the caller spawns.
+/// - Supervised and the headless plist is not in this LaunchAgents folder: true,
+///   the old behavior (launchd relaunches on its own, nothing here can nudge
+///   it). `kickstart` is never run then.
+/// - Supervised and the plist exists: `kickstart` (`launchctl kickstart`, no
+///   `-k`) decides. If launchd accepts it, the service is loaded and starts
+///   the next daemon: wait. If it fails, the service is not loaded (the old
+///   daemon was started by hand, or an exit 0 left the service stopped): no
+///   relaunch is coming, so the caller spawns at once instead of waiting
+///   `SUPERVISED_RELAUNCH_WAIT` with no daemon.
+fn relies_on_launchd(
+    daemon_was_supervised: bool,
+    plist_exists: bool,
+    kickstart: impl FnOnce() -> bool,
+) -> bool {
+    daemon_was_supervised && (!plist_exists || kickstart())
+}
+
+/// How often `wait_for_old_daemon_to_leave` looks.
+const RESTART_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How the old daemon left after a restart request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartWait {
+    /// `/health` stopped answering: the process exited.
+    Gone,
+    /// The daemon restarted in place (`exec`, lock kept): `/health` may never
+    /// look down, but the lock info shows another build.
+    RestartedInPlace,
+    /// Still the same daemon when `limit` ended.
+    TimedOut,
+}
+
+/// Waits for the old daemon to go away or to restart in place, for at most
+/// `limit`. `gone` is one `/health` probe (true when nothing answers).
+/// `replaced` reads the lock info (`upgrade::restart_took_effect`). Checking
+/// `replaced` is what keeps a request that joined an upgrade drain from
+/// waiting out the whole limit: the drain ends in an `exec`, not an exit.
+async fn wait_for_old_daemon_to_leave<F, Fut>(
+    limit: Duration,
+    poll: Duration,
+    mut gone: F,
+    mut replaced: impl FnMut() -> bool,
+) -> RestartWait
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let until = std::time::Instant::now() + limit;
+    loop {
+        if gone().await {
+            return RestartWait::Gone;
+        }
+        if replaced() {
+            return RestartWait::RestartedInPlace;
+        }
+        if std::time::Instant::now() >= until {
+            return RestartWait::TimedOut;
+        }
+        tokio::time::sleep(poll).await;
+    }
 }
 
 /// True when `restart_for_upgrade` must spawn a new daemon itself, after the
@@ -760,6 +877,74 @@ mod tests {
         // Equal, higher and unknown versions are all handed off when legacy.
         assert!(legacy_needs_handoff(true));
         assert!(!legacy_needs_handoff(false));
+    }
+
+    #[test]
+    fn a_plist_without_a_loaded_service_spawns_at_once_instead_of_waiting_for_launchd() {
+        // Supervised, plist exists, kickstart failed: no service is loaded,
+        // so no relaunch is coming. Spawn now, do not wait 30 s.
+        let relies = relies_on_launchd(true, true, || false);
+        assert!(!relies);
+        assert!(must_spawn_after_restart(relies, false));
+        // A loaded service: wait for it, spawn only if it never answers.
+        let relies = relies_on_launchd(true, true, || true);
+        assert!(relies);
+        assert!(!must_spawn_after_restart(relies, true));
+        assert!(must_spawn_after_restart(relies, false));
+        // An unsupervised daemon: the caller always spawns, and launchd is
+        // never asked.
+        let relies = relies_on_launchd(false, true, || panic!("must not kickstart"));
+        assert!(must_spawn_after_restart(relies, false));
+    }
+
+    #[test]
+    fn without_the_headless_plist_launchctl_is_never_run() {
+        // The daemon said it is supervised but this LaunchAgents folder has no
+        // headless plist (a temp folder, an app-only setup): wait for the
+        // relaunch as before and never touch launchctl.
+        assert!(relies_on_launchd(true, false, || panic!(
+            "must not kickstart"
+        )));
+    }
+
+    #[tokio::test]
+    async fn the_wait_stops_at_once_when_the_lock_info_shows_an_in_place_restart() {
+        // The old daemon never goes down for good (an upgrade `exec`): the
+        // wait must not run its 65 s limit.
+        let started = std::time::Instant::now();
+        let mut polls = 0;
+        let outcome = wait_for_old_daemon_to_leave(
+            Duration::from_secs(65),
+            Duration::from_millis(5),
+            || async { false },
+            || {
+                polls += 1;
+                polls >= 3
+            },
+        )
+        .await;
+        assert_eq!(outcome, RestartWait::RestartedInPlace);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn the_wait_reports_gone_and_times_out_when_nothing_changes() {
+        let gone = wait_for_old_daemon_to_leave(
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            || async { true },
+            || false,
+        )
+        .await;
+        assert_eq!(gone, RestartWait::Gone);
+        let timed_out = wait_for_old_daemon_to_leave(
+            Duration::from_millis(30),
+            Duration::from_millis(5),
+            || async { false },
+            || false,
+        )
+        .await;
+        assert_eq!(timed_out, RestartWait::TimedOut);
     }
 
     #[test]

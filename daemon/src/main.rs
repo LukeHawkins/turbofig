@@ -607,18 +607,29 @@ async fn cmd_run() {
     let home = turbofig::bridge_dir_from_env();
     ensure_verified_daemon("turbofig", mcp_port, &home, true).await;
 
+    // The clipboard copy and the Figma open the app path already did on a
+    // first run: `(clipboard_copied, figma_opened)`. The text walkthrough
+    // below reuses them, so a first run never copies or opens twice.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut prepared: Option<(bool, bool)> = None;
+
     // On macOS, the app (its tray icon and About window) is now the
     // onboarding surface: install/refresh turbofig.app, open it, and point
     // the terminal at it, falling back to the ordinary text walkthrough
     // below only if either step fails.
     #[cfg(target_os = "macos")]
-    if let Some(text) = try_app_first_run() {
-        // A refresh asks the old app to quit, and the app's quit stops the
-        // daemon. The new app starts one again: make sure, so the user is
-        // never left with no app and no daemon.
-        ensure_daemon_after_app_open(mcp_port, &home).await;
-        print!("{text}");
-        return;
+    {
+        if let Some(text) = try_app_first_run(&mut prepared) {
+            // A refresh asks the old app to quit, and the app's quit stops the
+            // daemon. The new app starts one again: make sure, so the user is
+            // never left with no app and no daemon.
+            ensure_daemon_after_app_open(mcp_port, &home).await;
+            print!("{text}");
+            return;
+        }
+        // The fallback path: a refresh may have quit the app (and with it the
+        // daemon) before the install failed. Make sure a daemon runs.
+        let _ = ensure_verified_daemon("turbofig", mcp_port, &home, true).await;
     }
 
     // The connected-file names below need /health's full, authenticated
@@ -662,10 +673,14 @@ async fn cmd_run() {
         return;
     }
 
-    let clipboard = clipboard_for_run();
-    let opener = opener_for_run();
-    let clipboard_copied = clipboard.copy(&manifest_path.display().to_string());
-    let figma_opened = opener.open_figma();
+    let (clipboard_copied, figma_opened) = prepared_or(prepared, || {
+        let clipboard = clipboard_for_run();
+        let opener = opener_for_run();
+        (
+            clipboard.copy(&manifest_path.display().to_string()),
+            opener.open_figma(),
+        )
+    });
     print!(
         "{}",
         turbofig::first_run::first_run_text(
@@ -677,6 +692,24 @@ async fn cmd_run() {
             clipboard_copied,
         )
     );
+}
+
+/// False when the refresh just asked the old app to quit. If that app did
+/// not exit within the deadline, its socket still accepts `OpenAbout`: the
+/// signal would be "delivered" to a dying old app and the refreshed bundle
+/// would never launch, while the output claimed both.
+fn open_about_signal_allowed(app_was_running: bool) -> bool {
+    !app_was_running
+}
+
+/// The clipboard and Figma results of a first run: the ones the app path
+/// already produced (`prepared`), else the result of doing both now. Never
+/// both, so a first run whose app open failed does not copy and open twice.
+fn prepared_or(
+    prepared: Option<(bool, bool)>,
+    prepare: impl FnOnce() -> (bool, bool),
+) -> (bool, bool) {
+    prepared.unwrap_or_else(prepare)
 }
 
 /// Longest the bare `turbofig` command waits, after asking a running app
@@ -841,7 +874,7 @@ fn rename_legacy_bundle_name_if_needed(agents_dir: &Path) {
 /// reaches a running app instead of just re-activating the stale one; see
 /// `app_bundle::app_bundle_outdated`'s build-id comparison.
 #[cfg(target_os = "macos")]
-fn try_app_first_run() -> Option<String> {
+fn try_app_first_run(prepared: &mut Option<(bool, bool)>) -> Option<String> {
     let own_exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
@@ -858,21 +891,25 @@ fn try_app_first_run() -> Option<String> {
     let was_outdated = bundle_dir.exists()
         && turbofig::app_bundle::app_bundle_outdated(&applications_dir, &own_exe);
 
-    let bundle_install_err = turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe)
-        .err()
-        .map(|e| e.to_string());
-
+    // Ask a running app to quit BEFORE the bundle is written. The app watches
+    // the bundle's build id and relaunches itself when it changes, so a quit
+    // sent after the write races that relaunch and can hit the new instance.
     let mut app_was_running = false;
-    if bundle_install_err.is_none() && was_outdated {
+    if was_outdated {
         app_was_running = turbofig::menu_bar::quit_running_app_and_wait_for_exit(
             &home,
             app_refresh_restart_deadline(),
             APP_REFRESH_RESTART_POLL_INTERVAL,
             &|d| std::thread::sleep(d),
         );
-        if app_was_running {
-            println!("Updated turbofig.app and restarted it.");
-        }
+    }
+
+    let bundle_install_err = turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe)
+        .err()
+        .map(|e| e.to_string());
+
+    if bundle_install_err.is_none() && app_was_running {
+        println!("Updated turbofig.app and restarted it.");
     }
 
     // On a first run (no plugin-seen marker) the app path also does what the
@@ -882,6 +919,7 @@ fn try_app_first_run() -> Option<String> {
         let manifest_path = home.join("figma-plugin").join("manifest.json");
         let clipboard_copied = clipboard_for_run().copy(&manifest_path.display().to_string());
         let figma_opened = opener_for_run().open_figma();
+        *prepared = Some((clipboard_copied, figma_opened));
         Some(turbofig::first_run::setup_steps_text(
             &manifest_path,
             figma_opened,
@@ -895,10 +933,11 @@ fn try_app_first_run() -> Option<String> {
     // no dead end); otherwise launch the bundle.
     let mut about_reopened = false;
     let opened = if bundle_install_err.is_none() {
-        let delivered = matches!(
-            turbofig::menu_bar::signal_open_about_running_app(&home),
-            Ok(true)
-        );
+        let delivered = open_about_signal_allowed(app_was_running)
+            && matches!(
+                turbofig::menu_bar::signal_open_about_running_app(&home),
+                Ok(true)
+            );
         match turbofig::first_run::about_action(delivered) {
             turbofig::first_run::AboutAction::ReopenAbout => {
                 about_reopened = true;
@@ -970,16 +1009,35 @@ async fn cmd_stop() {
 
     match stop_running_daemon(&client, mcp_port, &home).await {
         Ok(true) => {
+            // The daemon wrote the marker itself (`/control stop`). Write it
+            // again from here: a daemon from before the marker existed did not.
+            leave_stop_marker(&home);
             println!("{}", stopped_message());
             if autostart_plist_exists(&agents_dir) {
                 println!("{}", stop_autostart_restart_hint());
             }
         }
-        Ok(false) => println!("{}", stop_nothing_running_message()),
+        Ok(false) => {
+            // Nothing runs, and the user asked for it to stay that way: the
+            // menu-bar app must not start a daemon now either.
+            leave_stop_marker(&home);
+            println!("{}", stop_nothing_running_message());
+        }
         Err(e) => {
             eprintln!("turbofig stop: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Leaves the `stopped-by-user` marker in `home`. A failure is only a
+/// warning: the app may then start the daemon again.
+fn leave_stop_marker(home: &Path) {
+    if let Err(e) = turbofig::write_stop_marker(home) {
+        eprintln!(
+            "turbofig stop: could not write the stop marker in {}: {e}",
+            home.display()
+        );
     }
 }
 
@@ -1128,6 +1186,12 @@ async fn cmd_status() {
 async fn serve_startup_check(mcp_port: u16, home: &Path) -> turbofig::daemon_client::ServeCheck {
     let result = turbofig::daemon_client::verify_daemon_in_home(mcp_port, home).await;
     turbofig::daemon_client::serve_check(&result)
+}
+
+/// False after an in-place restart (`upgrade::exec_in_place`): see the call
+/// site in `run_daemon`.
+fn should_run_serve_startup_check(after_in_place_restart: bool) -> bool {
+    !after_in_place_restart
 }
 
 /// Acts on a `serve` startup check that found a listener: prints the
@@ -1285,7 +1349,15 @@ async fn run_daemon() {
     // Check before any other side effect (reading the token, binding a
     // port): a second `turbofig serve` while one is already healthy on this
     // port must exit at once with a clear message, not silently fail later.
-    exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
+    //
+    // Not after an in-place restart: the previous image of this very process
+    // held both ports until a moment ago and this process holds the folder
+    // lock, so no other daemon can run. A passing listener there must not make
+    // the new image exit and leave no daemon; the patient bind below waits it
+    // out.
+    if should_run_serve_startup_check(turbofig::upgrade::reexec_info().is_some()) {
+        exit_for_serve_check(&serve_startup_check(mcp_port, &bridge_dir).await, mcp_port);
+    }
     raise_nofile_limit();
 
     let mcp_addr = format!("127.0.0.1:{mcp_port}");
@@ -1334,6 +1406,13 @@ async fn run_daemon() {
     if take_bridge_lock(&bridge_dir) {
         write_unlocked_lock_info();
     }
+
+    // This process is the daemon now. A `stopped-by-user` marker from an
+    // earlier `turbofig stop` has done its job (it kept the app from starting
+    // this daemon while the user wanted none): delete it. `/control stop`
+    // writes it again into this folder (`control::set_marker_home`).
+    turbofig::clear_stop_marker(&bridge_dir);
+    turbofig::set_marker_home(&bridge_dir);
 
     println!(
         "turbofig MCP listening on {}",
@@ -1467,6 +1546,37 @@ async fn run_daemon() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_serve_startup_check_is_skipped_only_after_an_in_place_restart() {
+        assert!(should_run_serve_startup_check(false));
+        assert!(!should_run_serve_startup_check(true));
+    }
+
+    #[test]
+    fn a_first_run_copies_and_opens_figma_once() {
+        let mut calls = 0;
+        // The app path already did both: the text path reuses the result.
+        let reused = prepared_or(Some((true, false)), || {
+            calls += 1;
+            (false, true)
+        });
+        assert_eq!(reused, (true, false));
+        assert_eq!(calls, 0);
+        // The app path did not run: the text path does both, once.
+        let done = prepared_or(None, || {
+            calls += 1;
+            (false, true)
+        });
+        assert_eq!(done, (false, true));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn open_about_is_not_signalled_after_the_app_was_asked_to_quit() {
+        assert!(open_about_signal_allowed(false));
+        assert!(!open_about_signal_allowed(true));
+    }
 
     #[test]
     fn nofile_target_raises_the_soft_limit_to_the_hard_limit() {

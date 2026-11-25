@@ -238,6 +238,100 @@ pub(crate) fn prepare_bridge_dirs(dir: &Path, own_mode: bool) -> io::Result<(Pat
     Ok((inbox, outbox))
 }
 
+// ------------------------------------------------------- small private files
+
+/// Marker in the home folder: the user stopped the daemon on purpose
+/// (`/control stop`, `turbofig stop`). The menu-bar app does not restart the
+/// daemon while it exists. The daemon deletes it when it starts; the menu's
+/// "Start turbofig" item clears it before it starts the daemon.
+pub const STOPPED_BY_USER: &str = "stopped-by-user";
+
+/// The build key of the daemon `turbofig js` last asked to restart. `js`
+/// never asks the same one twice (`js_cmd::restart_older_daemon`).
+pub(crate) const RESTART_ASKED: &str = "restart-asked";
+
+/// Longest file `read_private_file` reads.
+const PRIVATE_FILE_READ_CAP: u64 = 4096;
+
+/// Writes a small file owner-only (0600) and atomically: a sibling `.tmp`
+/// opened with `O_EXCL | O_NOFOLLOW` (a stale tmp or a planted symlink at that
+/// name is unlinked first), then renamed over `path`.
+pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = PathBuf::from(tmp_name);
+    match std::fs::remove_file(&tmp) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let written = (|| {
+        let mut file = opts.open(&tmp)?;
+        file.write_all(contents)?;
+        file.flush()
+    })();
+    let outcome = written.and_then(|()| std::fs::rename(&tmp, path));
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    outcome
+}
+
+/// Reads a small file written by `write_private_file`: opened with
+/// `O_NOFOLLOW`, a regular file owned by this user, at most 4 KiB. `None` for
+/// anything else (missing, a symlink, foreign owner, not UTF-8).
+#[cfg(unix)]
+pub(crate) fn read_private_file(path: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if !meta.is_file() || meta.uid() != euid {
+        return None;
+    }
+    let mut buf = String::new();
+    file.take(PRIVATE_FILE_READ_CAP)
+        .read_to_string(&mut buf)
+        .ok()?;
+    Some(buf)
+}
+
+/// Deletes a file (or a symlink, never its target). A missing file is fine.
+pub(crate) fn remove_private_file(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// Records that the user stopped the daemon: writes `<home>/stopped-by-user`
+/// (0600, safe write). Best effort for the caller: a failure only means the
+/// app may restart the daemon.
+pub fn write_stop_marker(home: &Path) -> io::Result<()> {
+    write_private_file(&home.join(STOPPED_BY_USER), b"1\n")
+}
+
+/// True when `<home>/stopped-by-user` exists (not followed if a symlink).
+pub fn stop_marker_present(home: &Path) -> bool {
+    std::fs::symlink_metadata(home.join(STOPPED_BY_USER)).is_ok()
+}
+
+/// Deletes `<home>/stopped-by-user`. A missing marker is fine.
+pub fn clear_stop_marker(home: &Path) {
+    remove_private_file(&home.join(STOPPED_BY_USER));
+}
+
 /// Name of the single-instance lock file in the bridge folder.
 pub(crate) const DAEMON_LOCK: &str = "daemon.lock";
 
@@ -305,16 +399,27 @@ fn set_cloexec(fd: std::os::unix::io::RawFd, on: bool) -> io::Result<()> {
 /// through the fd itself: opening `daemon.lock` again, even once, would drop
 /// the lock when that second fd closed.
 #[cfg(unix)]
-#[allow(clippy::unnecessary_cast)] // `st_dev` and `st_ino` differ in width by platform
 fn adopt_inherited_lock(dir: &Path) -> Option<std::fs::File> {
+    let fd = crate::upgrade::reexec_info()?.lock_fd?;
+    adopt_lock_fd(dir, fd)
+}
+
+/// `adopt_inherited_lock` for an explicit fd number. A refused fd that is
+/// open stays open (closing it would drop the lock it may hold) but gets
+/// close-on-exec at once, so it never leaks into a child process.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)] // `st_dev` and `st_ino` differ in width by platform
+fn adopt_lock_fd(dir: &Path, fd: std::os::unix::io::RawFd) -> Option<std::fs::File> {
     use std::os::unix::fs::{FileExt, MetadataExt};
     use std::os::unix::io::FromRawFd;
-    let fd = crate::upgrade::reexec_info()?.lock_fd?;
     // SAFETY: only `fstat` runs on the fd before it is proven to be ours.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut st) } != 0 {
         return None;
     }
+    // The fd is open. Whatever the checks below decide, it must not reach a
+    // child process. Never close it here: that would drop the lock.
+    let _ = set_cloexec(fd, true);
     // SAFETY: `geteuid` has no preconditions and cannot fail.
     let euid = unsafe { libc::geteuid() };
     let regular = (st.st_mode & libc::S_IFMT) == libc::S_IFREG;
@@ -1063,5 +1168,76 @@ mod tests {
         assert!(!d.join(DAEMON_LOCK).exists() || !bridge_lock_held(&d));
         // The default home is tightened to 0700 first, so it passes.
         assert!(prepare_bridge_dirs(&d, true).is_ok());
+    }
+
+    fn has_cloexec(fd: std::os::unix::io::RawFd) -> bool {
+        // SAFETY: `fcntl(F_GETFD)` only reads the flags of an fd number.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        flags >= 0 && flags & libc::FD_CLOEXEC != 0
+    }
+
+    #[test]
+    fn a_refused_inherited_lock_fd_stays_open_but_gets_close_on_exec() {
+        use std::os::unix::io::AsRawFd;
+        let tmp = tempfile::tempdir().unwrap();
+        // The folder has a daemon.lock that is NOT the file behind the fd.
+        std::fs::write(tmp.path().join(DAEMON_LOCK), "{}").unwrap();
+        let other = tmp.path().join("other");
+        std::fs::write(&other, "{}").unwrap();
+        let file = std::fs::File::open(&other).unwrap();
+        let fd = file.as_raw_fd();
+        set_cloexec(fd, false).unwrap();
+        assert!(!has_cloexec(fd));
+        assert!(adopt_lock_fd(tmp.path(), fd).is_none());
+        assert!(has_cloexec(fd), "a refused fd must not leak into children");
+        // Still open: closing it would have dropped a held lock.
+        assert!(std::fs::File::metadata(&file).is_ok());
+    }
+
+    #[test]
+    fn a_refused_fd_with_the_wrong_pid_also_gets_close_on_exec() {
+        use std::os::unix::io::AsRawFd;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(DAEMON_LOCK);
+        std::fs::write(&path, "{\"pid\":1}").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let fd = file.as_raw_fd();
+        set_cloexec(fd, false).unwrap();
+        assert!(adopt_lock_fd(tmp.path(), fd).is_none());
+        assert!(has_cloexec(fd));
+    }
+
+    #[test]
+    fn a_private_file_is_written_0600_and_read_back_and_a_symlink_is_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("m");
+        write_private_file(&path, b"abc").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(read_private_file(&path).as_deref(), Some("abc"));
+        assert!(!tmp.path().join("m.tmp").exists());
+        // A symlink planted at the tmp name is replaced, never written through.
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        symlink(&victim, tmp.path().join("m.tmp")).unwrap();
+        write_private_file(&path, b"def").unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(read_private_file(&path).as_deref(), Some("def"));
+        // A symlink at the file itself reads as nothing.
+        let link = tmp.path().join("link");
+        symlink(&victim, &link).unwrap();
+        assert_eq!(read_private_file(&link), None);
+        assert_eq!(read_private_file(&tmp.path().join("missing")), None);
+    }
+
+    #[test]
+    fn the_stop_marker_is_written_seen_and_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!stop_marker_present(tmp.path()));
+        write_stop_marker(tmp.path()).unwrap();
+        assert!(stop_marker_present(tmp.path()));
+        assert_eq!(mode(&tmp.path().join(STOPPED_BY_USER)), 0o600);
+        clear_stop_marker(tmp.path());
+        assert!(!stop_marker_present(tmp.path()));
+        clear_stop_marker(tmp.path()); // a missing marker is fine
     }
 }

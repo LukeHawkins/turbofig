@@ -39,14 +39,26 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// Pause between "a change was seen" and acting on it, so a file that is
 /// still being written is never run.
 const SETTLE: Duration = Duration::from_secs(1);
-/// Longest the watcher waits for in-flight jobs before it restarts anyway.
+/// Shortest cap on the watcher's wait for in-flight jobs. The real cap is
+/// `drain_cap`: a job can run for the whole request timeout, which an env var
+/// can raise to 600 s.
 const DRAIN_MAX_WAIT: Duration = Duration::from_secs(60);
+/// Added to the request timeout in `drain_cap`: a result write or a response
+/// can land a few seconds after the job's own timeout.
+const DRAIN_MARGIN: Duration = Duration::from_secs(15);
 const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Grace after the job count reaches 0: a response or a result-file rename
 /// can be a few scheduler ticks from landing.
 const EXIT_GRACE: Duration = Duration::from_millis(250);
 /// Longest the new binary may take to answer `--version` in the preflight.
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Longest a draining daemon waits for in-flight jobs before it restarts
+/// anyway: 60 s, or the request timeout plus a margin when that is longer. A
+/// job allowed to run for 600 s is never cut off by an upgrade.
+pub fn drain_cap(request_timeout: Duration) -> Duration {
+    DRAIN_MAX_WAIT.max(request_timeout + DRAIN_MARGIN)
+}
 
 /// Where a Homebrew `turbofig` lives when the daemon cannot learn the path
 /// from the app bundle (a bundle written before `TurbofigSourcePath`).
@@ -280,7 +292,16 @@ pub struct Watcher {
     running_id: String,
     last_sig: Option<BinarySig>,
     restart_allowed: bool,
+    /// The signature of a build that failed to restart onto, and how many
+    /// times it failed. Once it reaches `MAX_RESTART_ATTEMPTS` the build is
+    /// skipped (no hash, no preflight) until its signature changes.
+    failed: Option<(BinarySig, u32)>,
 }
+
+/// Failed restarts onto one build signature before the watcher stops trying.
+/// More than one: the first run of a fresh binary can be slow (Gatekeeper
+/// scans it), so one slow `--version` must not park a good build for good.
+pub const MAX_RESTART_ATTEMPTS: u32 = 3;
 
 impl Watcher {
     pub fn new(running_id: String, restart_allowed: bool) -> Self {
@@ -288,7 +309,20 @@ impl Watcher {
             running_id,
             last_sig: None,
             restart_allowed,
+            failed: None,
         }
+    }
+
+    /// Records that restarting onto the build with signature `sig` failed (the
+    /// preflight or the `exec`). Returns true when this was the last attempt:
+    /// the build is now skipped until its signature changes.
+    pub fn record_failure(&mut self, sig: &BinarySig) -> bool {
+        let count = match &self.failed {
+            Some((s, n)) if s == sig => n + 1,
+            _ => 1,
+        };
+        self.failed = Some((sig.clone(), count));
+        count >= MAX_RESTART_ATTEMPTS
     }
 
     /// Decides for one poll. `current` is the fresh signature (or `None`);
@@ -302,6 +336,11 @@ impl Watcher {
             return Verdict::Unresolved;
         };
         if self.last_sig.as_ref() == Some(&sig) {
+            return Verdict::Unchanged;
+        }
+        // A build that already failed its attempts is not hashed or checked
+        // again until its signature changes.
+        if matches!(&self.failed, Some((s, n)) if s == &sig && *n >= MAX_RESTART_ATTEMPTS) {
             return Verdict::Unchanged;
         }
         let Some(build_id) = hash(&sig.path) else {
@@ -380,6 +419,21 @@ fn check_interval() -> Duration {
         return Duration::from_millis(ms);
     }
     CHECK_INTERVAL
+}
+
+/// The grace after the drain. A debug build honours
+/// `TURBOFIG_TEST_UPGRADE_EXIT_GRACE_MS`, so a test can hold the window in
+/// which a `/control restart` can still join the drain. Release builds always
+/// use `EXIT_GRACE`.
+fn exit_grace() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(ms) = std::env::var("TURBOFIG_TEST_UPGRADE_EXIT_GRACE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return Duration::from_millis(ms);
+    }
+    EXIT_GRACE
 }
 
 fn settle_delay() -> Duration {
@@ -483,11 +537,42 @@ pub async fn run_upgrade_watcher(state: Arc<AppState>) {
                 }
             }
             Verdict::Upgrade { build_id, sig } => {
-                // Returns only when the restart did not happen; the next poll
-                // looks again.
-                restart_onto(&state, &running_id, &build_id, &sig).await;
+                // Returns only when the restart did not happen.
+                if restart_onto(&state, &running_id, &build_id, &sig).await
+                    == RestartOutcome::Failed
+                    && watcher.record_failure(&sig)
+                {
+                    eprintln!(
+                        "turbofig daemon: giving up on build {build_id} at {} until the file changes",
+                        sig.path.display()
+                    );
+                }
             }
         }
+    }
+}
+
+/// Why `restart_onto` came back (it never returns on success).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartOutcome {
+    /// Nothing wrong with the build: look again on the next poll (the file
+    /// was still changing, or another drain owns the exit).
+    Retry,
+    /// The build failed the preflight or the `exec`: count it.
+    Failed,
+}
+
+/// Restores SIGPIPE to "ignored", the state Rust's runtime sets at start. A
+/// failed `exec` can leave the default action: `Command::exec` resets SIGPIPE
+/// to the default before it calls `execvp` and does not undo that on failure.
+/// A daemon that keeps serving would then die on the first write to a closed
+/// socket. Restoring it is safer than exiting here: the daemon holds the
+/// folder lock and in-flight state, and an unsupervised daemon has no
+/// launchd to bring it back.
+fn restore_sigpipe_ignore() {
+    // SAFETY: `signal` with SIG_IGN installs no handler code.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
 }
 
@@ -498,42 +583,39 @@ async fn restart_onto(
     running_id: &str,
     new_build_id: &str,
     sig: &BinarySig,
-) {
+) -> RestartOutcome {
     tokio::time::sleep(settle_delay()).await;
     if signature_of(&sig.path).as_ref() != Some(sig) {
-        return; // still being written: look again on the next poll
+        return RestartOutcome::Retry; // still being written: look again on the next poll
     }
     if !preflight(&sig.path).await {
         eprintln!(
             "turbofig daemon: the new build at {} did not start with --version; not restarting",
             sig.path.display()
         );
-        return;
+        return RestartOutcome::Failed;
     }
     if !state.try_begin_draining() {
         // A /control stop or restart is already draining: it ends the process.
-        return;
+        return RestartOutcome::Retry;
     }
     println!(
         "turbofig daemon: detected an upgrade ({running_id} -> {new_build_id}); draining and restarting"
     );
-    let drained = wait_for_drain(
-        || state.jobs_in_flight(),
-        DRAIN_MAX_WAIT,
-        DRAIN_POLL_INTERVAL,
-    )
-    .await;
+    let cap = drain_cap(state.request_timeout);
+    let drained = wait_for_drain(|| state.jobs_in_flight(), cap, DRAIN_POLL_INTERVAL).await;
     if !drained {
         eprintln!(
-            "turbofig daemon: {} job(s) still in flight after {DRAIN_MAX_WAIT:?}; restarting anyway",
+            "turbofig daemon: {} job(s) still in flight after {cap:?}; restarting anyway",
             state.jobs_in_flight()
         );
     }
-    tokio::time::sleep(EXIT_GRACE).await;
+    tokio::time::sleep(exit_grace()).await;
     if state.stop_requested() {
         std::process::exit(0);
     }
     let err = exec_in_place(&sig.path, running_id);
+    restore_sigpipe_ignore();
     eprintln!(
         "turbofig daemon: could not start {}: {err}",
         sig.path.display()
@@ -542,7 +624,20 @@ async fn restart_onto(
         // launchd restarts the daemon on a non-zero exit.
         std::process::exit(crate::supervisor::SUPERVISED_RESTART_EXIT_CODE);
     }
+    // A stop that came in during the failed `exec` still wins.
+    if state.stop_requested() {
+        std::process::exit(0);
+    }
+    // A `/control restart` that joined this drain got a `202` and was not
+    // lost: exit now. Nothing supervises this daemon, so the caller that
+    // asked (`turbofig js`, `turbofig mcp`, the app) starts the next one,
+    // exactly as after a normal unsupervised restart.
+    if crate::control::take_restart_during_drain() {
+        eprintln!("turbofig daemon: honoring the /control restart that arrived during the drain");
+        std::process::exit(0);
+    }
     state.set_draining(false);
+    RestartOutcome::Failed
 }
 
 // ----------------------------------------------------- app and CLI decisions
@@ -620,6 +715,40 @@ pub fn kickstart_headless_service() -> bool {
             .is_ok_and(|s| s.success());
     }
     false
+}
+
+/// How long a caller that asked the daemon to restart waits for it to leave:
+/// at least `base`, and long enough for the daemon's own drain
+/// (`drain_cap`) when the lock info recorded a long request timeout.
+pub fn restart_wait(base: Duration, request_timeout: Option<Duration>) -> Duration {
+    request_timeout.map_or(base, |t| base.max(drain_cap(t) + DRAIN_MARGIN))
+}
+
+/// True when the lock info now shows that a restart the caller asked for took
+/// effect without the lock ever being released: the daemon restarted in place
+/// (the upgrade watcher drained first and `exec`ed, keeping the lock), so its
+/// new image rewrote the lock info with another build id, or a version that
+/// is no longer older than `own_version`. Callers stop waiting for the lock to
+/// go away when this is true. `asked_build_id` is the build id the lock info
+/// held when the restart was asked.
+pub(crate) fn restart_took_effect(
+    asked_build_id: Option<&str>,
+    now: Option<&crate::secure_fs::LockInfo>,
+    own_version: &str,
+) -> bool {
+    let Some(now) = now else {
+        return false;
+    };
+    if matches!((asked_build_id, now.build_id.as_deref()), (Some(a), Some(n)) if a != n) {
+        return true;
+    }
+    // A version that is missing or cannot be parsed says nothing: it must
+    // never count as "no longer older" (`daemon_needs_restart` treats an
+    // unparseable version as "cannot tell", which is not a restart).
+    now.version
+        .as_deref()
+        .is_some_and(|v| semver::Version::parse(v).is_ok())
+        && !daemon_needs_restart(now.version.as_deref(), own_version)
 }
 
 /// True when the lock info a daemon recorded says it is older than `own`, or
@@ -959,5 +1088,137 @@ mod tests {
         assert!(!daemon_needs_restart(Some("0.2.1"), "0.2.1"));
         assert!(!daemon_needs_restart(Some("0.3.0"), "0.2.1"));
         assert!(!daemon_needs_restart(Some("garbage"), "0.2.1"));
+    }
+
+    #[test]
+    fn the_drain_cap_is_60_s_or_the_request_timeout_plus_a_margin() {
+        assert_eq!(
+            drain_cap(Duration::from_secs(30)),
+            Duration::from_secs(60),
+            "the default timeout keeps the 60 s cap"
+        );
+        assert_eq!(drain_cap(Duration::from_secs(45)), Duration::from_secs(60));
+        assert_eq!(drain_cap(Duration::from_secs(46)), Duration::from_secs(61));
+        // A 600 s request timeout: a running job is never cut off at 60 s.
+        assert_eq!(
+            drain_cap(Duration::from_secs(600)),
+            Duration::from_secs(615)
+        );
+    }
+
+    #[test]
+    fn a_caller_waits_at_least_as_long_as_the_daemons_drain() {
+        let base = Duration::from_secs(75);
+        assert_eq!(restart_wait(base, None), base);
+        assert_eq!(restart_wait(base, Some(Duration::from_secs(30))), base);
+        let long = restart_wait(base, Some(Duration::from_secs(600)));
+        assert!(long > drain_cap(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn a_build_that_keeps_failing_is_skipped_until_its_signature_changes() {
+        let bad = sig("/b/turbofig", 7, 100, 50);
+        let mut w = Watcher::new("aa-1".into(), true);
+        let mut hashes = 0;
+        for attempt in 1..=MAX_RESTART_ATTEMPTS {
+            let verdict = w.check(Some(bad.clone()), |_| {
+                hashes += 1;
+                Some("bb-2".into())
+            });
+            assert!(matches!(verdict, Verdict::Upgrade { .. }), "{attempt}");
+            let last = w.record_failure(&bad);
+            assert_eq!(last, attempt == MAX_RESTART_ATTEMPTS);
+        }
+        assert_eq!(hashes, MAX_RESTART_ATTEMPTS);
+        // Skipped now: no hash, no verdict to act on, poll after poll.
+        for _ in 0..5 {
+            let verdict = w.check(Some(bad.clone()), |_| {
+                panic!("must not hash a failed build")
+            });
+            assert_eq!(verdict, Verdict::Unchanged);
+        }
+        // A new file at the same path (new inode) is looked at again.
+        let fixed = sig("/b/turbofig", 8, 100, 90);
+        let verdict = w.check(Some(fixed), |_| Some("cc-3".into()));
+        assert!(matches!(verdict, Verdict::Upgrade { .. }));
+    }
+
+    #[test]
+    fn failures_of_one_signature_do_not_count_against_another() {
+        let a = sig("/b/turbofig", 7, 100, 50);
+        let b = sig("/b/turbofig", 8, 100, 90);
+        let mut w = Watcher::new("aa-1".into(), true);
+        assert!(!w.record_failure(&a));
+        assert!(!w.record_failure(&a));
+        assert!(!w.record_failure(&b), "the count starts again for b");
+    }
+
+    #[test]
+    fn sigpipe_is_ignored_again_after_a_failed_exec() {
+        // `Command::exec` leaves SIGPIPE at the default on failure.
+        // SAFETY: test-only signal disposition changes, restored below.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+        restore_sigpipe_ignore();
+        // SAFETY: `signal` returns the previous disposition.
+        let was = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+        assert_eq!(was, libc::SIG_IGN);
+    }
+
+    fn info(version: Option<&str>, build: Option<&str>) -> crate::secure_fs::LockInfo {
+        crate::secure_fs::LockInfo {
+            pid: Some(1),
+            request_timeout: None,
+            locked: true,
+            version: version.map(str::to_owned),
+            build_id: build.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_restart_took_effect_when_the_build_changed_or_the_version_is_no_longer_older() {
+        let asked = Some("aa-1");
+        // Same daemon still: nothing happened yet.
+        assert!(!restart_took_effect(
+            asked,
+            Some(&info(Some("0.1.9"), Some("aa-1"))),
+            "0.2.0"
+        ));
+        // The new image rewrote the lock info.
+        assert!(restart_took_effect(
+            asked,
+            Some(&info(Some("0.1.9"), Some("bb-2"))),
+            "0.2.0"
+        ));
+        assert!(restart_took_effect(
+            asked,
+            Some(&info(Some("0.2.0"), Some("aa-1"))),
+            "0.2.0"
+        ));
+        // A newer daemon is not "older" either.
+        assert!(restart_took_effect(
+            None,
+            Some(&info(Some("0.3.0"), None)),
+            "0.2.0"
+        ));
+    }
+
+    #[test]
+    fn a_restart_never_took_effect_on_missing_or_unreadable_facts() {
+        assert!(!restart_took_effect("aa-1".into(), None, "0.2.0"));
+        // No version, an unparseable version: "cannot tell" is not "done".
+        assert!(!restart_took_effect(None, Some(&info(None, None)), "0.2.0"));
+        assert!(!restart_took_effect(
+            None,
+            Some(&info(Some("garbage"), None)),
+            "0.2.0"
+        ));
+        // An unknown build id on either side is not a change.
+        assert!(!restart_took_effect(
+            None,
+            Some(&info(Some("0.1.9"), Some("bb-2"))),
+            "0.2.0"
+        ));
     }
 }

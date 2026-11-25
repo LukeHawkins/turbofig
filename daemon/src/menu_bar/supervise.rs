@@ -37,6 +37,16 @@ impl RespawnTracker {
     }
 }
 
+/// True when the health poller must not start the daemon now: Quit is under
+/// way, or the user stopped the daemon on purpose (`turbofig stop` leaves the
+/// `stopped-by-user` marker in `home`). Without the marker check the app
+/// would start the daemon again about 6 s after a stop, which makes `stop`
+/// meaningless and breaks the documented token rotation (stop, delete the
+/// token, start).
+pub fn respawn_held(home: &Path, quitting: bool) -> bool {
+    quitting || crate::secure_fs::stop_marker_present(home)
+}
+
 /// "Start at login" is On when either the app or the headless plist exists.
 pub fn login_item_on(launch_agents_dir: &Path) -> bool {
     crate::cli::autostart_plist_exists(launch_agents_dir)
@@ -130,6 +140,29 @@ mod tests {
         assert!(t.observe(true, false));
         // The count restarted: not again on the next tick.
         assert!(!t.observe(true, false));
+    }
+
+    #[test]
+    fn the_stop_marker_holds_the_respawn_until_it_is_cleared() {
+        let home = tempfile::tempdir().expect("tempdir");
+        assert!(!respawn_held(home.path(), false));
+        assert!(respawn_held(home.path(), true));
+        crate::secure_fs::write_stop_marker(home.path()).unwrap();
+        assert!(respawn_held(home.path(), false));
+        // The tracker never asks for a respawn while the marker holds it.
+        let mut t = RespawnTracker::default();
+        for _ in 0..10 {
+            let held = respawn_held(home.path(), false);
+            assert!(!t.observe(true, held));
+        }
+        // "Start turbofig" clears the marker: the poller works again.
+        crate::secure_fs::clear_stop_marker(home.path());
+        let mut t = RespawnTracker::default();
+        let mut respawned = false;
+        for _ in 0..RESPAWN_AFTER_FAILURES {
+            respawned = t.observe(true, respawn_held(home.path(), false));
+        }
+        assert!(respawned);
     }
 
     #[test]

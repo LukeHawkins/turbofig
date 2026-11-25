@@ -154,7 +154,11 @@ async fn run_bridge_loop(
 
     // A job written while no daemon ran may be hours old: the Figma file can
     // have changed since. Answer it with not_started instead of running it.
-    expire_stale_jobs(inbox, outbox, state.request_timeout).await;
+    // A job that waited in the inbox through an upgrade drain is NOT old: the
+    // draining daemon claims nothing for up to the drain cap, then the next
+    // image starts, so the age limit is the drain cap plus the request timeout
+    // (`stale_job_age_limit`), not the request timeout alone.
+    expire_stale_jobs(inbox, outbox, stale_job_age_limit(state.request_timeout)).await;
 
     // Scan once at startup for any job left in inbox before the watch began.
     scan_and_service(
@@ -197,6 +201,18 @@ async fn run_bridge_loop(
         )
         .await;
     }
+}
+
+/// Slack on top of the age limit, so a small clock step (NTP) never expires a
+/// job that just waited out a drain. A file whose mtime lies in the future has
+/// age 0 and never expires.
+const STALE_JOB_SLACK: Duration = Duration::from_secs(10);
+
+/// The age at which a job left in the inbox counts as old at daemon start.
+/// A job can wait through one upgrade drain (up to `upgrade::drain_cap`) and
+/// then still run for its own request timeout, so the limit covers both.
+fn stale_job_age_limit(request_timeout: Duration) -> Duration {
+    crate::upgrade::drain_cap(request_timeout) + request_timeout + STALE_JOB_SLACK
 }
 
 /// Startup only. Any regular inbox job file older than `max_age` (by mtime)
@@ -243,8 +259,8 @@ async fn expire_stale_jobs(inbox: &Path, outbox: &Path, max_age: Duration) {
     }
 }
 
-/// `not_started` result for an inbox job that waited longer than the request
-/// timeout while no daemon ran.
+/// `not_started` result for an inbox job that waited longer than
+/// `stale_job_age_limit` while no daemon ran.
 fn stale_job_result(age: Duration) -> serde_json::Value {
     serde_json::json!({
         "ok": false,
@@ -402,12 +418,11 @@ async fn scan_and_service(
 
     loop {
         // A draining daemon (an upgrade restart is under way) claims no new
-        // job: the files stay in the inbox for the daemon that starts next.
-        // Routing would refuse them anyway (`RouteError::Draining`), and a
-        // job claimed now would fail instead of waiting.
-        if state.is_draining() {
-            return;
-        }
+        // job that needs a plugin: the files stay in the inbox for the daemon
+        // that starts next. Routing would refuse them anyway
+        // (`RouteError::Draining`), and a job claimed now would fail instead
+        // of waiting. The check is made per entry, after the parse, because
+        // `files` needs no plugin (`drain_claims`).
         match entries.next_entry().await {
             Ok(Some(entry)) => {
                 let path = entry.path();
@@ -572,6 +587,11 @@ async fn scan_and_service(
                     }
                 };
 
+                if !drain_claims(state.is_draining(), &job) {
+                    // Draining: leave the job in the inbox, untouched.
+                    continue;
+                }
+
                 // Parsed successfully: no longer "unready".
                 first_seen.remove(&key);
 
@@ -640,6 +660,14 @@ async fn scan_and_service(
     // scans, so a later file reusing the same name starts fresh.
     first_seen.retain(|k, _| seen_this_scan.contains(k));
     given_up.retain(|k| seen_this_scan.contains(k));
+}
+
+/// True when the scan may claim `job` now. While the daemon drains, only the
+/// ops that need no plugin are claimed: `files` reads the registry, so a
+/// `turbofig js --guide` run during an upgrade is answered at once instead of
+/// waiting for the next image. Every other op waits in the inbox.
+fn drain_claims(draining: bool, job: &Job) -> bool {
+    !draining || matches!(job, Job::Files)
 }
 
 /// Why an inbox entry is unready: an I/O failure (a retry can succeed) or a
@@ -758,6 +786,7 @@ async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
     let out_tmp = outbox.join(format!("{job_id}.json.tmp"));
     let out_final = outbox.join(format!("{job_id}.json"));
     let bytes = result.to_string().into_bytes();
+    let ran = RanState::of(&result);
     let outcome =
         tokio::task::spawn_blocking(move || write_result_blocking(&out_tmp, &out_final, &bytes))
             .await;
@@ -765,7 +794,7 @@ async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             eprintln!("turbofig bridge: write failed for {job_id}: {e}");
-            write_failure_notice(outbox, job_id, &e).await;
+            write_failure_notice(outbox, job_id, &e, ran).await;
         }
         Err(e) => eprintln!("turbofig bridge: write task failed for {job_id}: {e}"),
     }
@@ -775,7 +804,7 @@ async fn write_result(outbox: &Path, job_id: &str, result: serde_json::Value) {
 /// in the log, then try one tiny error result: it can still fit where the
 /// real result did not, and it turns a ~30 s wait for `started_unknown`
 /// into an answer that names the cause.
-async fn write_failure_notice(outbox: &Path, job_id: &str, e: &std::io::Error) {
+async fn write_failure_notice(outbox: &Path, job_id: &str, e: &std::io::Error, ran: RanState) {
     let full = e.raw_os_error() == Some(libc::ENOSPC);
     if full {
         eprintln!(
@@ -791,9 +820,7 @@ async fn write_failure_notice(outbox: &Path, job_id: &str, e: &std::io::Error) {
     let notice = serde_json::json!({
         "ok": false,
         "code": "bridge_error",
-        "error": format!(
-            "the daemon could not write the result file ({cause}); the job may have run, check before resending"
-        ),
+        "error": write_failure_text(&cause, ran),
     });
     let out_tmp = outbox.join(format!("{job_id}.json.tmp"));
     let out_final = outbox.join(format!("{job_id}.json"));
@@ -804,6 +831,52 @@ async fn write_failure_notice(outbox: &Path, job_id: &str, e: &std::io::Error) {
     if !matches!(retried, Ok(Ok(()))) {
         eprintln!("turbofig bridge: could not write an error result for {job_id} either");
     }
+}
+
+/// Whether the job behind a result that could not be written ran. It is read
+/// from the result that was lost, so the notice never claims more than that
+/// result said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RanState {
+    /// The lost result was a success: the job ran.
+    Ran,
+    /// The lost result said the job never reached the plugin (`invalid_job`,
+    /// `not_started`, `busy`, `draining`, `plugin_disconnected` and the
+    /// routing refusals).
+    NotRun,
+    /// Anything else (`started_unknown`, a failure of a job that started, a
+    /// result with no code): it may have run.
+    Unknown,
+}
+
+impl RanState {
+    fn of(result: &serde_json::Value) -> Self {
+        if result.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+            return RanState::Ran;
+        }
+        match result.get("code").and_then(serde_json::Value::as_str) {
+            Some(
+                "invalid_job"
+                | "not_started"
+                | "busy"
+                | "draining"
+                | "plugin_disconnected"
+                | "ambiguous_target"
+                | "file_not_connected",
+            ) => RanState::NotRun,
+            _ => RanState::Unknown,
+        }
+    }
+}
+
+/// The `error` text of the notice written when a result cannot be written.
+fn write_failure_text(cause: &str, ran: RanState) -> String {
+    let what = match ran {
+        RanState::Ran => "the job ran, but its result is lost; check before resending",
+        RanState::NotRun => "the job did not run; you can resend it",
+        RanState::Unknown => "the job may have run, check before resending",
+    };
+    format!("the daemon could not write the result file ({cause}); {what}")
 }
 
 /// Create the `.tmp` with `create_new` and mode 0600. On `AlreadyExists`
@@ -1651,5 +1724,159 @@ mod tests {
             .await
             .expect("open of a FIFO must not block");
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_draining_daemon_claims_files_but_leaves_every_plugin_job_in_the_inbox() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inbox = tmp.path().join("inbox");
+        let outbox = tmp.path().join("outbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&outbox).await.unwrap();
+        tokio::fs::write(inbox.join("f1.json"), br#"{"op":"files"}"#)
+            .await
+            .unwrap();
+        tokio::fs::write(inbox.join("s1.json"), br#"{"op":"status"}"#)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            inbox.join("x1.json"),
+            br#"{"op":"execute","code":"return 1;"}"#,
+        )
+        .await
+        .unwrap();
+
+        let state = Arc::new(crate::state::AppState::with_timeout(Duration::from_millis(
+            100,
+        )));
+        state.set_draining(true);
+        let mut first_seen = HashMap::new();
+        let mut given_up = HashSet::new();
+        let in_flight = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
+        // Wait for the spawned `files` job to write its result.
+        for _ in 0..100 {
+            if outbox.join("f1.json").exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(outbox.join("f1.json")).expect("files result"))
+                .unwrap();
+        assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+        assert!(!inbox.join("f1.json").exists(), "files is claimed");
+        for id in ["s1", "x1"] {
+            assert!(
+                inbox.join(format!("{id}.json")).exists(),
+                "{id} must wait for the next image"
+            );
+            assert!(!outbox.join(format!("{id}.json")).exists(), "{id}");
+        }
+        // Not draining any more: the same scan claims the rest.
+        state.set_draining(false);
+        scan_and_service(
+            &inbox,
+            &outbox,
+            &state,
+            &mut first_seen,
+            &mut given_up,
+            &in_flight,
+        )
+        .await;
+        assert!(!inbox.join("s1.json").exists());
+        assert!(!inbox.join("x1.json").exists());
+    }
+
+    #[test]
+    fn only_files_is_claimed_while_draining() {
+        let files = Job::parse(&serde_json::json!({"op": "files"})).unwrap();
+        let status = Job::parse(&serde_json::json!({"op": "status"})).unwrap();
+        assert!(drain_claims(false, &files));
+        assert!(drain_claims(false, &status));
+        assert!(drain_claims(true, &files));
+        assert!(!drain_claims(true, &status));
+    }
+
+    #[test]
+    fn the_stale_job_age_limit_covers_the_drain_and_the_request_timeout() {
+        let rt = Duration::from_secs(30);
+        let limit = stale_job_age_limit(rt);
+        // A job that waited out a full drain, then ran its whole timeout.
+        assert!(limit >= crate::upgrade::drain_cap(rt) + rt);
+        assert!(limit > rt * 2);
+        // A long request timeout raises the limit with it.
+        assert!(stale_job_age_limit(Duration::from_secs(600)) > Duration::from_secs(1200));
+    }
+
+    #[tokio::test]
+    async fn a_job_that_waited_through_a_drain_is_not_expired_but_an_old_one_is() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let inbox = tmp.path().join("inbox");
+        let outbox = tmp.path().join("outbox");
+        tokio::fs::create_dir_all(&inbox).await.unwrap();
+        tokio::fs::create_dir_all(&outbox).await.unwrap();
+        let rt = Duration::from_secs(30);
+        let age = |name: &str, secs: u64| {
+            let path = inbox.join(name);
+            std::fs::write(&path, br#"{"op":"files"}"#).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(secs))
+                .unwrap();
+        };
+        // Older than the request timeout (30 s) but inside a drain (60 s).
+        age("drained.json", 70);
+        age("ancient.json", 3600);
+        age("fresh.json", 1);
+        expire_stale_jobs(&inbox, &outbox, stale_job_age_limit(rt)).await;
+        assert!(inbox.join("drained.json").exists());
+        assert!(inbox.join("fresh.json").exists());
+        assert!(!inbox.join("ancient.json").exists());
+        assert!(outbox.join("ancient.json").exists());
+    }
+
+    #[test]
+    fn the_write_failure_text_follows_the_code_of_the_lost_result() {
+        use serde_json::json;
+        let never_ran = [
+            "invalid_job",
+            "not_started",
+            "busy",
+            "draining",
+            "plugin_disconnected",
+            "ambiguous_target",
+            "file_not_connected",
+        ];
+        for code in never_ran {
+            let ran = RanState::of(&json!({"ok": false, "code": code}));
+            assert_eq!(ran, RanState::NotRun, "{code}");
+            let text = write_failure_text("the disk is full", ran);
+            assert!(text.contains("did not run"), "{code}: {text}");
+            assert!(!text.contains("may have run"), "{code}: {text}");
+        }
+        let ok = RanState::of(&json!({"ok": true}));
+        assert_eq!(ok, RanState::Ran);
+        assert!(write_failure_text("x", ok).contains("the job ran"));
+        for result in [
+            json!({"ok": false, "code": "started_unknown"}),
+            json!({"ok": false, "error": "boom"}),
+            json!({"ok": false, "code": "io_error"}),
+        ] {
+            let ran = RanState::of(&result);
+            assert_eq!(ran, RanState::Unknown, "{result}");
+            assert!(write_failure_text("x", ran).contains("may have run"));
+        }
+        assert!(write_failure_text("the disk is full", ok).contains("(the disk is full)"));
     }
 }

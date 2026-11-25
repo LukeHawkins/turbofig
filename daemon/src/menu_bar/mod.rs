@@ -361,6 +361,16 @@ fn start_daemon_now(home: &Path) -> Result<(), String> {
     crate::spawn::spawn_detached_daemon(&bin, home).map_err(|e| e.to_string())
 }
 
+/// Starts the daemon because the user asked for it (the menu's "Start
+/// turbofig" item, or the app's own launch): clears the `stopped-by-user`
+/// marker first, so the health poller treats the daemon as wanted again. The
+/// daemon deletes the marker itself when it starts, but a start that fails
+/// must not leave the poller held back.
+fn start_daemon_on_request(home: &Path) -> Result<(), String> {
+    crate::secure_fs::clear_stop_marker(home);
+    start_daemon_now(home)
+}
+
 /// Runs the menu-bar app: acquires the single-instance lock, ensures the
 /// daemon is running, builds the tray icon and menu, starts the background
 /// health poller, then runs the main-thread event loop forever. Never
@@ -432,6 +442,9 @@ pub async fn run_menu_bar_app() {
                     std::process::exit(1);
                 }
             };
+            // The app was opened on purpose: a marker from an earlier stop
+            // no longer holds the daemon down.
+            crate::secure_fs::clear_stop_marker(&home);
             if let Err(e) = crate::spawn::spawn_detached_daemon(&turbofig_binary, &home) {
                 supervise::show_failure_alert(&format!("could not start the daemon: {e}"), &home);
                 std::process::exit(1);
@@ -538,8 +551,13 @@ pub async fn run_menu_bar_app() {
                     )),
                     Err(crate::daemon_client::VerifyError::Unreachable)
                 );
-                let quitting = QUITTING.load(std::sync::atomic::Ordering::SeqCst);
-                if tracker.observe(unreachable, quitting) {
+                // Not while Quit stops the daemon, and not while the user's
+                // own `turbofig stop` holds it down (`stopped-by-user`).
+                let held = supervise::respawn_held(
+                    &poll_home,
+                    QUITTING.load(std::sync::atomic::Ordering::SeqCst),
+                );
+                if tracker.observe(unreachable, held) {
                     if let Err(e) = start_daemon_now(&poll_home) {
                         eprintln!("turbofig: could not restart the daemon: {e}");
                     }
@@ -638,7 +656,15 @@ pub async fn run_menu_bar_app() {
                 let on_disk = app_exe.as_deref().and_then(|exe| {
                     crate::upgrade::bundle_plist_string_of_exe(exe, "TurbofigBuildId")
                 });
-                if relaunch_watch.observe(on_disk.as_deref()) {
+                // Only while the refresh has finished: the plist is written
+                // first, then the binary, then the signature.
+                let settled = app_exe.as_deref().is_some_and(|exe| {
+                    self_update::refresh_settled(
+                        &self_update::bundle_stamps(exe),
+                        std::time::SystemTime::now(),
+                    )
+                });
+                if relaunch_watch.observe_settled(on_disk.as_deref(), settled) {
                     relaunch_for_upgrade(&app_lock);
                 }
             }
@@ -680,7 +706,7 @@ pub async fn run_menu_bar_app() {
             } else if event.id == settings_id {
                 open_or_focus_settings_window(target, &settings_window_handle, &settings_ctx);
             } else if event.id == start_id {
-                if let Err(e) = start_daemon_now(&home) {
+                if let Err(e) = start_daemon_on_request(&home) {
                     eprintln!("turbofig: could not start the daemon: {e}");
                 }
             } else if event.id == quit_id {
