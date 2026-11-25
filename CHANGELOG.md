@@ -60,9 +60,12 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
   build id in its bundle changes. The bare `turbofig` command waits for the app
   to quit, reopens it with `open -n`, and makes sure a daemon runs.
 - The bridge folder lock is taken after both ports are bound. `daemon.lock`
-  records `version` and `buildId`. `turbofig js` restarts an older daemon once
-  (a 0.1.0 daemon, which cannot restart itself in place). A draining daemon
-  leaves new job files in the inbox instead of claiming and failing them.
+  records `version` and `buildId`. `turbofig js` restarts an older daemon once:
+  a 0.1.0 daemon (no lock file) or one whose lock info shows an older version.
+  It never asks the same daemon build twice, and it does not wait out a
+  restart that ends in an in-place `exec`. A draining daemon leaves new job
+  files that need a plugin in the inbox instead of claiming and failing them;
+  `files` is still answered, so `turbofig js --guide` does not wait.
 - First run on the app path prints the Figma steps, the manifest path and an
   "AI agents" line, opens Figma and copies the path. If Figma Desktop is
   missing, it prints the download link. A later bare `turbofig` reopens the
@@ -101,9 +104,11 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
   the port and owner. `turbofig uninstall --purge` lists every file it
   creates and reports truthfully. Full-disk result failures are logged.
 - Menu bar: Start at login never boots out the running app or daemon. The app
-  restarts a dead daemon after 3 failed checks (not after Quit). A Start
-  turbofig menu item and startup failure alerts exist. Settings reflects
-  headless autostart too.
+  restarts a dead daemon after 3 failed checks (not after Quit or `turbofig
+  stop`: `turbofig stop` leaves `~/.turbofig/stopped-by-user`, which the
+  daemon deletes when it starts). A Start turbofig menu item and startup
+  failure alerts exist. Settings reflects headless autostart too. The app
+  relaunches onto a refreshed bundle only after the refresh finishes.
 - A 0.1.0 plugin left open across an upgrade (it connects with `?token=`)
   gets a `WELCOME` and shows its "Reload the plugin" banner, instead of
   reconnecting in silence. A wrong token still gets 401.
