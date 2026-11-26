@@ -460,10 +460,12 @@ fn flock_struct(l_type: libc::c_short) -> libc::flock {
 /// `fcntl` errors that mean the filesystem has no byte-range locks.
 #[cfg(unix)]
 fn lock_errno_means_unsupported(errno: i32) -> bool {
-    matches!(
-        errno,
-        libc::ENOLCK | libc::ENOTSUP | libc::EOPNOTSUPP | libc::ENOSYS
-    )
+    // Plain comparisons, not a `match`: on Linux ENOTSUP == EOPNOTSUPP, so a
+    // pattern list would be an unreachable pattern there (a clippy error in CI).
+    errno == libc::ENOLCK
+        || errno == libc::ENOTSUP
+        || errno == libc::EOPNOTSUPP
+        || errno == libc::ENOSYS
 }
 
 /// Result of `lock_bridge_dir`.

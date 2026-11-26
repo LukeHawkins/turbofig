@@ -1,5 +1,4 @@
 use clap::Parser;
-#[cfg(target_os = "macos")]
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -699,6 +698,7 @@ async fn cmd_run() {
 /// not exit within the deadline, its socket still accepts `OpenAbout`: the
 /// signal would be "delivered" to a dying old app and the refreshed bundle
 /// would never launch, while the output claimed both.
+#[cfg(target_os = "macos")]
 fn open_about_signal_allowed(app_was_running: bool) -> bool {
     !app_was_running
 }
@@ -1648,6 +1648,7 @@ mod tests {
         assert_eq!(calls, 1);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn open_about_is_not_signalled_after_the_app_was_asked_to_quit() {
         assert!(open_about_signal_allowed(false));
