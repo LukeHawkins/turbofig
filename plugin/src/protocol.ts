@@ -82,6 +82,38 @@ export interface ShowLogMessage {
 }
 
 /**
+ * Update check messages. UI to main thread: SET_UPDATE_CHECK (the on/off
+ * setting), SET_UPDATE_LATEST (when the check ran and the version it found),
+ * DISMISS_UPDATE (the version the user closed the banner for). Main thread to
+ * UI: UPDATE_STATE, the stored values, sent on READY. None of them ever
+ * travels over the WebSocket, and the UI drops them from the daemon.
+ */
+export interface SetUpdateCheckMessage {
+  type: "SET_UPDATE_CHECK";
+  enabled: boolean;
+}
+
+export interface SetUpdateLatestMessage {
+  type: "SET_UPDATE_LATEST";
+  lastCheckAt: number;
+  /** Absent when the check failed: the stored version stays. */
+  latestVersion?: string;
+}
+
+export interface DismissUpdateMessage {
+  type: "DISMISS_UPDATE";
+  version: string;
+}
+
+export interface UpdateStateMessage {
+  type: "UPDATE_STATE";
+  enabled: boolean;
+  lastCheckAt: number | null;
+  latestVersion: string | null;
+  dismissedVersion: string | null;
+}
+
+/**
  * Sent by the plugin UI iframe to the plugin main thread to resize the panel.
  * The main thread calls figma.ui.resize with the given dimensions.
  * Never forwarded over the WebSocket.
@@ -99,11 +131,31 @@ export interface ResizeMessage {
 export const ALLOWED_EXTERNAL_URLS: readonly string[] = [
   "https://lukehawkins.eu",
   "https://github.com/LukeHawkins/turbofig",
+  "https://github.com/LukeHawkins/turbofig/releases",
 ];
 
-/** Returns true when `url` is exactly one of the allow-listed external URLs. */
+/** Release page of one version: the only URL family beyond the exact list. */
+const RELEASE_TAG_URL =
+  /^https:\/\/github\.com\/LukeHawkins\/turbofig\/releases\/tag\/v\d{1,6}\.\d{1,6}\.\d{1,6}$/;
+
+/**
+ * Returns true when `url` is exactly one of the allow-listed external URLs,
+ * or the release page of one x.y.z version (.../releases/tag/vX.Y.Z).
+ */
 export function isAllowedExternalUrl(url: unknown): url is string {
-  return typeof url === "string" && ALLOWED_EXTERNAL_URLS.includes(url);
+  return (
+    typeof url === "string" && (ALLOWED_EXTERNAL_URLS.includes(url) || RELEASE_TAG_URL.test(url))
+  );
+}
+
+/**
+ * Returns the bare x.y.z version of a release tag ("v0.2.1" or "0.2.1"), or
+ * null when the tag is not exactly three dotted whole numbers.
+ */
+export function parseReleaseVersion(tag: unknown): string | null {
+  if (typeof tag !== "string") return null;
+  const bare = tag.startsWith("v") ? tag.slice(1) : tag;
+  return /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(bare) ? bare : null;
 }
 
 /**
@@ -300,6 +352,9 @@ export type InboundMessage =
   | ScreenshotMessage
   | SetPortMessage
   | SetShowLogMessage
+  | SetUpdateCheckMessage
+  | SetUpdateLatestMessage
+  | DismissUpdateMessage
   | ResizeMessage
   | OpenUrlMessage
   | ReadyMessage
@@ -345,6 +400,16 @@ export function isInboundMessage(x: unknown): x is InboundMessage {
       return typeof msg.port === "number";
     case "SET_SHOW_LOG":
       return typeof msg.show === "boolean";
+    case "SET_UPDATE_CHECK":
+      return typeof msg.enabled === "boolean";
+    case "SET_UPDATE_LATEST":
+      return (
+        typeof msg.lastCheckAt === "number" &&
+        Number.isFinite(msg.lastCheckAt) &&
+        (msg.latestVersion === undefined || parseReleaseVersion(msg.latestVersion) !== null)
+      );
+    case "DISMISS_UPDATE":
+      return parseReleaseVersion(msg.version) !== null;
     case "RESIZE":
       return typeof msg.width === "number" && typeof msg.height === "number";
     case "OPEN_URL":

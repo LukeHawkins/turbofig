@@ -385,6 +385,93 @@
         opacity: 0.5;
       }
 
+      /* === UPDATE BANNER ================================================= */
+      /* Quiet notice on the main screen when a newer turbofig exists. */
+      .update-banner {
+        font-size: 12px;
+        background: var(--bg-secondary);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        gap: var(--sp-1);
+        padding: 0 var(--sp-1) 0 var(--sp-2);
+      }
+      .update-open {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: none;
+        padding: var(--sp-1) 0;
+        text-align: left;
+        cursor: pointer;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      .update-dismiss {
+        flex-shrink: 0;
+        width: 20px;
+        height: 20px;
+        font: inherit;
+        font-size: 14px;
+        line-height: 1;
+        color: var(--text-secondary);
+        background: none;
+        border: none;
+        border-radius: 4px;
+        padding: 0;
+        cursor: pointer;
+      }
+      .update-dismiss:hover {
+        color: var(--text);
+      }
+      .update-open:focus-visible,
+      .update-dismiss:focus-visible,
+      .about-link:focus-visible {
+        outline: 2px solid var(--bg-brand);
+        outline-offset: 2px;
+      }
+
+      /* === UPDATE SCREEN ================================================= */
+      .update-title {
+        margin: 0;
+        font-size: var(--fs-md);
+        font-weight: 600;
+        color: var(--text);
+      }
+      .update-have {
+        margin: 0;
+        font-size: var(--fs-xs);
+        color: var(--text-secondary);
+      }
+      .update-step {
+        margin: 0;
+        font-size: var(--fs-xs);
+        color: var(--text);
+      }
+      .cmd-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+      .cmd {
+        flex: 1;
+        min-width: 0;
+        font-family: var(--ff-mono);
+        font-size: 12px;
+        color: var(--text);
+        background: var(--bg-secondary);
+        border-radius: 4px;
+        padding: var(--sp-1) var(--sp-2);
+        user-select: all;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
       /* === ICON BUTTONS ================================================== */
       /* Base: square, centered content, 6px radius, smooth hover. */
       .icon-btn {
@@ -710,6 +797,9 @@
       <!-- Stale warning: visible only when daemon and plugin versions differ. -->
       <div id="stale-warning" class="stale-banner" role="alert" style="display:none"><span id="stale-text"></span><button class="reload-btn" type="button">Reload</button></div>
 
+      <!-- Update notice: shown when a newer turbofig exists (see update-check.ts). -->
+      <div id="update-banner" class="update-banner" style="display:none"><button id="update-open" class="update-open" type="button"></button><button id="update-dismiss" class="update-dismiss" type="button" aria-label="Dismiss">&times;</button></div>
+
       <!-- Connection status and copy buttons. -->
       <div class="file-row">
         <span id="conn-status" role="status" aria-live="polite">Connecting...</span>
@@ -777,6 +867,17 @@
           </div>
         </div>
 
+        <!-- Update check setting -->
+        <div class="row-item">
+          <div class="row-text">
+            <p class="row-title" id="update-check-title">Update check</p>
+            <p class="row-desc">Checks GitHub once a day for a newer turbofig.</p>
+          </div>
+          <div class="row-control">
+            <button id="update-check" class="switch" type="button" role="switch" aria-checked="true" aria-labelledby="update-check-title"></button>
+          </div>
+        </div>
+
         <!-- Port -->
         <div class="row-item">
           <div class="row-text">
@@ -821,6 +922,38 @@
         <div>
           <button class="about-link" type="button" data-open-url="https://github.com/LukeHawkins/turbofig">GitHub</button>
         </div>
+      </div>
+    </section>
+
+    <!-- Update screen: how to update turbofig. Reached from the update banner. -->
+    <section id="screen-update" class="screen">
+      <button id="nav-back-update" class="back-btn" type="button" aria-label="Back">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <path d="M9 11L5 7l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Back
+      </button>
+
+      <div>
+        <p id="update-title" class="update-title">turbofig is available</p>
+        <p id="update-have" class="update-have"></p>
+      </div>
+
+      <p class="update-step">In Terminal, run:</p>
+      <div class="cmd-row">
+        <code id="update-cmd" class="cmd">brew upgrade turbofig</code>
+        <button id="copy-update" class="icon-btn ghost-btn" type="button" aria-label="Copy command" data-tooltip="Copy command">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <rect x="2.5" y="4" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M5 4V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <p class="update-step">turbofig restarts itself within about 30 seconds and this plugin reloads.</p>
+      <p class="row-desc" style="margin-top:calc(-1 * var(--sp-1))">Coming from 0.1.0? Run turbofig once after the upgrade.</p>
+
+      <div class="about-links">
+        <button id="update-notes" class="about-link" type="button">What's new</button>
       </div>
     </section>
 

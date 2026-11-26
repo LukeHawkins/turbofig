@@ -11,6 +11,9 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
 
 ### Added
 
+- The plugin tells you when a newer turbofig exists: a dismissible banner and an
+  Update page with the `brew upgrade turbofig` step. It checks GitHub once a
+  day, and you can switch it off in Advanced under "Update check".
 - Screenshots default to 800 px on the longest edge. Set `maxDim` or `fullRes`
   for more. `turbofig js --shot=N` sets the size.
 - `turbofig js`: runs JS or a job JSON from stdin through the file bridge and

@@ -66,9 +66,16 @@ export function isRequestType(type: string): boolean {
 export function daemonMessageAction(type: string): "welcome" | "mode" | "drop" | "relay" {
   /* Only the UI's own Reload button may close the plugin: never the daemon. */
   if (type === "CLOSE_FOR_UPDATE") return "drop";
+  /* The update check is local to the plugin: the daemon never drives it. */
+  if (isUpdateUiType(type) || type === "UPDATE_STATE") return "drop";
   if (type === "WELCOME") return "welcome";
   if (type === "CONNECTION_MODE") return "mode";
   return "relay";
+}
+
+/** Update check types only the UI itself sends to the main thread. */
+function isUpdateUiType(type: unknown): boolean {
+  return type === "SET_UPDATE_CHECK" || type === "SET_UPDATE_LATEST" || type === "DISMISS_UPDATE";
 }
 
 /**
@@ -84,20 +91,23 @@ export function isUiOnlyControlType(type: unknown): boolean {
     type === "CONNECTION_MODE" ||
     type === "WELCOME" ||
     type === "CHALLENGE" ||
-    type === "CLOSE_FOR_UPDATE"
+    type === "CLOSE_FOR_UPDATE" ||
+    isUpdateUiType(type)
   );
 }
 
 /**
  * Decides how the UI handles a message from the main thread.
  * "port": consume it locally to set the port and reconnect (PORT).
+ * "updatestate": consume it locally: the stored update check values (UPDATE_STATE).
  * "fileinfo": store and reflect the file identity (FILE_INFO).
  * "drop": never relay it (a UI-only control type, see isUiOnlyControlType).
  * "relay": forward it over the socket (RESULT and others).
  */
 export function mainMessageAction(
   type: string,
-): "port" | "showlog" | "fileinfo" | "drop" | "relay" {
+): "port" | "showlog" | "updatestate" | "fileinfo" | "drop" | "relay" {
+  if (type === "UPDATE_STATE") return "updatestate";
   if (isUiOnlyControlType(type)) return "drop";
   if (type === "PORT") return "port";
   if (type === "SHOW_LOG") return "showlog";
@@ -441,26 +451,32 @@ export function fillAgentPrompt(
 /** Height of the "Connect to change the Connection setting." hint (text + gap). */
 export const ADV_HINT_HEIGHT = 20;
 /** Advanced screen height with the activity log hidden and the hint shown (rows only). */
-export const ADV_HEIGHT = 369;
+export const ADV_HEIGHT = 451;
 /** Advanced screen height with the activity log shown and the hint shown. */
-export const ADV_HEIGHT_LOG = 483;
+export const ADV_HEIGHT_LOG = 565;
+/** Height the update banner adds to the main screen (banner + gap). */
+export const UPDATE_BANNER_HEIGHT = 40;
+/** Height of the update screen. */
+export const UPDATE_HEIGHT = 296;
 
 /**
  * Returns the panel dimensions for the given screen name.
- * main: compact status view (300 x 150). advanced: full settings view (ADV_HEIGHT_LOG, or ADV_HEIGHT with the activity log hidden), minus ADV_HINT_HEIGHT when the hint is hidden (daemon ready).
- * about: project info view (300 x 375).
+ * main: compact status view (300 x 150), plus UPDATE_BANNER_HEIGHT while the update banner shows. advanced: full settings view (ADV_HEIGHT_LOG, or ADV_HEIGHT with the activity log hidden), minus ADV_HINT_HEIGHT when the hint is hidden (daemon ready).
+ * about: project info view (300 x 375). update: how to update turbofig (UPDATE_HEIGHT).
  */
 export function screenSize(
-  name: "main" | "advanced" | "about",
+  name: "main" | "advanced" | "about" | "update",
   showLog = true,
   hintShown = true,
+  updateBannerShown = false,
 ): { width: number; height: number } {
   if (name === "advanced") {
     const base = showLog ? ADV_HEIGHT_LOG : ADV_HEIGHT;
     return { width: 300, height: hintShown ? base : base - ADV_HINT_HEIGHT };
   }
   if (name === "about") return { width: 300, height: 375 };
-  return { width: 300, height: 150 };
+  if (name === "update") return { width: 300, height: UPDATE_HEIGHT };
+  return { width: 300, height: 150 + (updateBannerShown ? UPDATE_BANNER_HEIGHT : 0) };
 }
 
 /** Returns the daemon's Connection mode when valid, else the default "file". */

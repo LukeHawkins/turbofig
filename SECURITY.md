@@ -163,8 +163,11 @@ could otherwise open the socket and receive the AI's jobs.
 
 ## Data handling
 
-- **turbofig makes no outbound network calls of its own.** The daemon only
-  serves `127.0.0.1`; it never calls out to any remote service.
+- **The daemon makes no outbound network calls.** It only serves
+  `127.0.0.1`; it never calls out to any remote service. The plugin makes one
+  HTTPS GET to `api.github.com` once a day, to read the latest release version
+  so it can tell you about an update. The request carries no user or file
+  data. You can switch it off in Advanced, under "Update check".
 - **The plugin's manifest allows it to reach any domain
   (`networkAccess.allowedDomains: ["*"]`).** See "Residual risks". This is deliberate: Figma
   rejects a wildcard port, so allow-all is the only value that covers a

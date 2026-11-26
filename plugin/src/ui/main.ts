@@ -40,6 +40,15 @@ import {
   trackActiveJobs,
   welcomeHasValidMode,
 } from "./ui-logic";
+import {
+  type FetchLike,
+  fetchLatestVersion,
+  isConnectionError,
+  releaseUrl,
+  runUpdateCheck,
+  UPGRADE_COMMAND,
+  updateBannerVersion,
+} from "./update-check";
 
 /** Build-time constant injected by build-ui.ts via Bun.build define. */
 declare const __PLUGIN_VERSION__: string;
@@ -68,7 +77,7 @@ let connectionMode: ConnectionMode = "file";
 /** "Activity log" setting. Updated when SHOW_LOG arrives and on user choice. */
 let showLog = true;
 /** Name of the screen on show now. */
-let currentScreen: "main" | "advanced" | "about" = "main";
+let currentScreen: "main" | "advanced" | "about" | "update" = "main";
 
 /** Request ids of jobs the plugin is running now (STARTED seen, RESULT not yet). */
 let activeJobs: ReadonlySet<number> = new Set();
@@ -111,6 +120,27 @@ const navMoreBtn = document.getElementById("nav-more") as HTMLButtonElement;
 const navAboutBtn = document.getElementById("nav-about") as HTMLButtonElement;
 const navBackBtn = document.getElementById("nav-back") as HTMLButtonElement;
 const navBackAboutBtn = document.getElementById("nav-back-about") as HTMLButtonElement;
+const navBackUpdateBtn = document.getElementById("nav-back-update") as HTMLButtonElement;
+const updateBannerEl = document.getElementById("update-banner") as HTMLElement;
+const updateOpenBtn = document.getElementById("update-open") as HTMLButtonElement;
+const updateDismissBtn = document.getElementById("update-dismiss") as HTMLButtonElement;
+const updateCheckEl = document.getElementById("update-check") as HTMLButtonElement;
+const updateTitleEl = document.getElementById("update-title") as HTMLElement;
+const updateHaveEl = document.getElementById("update-have") as HTMLElement;
+const updateNotesBtn = document.getElementById("update-notes") as HTMLButtonElement;
+const copyUpdateBtn = document.getElementById("copy-update") as HTMLButtonElement;
+
+/** "Update check" setting and stored values. Set from UPDATE_STATE and on user choice. */
+let updateEnabled = true;
+let updateLastCheckAt: number | null = null;
+let updateLatest: string | null = null;
+let updateDismissed: string | null = null;
+/** True once UPDATE_STATE has arrived: no check runs on guessed defaults. */
+let updateStateKnown = false;
+/** Last status state shown ("connecting", "offline", ...), for the connection error test. */
+let lastConnState = "connecting";
+/** Version the banner shows now, or null when hidden. */
+let bannerVersion: string | null = null;
 
 /** Maximum number of entries kept in the activity log. */
 const LOG_CAP = 20;
@@ -239,6 +269,67 @@ function refreshReload(): void {
   /* The token was reset: the open plugin can never verify again. */
   if (resetReloadEl) resetReloadEl.style.display = linkHealth.failed && !verified ? "" : "none";
   for (const btn of reloadBtns) btn.disabled = reloadDisabled(activeJobs.size);
+  refreshUpdateBanner(bannerOn);
+}
+
+/** Shows or hides the update banner and fits the main panel to it. The stale banner and a connection error win. */
+function refreshUpdateBanner(staleShowing: boolean): void {
+  const override = statusOverride(linkHealth);
+  const next = updateBannerVersion({
+    enabled: updateEnabled,
+    latestVersion: updateLatest,
+    dismissedVersion: updateDismissed,
+    pluginVersion: __PLUGIN_VERSION__,
+    staleShowing,
+    connectionError: isConnectionError(
+      lastConnState,
+      override,
+      hasPairingToken(__TURBOFIG_PAIRING_TOKEN__),
+    ),
+  });
+  const changed = next !== bannerVersion;
+  bannerVersion = next;
+  if (updateBannerEl) {
+    updateBannerEl.style.display = next ? "flex" : "none";
+    if (next) updateOpenBtn.textContent = `turbofig ${next} is available`;
+  }
+  if (changed && currentScreen === "main") resizeForScreen();
+}
+
+/** Fills the update screen from the latest known version. */
+function fillUpdateScreen(): void {
+  const v = updateLatest ?? "";
+  updateTitleEl.textContent = `turbofig ${v} is available`;
+  updateHaveEl.textContent = `You have ${__PLUGIN_VERSION__}`;
+}
+
+/** Runs the daily update check when it is due. A failure is silent and waits a day. */
+let updateCheckRunning = false;
+async function maybeCheckForUpdate(): Promise<void> {
+  if (!updateStateKnown || updateCheckRunning) return;
+  updateCheckRunning = true;
+  try {
+    const out = await runUpdateCheck({
+      enabled: updateEnabled,
+      lastCheckAt: updateLastCheckAt,
+      now: Date.now(),
+      fetchLatest: () => fetchLatestVersion(fetch as unknown as FetchLike),
+    });
+    if (!out.ran || out.lastCheckAt === null) return;
+    updateLastCheckAt = out.lastCheckAt;
+    const msg: Record<string, unknown> = {
+      type: "SET_UPDATE_LATEST",
+      lastCheckAt: out.lastCheckAt,
+    };
+    if (out.latestVersion !== null) {
+      updateLatest = out.latestVersion;
+      msg.latestVersion = out.latestVersion;
+    }
+    parent.postMessage({ pluginMessage: msg }, "*");
+    refreshReload();
+  } finally {
+    updateCheckRunning = false;
+  }
 }
 
 /** Updates the connection status element from a WS lifecycle event. */
@@ -248,6 +339,7 @@ let linkHealth: LinkHealth = INITIAL_LINK_HEALTH;
 function setConnStatus(event: "open" | "close" | "error" | "attempt"): void {
   showConnectionMode();
   const { state } = connStateFromEvent(event, attempt);
+  lastConnState = state;
   if (connStatusEl) {
     const override = event === "open" ? null : statusOverride(linkHealth);
     connStatusEl.textContent = override ?? CONN_LABELS[state] ?? state;
@@ -329,16 +421,27 @@ function setCopiedFeedback(btn: HTMLButtonElement): void {
   }, 1200);
 }
 
+/** Posts a RESIZE for the screen on show now. */
+function resizeForScreen(): void {
+  const { width, height } = screenSize(
+    currentScreen,
+    showLog,
+    !daemonReady(),
+    bannerVersion !== null,
+  );
+  parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
+}
+
 /** Shows the named screen and posts a RESIZE message to resize the plugin panel. */
-function showScreen(name: "main" | "advanced" | "about"): void {
+function showScreen(name: "main" | "advanced" | "about" | "update"): void {
   Array.from(document.querySelectorAll<HTMLElement>(".screen")).forEach((s) => {
     s.classList.remove("active");
   });
   const target = document.getElementById(`screen-${name}`);
   if (target) target.classList.add("active");
   currentScreen = name;
-  const { width, height } = screenSize(name, showLog, !daemonReady());
-  parent.postMessage({ pluginMessage: { type: "RESIZE", width, height } }, "*");
+  if (name === "update") fillUpdateScreen();
+  resizeForScreen();
 }
 
 /* Copy the full fileKey to the clipboard on click. Show a check icon for brief feedback. */
@@ -386,6 +489,50 @@ for (const el of modeSegEls) {
   });
 }
 
+/* Copy the upgrade command. Same check-icon feedback as the other copy buttons. */
+if (copyUpdateBtn) {
+  copyUpdateBtn.addEventListener("click", () => {
+    if (copyUpdateBtn.classList.contains("copied")) return;
+    if (clipboardCopy(UPGRADE_COMMAND)) setCopiedFeedback(copyUpdateBtn);
+  });
+}
+
+/* Banner text opens the update screen. The x hides the banner until a newer version appears. */
+if (updateOpenBtn) updateOpenBtn.addEventListener("click", () => showScreen("update"));
+if (updateDismissBtn) {
+  updateDismissBtn.addEventListener("click", () => {
+    if (!bannerVersion) return;
+    updateDismissed = bannerVersion;
+    parent.postMessage({ pluginMessage: { type: "DISMISS_UPDATE", version: bannerVersion } }, "*");
+    refreshReload();
+  });
+}
+
+/* "What's new" opens the release page of the announced version (the main thread checks the allowlist). */
+if (updateNotesBtn) {
+  updateNotesBtn.addEventListener("click", () => {
+    if (!updateLatest) return;
+    parent.postMessage({ pluginMessage: buildOpenUrlMessage(releaseUrl(updateLatest)) }, "*");
+  });
+}
+
+/* Update check setting: off means no fetch and no banner. */
+function showUpdateCheckSetting(): void {
+  if (updateCheckEl) updateCheckEl.setAttribute("aria-checked", updateEnabled ? "true" : "false");
+}
+if (updateCheckEl) {
+  updateCheckEl.addEventListener("click", () => {
+    updateEnabled = !updateEnabled;
+    showUpdateCheckSetting();
+    parent.postMessage(
+      { pluginMessage: { type: "SET_UPDATE_CHECK", enabled: updateEnabled } },
+      "*",
+    );
+    refreshReload();
+    void maybeCheckForUpdate();
+  });
+}
+
 /* Persist the activity log setting through the main thread. */
 if (showLogEl) {
   showLogEl.addEventListener("click", () => {
@@ -408,6 +555,11 @@ if (navAboutBtn) {
 /* Navigate back to main from the advanced screen. */
 if (navBackBtn) {
   navBackBtn.addEventListener("click", () => showScreen("main"));
+}
+
+/* Navigate back to main from the update screen. */
+if (navBackUpdateBtn) {
+  navBackUpdateBtn.addEventListener("click", () => showScreen("main"));
 }
 
 /* Navigate back to main from the about screen. */
@@ -676,6 +828,18 @@ window.onmessage = (event: MessageEvent) => {
     showLogSetting();
     return;
   }
+  if (action === "updatestate") {
+    updateEnabled = m.enabled !== false;
+    updateLastCheckAt =
+      typeof m.lastCheckAt === "number" && Number.isFinite(m.lastCheckAt) ? m.lastCheckAt : null;
+    updateLatest = typeof m.latestVersion === "string" ? m.latestVersion : null;
+    updateDismissed = typeof m.dismissedVersion === "string" ? m.dismissedVersion : null;
+    updateStateKnown = true;
+    showUpdateCheckSetting();
+    refreshReload();
+    void maybeCheckForUpdate();
+    return;
+  }
   if (action === "fileinfo") {
     latestFileInfo = m as unknown as FileInfoMessage;
     updateFileDisplay();
@@ -705,6 +869,9 @@ for (const btn of reloadBtns) {
     parent.postMessage({ pluginMessage: { type: "CLOSE_FOR_UPDATE" } }, "*");
   });
 }
+
+/* The panel can stay open for days: look again every hour. The check itself runs at most once a day. */
+setInterval(() => void maybeCheckForUpdate(), 60 * 60 * 1000);
 
 // Show the plugin version immediately on load.
 if (pluginVersionEl) pluginVersionEl.textContent = __PLUGIN_VERSION__;

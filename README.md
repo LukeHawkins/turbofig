@@ -360,7 +360,10 @@ No. turbofig needs Figma Desktop on macOS.
 
 ## For teams
 
-- MIT license. Everything runs locally: there is no turbofig server.
+- MIT license. Everything runs locally: there is no turbofig server. The
+  plugin makes one HTTPS GET to `api.github.com` once a day to read the latest
+  release version. It sends no user or file data. Switch it off in Advanced
+  under "Update check".
 - Release binaries are not notarized. The Homebrew formula pins a SHA256
   checksum, and `brew install` verifies it.
 - To remove it, see **Uninstall** in [Get started](#get-started).

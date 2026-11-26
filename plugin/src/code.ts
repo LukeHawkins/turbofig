@@ -18,6 +18,7 @@ import {
   capResultMessage,
   isAllowedExternalUrl,
   isInboundMessage,
+  parseReleaseVersion,
   safeResult,
   serializeNode,
   wrapUserCode,
@@ -428,6 +429,41 @@ async function emitStoredShowLog(figma: PluginAPI, post: (msg: unknown) => void)
   post({ type: "SHOW_LOG", show: stored !== false });
 }
 
+/** clientStorage keys for the update check. */
+const UPDATE_CHECK_KEY = "turbofig:updateCheck";
+const UPDATE_LAST_CHECK_KEY = "turbofig:updateLastCheckAt";
+const UPDATE_LATEST_KEY = "turbofig:updateLatestVersion";
+const UPDATE_DISMISSED_KEY = "turbofig:updateDismissedVersion";
+
+/** Reads one stored value, or undefined when storage is unavailable. */
+async function readStored(figma: PluginAPI, key: string): Promise<unknown> {
+  try {
+    return await figma.clientStorage.getAsync(key);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads the stored update check state (on by default) and posts it via the given sink. */
+async function emitStoredUpdateState(
+  figma: PluginAPI,
+  post: (msg: unknown) => void,
+): Promise<void> {
+  const [enabled, last, latest, dismissed] = await Promise.all([
+    readStored(figma, UPDATE_CHECK_KEY),
+    readStored(figma, UPDATE_LAST_CHECK_KEY),
+    readStored(figma, UPDATE_LATEST_KEY),
+    readStored(figma, UPDATE_DISMISSED_KEY),
+  ]);
+  post({
+    type: "UPDATE_STATE",
+    enabled: enabled !== false,
+    lastCheckAt: typeof last === "number" && Number.isFinite(last) ? last : null,
+    latestVersion: parseReleaseVersion(latest),
+    dismissedVersion: parseReleaseVersion(dismissed),
+  });
+}
+
 /**
  * Builds a ResultMessage for a job that expired while still waiting in the
  * queue: it never ran, so a retry is unconditionally safe.
@@ -543,6 +579,7 @@ export function createDispatcher(
         emitFileInfo(figma, post);
         void emitStoredPort(figma, post);
         void emitStoredShowLog(figma, post);
+        void emitStoredUpdateState(figma, post);
         break;
       case "STATUS":
         post(buildResult(msg, figma.fileKey ?? "", figma.root.name));
@@ -575,6 +612,27 @@ export function createDispatcher(
         figma.clientStorage.setAsync(SHOW_LOG_KEY, msg.show).catch(() => {
           // Persisting failed; the choice still holds for this session.
         });
+        break;
+      case "SET_UPDATE_CHECK":
+        figma.clientStorage.setAsync(UPDATE_CHECK_KEY, msg.enabled).catch(() => {
+          // Persisting failed; the choice still holds for this session.
+        });
+        break;
+      case "SET_UPDATE_LATEST":
+        /* A failed check sends no version: the stored one stays. */
+        figma.clientStorage.setAsync(UPDATE_LAST_CHECK_KEY, msg.lastCheckAt).catch(() => {});
+        if (msg.latestVersion !== undefined) {
+          figma.clientStorage
+            .setAsync(UPDATE_LATEST_KEY, parseReleaseVersion(msg.latestVersion))
+            .catch(() => {});
+        }
+        break;
+      case "DISMISS_UPDATE":
+        figma.clientStorage
+          .setAsync(UPDATE_DISMISSED_KEY, parseReleaseVersion(msg.version))
+          .catch(() => {
+            // Persisting failed; the banner stays hidden for this session.
+          });
         break;
       case "OPEN_URL":
         /* Open an external link only when it is on the allowlist. */
