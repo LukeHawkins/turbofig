@@ -23,9 +23,9 @@ Sources are listed in the Sources section at the end.
 - Several Figma files and several agent sessions can run at once.
 - Screenshots are saved to a file by default. The agent gets a file path,
   not image data in its context, and the image is downscaled so its
-  longest edge is at most 1200 px, unless the agent asks for full
+  longest edge is at most 800 px by default, unless the agent asks for full
   resolution (`daemon/src/mcp.rs`: return mode default `file`, `maxDim`
-  default 1200, `fullRes` default false).
+  default 800, `fullRes` default false).
 - No comments, no REST API access, and no reading a file without Figma
   open.
 
@@ -99,7 +99,7 @@ Sources are listed in the Sources section at the end.
 | Comments | No | Yes | Yes | Not stated |
 | Works without Figma Desktop open | No | Partly | Partly | Yes |
 | Works without adding an MCP server | Yes, file bridge | No | No | No |
-| Screenshots kept small by default | Yes, file + 1200 px | Not stated in their docs | Not stated in their docs | Yes, image link + 1024 px cap (measured) |
+| Screenshots kept small by default | Yes, file + 800 px | Not stated in their docs | Not stated in their docs | Yes, image link + 1024 px cap (measured) |
 
 Tool size and startup time are measured: see
 [bench/results](../bench/results/session-cost-20261007-144824.md) for the

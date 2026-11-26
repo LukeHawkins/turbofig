@@ -1756,7 +1756,7 @@ async fn test_turbofig_execute_eval_error_returns_clean_message() {
 ///
 /// Generates a 2000x1000 RgbaImage, encodes it to PNG, base64-encodes it, and
 /// feeds it through a mock plugin. Asserts:
-///   - default (maxDim=1200, fullRes=false) returns w=1200, h=600 from the decoded image.
+///   - default (maxDim=800, fullRes=false) returns w=800, h=400 from the decoded image.
 ///   - fullRes=true returns the original w=2000, h=1000.
 #[tokio::test]
 async fn test_run_screenshot_real_png_is_downscaled() {
@@ -1824,9 +1824,9 @@ async fn test_run_screenshot_real_png_is_downscaled() {
         }
     });
 
-    // Default: maxDim=1200, fullRes=false. Longest edge 2000 -> scales to 1200x600.
+    // Default: maxDim=800, fullRes=false. Longest edge 2000 -> scales to 800x400.
     let result =
-        turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 1200, false).await;
+        turbofig::run_screenshot(&state, None, None, 1.0, None, "inline", None, 800, false).await;
     assert_eq!(
         result["ok"],
         serde_json::json!(true),
@@ -1834,18 +1834,18 @@ async fn test_run_screenshot_real_png_is_downscaled() {
     );
     assert_eq!(
         result["w"],
-        serde_json::json!(1200u64),
-        "w must equal maxDim=1200 after downscale: {result}"
+        serde_json::json!(800u64),
+        "w must equal maxDim=800 after downscale: {result}"
     );
     assert_eq!(
         result["h"],
-        serde_json::json!(600u64),
-        "h must be proportionally halved to 600 after downscale: {result}"
+        serde_json::json!(400u64),
+        "h must be proportionally halved to 400 after downscale: {result}"
     );
 
     assert_eq!(
         frames.lock().unwrap()[0]["maxDim"],
-        serde_json::json!(1200),
+        serde_json::json!(800),
         "default frame must carry maxDim"
     );
 

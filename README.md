@@ -53,7 +53,7 @@ Install in 2 Terminal lines, no coding needed. See [Get started](#get-started).
   turbofig. No restarting plugins or gateways to get a connection. If the
   link drops, it reconnects on its own.
 - **Screenshots stay small.** Screenshots are saved as files and shrunk
-  to at most 1200 px, so they do not fill up your AI's memory. Full size
+  to 800 px by default, so they do not fill up your AI's memory. Full size
   is there when your AI asks for it.
 - **Multi-file.** Several files and several agent sessions can run at
   once, handy when you juggle clients.
@@ -190,7 +190,7 @@ Set up MCP only when the user asks for it. The default needs no MCP setup.
 |---|---|---|---|---|
 | Tokens for one design session: a 4-step landing page with screenshots | ✓ **134K** | ✗ 375K (2.8× more) | Not tested | Not tested |
 | Time for that session | ✓ **2.9 min** | ✗ 5.9 min, including approval waits | Not tested | Not tested |
-| Tokens for one screenshot of the same frame | ✓ **1,225** | ✗ 3,264 (2.7× more) | Not tested | Not tested |
+| Tokens for one screenshot of the same frame | ✓ **~545** at the 800 px default (computed from the measured frame; 1,225 at 1200 px measured) | ✗ 3,264 at 2000 px, measured (6× more) | Not tested | Not tested |
 | Tokens for 4 small jobs, in apps that load every tool (est.) | ✓ **~57K** | ✗ ~405K (7× more) | Not tested | Not tested |
 | Approval prompts in a 4-job test (tester's usual settings) | ✓ **0** | ✗ 6 | Not tested | Not tested |
 | AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | ✗ 10.3% (41 tools) |
@@ -214,7 +214,7 @@ tool. Every turbofig result was read back from Figma and matched the spec.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmark-overview-dark.svg">
-  <img src="docs/benchmark-overview-light.svg" width="860" alt="Measured side by side. Same prompts, same model (Claude Sonnet 5), one run each, lower is better. Tokens for one design session, a 4-step landing page with a screenshot after each step: turbofig 134,000, figma-console-mcp 375,000 (2.8 times more). Billed cost for that session, in input-token units: turbofig 228,000 total (89,400 for the work, 138,600 for the fixed context), figma-console-mcp 350,000 total, 35 percent more (163,600 for the work, 186,200 for the fixed context). Time for that session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes including approval waits. Tokens for one screenshot of the same frame at default settings: turbofig 1,225 at 1200 pixels, figma-console-mcp 3,264 at 2000 pixels. Session figures leave out time spent recovering from tool failures, on both sides.">
+  <img src="docs/benchmark-overview-light.svg" width="860" alt="Measured side by side. Same prompts, same model (Claude Sonnet 5), one run each, lower is better. Tokens for one design session, a 4-step landing page with a screenshot after each step: turbofig 134,000, figma-console-mcp 375,000 (2.8 times more). Billed cost for that session, in input-token units: turbofig 228,000 total (89,400 for the work, 138,600 for the fixed context), figma-console-mcp 350,000 total, 35 percent more (163,600 for the work, 186,200 for the fixed context). Time for that session: turbofig 2.9 minutes, figma-console-mcp 5.9 minutes including approval waits. Tokens for one screenshot of the same frame at default settings: turbofig about 545 at 800 pixels (computed from the measured 1,225 at 1200 pixels), figma-console-mcp 3,264 at 2000 pixels (measured). Session figures leave out time spent recovering from tool failures, on both sides.">
 </picture>
 
 - **Design session.** Build a landing page in 4 steps and check a

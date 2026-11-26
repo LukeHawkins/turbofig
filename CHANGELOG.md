@@ -11,6 +11,8 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
 
 ### Added
 
+- Screenshots default to 800 px on the longest edge. Set `maxDim` or `fullRes`
+  for more. `turbofig js --shot=N` sets the size.
 - `turbofig js`: runs JS or a job JSON from stdin through the file bridge and
   prints the result. `--shot` builds and screenshots in one call. WELCOME
   carries `binPath`, so the connect prompt names the daemon binary.

@@ -134,6 +134,7 @@ Export and result limits:
 - A queued reply is capped at 16 MiB. An oversized reply becomes an `ok:false` error that names the size.
 - `turbofig_screenshot` scale is clamped to `[0.1, 4]`.
 - `turbofig_screenshot` defaults to file mode. It writes the PNG to the file-bridge outbox and returns the path.
+- `turbofig_screenshot` caps the longest edge at 800 px by default. Pass `maxDim` for another cap or `fullRes: true` for full size.
 
 `instanceByKey` needs a published component. An unpublished component or a wrong key makes `importComponentByKeyAsync` throw. The error is not softened.
 

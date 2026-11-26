@@ -54,9 +54,9 @@ SESSION_TIME_PANEL = {
 SCREENSHOT_PANEL = {
     "type": "simple",
     "title": "Tokens for one screenshot of the same frame, default settings",
-    "turbofig_value": 1225,
+    "turbofig_value": 545,
     "console_value": 3264,
-    "turbofig_label": "1,225 (1200 px)",
+    "turbofig_label": "~545 (800 px, computed)",
     "console_label": "3,264 (2000 px)",
     "note": None,
 }
@@ -288,8 +288,9 @@ def render(theme_name):
         "the fixed context). Time for that session: turbofig 2.9 minutes, "
         "figma-console-mcp 5.9 minutes (includes approval waits). Tokens "
         "for one screenshot of the same frame, default settings: turbofig "
-        "1,225 tokens at 1200 pixels, figma-console-mcp 3,264 tokens at "
-        "2000 pixels.</desc>"
+        "about 545 tokens at 800 pixels (computed from the measured 1,225 "
+        "tokens at 1200 pixels), figma-console-mcp 3,264 tokens at "
+        "2000 pixels (measured).</desc>"
     )
     parts.append(f'<rect x="0" y="0" width="{WIDTH}" height="{total_height}" fill="{c["surface"]}" />')
 

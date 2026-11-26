@@ -4,7 +4,7 @@ now: files>=1 → reply "Ready"; unknown → run a status job, ok → "Ready"; n
 run: {{TURBOFIG_BIN}} js{{BRIDGE_FLAG}} [--file KEY] [--shot] <<'EOF'
 <async js; figma, tf in scope; return ids not nodes>
 EOF
---file: if files>1 (ambiguous_target). --shot: +screenshot of returned node (line 2 .path)
+--file: if files>1 (ambiguous_target). --shot[=N]: optional visual check, +screenshot of returned node, N px (800) (line 2 .path)
 other ops: stdin {"op":"status|get_selection|screenshot"}
 {{RULES}}
 ok:false → act on .code, any exit:

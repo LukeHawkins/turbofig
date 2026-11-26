@@ -74,9 +74,16 @@ pub enum Command {
         /// Target this Figma file (its fileKey).
         #[arg(long)]
         file: Option<String>,
-        /// After an ok result, also screenshot the first node id in it.
-        #[arg(long)]
-        shot: bool,
+        /// After an ok result, also screenshot the first node id in it
+        /// (800 px longest edge). `--shot=N` sets the longest edge to N px (1 to 16384).
+        #[arg(
+            long,
+            num_args = 0..=1,
+            require_equals = true,
+            value_name = "PX",
+            value_parser = clap::value_parser!(u32).range(1..=16384)
+        )]
+        shot: Option<Option<u32>>,
         /// Use this bridge folder (wins over TURBOFIG_BRIDGE_DIR and the default).
         #[arg(long)]
         dir: Option<String>,
@@ -1709,5 +1716,41 @@ mod tests {
         assert!(!msg.starts_with(&format!("turbofig: removed {}", home.display())));
         std::fs::remove_dir_all(&home).ok();
         std::fs::remove_dir_all(&launch_agents_dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod shot_flag_tests {
+    use super::*;
+
+    fn shot_of(args: &[&str]) -> Result<Option<Option<u32>>, clap::Error> {
+        let mut v = vec!["turbofig", "js"];
+        v.extend_from_slice(args);
+        match Cli::try_parse_from(v)?.command {
+            Some(Command::Js { shot, .. }) => Ok(shot),
+            other => panic!("expected js, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shot_forms() {
+        assert_eq!(shot_of(&[]).unwrap(), None);
+        assert_eq!(shot_of(&["--shot"]).unwrap(), Some(None));
+        assert_eq!(shot_of(&["--shot=1200"]).unwrap(), Some(Some(1200)));
+        assert_eq!(shot_of(&["--shot", "--file", "k"]).unwrap(), Some(None));
+    }
+
+    #[test]
+    fn bad_shot_sizes_are_usage_errors() {
+        for bad in [
+            "--shot=0",
+            "--shot=-5",
+            "--shot=abc",
+            "--shot=16385",
+            "--shot=",
+        ] {
+            let e = shot_of(&[bad]).unwrap_err();
+            assert_eq!(e.exit_code(), 2, "{bad}");
+        }
     }
 }

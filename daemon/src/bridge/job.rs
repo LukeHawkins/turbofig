@@ -62,7 +62,7 @@ mod tests {
         match job {
             Job::Screenshot(p) => {
                 assert_eq!(p.scale, 1.0);
-                assert_eq!(p.max_dim, 1200);
+                assert_eq!(p.max_dim, 800);
                 assert!(!p.full_res);
             }
             _ => panic!("expected Screenshot"),

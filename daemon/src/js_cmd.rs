@@ -467,15 +467,17 @@ fn execute(
     wait: Duration,
     alive: &mut dyn FnMut() -> bool,
 ) -> (Vec<u8>, i32) {
-    execute_with(dir, text, file_key, shot, wait, alive, None)
+    execute_with(dir, text, file_key, shot, None, wait, alive, None)
 }
 
 /// `execute` with an optional claim grace for each job (Legacy mode).
+#[allow(clippy::too_many_arguments)]
 fn execute_with(
     dir: &Path,
     text: &str,
     file_key: Option<&str>,
     shot: bool,
+    shot_dim: Option<u32>,
     wait: Duration,
     alive: &mut dyn FnMut() -> bool,
     claim_grace: Option<Duration>,
@@ -514,6 +516,9 @@ fn execute_with(
             let mut shot_job = json!({"op": "screenshot", "nodeId": id});
             if let Some(key) = job.get("fileKey") {
                 shot_job["fileKey"] = key.clone();
+            }
+            if let Some(dim) = shot_dim {
+                shot_job["maxDim"] = json!(dim);
             }
             let (line, _) = run_job_with(dir, &shot_job, wait, alive, claim_grace);
             shot_second_line(&line)
@@ -963,7 +968,14 @@ fn stdin_wait() -> Duration {
 
 /// Sends one job text to the daemon that serves `dir` (`mode` says how to
 /// watch it) and returns the stdout bytes and the exit code.
-fn serve(dir: &Path, mode: Mode, text: &str, file_key: Option<&str>, shot: bool) -> (Vec<u8>, i32) {
+fn serve(
+    dir: &Path,
+    mode: Mode,
+    text: &str,
+    file_key: Option<&str>,
+    shot: bool,
+    shot_dim: Option<u32>,
+) -> (Vec<u8>, i32) {
     // The wait follows the timeout the daemon recorded, not this process's
     // environment (an autostart service can carry a different value).
     let wait = match mode {
@@ -992,7 +1004,16 @@ fn serve(dir: &Path, mode: Mode, text: &str, file_key: Option<&str>, shot: bool)
         }
     };
     let claim_grace = (mode == Mode::Legacy).then_some(LEGACY_CLAIM_GRACE);
-    execute_with(dir, text, file_key, shot, wait, &mut alive, claim_grace)
+    execute_with(
+        dir,
+        text,
+        file_key,
+        shot,
+        shot_dim,
+        wait,
+        &mut alive,
+        claim_grace,
+    )
 }
 
 /// Prints the one JSON line every exit 1 carries, then returns 1.
@@ -1007,7 +1028,13 @@ fn exit_with_bridge_error(msg: &str) -> i32 {
 /// (with `--shot`, line 1 only: a failed screenshot is a `shot_failed` line
 /// on exit 0), 1 no result (always with one JSON line on stdout: `not_started`,
 /// `started_unknown` or `bridge_error`), 2 a usage error (message on stderr).
-pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>, guide: bool) -> i32 {
+pub fn run(
+    file_key: Option<&str>,
+    shot: bool,
+    shot_dim: Option<u32>,
+    dir_arg: Option<&str>,
+    guide: bool,
+) -> i32 {
     if guide {
         return run_guide(dir_arg);
     }
@@ -1069,7 +1096,7 @@ pub fn run(file_key: Option<&str>, shot: bool, dir_arg: Option<&str>, guide: boo
         Ok(m) => m,
         Err(e) => return exit_with_bridge_error(&e),
     };
-    let (out, code) = serve(&dir, mode, &text, file_key, shot);
+    let (out, code) = serve(&dir, mode, &text, file_key, shot, shot_dim);
     let mut stdout = std::io::stdout().lock();
     let _ = stdout.write_all(&out);
     let _ = stdout.flush();
@@ -1120,7 +1147,7 @@ fn run_guide(dir_arg: Option<&str>) -> i32 {
         Ok(m) => m,
         Err(e) => return exit_with_bridge_error(&e),
     };
-    let (out, _) = serve(&dir, mode, "{\"op\":\"files\"}", None, false);
+    let (out, _) = serve(&dir, mode, "{\"op\":\"files\"}", None, false, None);
     let listed = parse_files(&out);
     let dir_text = dir.display().to_string();
     let custom = if default_folder {
@@ -1819,6 +1846,35 @@ mod tests {
             assert_eq!(lines.len(), 2, "{text}");
             assert_eq!(lines[1], shot_reply);
         }
+    }
+
+    #[test]
+    fn shot_with_a_size_sends_it_as_max_dim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = bridge(tmp.path());
+        let fake = fake_daemon(
+            &dir,
+            vec![
+                "{\"ok\":true,\"result\":\"1:2\"}".into(),
+                "{\"ok\":true,\"path\":\"/o/1.png\"}".into(),
+            ],
+        );
+        let (_, c) = execute_with(
+            &dir,
+            "return x;",
+            None,
+            true,
+            Some(1600),
+            WAIT,
+            &mut || true,
+            None,
+        );
+        let got = fake.join().unwrap();
+        assert_eq!(c, 0);
+        assert_eq!(
+            got[1],
+            json!({"op": "screenshot", "nodeId": "1:2", "maxDim": 1600})
+        );
     }
 
     #[test]

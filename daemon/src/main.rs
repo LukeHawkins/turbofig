@@ -235,7 +235,8 @@ fn main() {
     {
         std::process::exit(turbofig::js_cmd::run(
             file.as_deref(),
-            *shot,
+            shot.is_some(),
+            shot.flatten(),
             dir.as_deref(),
             *guide,
         ));

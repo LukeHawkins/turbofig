@@ -117,7 +117,7 @@ pub(crate) struct ScreenshotParams {
     #[schemars(description = "File key; omit when one file is open")]
     pub(crate) file_key: Option<String>,
     #[serde(rename = "maxDim", default = "default_max_dim")]
-    #[schemars(description = "Longest-edge pixel cap, default 1200")]
+    #[schemars(description = "Longest-edge pixel cap, default 800")]
     pub(crate) max_dim: u32,
     #[serde(rename = "fullRes", default)]
     #[schemars(description = "Skip the maxDim downscale")]
@@ -129,7 +129,7 @@ fn default_screenshot_scale() -> f64 {
 }
 
 fn default_max_dim() -> u32 {
-    1200
+    800
 }
 
 /// MCP handler that exposes the four turbofig tools.

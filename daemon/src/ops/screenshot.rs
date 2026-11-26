@@ -260,8 +260,8 @@ mod tests {
 
     #[test]
     fn frame_carries_max_dim_by_default() {
-        let f = screenshot_frame(2.0, Some("1:2"), None, 5000, 1200, false);
-        assert_eq!(f["maxDim"], json!(1200));
+        let f = screenshot_frame(2.0, Some("1:2"), None, 5000, 800, false);
+        assert_eq!(f["maxDim"], json!(800));
         assert_eq!(f["type"], json!("SCREENSHOT"));
     }
 
