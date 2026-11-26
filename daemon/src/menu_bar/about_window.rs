@@ -71,7 +71,7 @@ fn render_about_html(version: &str) -> String {
     ABOUT_HTML_TEMPLATE.replace("__VERSION__", version)
 }
 
-/// Builds the About window: a 420x480, non-resizable, titled "turbofig"
+/// Builds the About window: a 420x482, non-resizable, titled "turbofig"
 /// window hosting a webview over the rendered page, wired to a navigation
 /// handler that intercepts every `turbofig-action://` link, opens the
 /// allow-listed external links (website, GitHub) through
@@ -85,7 +85,7 @@ pub fn create_about_window<T: 'static>(
 ) -> Result<AboutWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig")
-        .with_inner_size(LogicalSize::new(420.0, 480.0))
+        .with_inner_size(LogicalSize::new(420.0, 482.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;

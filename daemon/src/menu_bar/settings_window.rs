@@ -179,7 +179,7 @@ pub(crate) async fn apply_connection_mode(
     }
 }
 
-/// Builds the Settings window: a 420x316, non-resizable, titled "turbofig
+/// Builds the Settings window: a 420x328, non-resizable, titled "turbofig
 /// settings" window hosting a webview over the rendered page. Activates the
 /// app and focuses the window once built; enables the Web Inspector in
 /// debug builds.
@@ -189,7 +189,7 @@ pub fn create_settings_window<T: 'static>(
 ) -> Result<SettingsWindowHandle, String> {
     let window = WindowBuilder::new()
         .with_title("turbofig settings")
-        .with_inner_size(LogicalSize::new(420.0, 316.0))
+        .with_inner_size(LogicalSize::new(420.0, 328.0))
         .with_resizable(false)
         .build(target)
         .map_err(|e| format!("could not create the window: {e}"))?;

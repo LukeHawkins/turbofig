@@ -57,6 +57,10 @@
         height: 100%;
       }
 
+      html {
+        overflow-y: auto;
+      }
+
       body {
         font-family: var(--ff-body);
         font-size: var(--fs-sm);
@@ -268,7 +272,6 @@
       <div class="step">
         <p class="step-title">Start at login</p>
         <p class="muted-line">Keeps turbofig running after you restart your Mac.</p>
-        <p class="muted-line">Quit stops turbofig. The next agent call starts the daemon again, without this icon. Open turbofig to bring the icon back.</p>
       </div>
       <a class="switch" role="switch" aria-checked="__START_AT_LOGIN_CHECKED__" aria-label="Start at login" data-state="__START_AT_LOGIN_STATE__" href="turbofig-action://__START_AT_LOGIN_TOGGLE_ACTION__"></a>
     </div>
