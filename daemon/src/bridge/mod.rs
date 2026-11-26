@@ -841,8 +841,8 @@ enum RanState {
     /// The lost result was a success: the job ran.
     Ran,
     /// The lost result said the job never reached the plugin (`invalid_job`,
-    /// `not_started`, `busy`, `draining`, `plugin_disconnected` and the
-    /// routing refusals).
+    /// `not_started`, `busy`, `draining`, `plugin_disconnected`, `io_error`
+    /// (the job file could not be read) and the routing refusals).
     NotRun,
     /// Anything else (`started_unknown`, a failure of a job that started, a
     /// result with no code): it may have run.
@@ -861,6 +861,7 @@ impl RanState {
                 | "busy"
                 | "draining"
                 | "plugin_disconnected"
+                | "io_error"
                 | "ambiguous_target"
                 | "file_not_connected",
             ) => RanState::NotRun,
@@ -1859,6 +1860,7 @@ mod tests {
             "busy",
             "draining",
             "plugin_disconnected",
+            "io_error",
             "ambiguous_target",
             "file_not_connected",
         ];
@@ -1875,7 +1877,6 @@ mod tests {
         for result in [
             json!({"ok": false, "code": "started_unknown"}),
             json!({"ok": false, "error": "boom"}),
-            json!({"ok": false, "code": "io_error"}),
         ] {
             let ran = RanState::of(&result);
             assert_eq!(ran, RanState::Unknown, "{result}");

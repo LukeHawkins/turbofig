@@ -23,7 +23,8 @@
 //!
 //! The handler itself never blocks on the drain: it replies `202` at once
 //! with `{"ok":true,"action":...,"draining":true}`, then drains and exits in
-//! a background task. A drain can take up to `CONTROL_DRAIN_MAX_WAIT` (60s);
+//! a background task. A `stop` drain takes up to `CONTROL_DRAIN_MAX_WAIT` (60s), a `restart` drain
+//! up to `upgrade::drain_cap` (the same cap the upgrade drain uses);
 //! holding the HTTP response open that whole time (the old behaviour) ties
 //! up a connection and a caller's timeout budget for no reason, since every
 //! real caller (`turbofig stop`, the version-handoff restart, `autostart
@@ -56,17 +57,6 @@ const CONTROL_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// exiting, so the caller's response has time to flush before the process
 /// dies. Mirrors `upgrade.rs`'s `EXIT_GRACE`.
 const CONTROL_EXIT_GRACE: Duration = Duration::from_millis(250);
-
-/// The bridge folder the daemon writes its `stopped-by-user` marker into
-/// (`secure_fs::write_stop_marker`). Set once by `run_daemon`. Unset in an
-/// in-process test, so a test never writes into a real home.
-static MARKER_HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-/// Tells `/control stop` where the `stopped-by-user` marker goes. Called once
-/// at daemon start; a second call changes nothing.
-pub fn set_marker_home(home: &std::path::Path) {
-    let _ = MARKER_HOME.set(home.to_path_buf());
-}
 
 /// Set when a `restart` arrived while another drain (the upgrade watcher's)
 /// was already running. The `202` reply promised that restart, so if the
@@ -195,14 +185,9 @@ pub(crate) async fn control_handler(
         // below then returns false for this caller): a stop must always win
         // over a restart's exit code. See `AppState::request_stop`.
         state.request_stop();
-        // The stop is a user decision: leave the marker that keeps the
-        // menu-bar app from starting the daemon again. Written before the
-        // reply, so a caller that sees the 202 can rely on it.
-        if let Some(home) = MARKER_HOME.get() {
-            if let Err(e) = crate::secure_fs::write_stop_marker(home) {
-                eprintln!("turbofig daemon: could not write the stop marker: {e}");
-            }
-        }
+        // The daemon writes no `stopped-by-user` marker here: app Quit, the
+        // `autostart on` pre-stop and `uninstall` also stop through this
+        // path. Only `turbofig stop` (`cmd_stop`) leaves the marker.
     }
     let began = state.try_begin_draining();
     if !began && action == ControlAction::Restart {
@@ -214,18 +199,15 @@ pub(crate) async fn control_handler(
     if began {
         // Drain and exit in the background: the caller never waits on this,
         // only on /health going unreachable (see this module's doc comment).
+        let cap = drain_cap_for(action, state.request_timeout);
         tokio::spawn(async move {
-            let drained = wait_for_drain(
-                || state.jobs_in_flight(),
-                CONTROL_DRAIN_MAX_WAIT,
-                CONTROL_DRAIN_POLL_INTERVAL,
-            )
-            .await;
+            let drained =
+                wait_for_drain(|| state.jobs_in_flight(), cap, CONTROL_DRAIN_POLL_INTERVAL).await;
             if !drained {
                 eprintln!(
                     "turbofig daemon: {} job(s) still in flight after {:?}; exiting anyway for /control {:?}",
                     state.jobs_in_flight(),
-                    CONTROL_DRAIN_MAX_WAIT,
+                    cap,
                     action,
                 );
             }
@@ -248,6 +230,16 @@ pub(crate) async fn control_handler(
         StatusCode::ACCEPTED,
         Json(json!({"ok": true, "action": action, "draining": true})),
     )
+}
+
+/// How long `action` drains before it exits anyway. A `stop` keeps 60 s:
+/// `turbofig stop` waits 65 s (`STOP_UNREACHABLE_DEADLINE`). A `restart` uses
+/// `upgrade::drain_cap`, because its callers wait that cap plus a margin.
+fn drain_cap_for(action: ControlAction, request_timeout: Duration) -> Duration {
+    match action {
+        ControlAction::Restart => crate::upgrade::drain_cap(request_timeout),
+        _ => CONTROL_DRAIN_MAX_WAIT,
+    }
 }
 
 /// The exit code `/control` uses for `action`, once it is ready to exit.
@@ -275,6 +267,24 @@ fn exit_code_for(action: ControlAction) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_restart_drain_uses_the_drain_cap_and_stop_keeps_60_s() {
+        let long = Duration::from_secs(600);
+        assert_eq!(
+            drain_cap_for(ControlAction::Restart, long),
+            crate::upgrade::drain_cap(long)
+        );
+        assert_eq!(
+            drain_cap_for(ControlAction::Restart, Duration::from_secs(30)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            drain_cap_for(ControlAction::Stop, long),
+            CONTROL_DRAIN_MAX_WAIT
+        );
+    }
+
     #[test]
     fn exit_code_for_stop_is_always_zero() {
         let _guard = crate::supervisor::SUPERVISED_ENV_TEST_LOCK

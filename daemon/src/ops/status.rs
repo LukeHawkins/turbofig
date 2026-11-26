@@ -30,10 +30,14 @@ fn shape(mut v: Value) -> Value {
 ///
 /// On a young daemon with an empty registry it first waits, for at most
 /// `COLD_START_WAIT`, for the first file: a plugin that was open before the
-/// daemon started needs up to ~2 s to reconnect. An older daemon never waits.
+/// daemon started needs up to ~2 s to reconnect. An older daemon never waits, and
+/// neither does a draining one.
 pub async fn run_files(state: &Arc<AppState>) -> Value {
     let deadline = std::time::Instant::now() + COLD_START_WAIT;
-    while state.in_cold_start_grace() && std::time::Instant::now() < deadline {
+    while state.in_cold_start_grace()
+        && !state.is_draining()
+        && std::time::Instant::now() < deadline
+    {
         tokio::time::sleep(COLD_START_POLL).await;
     }
     json!({"ok": true, "plugins": state.named_connections_json()})
@@ -184,6 +188,15 @@ mod tests {
             }
         });
         run_status(&state, None, None).await
+    }
+
+    #[tokio::test]
+    async fn files_does_not_wait_in_the_cold_start_window_while_draining() {
+        let state = Arc::new(AppState::with_timeout(Duration::from_millis(500)));
+        state.set_draining(true);
+        let t = std::time::Instant::now();
+        assert_eq!(run_files(&state).await, json!({"ok": true, "plugins": []}));
+        assert!(t.elapsed() < COLD_START_WAIT - Duration::from_secs(1));
     }
 
     #[tokio::test]

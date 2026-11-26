@@ -620,13 +620,12 @@ async fn restart_onto(
         "turbofig daemon: could not start {}: {err}",
         sig.path.display()
     );
-    if crate::supervisor::is_supervised() {
-        // launchd restarts the daemon on a non-zero exit.
-        std::process::exit(crate::supervisor::SUPERVISED_RESTART_EXIT_CODE);
-    }
-    // A stop that came in during the failed `exec` still wins.
-    if state.stop_requested() {
-        std::process::exit(0);
+    // A stop that came in during the failed `exec` wins, supervised or not:
+    // exit 0 so launchd's `KeepAlive` leaves the daemon stopped.
+    if let Some(code) =
+        failed_exec_exit_code(state.stop_requested(), crate::supervisor::is_supervised())
+    {
+        std::process::exit(code);
     }
     // A `/control restart` that joined this drain got a `202` and was not
     // lost: exit now. Nothing supervises this daemon, so the caller that
@@ -638,6 +637,19 @@ async fn restart_onto(
     }
     state.set_draining(false);
     RestartOutcome::Failed
+}
+
+/// The exit code after a failed in-place `exec`, or `None` to carry on. A
+/// stop always exits 0. Otherwise a supervised daemon exits non-zero so
+/// launchd restarts it.
+fn failed_exec_exit_code(stop_requested: bool, supervised: bool) -> Option<i32> {
+    if stop_requested {
+        Some(0)
+    } else if supervised {
+        Some(crate::supervisor::SUPERVISED_RESTART_EXIT_CODE)
+    } else {
+        None
+    }
 }
 
 // ----------------------------------------------------- app and CLI decisions
@@ -770,6 +782,17 @@ pub fn daemon_needs_restart(lock_version: Option<&str>, own_version: &str) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_during_a_failed_exec_beats_the_supervised_restart_exit() {
+        assert_eq!(failed_exec_exit_code(true, true), Some(0));
+        assert_eq!(failed_exec_exit_code(true, false), Some(0));
+        assert_eq!(
+            failed_exec_exit_code(false, true),
+            Some(crate::supervisor::SUPERVISED_RESTART_EXIT_CODE)
+        );
+        assert_eq!(failed_exec_exit_code(false, false), None);
+    }
 
     fn sig(path: &str, ino: u64, size: u64, mtime: i64) -> BinarySig {
         BinarySig {

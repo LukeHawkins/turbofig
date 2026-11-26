@@ -165,7 +165,10 @@ pub(crate) async fn resolve_route_graced(
         .map(str::to_owned)
         .or_else(|| session_id.and_then(|sid| state.session_lookup(sid)));
     loop {
+        // A draining daemon is about to exit: the settle wait only delays the
+        // answer, so it is skipped.
         if pinned.is_none()
+            && !state.is_draining()
             && state.in_cold_start_settle()
             && state.connections_named().len() == 1
             && Instant::now() < deadline
@@ -525,6 +528,18 @@ mod tests {
             .expect("routes");
         assert_eq!(got.2, "fkA");
         assert!(t.elapsed() >= COLD_START_SETTLE - Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn graced_route_skips_the_settle_wait_while_draining() {
+        let state = AppState::with_timeout(Duration::from_millis(100));
+        let (txa, _rxa) = mpsc::unbounded_channel::<String>();
+        let ida = state.add_connection(txa);
+        state.set_connection_info(ida, "fkA".to_owned(), "A".to_owned());
+        state.set_draining(true);
+        let t = Instant::now();
+        let _ = resolve_route_graced(&state, None, None).await;
+        assert!(t.elapsed() < COLD_START_SETTLE - Duration::from_millis(300));
     }
 
     #[tokio::test]

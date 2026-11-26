@@ -371,6 +371,14 @@ fn start_daemon_on_request(home: &Path) -> Result<(), String> {
     start_daemon_now(home)
 }
 
+/// Clears the `stopped-by-user` marker right after the app takes `app.lock`.
+/// An app launch is always a user decision: a marker from an earlier
+/// `turbofig stop` (or one that outlived a drain) no longer holds the daemon
+/// down, whichever launch branch runs next.
+fn clear_marker_at_app_launch(home: &Path) {
+    crate::secure_fs::clear_stop_marker(home);
+}
+
 /// Runs the menu-bar app: acquires the single-instance lock, ensures the
 /// daemon is running, builds the tray icon and menu, starts the background
 /// health poller, then runs the main-thread event loop forever. Never
@@ -394,6 +402,7 @@ pub async fn run_menu_bar_app() {
             // `relaunch_for_upgrade` explicitly drops it first (see
             // `self_update`): dropping it releases the flock.
             *app_lock.borrow_mut() = Some(lock);
+            clear_marker_at_app_launch(&home);
         }
         Ok(None) => {
             let socket_path = home.join("app.sock");
@@ -844,6 +853,16 @@ fn relaunch_for_upgrade(app_lock: &Rc<RefCell<Option<AppLock>>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_launch_clears_a_stop_marker_that_outlived_its_stop() {
+        let home = tempfile::tempdir().unwrap();
+        crate::secure_fs::write_stop_marker(home.path()).unwrap();
+        assert!(crate::secure_fs::stop_marker_present(home.path()));
+        clear_marker_at_app_launch(home.path());
+        assert!(!crate::secure_fs::stop_marker_present(home.path()));
+        clear_marker_at_app_launch(home.path()); // no marker: fine
+    }
 
     #[test]
     fn returns_false_at_once_when_no_instance_is_running() {

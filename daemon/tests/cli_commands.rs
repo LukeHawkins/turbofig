@@ -73,6 +73,60 @@ async fn stop_stops_a_running_daemon_and_health_goes_unreachable() {
     );
 }
 
+/// Only the CLI `turbofig stop` leaves `stopped-by-user`. The pre-stop of
+/// `autostart on` (app variant), app Quit and `uninstall` stop the daemon
+/// through `/control stop`, which leaves no marker: a hand-opened app then
+/// still starts the daemon.
+#[tokio::test]
+async fn only_the_stop_command_leaves_the_marker_and_a_control_stop_does_not() {
+    let _serial = common::serial_process_test().await;
+    let home = tempfile::tempdir().expect("temp home");
+    let marker = home.path().join("stopped-by-user");
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    // The pre-stop path: `/control stop` only.
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+    stop_daemon(&client, mcp_port, home.path()).await;
+    let _ = daemon.wait().await;
+    assert!(!marker.exists(), "a /control stop must leave no marker");
+
+    // `turbofig stop`: the marker, owner-only.
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
+    wait_for_health(&client, mcp_port).await;
+    let (status, _out, stderr) = run_turbofig(&["stop"], home.path(), mcp_port, ws_port).await;
+    assert!(status.success(), "stderr: {stderr}");
+    let _ = daemon.wait().await;
+    assert!(marker.exists(), "turbofig stop must leave the marker");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&marker).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // Nothing runs and the user asks again: the marker stays.
+    let (status, _out, stderr) = run_turbofig(&["stop"], home.path(), mcp_port, ws_port).await;
+    assert!(status.success(), "stderr: {stderr}");
+    assert!(marker.exists());
+}
+
+/// `turbofig stop` on a missing home (a fresh Mac, or after `uninstall
+/// --purge`) is silent: no warning and no folder created.
+#[tokio::test]
+async fn stop_on_a_missing_home_prints_no_marker_warning() {
+    let _serial = common::serial_process_test().await;
+    let parent = tempfile::tempdir().expect("temp parent");
+    let home = parent.path().join("no-such-home");
+    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (status, stdout, stderr) = run_turbofig(&["stop"], &home, mcp_port, ws_port).await;
+    assert!(status.success(), "stderr: {stderr}");
+    assert!(stdout.contains("no daemon"), "stdout: {stdout}");
+    assert!(!stderr.contains("stop marker"), "stderr: {stderr}");
+    assert!(!home.exists(), "stop must not create the home");
+}
+
 /// `turbofig stop` with a running daemon whose token file was removed (or
 /// no longer matches) must never say "no daemon appears to be running": the
 /// daemon is reachable on /health, so that would be a lie. It must print the

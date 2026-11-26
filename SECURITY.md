@@ -145,13 +145,16 @@ could otherwise open the socket and receive the AI's jobs.
 - **To rotate it:** run `turbofig stop`, delete `~/.turbofig/token`, then run
   `turbofig start`. The daemon creates a new token and rewrites the plugin
   files at start. Then reopen the plugin in Figma. A clean `turbofig stop`
-  leaves the daemon stopped even with autostart on (`turbofig autostart
-  on`) and with the menu-bar app running, so the `turbofig start` step is
-  always required to finish the rotation. The stop writes a marker,
-  `~/.turbofig/stopped-by-user` (mode `0600`), and the app does not start the
-  daemon while the marker exists. The daemon deletes the marker when it
-  starts. The app's "Start turbofig" menu item and `turbofig start` start
-  the daemon and clear it. Quit in the app stops the daemon the same way.
+  keeps the menu-bar app and `turbofig autostart on` from starting the
+  daemon again, so the `turbofig start` step is required to finish the
+  rotation. `turbofig stop` writes a marker, `~/.turbofig/stopped-by-user`
+  (mode `0600`), and the app does not start the daemon while the marker
+  exists. The daemon deletes the marker when it starts. The app clears it at
+  every launch. The app's "Start turbofig" menu item and `turbofig start`
+  start the daemon and clear it. The marker does not stop an agent: a
+  `turbofig js` or `turbofig mcp` call starts the daemon again, by design.
+  Close every agent before you rotate the token. Quit in the app stops the
+  daemon but leaves no marker.
 - **Shared Mac:** each account has its own token. A second account's daemon
   that holds a port cannot read your token. Your clients verify the
   `/health` proof before they send the token, so they refuse that daemon and

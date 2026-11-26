@@ -1009,9 +1009,10 @@ async fn cmd_stop() {
 
     match stop_running_daemon(&client, mcp_port, &home).await {
         Ok(true) => {
-            // The daemon wrote the marker itself (`/control stop`). Write it
-            // again from here: a daemon from before the marker existed did not.
-            leave_stop_marker(&home);
+            // Only `turbofig stop` leaves the marker (the daemon's `/control
+            // stop` never does: app Quit, `autostart on` and `uninstall` use
+            // it too). Skip it when an in-place `exec` brought a daemon back.
+            leave_stop_marker_if_down(&client, mcp_port, &home).await;
             println!("{}", stopped_message());
             if autostart_plist_exists(&agents_dir) {
                 println!("{}", stop_autostart_restart_hint());
@@ -1020,7 +1021,7 @@ async fn cmd_stop() {
         Ok(false) => {
             // Nothing runs, and the user asked for it to stay that way: the
             // menu-bar app must not start a daemon now either.
-            leave_stop_marker(&home);
+            leave_stop_marker_if_down(&client, mcp_port, &home).await;
             println!("{}", stop_nothing_running_message());
         }
         Err(e) => {
@@ -1030,10 +1031,34 @@ async fn cmd_stop() {
     }
 }
 
+/// Leaves the `stopped-by-user` marker, but only while `/health` is still
+/// unreachable after the stop wait: a daemon that an in-place `exec` brought
+/// back must not be held down by a marker the app would then act on.
+async fn leave_stop_marker_if_down(client: &reqwest::Client, mcp_port: u16, home: &Path) {
+    if !turbofig::spawn::wait_for_unreachable(client, mcp_port, Duration::ZERO).await {
+        return;
+    }
+    leave_stop_marker(home);
+}
+
+/// Writes the marker unless `home` does not exist (a fresh Mac, or after
+/// `uninstall --purge`): then there is nothing to hold down, so this is
+/// silent. Returns whether a marker was written.
+fn try_leave_stop_marker(home: &Path) -> std::io::Result<bool> {
+    if !home.is_dir() {
+        return Ok(false);
+    }
+    match turbofig::write_stop_marker(home) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Leaves the `stopped-by-user` marker in `home`. A failure is only a
 /// warning: the app may then start the daemon again.
 fn leave_stop_marker(home: &Path) {
-    if let Err(e) = turbofig::write_stop_marker(home) {
+    if let Err(e) = try_leave_stop_marker(home) {
         eprintln!(
             "turbofig stop: could not write the stop marker in {}: {e}",
             home.display()
@@ -1409,10 +1434,9 @@ async fn run_daemon() {
 
     // This process is the daemon now. A `stopped-by-user` marker from an
     // earlier `turbofig stop` has done its job (it kept the app from starting
-    // this daemon while the user wanted none): delete it. `/control stop`
-    // writes it again into this folder (`control::set_marker_home`).
+    // this daemon while the user wanted none): delete it. Only `turbofig stop`
+    // writes it; the daemon never does.
     turbofig::clear_stop_marker(&bridge_dir);
-    turbofig::set_marker_home(&bridge_dir);
 
     println!(
         "turbofig MCP listening on {}",
@@ -1546,6 +1570,57 @@ async fn run_daemon() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_leaves_a_marker_in_an_existing_home_and_skips_a_missing_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(try_leave_stop_marker(tmp.path()).unwrap());
+        assert!(turbofig::stop_marker_present(tmp.path()));
+        let missing = tmp.path().join("gone");
+        assert!(
+            !try_leave_stop_marker(&missing).unwrap(),
+            "no home: silent skip"
+        );
+        assert!(!missing.exists(), "the skip must not create the home");
+    }
+
+    #[tokio::test]
+    async fn stop_writes_the_marker_only_while_health_is_unreachable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        // A listener that answers /health: a daemon is back, so no marker.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let body = "{\"ok\":true}";
+                let _ = sock
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        leave_stop_marker_if_down(&client, live_port, tmp.path()).await;
+        assert!(!turbofig::stop_marker_present(tmp.path()));
+        // A free port: nothing answers, so the marker is written.
+        let free = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        leave_stop_marker_if_down(&client, free, tmp.path()).await;
+        assert!(turbofig::stop_marker_present(tmp.path()));
+    }
 
     #[test]
     fn the_serve_startup_check_is_skipped_only_after_an_in_place_restart() {

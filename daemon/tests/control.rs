@@ -239,20 +239,19 @@ async fn post_control(client: &reqwest::Client, mcp_port: u16, token: &str, acti
     assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
 }
 
-/// `/control stop` leaves `<home>/stopped-by-user` (0600) so the menu-bar app
-/// does not start the daemon again. A restart leaves none, and a new daemon
-/// deletes a marker that an earlier stop left.
+/// `/control stop` leaves no `<home>/stopped-by-user` marker: app Quit, the
+/// `autostart on` pre-stop and `uninstall` stop through it too, and only
+/// `turbofig stop` (the CLI, not the daemon) writes the marker. A new daemon
+/// deletes a marker that an earlier `turbofig stop` left.
 #[tokio::test]
-async fn control_stop_leaves_the_stop_marker_and_a_new_daemon_deletes_it() {
-    use std::os::unix::fs::PermissionsExt;
+async fn control_stop_and_restart_leave_no_marker_and_a_new_daemon_deletes_one() {
     let home = tempfile::tempdir().expect("temp home");
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
         .expect("build http client");
 
-    // A restart is not a user stop: no marker.
-    {
+    for action in ["restart", "stop"] {
         let (mcp, ws) = (free_port(), free_port());
         let mut daemon = spawn_daemon(home.path(), mcp, ws).await;
         wait_for_health(&client, mcp).await;
@@ -260,48 +259,23 @@ async fn control_stop_leaves_the_stop_marker_and_a_new_daemon_deletes_it() {
             .unwrap()
             .trim()
             .to_owned();
-        post_control(&client, mcp, &token, "restart").await;
+        post_control(&client, mcp, &token, action).await;
+        assert!(
+            !marker_in(home.path()).exists(),
+            "/control {action} must not leave a marker"
+        );
         let status = tokio::task::spawn_blocking(move || daemon.0.wait().expect("wait"))
             .await
             .unwrap();
         assert!(status.success());
         assert!(
             !marker_in(home.path()).exists(),
-            "a restart leaves no marker"
+            "/control {action} leaves no marker after the exit either"
         );
     }
 
-    // A stop leaves it, owner-only.
-    {
-        let (mcp, ws) = (free_port(), free_port());
-        let mut daemon = spawn_daemon(home.path(), mcp, ws).await;
-        wait_for_health(&client, mcp).await;
-        let token = std::fs::read_to_string(home.path().join("token"))
-            .unwrap()
-            .trim()
-            .to_owned();
-        post_control(&client, mcp, &token, "stop").await;
-        // Written before the 202 reply.
-        assert!(
-            marker_in(home.path()).exists(),
-            "stop must leave the marker"
-        );
-        let mode = std::fs::metadata(marker_in(home.path()))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-        let status = tokio::task::spawn_blocking(move || daemon.0.wait().expect("wait"))
-            .await
-            .unwrap();
-        assert!(status.success());
-        assert!(
-            marker_in(home.path()).exists(),
-            "the marker outlives the daemon"
-        );
-    }
-
-    // The next daemon (turbofig start, the menu's Start item, login) deletes it.
+    // A marker left by `turbofig stop` is deleted by the next daemon.
+    turbofig::write_stop_marker(home.path()).unwrap();
     {
         let (mcp, ws) = (free_port(), free_port());
         let _daemon = spawn_daemon(home.path(), mcp, ws).await;

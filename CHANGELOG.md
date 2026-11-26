@@ -105,8 +105,8 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
   creates and reports truthfully. Full-disk result failures are logged.
 - Menu bar: Start at login never boots out the running app or daemon. The app
   restarts a dead daemon after 3 failed checks (not after Quit or `turbofig
-  stop`: `turbofig stop` leaves `~/.turbofig/stopped-by-user`, which the
-  daemon deletes when it starts). A Start turbofig menu item and startup
+  stop`: `turbofig stop` alone leaves `~/.turbofig/stopped-by-user`, which the
+  daemon deletes when it starts and an app launch clears). A Start turbofig menu item and startup
   failure alerts exist. Settings reflects headless autostart too. The app
   relaunches onto a refreshed bundle only after the refresh finishes.
 - A 0.1.0 plugin left open across an upgrade (it connects with `?token=`)
