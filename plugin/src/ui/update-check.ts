@@ -19,11 +19,6 @@ export const UPDATE_FETCH_TIMEOUT_MS = 5000;
 /** The command the Update page shows. */
 export const UPGRADE_COMMAND = "brew upgrade turbofig";
 
-/** Release page of one version, opened from the Update page. */
-export function releaseUrl(version: string): string {
-  return `https://github.com/LukeHawkins/turbofig/releases/tag/v${version}`;
-}
-
 function versionParts(v: string): [number, number, number] | null {
   const bare = parseReleaseVersion(v);
   if (bare === null) return null;

@@ -457,7 +457,7 @@ export const ADV_HEIGHT_LOG = 565;
 /** Height the update banner adds to the main screen (banner + gap). */
 export const UPDATE_BANNER_HEIGHT = 40;
 /** Height of the update screen. */
-export const UPDATE_HEIGHT = 296;
+export const UPDATE_HEIGHT = 226;
 
 /**
  * Returns the panel dimensions for the given screen name.

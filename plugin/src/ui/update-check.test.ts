@@ -15,7 +15,6 @@ import {
   isConnectionError,
   isNewerVersion,
   LATEST_RELEASE_API_URL,
-  releaseUrl,
   runUpdateCheck,
   shouldCheckForUpdate,
   UPDATE_CHECK_INTERVAL_MS,
@@ -234,40 +233,22 @@ describe("banner", () => {
 });
 
 describe("release URLs", () => {
-  test("accepts the releases page and one tag page", () => {
-    expect(isAllowedExternalUrl("https://github.com/LukeHawkins/turbofig/releases")).toBe(true);
-    expect(
-      isAllowedExternalUrl("https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0"),
-    ).toBe(true);
-    expect(isAllowedExternalUrl(releaseUrl("1.20.3"))).toBe(true);
-  });
-  test("rejects other github paths and malformed tags", () => {
+  test("rejects github release and other paths", () => {
     for (const bad of [
-      "https://github.com/LukeHawkins/turbofig/releases/",
+      "https://github.com/LukeHawkins/turbofig/releases",
       "https://github.com/LukeHawkins/turbofig/releases/latest",
-      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3",
-      "https://github.com/LukeHawkins/turbofig/releases/tag/0.3.0",
-      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0/x",
-      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0?x=1",
-      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0#a",
-      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0\n",
+      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0",
       "https://github.com/LukeHawkins/turbofig/issues",
-      "https://github.com/LukeHawkins/turbofig/pulls",
-      "https://github.com/LukeHawkins/other/releases/tag/v0.3.0",
-      "https://github.com/Other/turbofig/releases/tag/v0.3.0",
-      "http://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0",
-      "https://github.com.evil.example/LukeHawkins/turbofig/releases/tag/v0.3.0",
     ]) {
       expect(isAllowedExternalUrl(bad)).toBe(false);
     }
   });
-  test("the main thread opens a release URL and refuses a wrong one", () => {
+  test("the main thread refuses a release URL", () => {
     const opened: string[] = [];
     const figma = { openExternal: (u: string) => opened.push(u) } as unknown as PluginAPI;
     const d = createDispatcher(figma, () => {});
-    d({ type: "OPEN_URL", url: releaseUrl("0.3.0") });
-    d({ type: "OPEN_URL", url: "https://github.com/LukeHawkins/turbofig/issues" });
-    expect(opened).toEqual([releaseUrl("0.3.0")]);
+    d({ type: "OPEN_URL", url: "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0" });
+    expect(opened).toEqual([]);
   });
 });
 

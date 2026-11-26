@@ -44,7 +44,6 @@ import {
   type FetchLike,
   fetchLatestVersion,
   isConnectionError,
-  releaseUrl,
   runUpdateCheck,
   UPGRADE_COMMAND,
   updateBannerVersion,
@@ -127,7 +126,6 @@ const updateDismissBtn = document.getElementById("update-dismiss") as HTMLButton
 const updateCheckEl = document.getElementById("update-check") as HTMLButtonElement;
 const updateTitleEl = document.getElementById("update-title") as HTMLElement;
 const updateHaveEl = document.getElementById("update-have") as HTMLElement;
-const updateNotesBtn = document.getElementById("update-notes") as HTMLButtonElement;
 const copyUpdateBtn = document.getElementById("copy-update") as HTMLButtonElement;
 
 /** "Update check" setting and stored values. Set from UPDATE_STATE and on user choice. */
@@ -505,14 +503,6 @@ if (updateDismissBtn) {
     updateDismissed = bannerVersion;
     parent.postMessage({ pluginMessage: { type: "DISMISS_UPDATE", version: bannerVersion } }, "*");
     refreshReload();
-  });
-}
-
-/* "What's new" opens the release page of the announced version (the main thread checks the allowlist). */
-if (updateNotesBtn) {
-  updateNotesBtn.addEventListener("click", () => {
-    if (!updateLatest) return;
-    parent.postMessage({ pluginMessage: buildOpenUrlMessage(releaseUrl(updateLatest)) }, "*");
   });
 }
 

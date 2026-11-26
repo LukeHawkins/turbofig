@@ -9,11 +9,10 @@ const template = readFileSync(join(import.meta.dir, "ui/template.html"), "utf8")
 const mainTs = readFileSync(join(import.meta.dir, "ui/main.ts"), "utf8");
 
 describe("external link allowlist", () => {
-  test("accepts exactly the 3 allowed URLs", () => {
+  test("accepts exactly the 2 allowed URLs", () => {
     expect(ALLOWED_EXTERNAL_URLS).toEqual([
       "https://lukehawkins.eu",
       "https://github.com/LukeHawkins/turbofig",
-      "https://github.com/LukeHawkins/turbofig/releases",
     ]);
     for (const url of ALLOWED_EXTERNAL_URLS) expect(isAllowedExternalUrl(url)).toBe(true);
   });
@@ -25,6 +24,8 @@ describe("external link allowlist", () => {
       "https://lukehawkins.eu/",
       "https://lukehawkins.eu.evil.example",
       "https://github.com/LukeHawkins/other",
+      "https://github.com/LukeHawkins/turbofig/releases",
+      "https://github.com/LukeHawkins/turbofig/releases/tag/v0.3.0",
       "javascript:alert(1)",
       "",
       42,
@@ -62,10 +63,7 @@ describe("code.ts OPEN_URL", () => {
 describe("UI links", () => {
   test("each external link posts OPEN_URL with an allowed URL", () => {
     const urls = [...template.matchAll(/data-open-url="([^"]+)"/g)].map((m) => m[1]);
-    /* The Update page link is built at run time from the version: no static attribute. */
-    expect(urls.sort()).toEqual(
-      ALLOWED_EXTERNAL_URLS.filter((u) => !u.endsWith("/releases")).sort(),
-    );
+    expect(urls.sort()).toEqual([...ALLOWED_EXTERNAL_URLS].sort());
     for (const url of urls) {
       expect(buildOpenUrlMessage(url)).toEqual({ type: "OPEN_URL", url });
     }

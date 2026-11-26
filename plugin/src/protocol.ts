@@ -131,21 +131,11 @@ export interface ResizeMessage {
 export const ALLOWED_EXTERNAL_URLS: readonly string[] = [
   "https://lukehawkins.eu",
   "https://github.com/LukeHawkins/turbofig",
-  "https://github.com/LukeHawkins/turbofig/releases",
 ];
 
-/** Release page of one version: the only URL family beyond the exact list. */
-const RELEASE_TAG_URL =
-  /^https:\/\/github\.com\/LukeHawkins\/turbofig\/releases\/tag\/v\d{1,6}\.\d{1,6}\.\d{1,6}$/;
-
-/**
- * Returns true when `url` is exactly one of the allow-listed external URLs,
- * or the release page of one x.y.z version (.../releases/tag/vX.Y.Z).
- */
+/** Returns true when `url` is exactly one of the allow-listed external URLs. */
 export function isAllowedExternalUrl(url: unknown): url is string {
-  return (
-    typeof url === "string" && (ALLOWED_EXTERNAL_URLS.includes(url) || RELEASE_TAG_URL.test(url))
-  );
+  return typeof url === "string" && ALLOWED_EXTERNAL_URLS.includes(url);
 }
 
 /**
