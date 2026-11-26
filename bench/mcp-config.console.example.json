@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "figma-console": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "figma-console-mcp@latest"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "figd_REPLACE_ME",
+        "ENABLE_MCP_APPS": "true"
+      }
+    }
+  }
+}

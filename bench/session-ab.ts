@@ -30,6 +30,8 @@ interface Args {
   label: string;
   promptRef?: string;
   promptFile?: string;
+  mcpConfig?: string;
+  mcpServer?: string;
   bin: string;
   runs: number;
   model: string;
@@ -63,6 +65,8 @@ function parseArgs(argv: string[]): Args {
     if (f === "--label") a.label = need(i++, f);
     else if (f === "--prompt-ref") a.promptRef = need(i++, f);
     else if (f === "--prompt-file") a.promptFile = need(i++, f);
+    else if (f === "--mcp-config") a.mcpConfig = need(i++, f);
+    else if (f === "--mcp-server") a.mcpServer = need(i++, f);
     else if (f === "--bin") a.bin = need(i++, f);
     else if (f === "--runs") a.runs = Number(need(i++, f));
     else if (f === "--model") a.model = need(i++, f);
@@ -79,7 +83,11 @@ function parseArgs(argv: string[]): Args {
   a.bridgeDir = resolve(a.bridgeDir.replace(/^~/, homedir()));
   if (!a.compare) {
     if (!a.label) throw new Error("--label is required");
-    if (!a.promptRef && !a.promptFile) throw new Error("--prompt-ref or --prompt-file is required");
+    if (!!a.mcpConfig !== !!a.mcpServer)
+      throw new Error("--mcp-config and --mcp-server must be used together");
+    if (!a.mcpConfig && !a.promptRef && !a.promptFile)
+      throw new Error("--prompt-ref or --prompt-file is required");
+    if (a.mcpConfig) a.mcpConfig = resolve(a.mcpConfig.replace(/^~/, homedir()));
     if (!Number.isInteger(a.runs) || a.runs < 1)
       throw new Error("--runs must be a positive integer");
   }
@@ -219,8 +227,8 @@ interface RunRecord {
   error?: string;
 }
 
-function parseStream(stdout: string) {
-  const uses = new Map<string, { name: string; kind?: Kind }>();
+function parseStream(stdout: string, mcpServer?: string) {
+  const uses = new Map<string, { name: string; kind?: string }>();
   const kinds: Record<string, number> = {};
   const names: Record<string, number> = {};
   let calls = 0;
@@ -242,8 +250,12 @@ function parseStream(stdout: string) {
         calls++;
         const name = String(c.name);
         names[name] = (names[name] ?? 0) + 1;
-        let kind: Kind | undefined;
-        if (name === "Bash") {
+        let kind: string | undefined;
+        if (mcpServer) {
+          const prefix = `mcp__${mcpServer}__`;
+          kind = name.startsWith(prefix) ? name.slice(prefix.length) : "other";
+          kinds[kind] = (kinds[kind] ?? 0) + 1;
+        } else if (name === "Bash") {
           kind = classify(String((c.input as { command?: string } | undefined)?.command ?? ""));
           kinds[kind] = (kinds[kind] ?? 0) + 1;
         }
@@ -273,9 +285,9 @@ function claudeArgs(a: Args, prompt: string): string[] {
     "local",
     "--strict-mcp-config",
     "--mcp-config",
-    '{"mcpServers":{}}',
+    a.mcpConfig ?? '{"mcpServers":{}}',
     "--allowedTools",
-    "Bash,Read",
+    a.mcpServer ? `mcp__${a.mcpServer}__*,Read` : "Bash,Read",
   ];
 }
 
@@ -333,7 +345,7 @@ async function oneRun(a: Args, n: number, fileKey: string, prompt: string): Prom
     pageId = created.page;
     tmp = await mkdtemp(join(tmpdir(), "tf-session-"));
     const stdout = await runClaude(a, prompt, tmp);
-    const s = parseStream(stdout);
+    const s = parseStream(stdout, a.mcpServer);
     const r = s.result ?? {};
     const u = (r.usage ?? {}) as Record<string, number>;
     rec.inputTokens = u.input_tokens ?? 0;
@@ -457,9 +469,10 @@ async function main(): Promise<void> {
     return compare(a.compare[0], a.compare[1]);
   }
   const brief = await loadBrief(a.brief);
-  const tpl = await loadTemplate(a);
+  const tpl = a.mcpConfig && !a.promptRef && !a.promptFile ? "" : await loadTemplate(a);
   const fileKey = a.dryRun ? "DRYRUN_FILE_KEY" : await connectedFileKey(a.bridgeDir);
-  const prompt = `${render(tpl, fileKey, a.bridgeDir, a.bin)}\n\n${brief}`;
+  const setup = tpl ? render(tpl, fileKey, a.bridgeDir, a.bin) : "";
+  const prompt = setup ? `${setup}\n\n${brief}` : brief;
 
   if (a.dryRun) {
     console.log("DRY RUN: nothing is run, the bridge is not touched.\n");

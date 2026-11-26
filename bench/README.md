@@ -320,3 +320,33 @@ bun bench/session-ab.ts --compare /tmp/tf-session-ab/v010.jsonl /tmp/tf-session-
 Add `--dry-run` to print the rendered prompt and the claude command only.
 Keep exactly one Figma file connected. Time is noisy when the machine is
 busy: trust tokens and tool calls more than seconds.
+
+### turbofig vs figma-console-mcp (personal Mac)
+
+MCP target mode runs the same brief against any MCP server. Pass
+`--mcp-config <file>` (JSON with `{"mcpServers":{...}}`) and `--mcp-server
+<name>` (the server key). The run then uses `--strict-mcp-config` with that
+file, allows only `mcp__<name>__*` and `Read` (no Bash), and sends only the
+brief. Add `--prompt-file` for an optional setup prompt for that tool. Tool
+calls are grouped by MCP tool name. Failures count from `tool_result`
+`is_error`.
+
+The turbofig file bridge still creates the scratch page, counts nodes and
+cleans up. The turbofig daemon and plugin must run on the same Mac, connected
+to the same Figma file. Local MCP must be allowed on that Mac.
+
+```
+brew install turbofig
+turbofig serve
+# In one Figma file, import the turbofig plugin and the figma-console-mcp
+# Desktop Bridge plugin, then run both.
+bun bench/session-ab.ts --label turbofig --prompt-ref HEAD --bin "$(which turbofig)" --runs 5
+bun bench/session-ab.ts --label console --mcp-config bench/mcp-config.console.example.json --mcp-server figma-console --runs 5
+bun bench/session-ab.ts --compare /tmp/tf-session-ab/turbofig.jsonl /tmp/tf-session-ab/console.jsonl
+```
+
+`bench/mcp-config.console.example.json` is a sample. Replace the
+`FIGMA_ACCESS_TOKEN` placeholder with your token. figma-console-mcp needs its
+Desktop Bridge plugin open in the file. Check the figma-console-mcp README for
+the current env vars. Both tools use the same model and brief. A free Figma
+account works for both. Time is noisy on a busy machine.
