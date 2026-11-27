@@ -42,7 +42,8 @@ jobs:
         run: cargo build --release
 
       - name: Test
-        run: cargo test
+        # --no-fail-fast: one run reports every failing test binary, not only the first.
+        run: cargo test --no-fail-fast
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings

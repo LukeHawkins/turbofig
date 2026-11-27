@@ -215,14 +215,55 @@ async fn run_with_timeout(mut cmd: tokio::process::Command, limit: Duration) -> 
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The uid that owns the listening socket on `127.0.0.1:<port>`, from
-/// `lsof`. `None` when `lsof` fails, times out or shows nothing. Always
-/// `None` in this crate's unit tests, so a same-user mock server there
-/// reads as a foreign listener.
+/// Reads the owner uid of the listening socket on `127.0.0.1:<port>` (or
+/// `0.0.0.0:<port>`) from the text of `/proc/net/tcp`. `None` when no such
+/// socket is listed, or when the sockets have more than one owner.
+#[cfg(any(target_os = "linux", test))]
+fn parse_proc_net_tcp_uid(table: &str, port: u16) -> Option<u32> {
+    const LISTEN: &str = "0A";
+    let want_port = format!("{port:04X}");
+    let mut uid: Option<u32> = None;
+    for line in table.lines().skip(1) {
+        // sl local_address rem_address st tx:rx tr:when retrnsmt uid ...
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let (Some(local), Some(state), Some(owner)) = (f.get(1), f.get(3), f.get(7)) else {
+            continue;
+        };
+        let Some((addr, p)) = local.split_once(':') else {
+            continue;
+        };
+        if *state != LISTEN || p != want_port || !matches!(addr, "0100007F" | "00000000") {
+            continue;
+        }
+        let v: u32 = owner.parse().ok()?;
+        if uid.is_some_and(|u| u != v) {
+            return None;
+        }
+        uid = Some(v);
+    }
+    uid
+}
+
+/// The uid that owns the listening socket on `127.0.0.1:<port>`: from
+/// `lsof` on macOS, from `/proc/net/tcp` on Linux (no `lsof` there needed;
+/// Linux runs only in CI). `None` when the lookup fails, times out or shows
+/// nothing. Always `None` in this crate's unit tests, so a same-user mock
+/// server there reads as a foreign listener.
 async fn listener_uid(port: u16) -> Option<u32> {
     if cfg!(test) {
         return None;
     }
+    #[cfg(target_os = "linux")]
+    {
+        let table = tokio::fs::read_to_string("/proc/net/tcp").await.ok()?;
+        parse_proc_net_tcp_uid(&table, port)
+    }
+    #[cfg(not(target_os = "linux"))]
+    listener_uid_from_lsof(port).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn listener_uid_from_lsof(port: u16) -> Option<u32> {
     let mut cmd = tokio::process::Command::new("/usr/sbin/lsof");
     cmd.args([
         "-nP",
@@ -841,6 +882,27 @@ mod tests {
         );
         assert_eq!(classify_listener(false, Some(502), 501), Listener::Foreign);
         assert_eq!(classify_listener(false, None, 501), Listener::Foreign);
+    }
+
+    #[test]
+    fn parse_proc_net_tcp_uid_reads_the_listener_owner() {
+        let head = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+        // Port 18846 = 0x499E.
+        let listen = "   0: 0100007F:499E 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 111 1\n";
+        let any = "   1: 00000000:499E 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 112 1\n";
+        let other_port = "   2: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1002        0 113 1\n";
+        let established = "   3: 0100007F:499E 0100007F:D431 01 00000000:00000000 00:00000000 00000000  1003        0 114 1\n";
+        let other_owner = "   4: 00000000:499E 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1004        0 115 1\n";
+        let t = format!("{head}{listen}{other_port}{established}");
+        assert_eq!(parse_proc_net_tcp_uid(&t, 18846), Some(1001));
+        assert_eq!(parse_proc_net_tcp_uid(&t, 8080), Some(1002));
+        assert_eq!(parse_proc_net_tcp_uid(&t, 1), None);
+        let t = format!("{head}{listen}{any}");
+        assert_eq!(parse_proc_net_tcp_uid(&t, 18846), Some(1001));
+        let t = format!("{head}{listen}{other_owner}");
+        assert_eq!(parse_proc_net_tcp_uid(&t, 18846), None);
+        assert_eq!(parse_proc_net_tcp_uid(head, 18846), None);
+        assert_eq!(parse_proc_net_tcp_uid("", 18846), None);
     }
 
     #[test]
