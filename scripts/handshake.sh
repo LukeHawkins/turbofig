@@ -47,6 +47,10 @@ if [ ! -x "${BIN}" ]; then
   (cd "${ROOT}" && cargo build --quiet)
 fi
 
+# /mcp is served only when the Connection setting is MCP; the default is the
+# file bridge. The marker file in the bridge dir selects MCP.
+touch "${BRIDGE_DIR}/mcp-mode"
+
 # Start the daemon in the foreground mode, backgrounded by the shell, so the
 # script owns its PID. Bare `turbofig` is the first-run helper, not the daemon.
 TURBOFIG_MCP_PORT="${PORT}" TURBOFIG_WS_PORT="${WS_PORT}" \

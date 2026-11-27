@@ -203,6 +203,23 @@ async fn an_upgrade_restarts_in_place_and_the_folder_lock_never_drops() {
 
     // The new image adopts the inherited fd, rebinds both ports and serves.
     wait_healthy(&client, env.mcp, 15).await;
+    // The build id lands in the lock info once the new image's startup hash
+    // is done, which can be after /health answers.
+    let want = turbofig::upgrade::build_id_for_file(Path::new(BIN)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while env
+        .lock_info()
+        .and_then(|v| v["buildId"].as_str().map(str::to_owned))
+        .as_deref()
+        != Some(want.as_str())
+    {
+        assert!(
+            Instant::now() < deadline,
+            "no build id after the restart: {:?}",
+            env.lock_info()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let info = env.lock_info().expect("lock info after the restart");
     assert_eq!(info["pid"].as_u64(), Some(pid), "same process: {info}");
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"), "{info}");

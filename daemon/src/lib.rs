@@ -63,8 +63,8 @@ pub use mcp::{build_router, serve, serve_with_state, HELP_TEXT};
 pub use ops::{run_execute, run_get_selection, run_screenshot, run_status};
 pub use plugin_files::{plugin_files_outdated, write_plugin_files};
 pub use secure_fs::{
-    clear_stop_marker, exit_code_for_error, is_refusal, lock_bridge_dir, startup_exit_code,
-    stop_marker_present, write_lock_info, write_stop_marker, LockOutcome,
+    clear_stop_marker, exit_code_for_error, is_refusal, lock_bridge_dir, refresh_lock_info,
+    startup_exit_code, stop_marker_present, write_lock_info, write_stop_marker, LockOutcome,
 };
 pub use state::AppState;
 pub use token::{ensure_token, read_token_file};

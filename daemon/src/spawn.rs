@@ -819,31 +819,47 @@ mod tests {
         let mut fds = [0 as libc::c_int; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let (rd, wr) = (fds[0], fds[1]);
-        let out = tmp.path().join("fds");
+        let out = tmp.path().join("done");
         let fake = tmp.path().join("fake-turbofig");
-        // The fake daemon lists whether fd `wr` is open (/dev/fd/<n>).
+        // The fake daemon writes into fd `wr`. Only an inherited pipe end
+        // carries that write back to `rd`. A check like `[ -e /dev/fd/N ]`
+        // is not enough: the shell reuses free fd numbers for its own files
+        // (dash moves the script fd to 10 and up), so the same number can be
+        // open for another reason.
         std::fs::write(
             &fake,
             format!(
-                "#!/bin/sh\nif [ -e /dev/fd/{wr} ]; then echo open > {o}; else echo closed > {o}; fi\n",
+                "#!/bin/sh\n(echo leaked >&{wr}) 2>/dev/null\necho done > {o}\n",
                 o = out.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         spawn_detached_daemon(&fake, tmp.path()).unwrap();
-        for _ in 0..200 {
+        for _ in 0..400 {
             if out.exists() && std::fs::metadata(&out).unwrap().len() > 0 {
                 break;
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        let got = std::fs::read_to_string(&out).unwrap();
+        assert!(out.exists(), "the fake daemon never ran");
+        // Non-blocking read: this test still holds `wr`, so an empty pipe
+        // gives EAGAIN, never a block.
+        let mut buf = [0u8; 16];
+        let n = unsafe {
+            let flags = libc::fcntl(rd, libc::F_GETFL);
+            libc::fcntl(rd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            libc::read(rd, buf.as_mut_ptr().cast(), buf.len())
+        };
         unsafe {
             libc::close(rd);
             libc::close(wr);
         }
         let _ = std::io::stdin().as_raw_fd();
-        assert_eq!(got.trim(), "closed");
+        assert!(
+            n <= 0,
+            "the child wrote {:?} into the inherited pipe: the fd leaked",
+            String::from_utf8_lossy(&buf[..n.max(0) as usize])
+        );
     }
 }

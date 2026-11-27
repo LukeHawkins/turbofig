@@ -1360,8 +1360,11 @@ async fn run_daemon() {
 
     // Hash this binary now, off the startup path: the lock info and the
     // upgrade watcher need its build id, and a debug build is slow to hash.
+    // The lock info is written without the build id first (startup never
+    // waits for the hash); this adds it once the hash is done.
     std::thread::spawn(|| {
         let _ = turbofig::upgrade::running_build_id();
+        turbofig::refresh_lock_info();
     });
 
     // `spawn_detached_daemon`'s own log rotation only ever runs in the

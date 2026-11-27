@@ -13,6 +13,8 @@ jobs:
   rust:
     name: Rust
     strategy:
+      # Let both OS jobs finish: a failure on one must not cancel the other.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}

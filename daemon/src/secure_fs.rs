@@ -583,8 +583,36 @@ pub fn lock_bridge_dir(
 /// (`LockOutcome::Unsupported`). The new body goes in first and the file is
 /// then cut to its length, so a reader never sees an empty file. `turbofig js`
 /// reads it to size its wait. Best effort.
+///
+/// `buildId` is `null` until the startup hash of the binary is done: this
+/// never waits for it. The hashing thread then calls `refresh_lock_info`,
+/// which writes the same values with the build id.
 #[cfg(unix)]
 pub fn write_lock_info(request_timeout_ms: u64, locked: bool) {
+    let mut args = LOCK_INFO_ARGS.lock().unwrap_or_else(|e| e.into_inner());
+    *args = Some((request_timeout_ms, locked));
+    write_lock_info_now(request_timeout_ms, locked);
+}
+
+/// Writes the lock info again with the values of the last `write_lock_info`,
+/// now with the build id if it is known. A no-op before the first
+/// `write_lock_info`: that write then reads the build id itself.
+#[cfg(unix)]
+pub fn refresh_lock_info() {
+    let args = LOCK_INFO_ARGS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((request_timeout_ms, locked)) = *args {
+        write_lock_info_now(request_timeout_ms, locked);
+    }
+}
+
+/// The arguments of the last `write_lock_info`. Both writers hold this mutex
+/// for the whole write, so a write without the build id can never land after
+/// the one with it.
+#[cfg(unix)]
+static LOCK_INFO_ARGS: std::sync::Mutex<Option<(u64, bool)>> = std::sync::Mutex::new(None);
+
+#[cfg(unix)]
+fn write_lock_info_now(request_timeout_ms: u64, locked: bool) {
     use std::os::unix::fs::FileExt;
     let Some(file) = HELD_LOCK.get() else {
         return;
@@ -596,7 +624,7 @@ pub fn write_lock_info(request_timeout_ms: u64, locked: bool) {
         "requestTimeoutMs": request_timeout_ms,
         "locked": locked,
         "version": crate::mcp::reported_version(),
-        "buildId": crate::upgrade::running_build_id(),
+        "buildId": crate::upgrade::running_build_id_if_ready(),
     })
     .to_string();
     body.push('\n');

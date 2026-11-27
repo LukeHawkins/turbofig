@@ -810,9 +810,21 @@ async fn js_restarts_an_older_daemon_once_and_runs_the_job() {
         .expect("the old daemon must have exited")
         .expect("wait");
     wait_for_health(&client, mcp_port).await;
+    // The build id lands in the lock info once the daemon's startup hash is
+    // done, which can be after /health answers.
+    common::wait_until(
+        || {
+            std::fs::read_to_string(home.path().join("daemon.lock"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(t.trim()).ok())
+                .is_some_and(|v| v["buildId"].is_string())
+        },
+        15_000,
+        "the new daemon's build id in its lock info",
+    )
+    .await;
     let info = read_lock_info(home.path());
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"), "{info}");
-    assert!(info["buildId"].is_string(), "{info}");
     let new_pid = info["pid"].as_u64().unwrap();
     assert_ne!(new_pid, old_pid, "the daemon was restarted");
 
@@ -924,13 +936,15 @@ async fn js_never_asks_the_same_old_daemon_build_twice() {
     let old_lock_info = |home: &Path| {
         let home = home.to_path_buf();
         async move {
+            // Wait for the build id too: it lands once the startup hash is done.
             common::wait_until(
                 || {
-                    std::fs::read_to_string(home.join("daemon.lock"))
-                        .is_ok_and(|t| t.contains("\"version\":\"0.0.1\""))
+                    std::fs::read_to_string(home.join("daemon.lock")).is_ok_and(|t| {
+                        t.contains("\"version\":\"0.0.1\"") && !t.contains("\"buildId\":null")
+                    })
                 },
-                5_000,
-                "the old daemon's lock info",
+                15_000,
+                "the old daemon's lock info with its build id",
             )
             .await;
             read_lock_info(&home)

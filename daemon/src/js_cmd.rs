@@ -720,7 +720,9 @@ fn legacy_needs_restart(verified: bool, health_version: Option<&str>, own_versio
 
 /// The key `js` remembers for a daemon it asked to restart: the build id the
 /// daemon recorded, else its version, else (no lock file) its `/health`
-/// version.
+/// version. A daemon records its build id only once its startup hash is done
+/// (`secure_fs::refresh_lock_info`); a restart asked before that uses the
+/// version key, so at most one extra request can follow for that daemon.
 fn restart_key(build_id: Option<&str>, version: Option<&str>, legacy: bool) -> String {
     if legacy {
         return format!("legacy:{}", version.unwrap_or("unknown"));

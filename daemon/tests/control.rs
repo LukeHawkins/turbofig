@@ -36,7 +36,9 @@ fn free_port() -> u16 {
 
 async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {
     let url = format!("http://127.0.0.1:{mcp_port}/health");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Generous for a busy CI runner: this only bounds how long a real
+    // failure takes to report.
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {

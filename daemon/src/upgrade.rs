@@ -173,12 +173,22 @@ fn current_exe_resolved() -> Option<PathBuf> {
 /// Homebrew binary it came from. Anywhere else it is the hash of the running
 /// binary file, read once at startup.
 pub fn running_build_id() -> Option<&'static str> {
-    static ID: OnceLock<Option<String>> = OnceLock::new();
-    ID.get_or_init(|| {
-        let exe = current_exe_resolved()?;
-        bundle_plist_string_of_exe(&exe, "TurbofigBuildId").or_else(|| build_id_for_file(&exe).ok())
-    })
-    .as_deref()
+    RUNNING_BUILD_ID
+        .get_or_init(|| {
+            let exe = current_exe_resolved()?;
+            bundle_plist_string_of_exe(&exe, "TurbofigBuildId")
+                .or_else(|| build_id_for_file(&exe).ok())
+        })
+        .as_deref()
+}
+
+static RUNNING_BUILD_ID: OnceLock<Option<String>> = OnceLock::new();
+
+/// `running_build_id` when it is already known, else `None`. Never hashes and
+/// never waits: the daemon's startup must not wait for the hash (a debug
+/// binary takes seconds to hash on a busy machine).
+pub fn running_build_id_if_ready() -> Option<&'static str> {
+    RUNNING_BUILD_ID.get().and_then(|id| id.as_deref())
 }
 
 // ------------------------------------------------------------ exec handoff
