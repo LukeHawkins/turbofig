@@ -420,6 +420,19 @@ pub fn daemon_start_binary() -> std::io::Result<PathBuf> {
 
 // -------------------------------------------------------------- the watcher
 
+/// Runs blocking work `f` from async code without stalling a runtime worker:
+/// through `block_in_place` on a multi-thread runtime (the daemon's), else
+/// directly (`block_in_place` would panic on a current-thread runtime).
+fn off_runtime_worker<T>(f: impl FnOnce() -> T) -> T {
+    let multi_thread = tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+    if multi_thread {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
 fn check_interval() -> Duration {
     #[cfg(debug_assertions)]
     if let Some(ms) = std::env::var("TURBOFIG_TEST_UPGRADE_CHECK_MS")
@@ -499,7 +512,13 @@ pub fn exec_in_place(target: &Path, running_id: &str) -> std::io::Error {
 /// launchd it exits with the restart code instead (launchd starts the new
 /// build). A `/control stop` that arrives during the drain always wins.
 pub async fn run_upgrade_watcher(state: Arc<AppState>) {
-    let Some(running_id) = running_build_id().map(str::to_owned) else {
+    // The startup hash may still be running (a debug binary takes seconds):
+    // wait for it on a blocking thread, never on a runtime worker.
+    let running_id = tokio::task::spawn_blocking(|| running_build_id().map(str::to_owned))
+        .await
+        .ok()
+        .flatten();
+    let Some(running_id) = running_id else {
         eprintln!("turbofig daemon: cannot read its own build id; not watching for upgrades");
         return;
     };
@@ -522,7 +541,8 @@ pub async fn run_upgrade_watcher(state: Arc<AppState>) {
             continue;
         };
         let sig = signature_of(&path);
-        let verdict = watcher.check(sig, |p| build_id_for_file(p).ok());
+        // A changed binary is hashed in full: keep that off the runtime worker.
+        let verdict = off_runtime_worker(|| watcher.check(sig, |p| build_id_for_file(p).ok()));
         if verdict == Verdict::Unresolved {
             unresolved += 1;
             if should_log_binary_gone(unresolved) {

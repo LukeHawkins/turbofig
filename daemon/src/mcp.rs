@@ -679,7 +679,15 @@ fn build_router_with_keep_alive(state: Arc<AppState>, keep_alive: Duration) -> a
     // middleware only to the routes already added to this sub-router, so a
     // later `.merge()` into the full router never widens its reach.
     let protected = axum::Router::new()
-        .route("/job", axum::routing::post(job_handler))
+        // The same 30 MiB cap as a bridge job file. Without it axum's 2 MiB
+        // default refused a larger execute job from `turbofig mcp` with a
+        // plain-text 413 the proxy reported as an unreadable response.
+        .route(
+            "/job",
+            axum::routing::post(job_handler).layer(axum::extract::DefaultBodyLimit::max(
+                crate::bridge::MAX_JOB_BYTES as usize,
+            )),
+        )
         .route(
             "/control",
             axum::routing::post(crate::control::control_handler),
@@ -1114,6 +1122,25 @@ mod tests {
             .expect("read body");
         let value: Value = serde_json::from_slice(&bytes).expect("valid JSON body");
         (status, value)
+    }
+
+    /// A job over axum's 2 MiB default body limit is accepted like a bridge
+    /// job (30 MiB cap): the handler answers with JSON, never a 413.
+    #[tokio::test]
+    async fn job_accepts_a_body_over_2_mib() {
+        let state = Arc::new(AppState::with_timeout(std::time::Duration::from_millis(
+            100,
+        )));
+        let router = build_router(state.clone());
+        let code = format!("return {:?};", "x".repeat(3 * 1024 * 1024));
+        let (status, body) = post_job(
+            router,
+            state.token(),
+            json!({"op": "execute", "code": code}),
+        )
+        .await;
+        assert_ne!(status, axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(body.get("ok").is_some(), "{body}");
     }
 
     /// POST a job body to `/job` on `router`, with a valid bearer `token` and,

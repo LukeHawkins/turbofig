@@ -20,6 +20,21 @@ import {
 // UI bootstrap (source guard)
 // ---------------------------------------------------------------------------
 
+/** Poll until `cond` is true. Fails with a clear message on timeout. */
+async function waitUntil(
+  cond: () => boolean,
+  what: string,
+  timeoutMs = 2000,
+  intervalMs = 5,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline)
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 describe("showUI bootstrap", () => {
   const src = readFileSync(join(import.meta.dir, "code.ts"), "utf8");
 
@@ -739,7 +754,7 @@ describe("createDispatcher", () => {
       requestId: 3,
       code: "return 3;",
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await waitUntil(() => posted.filter((m) => m.type === "RESULT").length >= 3, "3 RESULT frames");
     // Only RESULT completion order matters here: each job also posts a
     // STARTED frame first (see "each queued job announces STARTED..." below).
     for (const msg of posted) {
@@ -755,7 +770,7 @@ describe("createDispatcher", () => {
     );
     dispatch({ type: "EXECUTE", requestId: 1, code: "return 1;" });
     dispatch({ type: "GET_SELECTION", requestId: 2 });
-    await new Promise((r) => setTimeout(r, 30));
+    await waitUntil(() => posted.length >= 4, "4 posted frames");
     expect(posted.map((m) => [m.type, m.requestId])).toEqual([
       ["STARTED", 1],
       ["RESULT", 1],
@@ -775,7 +790,12 @@ describe("createDispatcher", () => {
       code: "await new Promise((r) => setTimeout(r, 50)); return 1;",
     });
     dispatch({ type: "GET_SELECTION", requestId: 2, timeoutMs: 10 });
-    await new Promise((r) => setTimeout(r, 100));
+    // Poll for job 2's expiry RESULT so the negative check runs after the
+    // queue has fully drained, not after a fixed window.
+    await waitUntil(
+      () => posted.some((m) => m.type === "RESULT" && m.requestId === 2),
+      "RESULT for job 2",
+    );
     const startedForJob2 = posted.find((m) => m.type === "STARTED" && m.requestId === 2);
     expect(startedForJob2).toBeUndefined();
   });
@@ -790,7 +810,7 @@ describe("createDispatcher", () => {
       requestId: 4,
       code: `return "x".repeat(17 * 1024 * 1024);`,
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitUntil(() => posted.some((m) => m.type === "RESULT"), "capped RESULT", 5000);
     const result = posted.find((m) => m.type === "RESULT");
     expect(result?.ok).toBe(false);
     expect(result?.error).toContain("result too large");
@@ -843,7 +863,7 @@ describe("createDispatcher", () => {
     // Enqueued right behind job 1: its 10ms deadline is stamped now, and
     // elapses long before job 1 finishes and job 2 reaches the front.
     dispatch({ type: "GET_SELECTION", requestId: 2, timeoutMs: 10 });
-    await new Promise((r) => setTimeout(r, 100));
+    await waitUntil(() => posted.some((m) => m.requestId === 2), "reply for job 2");
     const second = posted.find((m) => m.requestId === 2);
     expect(second?.ok).toBe(false);
     expect(second?.error).toContain("expired in the queue");
@@ -868,7 +888,7 @@ describe("createDispatcher", () => {
       posted.push(m as { type?: string; requestId?: number; ok?: boolean; error?: string }),
     );
     dispatch({ type: "SCREENSHOT", requestId: 9, timeoutMs: 20 });
-    await new Promise((r) => setTimeout(r, 60));
+    await waitUntil(() => posted.some((m) => m.type === "RESULT"), "timed-out RESULT");
     const result = posted.find((m) => m.type === "RESULT");
     expect(result?.ok).toBe(false);
     expect(result?.error).toContain("timed out");
@@ -881,7 +901,7 @@ describe("createDispatcher", () => {
       posted.push(m as { type?: string; requestId?: number; ok?: boolean }),
     );
     dispatch({ type: "GET_SELECTION", requestId: 11 });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitUntil(() => posted.some((m) => m.type === "RESULT"), "RESULT for job 11");
     const result = posted.find((m) => m.type === "RESULT");
     expect(result?.requestId).toBe(11);
     expect(result?.ok).toBe(true);
@@ -898,7 +918,10 @@ describe("createDispatcher", () => {
     });
     dispatch({ type: "EXECUTE", requestId: 1, code: "return 1;" });
     dispatch({ type: "EXECUTE", requestId: 2, code: "return 2;" });
-    await new Promise((r) => setTimeout(r, 20));
+    await waitUntil(
+      () => posted.some((m) => m.type === "RESULT" && m.requestId === 2),
+      "RESULT for job 2",
+    );
     expect(posted.map((m) => [m.type, m.requestId])).toEqual([
       ["STARTED", 1],
       ["STARTED", 2],

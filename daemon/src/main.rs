@@ -1353,6 +1353,36 @@ async fn bind_listener(addr: &str, patient: bool) -> std::io::Result<tokio::net:
     Err(last.unwrap_or_else(|| std::io::Error::other("bind failed")))
 }
 
+/// Keeps an existing app bundle current across a `brew upgrade`: never
+/// creates one here (the first run decides when a bundle is first created),
+/// only refreshes one that is already there and out of date. Blocking file
+/// work and `codesign`: `run_daemon` calls it on a blocking thread after the
+/// servers answer.
+///
+/// Never from the bundle's own copy: it would compare the bundle with
+/// itself. A daemon that runs from the bundle restarts onto the Homebrew
+/// binary first (`upgrade::run_upgrade_watcher`), and that image refreshes.
+#[cfg(target_os = "macos")]
+fn refresh_outdated_app_bundle() {
+    if turbofig::app_bundle::running_inside_app_bundle() {
+        return;
+    }
+    let own_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
+    migrate_app_bundle_to_global_if_possible(&own_exe, &launch_agents_dir());
+    let applications_dir = turbofig::app_bundle::applications_dir_from_env();
+    if turbofig::app_bundle::app_bundle_outdated(&applications_dir, &own_exe) {
+        match turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe) {
+            Ok(path) => println!(
+                "turbofig daemon: reinstalled the outdated app bundle at {}",
+                path.display()
+            ),
+            Err(e) => {
+                eprintln!("turbofig daemon: failed to reinstall the outdated app bundle: {e}")
+            }
+        }
+    }
+}
+
 async fn run_daemon() {
     let mcp_port = turbofig::port_from_env();
     let ws_port = turbofig::ws_port_from_env();
@@ -1485,31 +1515,6 @@ async fn run_daemon() {
         }
     }
 
-    // Keep an existing app bundle current across a `brew upgrade`: never
-    // create one here (step 4 decides when a bundle is first created), only
-    // refresh one that is already there and out of date.
-    //
-    // Never from the bundle's own copy: it would compare the bundle with
-    // itself. A daemon that runs from the bundle restarts onto the Homebrew
-    // binary first (`upgrade::run_upgrade_watcher`), and that image refreshes.
-    #[cfg(target_os = "macos")]
-    if !turbofig::app_bundle::running_inside_app_bundle() {
-        let own_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("turbofig"));
-        migrate_app_bundle_to_global_if_possible(&own_exe, &launch_agents_dir());
-        let applications_dir = turbofig::app_bundle::applications_dir_from_env();
-        if turbofig::app_bundle::app_bundle_outdated(&applications_dir, &own_exe) {
-            match turbofig::app_bundle::install_app_bundle(&applications_dir, &own_exe) {
-                Ok(path) => println!(
-                    "turbofig daemon: reinstalled the outdated app bundle at {}",
-                    path.display()
-                ),
-                Err(e) => {
-                    eprintln!("turbofig daemon: failed to reinstall the outdated app bundle: {e}")
-                }
-            }
-        }
-    }
-
     let state = Arc::new(AppState::new_with_token(token, &bridge_dir));
 
     let mcp_state = state.clone();
@@ -1539,8 +1544,15 @@ async fn run_daemon() {
     // In every daemon mode, supervised or not: watch the stable Homebrew
     // binary and restart in place onto a new build, so no in-flight job is
     // killed and no user action is needed. See upgrade.rs and ARCHITECTURE.md.
+    //
+    // First refresh an outdated app bundle, on a blocking thread after the
+    // servers already answer: it hashes the binary, copies it and runs
+    // codesign, which took seconds before /health could reply. The watcher
+    // starts after it, so an in-place restart never cuts a bundle copy short.
     let watcher_state = state.clone();
     tokio::spawn(async move {
+        #[cfg(target_os = "macos")]
+        let _ = tokio::task::spawn_blocking(refresh_outdated_app_bundle).await;
         turbofig::upgrade::run_upgrade_watcher(watcher_state).await;
     });
 

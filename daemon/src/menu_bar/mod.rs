@@ -823,11 +823,24 @@ fn version_to_accept(health: Option<&serde_json::Value>) -> Option<String> {
 /// identically. Never returns.
 fn perform_quit(home: &Path, mcp_port: u16) -> ! {
     QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
-    let stopper = RealDaemonStopper::new(home.to_path_buf(), mcp_port);
-    if !quit_sequence(&stopper) {
+    if !stop_daemon_off_runtime(home.to_path_buf(), mcp_port) {
         eprintln!("turbofig: the daemon was still answering after Quit's stop request");
     }
     std::process::exit(0);
+}
+
+/// Runs `quit_sequence` with the real stopper on a plain thread and waits for
+/// it. The event loop callback runs inside the app's tokio runtime (the tray
+/// loop is driven from `async_main`), where the stopper's own `block_on`
+/// would panic ("Cannot start a runtime from within a runtime") and the
+/// daemon would never get the stop. A plain thread has no runtime context.
+fn stop_daemon_off_runtime(home: PathBuf, mcp_port: u16) -> bool {
+    std::thread::spawn(move || {
+        let stopper = RealDaemonStopper::new(home, mcp_port);
+        quit_sequence(&stopper)
+    })
+    .join()
+    .unwrap_or(false)
 }
 
 /// Relaunches the app after the bundle on disk got another build id
@@ -971,5 +984,20 @@ mod tests {
         crate::daemon_client::test_mock::write_token(home.path());
         let health = verified_health(port, home.path()).await;
         assert_eq!(version_to_accept(health.as_ref()), Some("9.9.9".to_owned()));
+    }
+
+    /// Quit runs from the tray event loop, which sits inside the app's tokio
+    /// runtime. The real stopper calls `block_on`, which panics there unless
+    /// it runs on its own thread. No daemon listens here: the stop finds no
+    /// token and `/health` is unreachable at once, so this returns quickly.
+    #[tokio::test]
+    async fn quit_stops_the_daemon_without_panicking_inside_the_app_runtime() {
+        let home = tempfile::tempdir().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert!(stop_daemon_off_runtime(home.path().to_path_buf(), port));
     }
 }
