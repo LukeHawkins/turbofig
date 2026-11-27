@@ -4,7 +4,9 @@ Use the file bridge: run the turbofig plugin in Figma, press the link icon next 
 
 ## File bridge (recommended)
 
-Write a JSON job to `~/.turbofig/inbox/<id>.json` and read the result from `~/.turbofig/outbox/<id>.json` (any unique `<id>`). Ops: `execute` (async JS in `code`, with `figma` and `tf.*` in scope; use `return`, return ids), `get_selection`, `screenshot`, `status`. Add `"fileKey":"<key>"` to target one of several open files; omit it when one file is open. Full protocol and one-call shell recipe: `skills/file-bridge.md`.
+With a shell, run `turbofig js --guide` first: it prints the live files and keys, error codes and the exact run line. Then send each job as `turbofig js <<'EOF'`, the JS, and `EOF`. Add `--file <fileKey>` when several files are open, and `--shot` to also screenshot the returned node.
+
+Without a shell, write a JSON job to `~/.turbofig/inbox/<id>.json` and read the result from `~/.turbofig/outbox/<id>.json` (any unique `<id>`). Ops: `execute` (async JS in `code`, with `figma` and `tf.*` in scope; use `return`, return ids), `get_selection`, `screenshot`, `status`. Add `"fileKey":"<key>"` to target one of several open files; omit it when one file is open. Full protocol and one-call shell recipe: `skills/file-bridge.md`.
 
 Example job: `{"op":"execute","fileKey":"<key>","code":"return figma.root.name;"}`
 

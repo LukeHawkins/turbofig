@@ -14,7 +14,7 @@ WebSocket.*
 - The Figma plugin UI holds a persistent WebSocket to the daemon, with
   infinite-backoff reconnect, so a plugin reopen re-pairs with no
   handshake.
-- MCP is optional, for chat apps that cannot run a command. MCP HTTP
+- MCP is optional; the file bridge is recommended. MCP HTTP
   (`POST /mcp`, port 18846) carries the pairing token as a Bearer auth
   header, and the daemon forwards the call to the plugin. It runs only when
   Connection is MCP (turbofig Settings, or the gear in the plugin). The

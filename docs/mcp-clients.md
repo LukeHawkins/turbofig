@@ -6,9 +6,9 @@ connect prompt), and paste the prompt into your agent. That works in Claude
 Code, Cursor, Copilot, Codex and the Code tab of Claude Desktop. AI agents
 add an MCP server only when the user asks for MCP.
 
-Use MCP only for an app that cannot run a command, such as the chat in
-Claude Desktop. The file bridge is the better connection: it loads no tool
-list (MCP adds about 600 tokens of tools to every AI call), a design step
+MCP is there if you want it, for example in an app that cannot run a
+command, such as the chat in Claude Desktop. We recommend the file bridge,
+because it is the better connection: it loads no tool list (MCP adds about 600 tokens of tools to every AI call), a design step
 with a screenshot takes 2 tool calls instead of 3, it needs no config, and
 it works on machines that block MCP servers.
 

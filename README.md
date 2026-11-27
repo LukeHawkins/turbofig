@@ -79,8 +79,9 @@ straight away. It is the better way to work, and the one to use:
 - **Nothing to configure.** No config file and no MCP server to add. In
   Claude Code, one allow rule stops the approval prompts.
 
-An MCP mode exists only for chat apps that cannot run a command, such as
-the chat in Claude Desktop. See [MCP setup](docs/mcp-clients.md).
+turbofig also speaks MCP, if you want it (for example in an app that
+cannot run a command). We recommend the file bridge, and a fresh install
+starts in file bridge mode. See [MCP setup](docs/mcp-clients.md).
 
 ## Why I made it
 
@@ -158,7 +159,7 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
    to the file name (Copy connect prompt), and paste the prompt into Claude
    Code, Cursor, Copilot, or any other agent with local file access. This
    needs no MCP setup. Using Claude Desktop? Use its Code tab: it runs the
-   file bridge. Only its chat needs [MCP setup](docs/mcp-clients.md). See
+   file bridge. Its chat can connect through [MCP](docs/mcp-clients.md). See
    [docs/agents.md](docs/agents.md) for an agent-neutral version of the
    same prompt. The prompt is tiny: it tells the agent to run
    `turbofig js --guide`, which prints the full guide for your installed
@@ -193,7 +194,7 @@ item.
 to do them. Use the prompt in [docs/agents.md](docs/agents.md).</sub>
 
 **Let your AI install it.** Give your agent this prompt. It installs
-turbofig the right way and adds no MCP server. The bare `turbofig` command
+turbofig in file bridge mode, the recommended setup, and adds no MCP server. The bare `turbofig` command
 prints the Figma steps and an "AI agents" line.
 
 ```text
@@ -202,11 +203,11 @@ Install turbofig for me. Run `brew install LukeHawkins/tap/turbofig`, then run `
 
 An agent cannot click in Figma. It will hand steps 2 and 3 back to you.
 
-**MCP (only for chat apps).** An app that cannot run a command, such as
-the chat in Claude Desktop, can connect through MCP instead. It costs more
-per session (see [the file bridge beats MCP](#the-file-bridge-beats-mcp)).
-Setup: [docs/mcp-clients.md](docs/mcp-clients.md). Agents: set up MCP only
-when the user asks for it.
+**MCP (optional).** turbofig also speaks MCP, if you want it, for example
+in the chat of Claude Desktop. We recommend the file bridge: it is lighter
+and needs no setup (see [the file bridge beats MCP](#the-file-bridge-beats-mcp)).
+Setup: [docs/mcp-clients.md](docs/mcp-clients.md). Agents: install in file
+bridge mode, and set up MCP only when the user asks for it.
 
 ## How turbofig compares
 
@@ -325,8 +326,8 @@ session it used far fewer tokens and finished sooner. See
 
 Yes. Any agent that can run a command or read and write files on your Mac
 uses the file bridge, with no setup. See the [agent guide](docs/agents.md).
-Only a chat app without a shell needs MCP (`turbofig mcp`, see
-[MCP setup](docs/mcp-clients.md)).
+MCP is there too, if you want it (`turbofig mcp`, see
+[MCP setup](docs/mcp-clients.md)), but we recommend the file bridge.
 
 ### Which agent is best with turbofig?
 
@@ -370,8 +371,8 @@ No. turbofig needs Figma Desktop on macOS.
 - [skills/file-bridge.md](skills/file-bridge.md): the file bridge protocol.
 - [docs/tools.md](docs/tools.md): the 4 operations, with `turbofig js`
   examples.
-- [docs/mcp-clients.md](docs/mcp-clients.md): optional MCP setup for chat
-  apps that cannot run a command, including the HTTP fallback.
+- [docs/mcp-clients.md](docs/mcp-clients.md): optional MCP setup,
+  including the HTTP fallback.
 - [docs/configuration.md](docs/configuration.md): environment variables
   and ports.
 - [docs/menu-bar.md](docs/menu-bar.md): the menu bar and its windows.
