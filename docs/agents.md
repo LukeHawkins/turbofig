@@ -10,6 +10,8 @@ Prefer the file bridge. It loads no MCP tool definitions. Run `turbofig js --gui
 
 Best with an agent that has a shell, such as Claude Code: one short command per job, `--shot` builds and screenshots in 1 call (optional, 800 px by default), and no MCP config is needed. Chat apps use MCP instead.
 
+With several Figma files connected, pass `--file KEY` on each job (the guide lists every file and key). The connect prompt names the file the user copied it from as the default target, not the only one: work on any connected file the user asks for.
+
 The paths there assume `~/.turbofig`. If the daemon runs with a custom `TURBOFIG_BRIDGE_DIR`, use that folder. The connect prompt (the link icon next to the file name in the plugin panel, "Copy connect prompt") shows the real path.
 
 ## MCP (fallback)

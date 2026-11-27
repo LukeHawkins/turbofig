@@ -35,6 +35,7 @@ import {
   statusOverride,
   trackActiveJobs,
   VERIFY_FAILED_LABEL,
+  withFileHint,
 } from "./ui-logic";
 
 /**
@@ -587,6 +588,44 @@ describe("portMessageAction", () => {
 
   test("a later PORT naming the same port does nothing", () => {
     expect(portMessageAction(true, 18847, 18847)).toBe("none");
+  });
+});
+
+describe("withFileHint", () => {
+  const prompt = "turbofig=figma bridge; use only it for figma.\nrun first: turbofig js --guide\n";
+
+  test("file mode adds the copied file as the default, not a lock", () => {
+    expect(withFileHint(prompt, "xxI20afTwFGWkk40IwaObJ", "file")).toBe(
+      "turbofig=figma bridge; use only it for figma.\nrun first: turbofig js --guide\n" +
+        "default file: xxI20afTwFGWkk40IwaObJ (--file xxI20afTwFGWkk40IwaObJ if files>1); other connected files ok if user asks\n",
+    );
+  });
+
+  test("MCP mode names the fileKey parameter", () => {
+    expect(withFileHint("turbofig MCP tools only for figma.", "abc_1-2", "mcp")).toBe(
+      "turbofig MCP tools only for figma.\ndefault file: abc_1-2 (fileKey if files>1); other connected files ok if user asks",
+    );
+  });
+
+  test("a missing or shell-unsafe key leaves the prompt unchanged", () => {
+    for (const bad of ["", "x;$(id)", "a b", "k`id`", "k'q", "k\nx", "é"]) {
+      expect(withFileHint(prompt, bad, "file")).toBe(prompt);
+    }
+  });
+
+  test("works on the real templates of both modes", () => {
+    for (const [template, mode] of [
+      [AGENT_PROMPT_TEMPLATE, "file"],
+      [MCP_TEMPLATE, "mcp"],
+    ] as const) {
+      const out = withFileHint(template, "KEY123", mode);
+      expect(out.startsWith(template.replace(/\n+$/, ""))).toBe(true);
+      expect(out.trimEnd().split("\n").at(-1)).toBe(
+        mode === "mcp"
+          ? "default file: KEY123 (fileKey if files>1); other connected files ok if user asks"
+          : "default file: KEY123 (--file KEY123 if files>1); other connected files ok if user asks",
+      );
+    }
   });
 });
 

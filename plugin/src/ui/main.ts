@@ -39,6 +39,7 @@ import {
   statusOverride,
   trackActiveJobs,
   welcomeHasValidMode,
+  withFileHint,
 } from "./ui-logic";
 import {
   type FetchLike,
@@ -463,12 +464,16 @@ if (copyConnectBtn) {
     if (!latestFileInfo?.fileKey) return;
     /* Until a WELCOME says which mode applies, the prompt could be the wrong one. */
     if (!modeKnown) return;
-    const prompt = fillAgentPrompt(
-      promptTemplateFor(connectionMode, __AGENT_PROMPT_TEMPLATE__, __AGENT_PROMPT_MCP_TEMPLATE__),
-      daemonBridgeHome,
-      daemonMcpPort,
-      daemonBinPath,
-      daemonBridgeDirCustom,
+    const prompt = withFileHint(
+      fillAgentPrompt(
+        promptTemplateFor(connectionMode, __AGENT_PROMPT_TEMPLATE__, __AGENT_PROMPT_MCP_TEMPLATE__),
+        daemonBridgeHome,
+        daemonMcpPort,
+        daemonBinPath,
+        daemonBridgeDirCustom,
+      ),
+      latestFileInfo.fileKey,
+      connectionMode,
     );
     if (clipboardCopy(prompt)) {
       setCopiedFeedback(copyConnectBtn);

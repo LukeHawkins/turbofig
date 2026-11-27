@@ -142,8 +142,11 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
    [docs/agents.md](docs/agents.md) for an agent-neutral version of the
    same prompt. The prompt is tiny: it tells the agent to run
    `turbofig js --guide`, which prints the full guide for your installed
-   version. Chat apps that run in a browser cannot reach your Mac, so
-   they cannot use turbofig.
+   version. It also names the file you copied it from as the default, so
+   with several files open the agent knows which one you mean. The agent
+   can still work on, and compare, every connected file when you ask.
+   Chat apps that run in a browser cannot reach your Mac, so they cannot
+   use turbofig.
 
    **Claude Code tip:** to stop it asking before every Figma job, run
    `which turbofig` in the Terminal. Then type `/permissions` in Claude Code

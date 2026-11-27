@@ -7,6 +7,16 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-27
+
+### Changed
+
+- The plugin's **Copy prompt** now names the file it was copied from as the
+  default target (`default file: KEY ...`). With several Figma files
+  connected, the agent knows which one you mean without asking. It is not
+  locked to it: the agent can still work on and compare any connected file
+  when you ask.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

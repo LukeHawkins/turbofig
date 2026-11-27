@@ -448,6 +448,23 @@ export function fillAgentPrompt(
     .join(String(mcpPort));
 }
 
+/**
+ * Adds the file the prompt was copied from as a last line: the default
+ * target, so an agent with several connected files knows which one the user
+ * means. It is not a lock: the guide lists every connected file, and the
+ * agent may work on (and compare) any of them when the user asks. Only a key the daemon
+ * accepts (`[A-Za-z0-9_-]`, the line is pasted near a shell command) is
+ * added; any other key leaves the prompt unchanged. A trailing newline is
+ * kept as it was.
+ */
+export function withFileHint(prompt: string, fileKey: string, mode: ConnectionMode): string {
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(fileKey)) return prompt;
+  const use = mode === "mcp" ? "fileKey" : `--file ${fileKey}`;
+  const body = prompt.replace(/\n+$/, "");
+  const end = prompt.endsWith("\n") ? "\n" : "";
+  return `${body}\ndefault file: ${fileKey} (${use} if files>1); other connected files ok if user asks${end}`;
+}
+
 /** Height of the "Connect to change the Connection setting." hint (text + gap). */
 export const ADV_HINT_HEIGHT = 20;
 /** Advanced screen height with the activity log hidden and the hint shown (rows only). */
