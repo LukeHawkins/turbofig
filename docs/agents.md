@@ -16,7 +16,7 @@ The paths there assume `~/.turbofig`. If the daemon runs with a custom `TURBOFIG
 
 Use MCP only when the file bridge is not available. If you can add an MCP server that runs as a child process over stdio, run `turbofig mcp`. It starts the daemon if needed and reads the pairing token itself.
 
-If you can only speak HTTP, use the daemon HTTP port (default 18846). It serves plain local HTTP, not HTTPS. Use `curl`, never a web-fetch tool: a web-fetch tool forces HTTPS and fails. `/mcp` needs the pairing token (`~/.turbofig/token`) as a Bearer header. Call `initialize` first and keep the `Mcp-Session-Id` header. Tool names start with `turbofig_`:
+If you can only speak HTTP, use the daemon HTTP port (default 18846). The daemon serves `/mcp` only when Connection is MCP (plugin Advanced section or menu bar Settings). In the default File bridge mode, `/mcp` answers 404: use `turbofig js` instead. It serves plain local HTTP, not HTTPS. Use `curl`, never a web-fetch tool: a web-fetch tool forces HTTPS and fails. `/mcp` needs the pairing token (`~/.turbofig/token`) as a Bearer header. Call `initialize` first and keep the `Mcp-Session-Id` header. Tool names start with `turbofig_`:
 
 Run `turbofig status` first. It checks that the process on the port is your own daemon. Send the token only after it succeeds.
 

@@ -38,7 +38,7 @@ reports back together.
 
 | Target | What it is | Default endpoint |
 |---|---|---|
-| `turbofig-mcp` | turbofig over MCP HTTP, tool `turbofig_execute` | `http://127.0.0.1:18846/mcp` |
+| `turbofig-mcp` | turbofig over MCP HTTP, tool `turbofig_execute` (set Connection to MCP first) | `http://127.0.0.1:18846/mcp` |
 | `turbofig-bridge` | turbofig over its file bridge (the primary agent path) | `~/.turbofig/inbox` -> `outbox` |
 | `console-mcp` | `figma-console-mcp` over MCP HTTP, tool `figma_execute` | `http://127.0.0.1:3846/mcp` |
 
@@ -96,9 +96,11 @@ page or content the user already has open.
 1. `cargo run --release` (or the installed `turbofig` binary) from the repo root.
 2. In Figma Desktop, open the file you want to benchmark, then
    **Plugins -> Development -> turbofig** to connect its WebSocket.
-3. The daemon now serves `turbofig-bridge` via `~/.turbofig/` and
-   `turbofig-mcp` via `http://127.0.0.1:18846/mcp`, for whichever file has the
-   plugin connected. Use `--file-key <key>` on the harness if more than one
+3. The daemon now serves `turbofig-bridge` via `~/.turbofig/`, for whichever
+   file has the plugin connected. For `turbofig-mcp`, first set Connection to
+   MCP (plugin Advanced section or menu bar Settings): only then does the
+   daemon serve `http://127.0.0.1:18846/mcp` (it answers 404 in File bridge
+   mode). Use `--file-key <key>` on the harness if more than one
    file has the plugin connected at once (copy the key from the plugin panel).
 
 **console-mcp:**
