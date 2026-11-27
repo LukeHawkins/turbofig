@@ -742,8 +742,11 @@ fn open_lock_readonly(dir: &Path) -> Option<std::fs::File> {
     (meta.is_file() && meta.uid() == euid).then_some(file)
 }
 
-/// Refuses a folder that group or other can write to, unless it has the
-/// sticky bit: another account could then swap `inbox/` or `outbox/`.
+/// Refuses a bridge folder that group or other can write to, even with the
+/// sticky bit: another account could then swap `inbox/` or `outbox/`, or
+/// plant a symlink or a file (`daemon.lock`, `stopped-by-user`) before the
+/// daemon creates it. The sticky bit is fine only for parent folders
+/// (`check_ancestor`), not for the bridge folder itself.
 #[cfg(unix)]
 pub(crate) fn check_not_shared_writable(dir: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -751,7 +754,7 @@ pub(crate) fn check_not_shared_writable(dir: &Path) -> io::Result<()> {
         return Ok(());
     };
     let mode = meta.permissions().mode();
-    if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+    if mode & 0o022 != 0 {
         return Err(refuse(
             dir,
             &format!(
@@ -1048,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_other_accounts_can_write_to_is_refused_unless_sticky() {
+    fn a_bridge_folder_other_accounts_can_write_to_is_refused_even_when_sticky() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path().join("b");
@@ -1056,9 +1059,11 @@ mod tests {
         for (mode, ok) in [
             (0o700, true),
             (0o755, true),
+            (0o1700, true),
             (0o775, false),
             (0o777, false),
-            (0o1777, true),
+            (0o1777, false),
+            (0o1775, false),
         ] {
             std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
             assert_eq!(check_not_shared_writable(&d).is_ok(), ok, "{mode:o}");

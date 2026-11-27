@@ -148,18 +148,33 @@ fn write_atomic_0600(path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(".tmp");
     let tmp_path = PathBuf::from(tmp_name);
+    // A leftover temp file (a crash) or a planted symlink is removed first:
+    // `remove_file` unlinks a symlink itself, never its target. The open then
+    // creates a new file only (`create_new` = O_EXCL, plus O_NOFOLLOW), so it
+    // never writes through a symlink that appears in between; that race only
+    // makes this write fail.
+    match std::fs::remove_file(&tmp_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     {
         let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
+        opts.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
+            opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         }
         let mut file = opts.open(&tmp_path)?;
         file.write_all(contents)?;
+        // Through the open handle, not the path: no symlink can redirect it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
     }
-    set_owner_only(&tmp_path)?;
     std::fs::rename(&tmp_path, path)?;
     Ok(())
 }

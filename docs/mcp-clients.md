@@ -82,3 +82,9 @@ claude mcp add --transport http turbofig http://127.0.0.1:18846/mcp \
 
 The recommended path (`claude mcp add turbofig -- turbofig mcp`, above)
 needs no header: the stdio proxy reads the token itself.
+
+On a Mac with other user accounts, use the stdio proxy, not this HTTP
+path. An HTTP client sends the token on every request and does not check
+who answers. Another account that takes the port while the daemon is down
+(a restart, an upgrade, `turbofig stop`) could read the token. The stdio
+proxy checks the daemon's proof before it sends the token.

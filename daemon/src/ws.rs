@@ -51,7 +51,8 @@ pub(crate) fn heartbeat_message() -> String {
 /// Matches the plugin's own 16 MiB RESULT cap with headroom, and bounds how
 /// much memory one misbehaving or malicious connection can force us to hold.
 const MAX_WS_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
-/// Maximum length (in bytes) of a `fileKey` in FILE_INFO. Longer frames are dropped.
+/// Maximum length (in bytes) of a `fileKey` in FILE_INFO. Longer frames are
+/// dropped, and so are keys with characters other than `[A-Za-z0-9_-]`.
 const MAX_FILE_KEY_BYTES: usize = 256;
 /// How long a nonce client may take to answer CHALLENGE with AUTH.
 /// Maximum number of upgraded sockets that may wait for AUTH at once.
@@ -260,6 +261,18 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, timings: WsTimin
     state.cancel_pending_for_conn(conn_id);
 }
 
+/// True for a `fileKey` the daemon accepts: empty (no key known) or at most
+/// `MAX_FILE_KEY_BYTES` ASCII letters, digits, `_` and `-`. Real Figma file
+/// keys are letters and digits. The key is printed unquoted in the agent
+/// guide, which an agent pastes into a shell (`--file KEY`), so a key with
+/// any other character (space, `;`, `$`, a quote) is never stored.
+fn file_key_is_valid(key: &str) -> bool {
+    key.len() <= MAX_FILE_KEY_BYTES
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 /// Dispatch one parsed inbound frame by `type`. Never panics on malformed input.
 ///
 /// Ignores every frame from a conn_id no longer in the registry: a message
@@ -277,7 +290,7 @@ fn dispatch(json: &Value, state: &Arc<AppState>, tx: &mpsc::UnboundedSender<Stri
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
-            if file_key.len() > MAX_FILE_KEY_BYTES {
+            if !file_key_is_valid(&file_key) {
                 return;
             }
             let name = json
@@ -987,6 +1000,38 @@ mod tests {
             conn_id,
         );
         assert_eq!(state.connections_named().len(), 1);
+    }
+
+    #[test]
+    fn dispatch_drops_file_info_with_a_shell_unsafe_file_key() {
+        for bad in [
+            "x;$(id)", "a b", "k`id`", "k\"q", "k'q", "k\nx", "k/../x", "é",
+        ] {
+            let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+            let (tx, _rx) = mpsc::unbounded_channel::<String>();
+            let conn_id = state.add_connection(tx.clone());
+            dispatch(
+                &json!({"type": "FILE_INFO", "fileKey": bad, "name": "D"}),
+                &state,
+                &tx,
+                conn_id,
+            );
+            assert!(state.connections_named().is_empty(), "{bad:?} was stored");
+        }
+        // An empty key (no key known) is valid but never listed as named.
+        assert!(file_key_is_valid(""));
+        for good in ["AbC123xyz0", "silent-file", "missing_key"] {
+            let state = Arc::new(AppState::with_timeout(Duration::from_millis(100)));
+            let (tx, _rx) = mpsc::unbounded_channel::<String>();
+            let conn_id = state.add_connection(tx.clone());
+            dispatch(
+                &json!({"type": "FILE_INFO", "fileKey": good, "name": "D"}),
+                &state,
+                &tx,
+                conn_id,
+            );
+            assert_eq!(state.connections_named().len(), 1, "{good:?} was dropped");
+        }
     }
 
     async fn pending_client(

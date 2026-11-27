@@ -49,7 +49,10 @@ and what is a bug.
   a `token` with group or other bits, or an unset `HOME` stops the start.
   Under launchd the refusal exits 0, so launchd does not restart it. Every
   parent of the bridge dir must belong to the user or root, and must not be
-  group or other writable unless it has the sticky bit. The bridge skips a
+  group or other writable unless it has the sticky bit. The bridge folder
+  itself must not be group or other writable, even with the sticky bit.
+  The daemon writes its private files through a new temp file (O_EXCL,
+  O_NOFOLLOW), never through a symlink. The bridge skips a
   job file that another user owns. It prunes the outbox only when it is a
   real folder, owned by the user, with the `.turbofig-outbox` marker.
 - **The file bridge rejects hostile inbox entries.** Job reads use
