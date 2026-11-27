@@ -7,7 +7,7 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-11-26
+## [0.2.0] - 2026-11-27
 
 ### Added
 
