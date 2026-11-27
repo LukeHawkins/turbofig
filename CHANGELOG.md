@@ -133,6 +133,11 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
   path. The dev `dist/ui.html` is mode 0600.
 - `/control` checks the token before it reads the body. Client reads are
   capped. The daemon raises `RLIMIT_NOFILE` at start.
+- The daemon accepts a Figma file key only as letters, digits, `_` and `-`,
+  so a key is always safe in a shell command (`--file KEY`).
+- The bridge folder itself must not be group or other writable, even with
+  the sticky bit. Private files are written through a new temp file
+  (`O_EXCL|O_NOFOLLOW`), never through a symlink.
 - `SECURITY.md` lists the residual risks.
 
 ### Performance
