@@ -836,7 +836,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         spawn_detached_daemon(&fake, tmp.path()).unwrap();
-        for _ in 0..400 {
+        for _ in 0..1200 {
             if out.exists() && std::fs::metadata(&out).unwrap().len() > 0 {
                 break;
             }

@@ -9,7 +9,7 @@
 mod common;
 
 use base64::Engine as _;
-use common::{connect_plugin, free_port, wait_for_health, DaemonGuard, BIN};
+use common::{connect_plugin, wait_for_health, DaemonGuard, BIN};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -95,8 +95,7 @@ fn marker_of(code: &str) -> String {
 ///   SCREENSHOT -> `{"ok":true,"png":<base64 PNG>,"w":1,"h":1}`
 async fn rig(max_inflight: u32) -> Rig {
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     // Built before `turbofig js` starts the daemon, so a panic anywhere below
     // still stops it. Declared after `home`, so it drops first.

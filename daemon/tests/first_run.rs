@@ -11,7 +11,7 @@
 
 mod common;
 
-use common::{assert_safe_turbofig_spawn, free_port, stop_daemon, wait_for_health, BIN};
+use common::{assert_safe_turbofig_spawn, stop_daemon, wait_for_health, BIN};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -61,8 +61,7 @@ async fn run_bare_turbofig(
 async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let clipboard_record = home.path().join("clipboard-record.txt");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
@@ -137,8 +136,7 @@ async fn bare_turbofig_first_run_starts_the_daemon_and_prints_the_walkthrough() 
 async fn bare_turbofig_first_run_prints_the_figma_install_line_when_figma_will_not_open() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let clipboard_record = home.path().join("clipboard-record.txt");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
@@ -163,8 +161,7 @@ async fn bare_turbofig_first_run_prints_the_figma_install_line_when_figma_will_n
 async fn bare_turbofig_second_run_with_an_existing_marker_prints_a_short_status() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let clipboard_record = home.path().join("clipboard-record.txt");
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);

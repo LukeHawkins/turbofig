@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{free_port, stop_daemon, wait_for_health, BIN};
+use common::{stop_daemon, wait_for_health, BIN};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
@@ -81,8 +81,7 @@ async fn run_js_full(
 async fn js_runs_status_and_code_jobs_and_rejects_empty_stdin() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -156,8 +155,7 @@ async fn js_size_cap_shot_usage_and_a_bridge_path_with_a_space() {
     let _serial = common::serial_process_test().await;
     let root = tempfile::tempdir().expect("temp root");
     let home = root.path().join("bridge with space");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(&home, mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -214,8 +212,7 @@ async fn js_size_cap_shot_usage_and_a_bridge_path_with_a_space() {
 async fn twenty_parallel_js_calls_all_get_their_own_result() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -248,9 +245,9 @@ async fn a_second_daemon_on_one_bridge_folder_exits_but_another_folder_starts() 
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let other = tempfile::tempdir().expect("other home");
-    let (p1, w1) = (free_port(), free_port());
-    let (p2, w2) = (free_port(), free_port());
-    let (p3, w3) = (free_port(), free_port());
+    let (p1, w1) = common::free_port_pair();
+    let (p2, w2) = common::free_port_pair();
+    let (p3, w3) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), p1);
     let _guard3 = common::DaemonGuard::new(other.path(), p3);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -294,7 +291,7 @@ async fn js_fails_fast_with_daemon_stopped_when_the_daemon_dies_mid_job() {
     use tokio_tungstenite::tungstenite::Message;
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -358,7 +355,7 @@ async fn dir_flag_wins_over_the_env_folder_and_works_with_a_space() {
     let root = tempfile::tempdir().expect("temp root");
     let dir = root.path().join("my bridge");
     let env_dir = root.path().join("env bridge");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(&dir, mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -403,7 +400,7 @@ async fn dir_flag_wins_over_the_env_folder_and_works_with_a_space() {
 async fn a_job_the_dead_daemon_never_claimed_is_taken_back_and_reported_not_started() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -452,7 +449,7 @@ async fn a_relative_dir_is_made_absolute_and_the_default_folder_is_not_exported(
     use std::os::unix::fs::PermissionsExt;
     let _serial = common::serial_process_test().await;
     let root = tempfile::tempdir().expect("temp root");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(&root.path().join("rel/bridge"), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -478,7 +475,7 @@ async fn a_relative_dir_is_made_absolute_and_the_default_folder_is_not_exported(
 
     // --dir equal to $HOME/.turbofig: the daemon runs in default-folder mode
     // (the folder is set to 0700), which it skips when the variable is set.
-    let (mcp2, ws2) = (free_port(), free_port());
+    let (mcp2, ws2) = common::free_port_pair();
     let default = root.path().join(".turbofig");
     let _guard2 = common::DaemonGuard::new(&default, mcp2);
     let other = root.path().join("other");
@@ -538,7 +535,7 @@ fn fake_inbox_server(
 async fn js_works_against_an_older_daemon_that_holds_no_lock() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     // A stand-in for an older daemon: it listens on the port, serves the
     // inbox, and never takes a lock or creates daemon.lock.
     let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
@@ -559,7 +556,7 @@ async fn js_works_against_an_older_daemon_that_holds_no_lock() {
 async fn js_works_against_a_daemon_on_a_filesystem_without_locks() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     // The lock file says a daemon is there (pid = this test process, which is
     // alive) and the port accepts a connect: both are required.
     let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
@@ -584,7 +581,7 @@ async fn js_works_against_a_daemon_on_a_filesystem_without_locks() {
 async fn a_lock_file_rules_out_legacy_mode_even_with_a_listener_on_the_port() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     // An unrelated process on the port, a stale inbox, and a stale lock file
     // of a dead daemon (locked:true, nobody holds it): js must not write into
     // this folder as if a daemon served it. It reports a bridge error.
@@ -636,7 +633,7 @@ async fn the_daemon_refuses_a_group_writable_bridge_folder_at_startup() {
     let dir = home.path().join("shared");
     std::fs::create_dir(&dir).unwrap();
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o775)).unwrap();
-    let (p, w) = (free_port(), free_port());
+    let (p, w) = common::free_port_pair();
     let out = Command::new(BIN)
         .arg("serve")
         .env("HOME", home.path())
@@ -682,7 +679,7 @@ async fn stdin_that_never_closes_gives_usage_and_exit_2() {
 async fn a_second_lock_call_in_one_process_fails_and_keeps_the_first_lock() {
     let _serial = common::serial_process_test().await;
     let a = tempfile::tempdir().unwrap();
-    let (p, w) = (free_port(), free_port());
+    let (p, w) = common::free_port_pair();
     let zero = Duration::ZERO;
     assert_eq!(
         turbofig::lock_bridge_dir(a.path(), false, zero).unwrap(),
@@ -708,7 +705,7 @@ async fn a_second_lock_call_in_one_process_fails_and_keeps_the_first_lock() {
 async fn a_stale_folder_with_nobody_claiming_jobs_is_a_bridge_error_after_about_3_s() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     // Legacy mode (no lock file, something on the port, folders present) but
     // nobody serves the inbox.
     let _listener = std::net::TcpListener::bind(("127.0.0.1", mcp_port)).unwrap();
@@ -738,7 +735,7 @@ async fn a_stale_folder_with_nobody_claiming_jobs_is_a_bridge_error_after_about_
 async fn an_empty_bridge_dir_env_is_a_bridge_error_with_exit_1() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let (status, stdout, _) = run_js_env(
         home.path(),
         Path::new(""),
@@ -780,7 +777,7 @@ fn read_lock_info(home: &Path) -> Value {
 async fn js_restarts_an_older_daemon_once_and_runs_the_job() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
@@ -892,7 +889,7 @@ async fn js_restarts_a_0_1_0_daemon_that_has_no_lock_file() {
     use std::os::unix::fs::PermissionsExt;
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     std::fs::create_dir_all(home.path().join("inbox")).unwrap();
@@ -929,7 +926,7 @@ async fn js_restarts_a_0_1_0_daemon_that_has_no_lock_file() {
 async fn js_never_asks_the_same_old_daemon_build_twice() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 

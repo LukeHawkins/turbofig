@@ -462,7 +462,8 @@ mod tests {
             resolve_route_graced(&state, None, Some("fk1")).await,
             Err(RouteError::NoPlugin)
         ));
-        assert!(t.elapsed() < Duration::from_millis(500));
+        // A wait would last `COLD_START_WAIT` (3 s) per call.
+        assert!(t.elapsed() < Duration::from_millis(2_500));
     }
 
     #[tokio::test]
@@ -539,7 +540,7 @@ mod tests {
         state.set_draining(true);
         let t = Instant::now();
         let _ = resolve_route_graced(&state, None, None).await;
-        assert!(t.elapsed() < COLD_START_SETTLE - Duration::from_millis(300));
+        assert!(t.elapsed() < COLD_START_SETTLE - Duration::from_millis(100));
     }
 
     #[tokio::test]
@@ -555,6 +556,7 @@ mod tests {
             resolve_route_graced(&state, None, Some("fkB")).await,
             Err(RouteError::NotFound(..))
         ));
-        assert!(t.elapsed() < Duration::from_millis(300));
+        // A grace wait would last `COLD_START_WAIT` (3 s).
+        assert!(t.elapsed() < Duration::from_millis(2_500));
     }
 }

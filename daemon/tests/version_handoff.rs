@@ -15,7 +15,7 @@
 mod common;
 
 use common::{
-    fetch_health, fetch_health_with_token, free_port, handshake, spawn_daemon, spawn_proxy,
+    fetch_health, fetch_health_with_token, handshake, spawn_daemon, spawn_proxy,
     spawn_supervised_daemon_with_version, stdio_call_tool, stop_daemon, tool_call_status,
     wait_for_health, DaemonGuard,
 };
@@ -34,8 +34,7 @@ const OLD_VERSION: &str = "0.0.1";
 async fn old_daemon_and_new_proxy_triggers_a_restart_and_health_reports_the_new_version() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, Some(OLD_VERSION));
@@ -75,8 +74,7 @@ async fn old_daemon_and_new_proxy_triggers_a_restart_and_health_reports_the_new_
 async fn new_daemon_and_old_proxy_gives_no_restart_and_the_daemon_pid_stays_the_same() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // The daemon reports its real (current) version, unmodified: from an
@@ -120,8 +118,7 @@ async fn new_daemon_and_old_proxy_gives_no_restart_and_the_daemon_pid_stays_the_
 async fn two_new_proxies_and_one_old_daemon_give_exactly_one_new_daemon() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, Some(OLD_VERSION));
@@ -219,8 +216,7 @@ async fn wait_for_file_connected(
 async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, Some(OLD_VERSION));
@@ -322,8 +318,7 @@ async fn an_in_flight_job_finishes_before_the_old_daemon_exits_during_a_restart(
 async fn initialize_answers_well_before_a_slow_version_handoff_drain_finishes() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, Some(OLD_VERSION));
@@ -447,8 +442,7 @@ async fn initialize_answers_well_before_a_slow_version_handoff_drain_finishes() 
 async fn a_supervised_restart_waits_for_the_relaunch_instead_of_spawning_its_own() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut old_daemon =

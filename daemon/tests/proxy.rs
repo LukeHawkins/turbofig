@@ -12,9 +12,8 @@
 mod common;
 
 use common::{
-    fetch_health_with_token, free_port, handshake, read_response_for_id, send_json, spawn_daemon,
-    spawn_proxy, stdio_call_tool, stdio_tools_list, stop_daemon, tool_call_status, wait_for_health,
-    DaemonGuard,
+    fetch_health_with_token, handshake, read_response_for_id, send_json, spawn_daemon, spawn_proxy,
+    stdio_call_tool, stdio_tools_list, stop_daemon, tool_call_status, wait_for_health, DaemonGuard,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -134,8 +133,7 @@ fn parse_sse_data(body: &str) -> Value {
 async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Built right after the spawn, before any `await` that could panic
@@ -169,8 +167,7 @@ async fn proxy_tools_list_matches_the_http_mcp_tools_list() {
 async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Built right after the spawn, before any `await` that could panic: see
@@ -214,8 +211,7 @@ async fn proxy_initialize_reports_the_turbofig_server_info_over_stdio() {
 async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Nothing is listening on mcp_port/ws_port yet, and no token file exists:
@@ -245,8 +241,7 @@ async fn proxy_starts_the_daemon_when_none_is_running_and_a_status_call_works() 
 async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Built right after the spawn, before any `await` that could panic: see
@@ -276,8 +271,7 @@ async fn killing_the_proxy_with_sigkill_leaves_the_daemon_running() {
 async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // Built right after the spawn, before any `await` that could panic: see
@@ -311,8 +305,7 @@ async fn sigterm_to_the_proxys_process_group_leaves_the_daemon_running() {
 async fn two_proxies_started_at_once_share_exactly_one_daemon() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
 
     // Spawned back to back, with no daemon running yet for either to find:
     // both race to start one, and the TCP bind on mcp_port/ws_port is the
@@ -378,8 +371,7 @@ async fn two_proxies_started_at_once_share_exactly_one_daemon() {
 async fn a_mid_session_daemon_death_is_retried_once_and_the_call_succeeds() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -429,8 +421,7 @@ async fn a_mid_session_daemon_death_is_retried_once_and_the_call_succeeds() {
 async fn a_token_rotation_mid_session_is_retried_once_and_the_call_succeeds() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut old_daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -517,8 +508,7 @@ async fn wait_for_file_connected(
 async fn an_in_flight_request_killed_mid_call_is_never_retried() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -649,8 +639,7 @@ async fn spawn_replying_plugin(ws_port: u16, token: &str, file_key: &'static str
 async fn stdio_proxy_pairs_a_file_across_calls_with_2_files_connected() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let _daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);

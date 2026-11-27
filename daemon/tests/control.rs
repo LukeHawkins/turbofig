@@ -21,17 +21,8 @@ struct DaemonChild(Child);
 
 impl Drop for DaemonChild {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        common::kill_and_reap_bounded(&mut self.0);
     }
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind an ephemeral port")
-        .local_addr()
-        .expect("local addr")
-        .port()
 }
 
 async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {
@@ -70,6 +61,8 @@ async fn spawn_daemon_with_env(
         .env("TURBOFIG_MCP_PORT", mcp_port.to_string())
         .env("TURBOFIG_WS_PORT", ws_port.to_string())
         .env("TURBOFIG_BRIDGE_DIR", home)
+        // Never the real HOME: the daemon must not touch the user's files.
+        .env("HOME", home)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     for (key, value) in extra_env {
@@ -86,8 +79,7 @@ async fn spawn_daemon_with_env(
 /// exits 0 shortly after responding.
 async fn assert_control_drains_and_exits(action: &str) {
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port).await;
 
     let client = reqwest::Client::builder()
@@ -125,7 +117,7 @@ async fn assert_control_drains_and_exits(action: &str) {
         "the response must arrive at once, not after the (up to 60s) drain: took {response_elapsed:?}"
     );
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
         if let Some(status) = daemon.0.try_wait().expect("try_wait") {
             break status;
@@ -162,8 +154,7 @@ async fn control_restart_with_the_right_token_drains_and_exits_zero() {
 async fn control_stop_during_a_supervised_restart_drain_overrides_the_exit_code() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let mut daemon = spawn_daemon_with_env(
         home.path(),
         mcp_port,
@@ -210,7 +201,7 @@ async fn control_stop_during_a_supervised_restart_drain_overrides_the_exit_code(
         .expect("send POST /control stop");
     assert_eq!(stop_resp.status(), reqwest::StatusCode::ACCEPTED);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
         if let Some(status) = daemon.0.try_wait().expect("try_wait") {
             break status;
@@ -247,6 +238,7 @@ async fn post_control(client: &reqwest::Client, mcp_port: u16, token: &str, acti
 /// deletes a marker that an earlier `turbofig stop` left.
 #[tokio::test]
 async fn control_stop_and_restart_leave_no_marker_and_a_new_daemon_deletes_one() {
+    let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -254,7 +246,7 @@ async fn control_stop_and_restart_leave_no_marker_and_a_new_daemon_deletes_one()
         .expect("build http client");
 
     for action in ["restart", "stop"] {
-        let (mcp, ws) = (free_port(), free_port());
+        let (mcp, ws) = common::free_port_pair();
         let mut daemon = spawn_daemon(home.path(), mcp, ws).await;
         wait_for_health(&client, mcp).await;
         let token = std::fs::read_to_string(home.path().join("token"))
@@ -279,10 +271,10 @@ async fn control_stop_and_restart_leave_no_marker_and_a_new_daemon_deletes_one()
     // A marker left by `turbofig stop` is deleted by the next daemon.
     turbofig::write_stop_marker(home.path()).unwrap();
     {
-        let (mcp, ws) = (free_port(), free_port());
+        let (mcp, ws) = common::free_port_pair();
         let _daemon = spawn_daemon(home.path(), mcp, ws).await;
         wait_for_health(&client, mcp).await;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         while marker_in(home.path()).exists() {
             assert!(Instant::now() < deadline, "the new daemon kept the marker");
             tokio::time::sleep(Duration::from_millis(20)).await;

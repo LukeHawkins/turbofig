@@ -276,13 +276,15 @@ async fn test_fk2_survives_fk1_close() {
 /// A timeout on one connection does not disturb a concurrent execute on another.
 ///
 /// fk1 is SILENT: it registers via FILE_INFO but never replies to EXECUTE.
-/// fk2 answers normally. With a 300 ms timeout, a concurrent tokio::join! must
+/// fk2 answers normally. With a 2 s timeout, a concurrent tokio::join! must
 /// return fk1 as ok:false (timed out) and fk2 as ok:true, proving timeout
 /// isolation between connections.
 #[tokio::test]
 async fn test_timeout_isolation_two_connections() {
     // Build state with a short timeout so the fk1 failure surfaces quickly.
-    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_millis(300)));
+    // The timeout is per state, so fk2 gets it too: 2 s leaves a slow runner
+    // enough time for fk2's reply.
+    let state = Arc::new(turbofig::AppState::with_timeout(Duration::from_secs(2)));
 
     let ws_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

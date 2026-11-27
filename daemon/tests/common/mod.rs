@@ -166,6 +166,55 @@ pub fn free_port() -> u16 {
         .port()
 }
 
+/// Kills a `std` child and reaps it, never blocking for good. Sends SIGKILL,
+/// then polls `try_wait` for up to 10 s and sends SIGKILL again about once a
+/// second (a signal can arrive late on a loaded or scanned machine). If the
+/// child is still alive after that, it prints one line with the pid and
+/// returns. For `Drop` impls: a drop must never hang the test binary.
+pub fn kill_and_reap_bounded(child: &mut std::process::Child) {
+    let pid = child.id();
+    let _ = child.kill();
+    let until = Instant::now() + Duration::from_secs(10);
+    let mut next_kill = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => {}
+        }
+        let now = Instant::now();
+        if now >= until {
+            eprintln!(
+                "kill_and_reap_bounded: child pid {pid} is still alive after 10 s, giving up"
+            );
+            return;
+        }
+        if now >= next_kill {
+            #[cfg(unix)]
+            // SAFETY: plain signal send to the pid of our own child.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+            next_kill = now + Duration::from_secs(1);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Binds 2 ephemeral TCP ports at once and returns them. Both listeners stay
+/// open until both ports are read, so the 2 ports are always different (2
+/// separate `free_port` calls can return the same port, because the first
+/// listener is gone before the second bind).
+pub fn free_port_pair() -> (u16, u16) {
+    let a = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    let b = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    let ports = (
+        a.local_addr().expect("local addr").port(),
+        b.local_addr().expect("local addr").port(),
+    );
+    drop((a, b));
+    ports
+}
+
 /// Owns a spawned `turbofig mcp` child. Kills and reaps it on drop, so a
 /// failing assertion never leaks a process holding the test's stdio pipes.
 pub struct ProxyChild(pub Child);
@@ -487,9 +536,10 @@ pub async fn fetch_health_with_token(
 }
 
 /// Polls `GET /health` until it answers with a success status, or panics
-/// after 5 s.
+/// after 15 s (the deadline only bounds how long a real failure takes to
+/// report: CI runners are slow).
 pub async fn wait_for_health(client: &reqwest::Client, mcp_port: u16) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if fetch_health(client, mcp_port).await.is_some() {
             return;
@@ -615,11 +665,48 @@ impl DaemonGuard {
     }
 }
 
+/// The daemon pid recorded in `<home>/daemon.lock`, if the file is readable.
+fn pid_from_lock_file(home: &Path) -> Option<u32> {
+    let text = std::fs::read_to_string(home.join("daemon.lock")).ok()?;
+    let value: Value = serde_json::from_str(text.trim()).ok()?;
+    let pid = value.get("pid")?.as_u64()? as u32;
+    // A stale lock file can name a pid that the system reused: only a live
+    // process that runs turbofig counts, so the kill never hits a stranger.
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .contains("turbofig")
+        .then_some(pid)
+}
+
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
         let mcp_port = self.mcp_port;
         let home = self.home.clone();
-        let pid = self.pid;
+        // The pid may be unknown: the guard was built before the daemon was
+        // healthy (a test that panicked while the daemon was still starting)
+        // and `/control stop` cannot work yet (no token, nothing listening).
+        // The daemon records its pid in `<home>/daemon.lock` as soon as it
+        // holds the lock. On a failing test, wait for that file: the daemon
+        // may still be starting, and it must not outlive the test.
+        let mut pid = self.pid;
+        if pid.is_none() {
+            let patience = if std::thread::panicking() {
+                Duration::from_secs(10)
+            } else {
+                Duration::ZERO
+            };
+            let until = Instant::now() + patience;
+            loop {
+                pid = pid_from_lock_file(&home);
+                if pid.is_some() || Instant::now() >= until {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
 
         // `Drop::drop` is synchronous, and a test's own `#[tokio::test]`
         // runtime cannot be entered recursively from inside its own drop

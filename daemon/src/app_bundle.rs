@@ -1331,6 +1331,9 @@ mod tests {
 
     #[test]
     fn applications_dir_from_env_honors_the_override_even_when_a_bundle_exists_elsewhere() {
+        let _env_guard = crate::supervisor::SUPERVISED_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let override_dir = unique_temp_dir("resolver-override");
         // SAFETY: test-only, single-threaded env mutation, restored before
         // the function returns.

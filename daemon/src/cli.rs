@@ -746,7 +746,6 @@ mod tests {
     use crate::launchd::Launchctl;
     use serde_json::json;
     use std::cell::RefCell;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// `run_autostart_on` reads the real process environment for
@@ -754,7 +753,7 @@ mod tests {
     /// variables (directly, or indirectly by calling `run_autostart_on`)
     /// must hold this lock first, so two such tests never race on shared
     /// global state.
-    static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+    use crate::supervisor::SUPERVISED_ENV_TEST_LOCK as ENV_TEST_LOCK;
 
     struct FakeLaunchctl {
         calls: RefCell<Vec<String>>,

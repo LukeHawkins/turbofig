@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{free_port, spawn_supervised_daemon, stop_daemon, wait_for_health};
+use common::{spawn_supervised_daemon, stop_daemon, wait_for_health};
 
 const LOG_ROTATE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
 
@@ -17,8 +17,7 @@ const LOG_ROTATE_THRESHOLD_BYTES: u64 = 5 * 1024 * 1024;
 async fn a_supervised_daemon_rotates_its_oversize_log_and_keeps_logging_to_the_fresh_one() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     std::fs::create_dir_all(home.path()).expect("create home");

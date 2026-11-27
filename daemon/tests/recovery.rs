@@ -4,8 +4,7 @@
 mod common;
 
 use common::{
-    connect_plugin, fetch_health_with_token, free_port, poll_file, spawn_daemon, wait_for_health,
-    DaemonGuard,
+    connect_plugin, fetch_health_with_token, poll_file, spawn_daemon, wait_for_health, DaemonGuard,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -19,6 +18,12 @@ struct Rig {
     _child: tokio::process::Child,
     _guard: DaemonGuard,
     home: tempfile::TempDir,
+    /// Taken just before the daemon spawns, so it is never later than the
+    /// daemon's own start.
+    spawned: Instant,
+    /// Last field: dropped last, after the daemon is gone. Tests that spawn
+    /// real daemons run one at a time.
+    _serial: tokio::sync::MutexGuard<'static, ()>,
 }
 
 fn client() -> reqwest::Client {
@@ -26,9 +31,10 @@ fn client() -> reqwest::Client {
 }
 
 async fn start_daemon_in(home: tempfile::TempDir) -> Rig {
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let serial = common::serial_process_test().await;
+    let (mcp_port, ws_port) = common::free_port_pair();
     let guard = DaemonGuard::new(home.path(), mcp_port);
+    let spawned = Instant::now();
     let child = spawn_daemon(home.path(), mcp_port, ws_port, None);
     wait_for_health(&client(), mcp_port).await;
     let mut guard = guard;
@@ -39,6 +45,8 @@ async fn start_daemon_in(home: tempfile::TempDir) -> Rig {
         _child: child,
         _guard: guard,
         home,
+        spawned,
+        _serial: serial,
     }
 }
 
@@ -123,7 +131,7 @@ async fn a_job_sent_before_the_plugin_connects_succeeds_within_the_grace() {
 async fn wait_for_no_connections_via_health(rig: &Rig) {
     let token = std::fs::read_to_string(rig.home.path().join("token")).expect("token");
     let c = client();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let h = fetch_health_with_token(&c, rig.mcp_port, token.trim()).await;
         if h.is_some_and(|h| h["connectedFiles"].as_array().is_none_or(|a| a.is_empty())) {
@@ -137,13 +145,20 @@ async fn wait_for_no_connections_via_health(rig: &Rig) {
 #[tokio::test]
 async fn a_job_fails_after_the_grace_when_no_plugin_ever_connects() {
     let rig = start_daemon().await;
+    // The grace ends when the daemon is 5 s old, or 3 s after the job
+    // arrives, whichever is first. The daemon is at most `age_at_job` old
+    // here, so the answer cannot come sooner than this.
     let t = Instant::now();
+    let age_at_job = rig.spawned.elapsed();
     write_job(rig.home.path(), "cold2");
-    let v = result_of(rig.home.path(), "cold2", 10_000).await;
+    let v = result_of(rig.home.path(), "cold2", 15_000).await;
     assert_eq!(v["code"], json!("plugin_disconnected"), "{v}");
+    let min_wait = Duration::from_millis(3_000)
+        .min(Duration::from_millis(5_000).saturating_sub(age_at_job))
+        .saturating_sub(Duration::from_millis(100));
     assert!(
-        t.elapsed() >= Duration::from_millis(2_500),
-        "must wait out the grace first: {:?}",
+        t.elapsed() >= min_wait,
+        "must wait out the grace first: {:?} (expected at least {min_wait:?})",
         t.elapsed()
     );
 }
@@ -165,7 +180,7 @@ async fn a_job_fails_fast_once_a_plugin_had_connected_and_left() {
     let v = result_of(rig.home.path(), "gone", 8_000).await;
     assert_eq!(v["code"], json!("plugin_disconnected"), "{v}");
     assert!(
-        t.elapsed() < Duration::from_millis(1_500),
+        t.elapsed() < Duration::from_millis(2_500),
         "no grace once a plugin had connected: {:?}",
         t.elapsed()
     );

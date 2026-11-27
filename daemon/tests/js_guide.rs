@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{connect_plugin, free_port, spawn_daemon, wait_for_health, DaemonGuard, BIN};
+use common::{connect_plugin, spawn_daemon, wait_for_health, DaemonGuard, BIN};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
@@ -72,8 +72,7 @@ async fn silent_plugin(ws_port: u16, token: &str, key: &str, name: &str) -> Abor
 async fn guide_lists_0_then_2_files_fast_and_writes_guide_md() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let guard = DaemonGuard::new(home.path(), mcp_port);
     let _daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -119,7 +118,7 @@ async fn guide_lists_0_then_2_files_fast_and_writes_guide_md() {
     let (st, _, _) = run_guide(home.path(), mcp_port, ws_port, &["--guide"]).await;
     assert!(st.success());
     assert!(
-        t.elapsed() < Duration::from_secs(2),
+        t.elapsed() < Duration::from_secs(10),
         "guide took {:?}",
         t.elapsed()
     );

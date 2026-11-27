@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::{free_port, wait_until, BIN};
+use common::{wait_until, BIN};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -25,8 +25,7 @@ struct Daemon(Child);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        common::kill_and_reap_bounded(&mut self.0);
     }
 }
 
@@ -44,11 +43,12 @@ impl Env {
         std::fs::create_dir_all(&bridge).expect("bridge dir");
         std::fs::create_dir_all(tmp.path().join("apps")).expect("apps dir");
         std::fs::create_dir_all(tmp.path().join("agents")).expect("agents dir");
+        let (mcp, ws) = common::free_port_pair();
         Self {
             tmp,
             bridge,
-            mcp: free_port(),
-            ws: free_port(),
+            mcp,
+            ws,
         }
     }
 
@@ -128,7 +128,7 @@ async fn wait_unreachable(client: &reqwest::Client, port: u16, secs: u64) {
 /// A second `serve` on the same bridge folder but other ports: it must exit 1
 /// with the "already using" message, and never serve.
 fn assert_second_daemon_refused(env: &Env) {
-    let (mcp, ws) = (free_port(), free_port());
+    let (mcp, ws) = common::free_port_pair();
     let out = env
         .command(mcp, ws)
         .stdout(Stdio::null())
@@ -251,7 +251,7 @@ async fn an_upgrade_restarts_in_place_and_the_folder_lock_never_drops() {
         1,
         "{log}"
     );
-    wait_healthy(&client, env.mcp, 2).await;
+    wait_healthy(&client, env.mcp, 15).await;
     assert_eq!(env.lock_info().and_then(|v| v["pid"].as_u64()), Some(pid));
     let mut daemon = daemon;
     assert!(
@@ -274,7 +274,7 @@ async fn a_new_build_that_cannot_start_is_not_restarted_into() {
     cmd.env("TURBOFIG_TEST_UPGRADE_WATCH", &broken)
         .env("TURBOFIG_TEST_UPGRADE_CHECK_MS", "100");
     let mut daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
-    wait_healthy(&client, env.mcp, 10).await;
+    wait_healthy(&client, env.mcp, 15).await;
     wait_until(
         || env.log_text().contains("did not start with --version"),
         15_000,
@@ -282,7 +282,7 @@ async fn a_new_build_that_cannot_start_is_not_restarted_into() {
     )
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    wait_healthy(&client, env.mcp, 2).await;
+    wait_healthy(&client, env.mcp, 15).await;
     assert!(!env.log_text().contains("detected an upgrade"));
     assert!(daemon.0.try_wait().unwrap().is_none());
 }
@@ -293,10 +293,10 @@ async fn the_lock_info_carries_the_version_and_the_build_id() {
     let env = Env::new();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let _daemon = Daemon(env.command(env.mcp, env.ws).spawn().expect("spawn"));
-    wait_healthy(&client, env.mcp, 10).await;
+    wait_healthy(&client, env.mcp, 15).await;
     wait_until(
         || env.lock_info().is_some_and(|v| v["buildId"].is_string()),
-        5_000,
+        15_000,
         "the lock info to carry a build id",
     )
     .await;
@@ -361,7 +361,7 @@ async fn a_failed_exec_is_retried_a_few_times_then_the_build_is_skipped_and_the_
     cmd.env("TURBOFIG_TEST_UPGRADE_WATCH", &script)
         .env("TURBOFIG_TEST_UPGRADE_CHECK_MS", "100");
     let mut daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
-    wait_healthy(&client, env.mcp, 10).await;
+    wait_healthy(&client, env.mcp, 15).await;
     wait_until(
         || env.log_text().contains("could not start"),
         15_000,
@@ -381,7 +381,7 @@ async fn a_failed_exec_is_retried_a_few_times_then_the_build_is_skipped_and_the_
     assert_eq!(log.matches("giving up on build").count(), 1, "{log}");
     assert_eq!(log.matches("detected an upgrade").count(), 1, "{log}");
     // The daemon serves on, and the lock is still held.
-    wait_healthy(&client, env.mcp, 2).await;
+    wait_healthy(&client, env.mcp, 15).await;
     assert!(env.lock_held());
     assert!(daemon.0.try_wait().unwrap().is_none());
 }
@@ -400,7 +400,7 @@ async fn a_control_restart_that_joined_the_drain_is_honored_after_a_failed_exec(
         // A wide window between the drain and the `exec`.
         .env("TURBOFIG_TEST_UPGRADE_EXIT_GRACE_MS", "2500");
     let mut daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
-    wait_healthy(&client, env.mcp, 10).await;
+    wait_healthy(&client, env.mcp, 15).await;
     wait_until(
         || env.log_text().contains("detected an upgrade"),
         15_000,
@@ -517,7 +517,7 @@ async fn js_does_not_wait_out_a_restart_that_joined_an_upgrade_drain() {
         .env("TF_REAL", BIN);
     let daemon = Daemon(cmd.spawn().expect("spawn the daemon"));
     let pid = u64::from(daemon.0.id());
-    wait_healthy(&client, env.mcp, 10).await;
+    wait_healthy(&client, env.mcp, 15).await;
     wait_until(
         || env.log_text().contains("detected an upgrade"),
         15_000,

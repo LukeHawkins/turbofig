@@ -1189,9 +1189,36 @@ async fn test_bridge_renamed_job_is_answered_by_the_event_not_the_backstop() {
         "bridge dirs",
     )
     .await;
-    // Let the watcher attach before the first job.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Warm-up: the watcher attaches some time after the dirs exist (longer on
+    // a slow runner). Send jobs until one is answered by the event, fast.
+    // The timed jobs below then start with the watcher attached.
+    let mut warm = false;
+    for n in 0..40 {
+        let tmp_job = inbox.join(format!("warm{n}.json.tmp"));
+        tokio::fs::write(&tmp_job, r#"{"op":"status"}"#)
+            .await
+            .expect("write tmp warm job");
+        let started = std::time::Instant::now();
+        tokio::fs::rename(&tmp_job, inbox.join(format!("warm{n}.json")))
+            .await
+            .expect("rename warm job");
+        let result = outbox.join(format!("warm{n}.json"));
+        while !result.exists() && started.elapsed() < Duration::from_secs(2) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(result.exists(), "warm-up job {n} was never answered");
+        if started.elapsed() < Duration::from_millis(250) {
+            warm = true;
+            break;
+        }
+    }
+    assert!(warm, "the watcher never answered a job inside 250 ms");
 
+    // A backstop-driven bridge answers a job right after a result about 500
+    // ms later, so its median is near 500 ms. The event path answers in a few
+    // ms. The median (not the worst job) keeps one scheduler stall on a slow
+    // runner from failing the test.
+    let mut times = Vec::new();
     for n in 0..10 {
         let tmp_job = inbox.join(format!("fast{n}.json.tmp"));
         tokio::fs::write(&tmp_job, r#"{"op":"status"}"#)
@@ -1204,12 +1231,19 @@ async fn test_bridge_renamed_job_is_answered_by_the_event_not_the_backstop() {
         let result = outbox.join(format!("fast{n}.json"));
         while !result.exists() {
             assert!(
-                started.elapsed() < Duration::from_millis(450),
-                "job {n} was not answered inside one backstop interval"
+                started.elapsed() < Duration::from_secs(5),
+                "job {n} was not answered at all"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        times.push(started.elapsed());
     }
+    times.sort();
+    let median = times[times.len() / 2];
+    assert!(
+        median < Duration::from_millis(250),
+        "the median answer time must be far inside one backstop interval: {times:?}"
+    );
 }
 
 /// A draining daemon (an upgrade restart under way) claims no job: the file

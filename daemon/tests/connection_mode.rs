@@ -6,8 +6,8 @@
 mod common;
 
 use common::{
-    connect_plugin, free_port, handshake, spawn_daemon, spawn_proxy, stdio_call_tool,
-    tool_call_status, wait_for_health, PluginWs,
+    connect_plugin, handshake, spawn_daemon, spawn_proxy, stdio_call_tool, tool_call_status,
+    wait_for_health, PluginWs,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -28,8 +28,7 @@ async fn start_rig(seed_legacy_marker: bool) -> Rig {
     if seed_legacy_marker {
         std::fs::write(home.path().join("mcp-http-off"), "off\n").expect("legacy marker");
     }
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     wait_for_health(&client, mcp_port).await;

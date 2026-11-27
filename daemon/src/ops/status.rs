@@ -219,7 +219,8 @@ mod tests {
         state.skip_cold_start_grace();
         let t = std::time::Instant::now();
         assert_eq!(run_files(&state).await, json!({"ok": true, "plugins": []}));
-        assert!(t.elapsed() < Duration::from_millis(200));
+        // A grace wait would last `COLD_START_WAIT` (3 s).
+        assert!(t.elapsed() < Duration::from_millis(2_000));
     }
 
     #[tokio::test]

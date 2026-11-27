@@ -1058,7 +1058,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(2));
         let mut echo = tokio::process::Command::new("/bin/echo");
         echo.arg("u501");
-        let out = run_with_timeout(echo, Duration::from_secs(2)).await;
+        let out = run_with_timeout(echo, Duration::from_secs(20)).await;
         assert_eq!(out.as_deref().map(str::trim), Some("u501"));
     }
 

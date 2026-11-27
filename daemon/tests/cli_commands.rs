@@ -4,14 +4,13 @@
 
 mod common;
 
-use common::{fetch_health, free_port, run_turbofig, spawn_daemon, stop_daemon, wait_for_health};
+use common::{fetch_health, run_turbofig, spawn_daemon, stop_daemon, wait_for_health};
 
 #[tokio::test]
 async fn start_detaches_a_daemon_when_none_is_running_and_prints_version_and_ports() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let _guard = common::DaemonGuard::new(home.path(), mcp_port);
 
@@ -31,8 +30,7 @@ async fn start_detaches_a_daemon_when_none_is_running_and_prints_version_and_por
 async fn start_when_already_running_prints_already_running_and_exits_zero() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -54,8 +52,7 @@ async fn start_when_already_running_prints_already_running_and_exits_zero() {
 async fn stop_stops_a_running_daemon_and_health_goes_unreachable() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -85,7 +82,7 @@ async fn only_the_stop_command_leaves_the_marker_and_a_control_stop_does_not() {
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     // The pre-stop path: `/control stop` only.
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
     wait_for_health(&client, mcp_port).await;
     stop_daemon(&client, mcp_port, home.path()).await;
@@ -93,7 +90,7 @@ async fn only_the_stop_command_leaves_the_marker_and_a_control_stop_does_not() {
     assert!(!marker.exists(), "a /control stop must leave no marker");
 
     // `turbofig stop`: the marker, owner-only.
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
     wait_for_health(&client, mcp_port).await;
     let (status, _out, stderr) = run_turbofig(&["stop"], home.path(), mcp_port, ws_port).await;
@@ -119,7 +116,7 @@ async fn stop_on_a_missing_home_prints_no_marker_warning() {
     let _serial = common::serial_process_test().await;
     let parent = tempfile::tempdir().expect("temp parent");
     let home = parent.path().join("no-such-home");
-    let (mcp_port, ws_port) = (free_port(), free_port());
+    let (mcp_port, ws_port) = common::free_port_pair();
     let (status, stdout, stderr) = run_turbofig(&["stop"], &home, mcp_port, ws_port).await;
     assert!(status.success(), "stderr: {stderr}");
     assert!(stdout.contains("no daemon"), "stdout: {stdout}");
@@ -136,8 +133,7 @@ async fn stop_on_a_missing_home_prints_no_marker_warning() {
 async fn stop_with_a_missing_token_file_reports_trouble_not_nothing_running() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut daemon = spawn_daemon(home.path(), mcp_port, ws_port, None);
@@ -179,8 +175,7 @@ async fn stop_with_a_missing_token_file_reports_trouble_not_nothing_running() {
 async fn stop_when_nothing_is_running_is_a_no_op() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
 
     let (status, stdout, stderr) = run_turbofig(&["stop"], home.path(), mcp_port, ws_port).await;
     assert!(
@@ -194,8 +189,7 @@ async fn stop_when_nothing_is_running_is_a_no_op() {
 async fn a_second_serve_exits_at_once_with_the_already_running_message() {
     let _serial = common::serial_process_test().await;
     let home = tempfile::tempdir().expect("temp home");
-    let mcp_port = free_port();
-    let ws_port = free_port();
+    let (mcp_port, ws_port) = common::free_port_pair();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
     let mut first = spawn_daemon(home.path(), mcp_port, ws_port, None);

@@ -1135,6 +1135,23 @@ mod tests {
         assert!(!info.locked);
     }
 
+    /// Same loop as `read_lock_info` with a caller-chosen retry window, so
+    /// a test does not depend on the 100 ms production window.
+    fn read_lock_info_within(dir: &Path, window: std::time::Duration) -> Option<LockInfo> {
+        let until = std::time::Instant::now() + window;
+        loop {
+            match read_lock_info_once(dir) {
+                LockRead::Info(info) => return Some(info),
+                LockRead::Missing => return None,
+                LockRead::Unreadable => {}
+            }
+            if std::time::Instant::now() >= until {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn an_empty_lock_file_is_retried_until_content_arrives() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1147,7 +1164,8 @@ mod tests {
                 std::fs::write(&f, "{\"pid\":7,\"requestTimeoutMs\":9000}\n").unwrap();
             }
         });
-        let info = read_lock_info(tmp.path()).expect("the retry must see the content");
+        let info = read_lock_info_within(tmp.path(), std::time::Duration::from_secs(2))
+            .expect("the retry must see the content");
         writer.join().unwrap();
         assert_eq!(
             info.request_timeout,
@@ -1163,11 +1181,15 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(read_lock_info(tmp.path()), None);
         assert!(t.elapsed() < std::time::Duration::from_secs(2));
-        // A missing file is not retried.
+        // A missing file is not retried: with a 5 s window it still returns
+        // at once (the bound is far below the window, far above scheduler noise).
         let empty = tempfile::tempdir().unwrap();
         let t = std::time::Instant::now();
-        assert_eq!(read_lock_info(empty.path()), None);
-        assert!(t.elapsed() < std::time::Duration::from_millis(50));
+        assert_eq!(
+            read_lock_info_within(empty.path(), std::time::Duration::from_secs(5)),
+            None
+        );
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

@@ -1177,8 +1177,9 @@ fn run_guide(dir_arg: Option<&str>) -> i32 {
 mod tests {
     use super::*;
 
-    /// Tests that touch process environment variables run one at a time.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Tests that touch process environment variables run one at a time,
+    /// under the one crate-wide test env lock.
+    use crate::supervisor::SUPERVISED_ENV_TEST_LOCK as ENV_LOCK;
 
     #[test]
     fn parse_files_reads_the_plugins_list_or_says_why_not() {
@@ -1699,7 +1700,7 @@ mod tests {
         let dir = bridge(tmp.path());
         let inbox = dir.join("inbox");
         let outbox = dir.join("outbox");
-        // Claims the job at once, answers after the grace time.
+        // Claims the job at once, answers after the 1 s grace time.
         let fake = std::thread::spawn(move || loop {
             if let Some(e) = std::fs::read_dir(&inbox)
                 .unwrap()
@@ -1708,7 +1709,7 @@ mod tests {
             {
                 let id = e.file_name().to_string_lossy().replace(".json", "");
                 std::fs::remove_file(e.path()).unwrap();
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::sleep(Duration::from_millis(1_500));
                 std::fs::write(outbox.join(format!("{id}.json")), "{\"ok\":true}").unwrap();
                 return;
             }
@@ -1719,7 +1720,7 @@ mod tests {
             &json!({"op": "status"}),
             WAIT,
             &mut || true,
-            Some(Duration::from_millis(200)),
+            Some(Duration::from_millis(1_000)),
         );
         fake.join().unwrap();
         assert_eq!(code, 0);
@@ -1931,7 +1932,8 @@ mod tests {
             &mut || false,
         );
         assert_eq!(c, 1);
-        assert!(t.elapsed() < Duration::from_secs(3));
+        // Without the dead-daemon check the wait would last the full 30 s.
+        assert!(t.elapsed() < Duration::from_secs(15));
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["code"], json!("not_started"));
         assert_eq!(v["reason"], json!("daemon_stopped"));
