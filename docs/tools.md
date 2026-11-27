@@ -1,21 +1,27 @@
-# The 4 tools
+# The 4 operations
 
-| Tool | What it does |
-|---|---|
-| `turbofig_execute` | Runs arbitrary Figma Plugin API JavaScript in the connected file and returns its result |
-| `turbofig_get_selection` | Returns the current selection as a compact, shaped object |
-| `turbofig_screenshot` | Exports a PNG of a given node, or the first selected node if none is given, downscaled by default |
-| `turbofig_status` | Returns connection state for the daemon and the connected plugin |
+Send each operation through the file bridge, the default: one short
+`turbofig js` command from a shell, or a job file in the bridge inbox (see
+[skills/file-bridge.md](../skills/file-bridge.md)). An MCP client sees the
+same 4 operations as tools (see [MCP setup](mcp-clients.md)).
 
-Every tool accepts an optional `fileKey` to target one of several open
-files. Omit it to use the paired or sole connected file.
+| Operation | File bridge (default) | MCP tool | What it does |
+|---|---|---|---|
+| execute | `turbofig js <<'EOF'` … `EOF` | `turbofig_execute` | Runs arbitrary Figma Plugin API JavaScript in the connected file and returns its result |
+| get_selection | `{"op":"get_selection"}` on stdin | `turbofig_get_selection` | Returns the current selection as a compact, shaped object |
+| screenshot | `turbofig js --shot` (with a job), or `{"op":"screenshot"}` | `turbofig_screenshot` | Exports a PNG of a given node, or the first selected node if none is given, 800 px by default |
+| status | `{"op":"status"}` on stdin | `turbofig_status` | Returns connection state for the daemon and the connected plugins |
+
+Every operation takes an optional file key (`--file KEY`, or `fileKey` over
+MCP) to target one of several open files. Omit it to use the sole connected
+file.
 
 ## Reply shapes
 
 Every reply is JSON with an `ok` key. MCP and the file bridge send the same JSON.
 MCP sets `isError` when `ok` is false.
 
-`turbofig_status` omits fields that only say "nothing is happening". It omits
+status omits fields that only say "nothing is happening". It omits
 null values, zero counters (`inFlight`, `pendingJobs`), `saturated:false`,
 empty `plugins` lists and a `pluginVersion` that equals the daemon version.
 `/health` lists files in the same per-file shape, so it omits the same null, 0 and false stats.
@@ -25,7 +31,7 @@ empty `plugins` lists and a `pluginVersion` that equals the daemon version.
 {"ok":true,"plugin":{"connected":false,"reason":"open the turbofig plugin in Figma"}}
 ```
 
-`turbofig_execute` omits `result` when the code returns nothing (null). `{"ok":true}` with no `result` key means the code returned nothing:
+execute omits `result` when the code returns nothing (null). `{"ok":true}` with no `result` key means the code returned nothing:
 
 ```json
 {"ok":true,"result":"1:23"}
@@ -51,7 +57,9 @@ A read over budget adds a `warning`:
 
 An inline screenshot over budget says "use file mode or maxDim".
 
-`turbofig_execute` example, matching the helper API in `helpers/tf-api.md`:
+An execute example, matching the helper API in `helpers/tf-api.md`. Send
+it with `turbofig js <<'EOF'`, the code, then `EOF` on its own line. The
+same code works as `turbofig_execute` code over MCP:
 
 ```js
 await tf.loadFonts([{ family: "Inter", style: "Bold" }]);
@@ -71,8 +79,7 @@ tf.commit("card");
 return card.id;
 ```
 
-A batch example, building many nodes from a data array in one
-`turbofig_execute` call:
+A batch example, building many nodes from a data array in one job:
 
 ```js
 const rows = [

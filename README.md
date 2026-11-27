@@ -25,8 +25,7 @@ turbofig is a free, open-source Figma plugin and bridge that lets AI agents desi
 Copilot to design in Figma in plain English. Get a landing page, a slide
 deck or a component library from a written brief, built in the file you
 have open. Works in Figma Design files and FigJam boards, and on a free
-Figma Starter team (tested 2026-10-10). An MCP
-mode is there if you prefer.
+Figma Starter team (tested 2026-10-10).
 
 Install in 2 Terminal lines, no coding needed. See [Get started](#get-started).
 
@@ -63,6 +62,26 @@ Install in 2 Terminal lines, no coding needed. See [Get started](#get-started).
   to your AI through plain files, so it avoids both and a long job can
   run without you. See [why long jobs never stop for approval](docs/reliability.md).
 
+## The file bridge beats MCP
+
+turbofig's default connection is the file bridge: your agent runs one short
+`turbofig js` command per job (or writes a job file), and turbofig answers
+straight away. It is the better way to work, and the one to use:
+
+- **Lighter on every call.** The file bridge loads no tool list. An MCP
+  connection adds its tool list to every AI call for the whole session.
+- **Fewer steps.** `--shot` builds and screenshots in 1 call, so a design
+  step takes 2 tool calls, not 3 with MCP.
+- **Fewer output tokens.** A short job took 29 output tokens, against 35
+  for the same job as an MCP call. A card took 162, against 167.
+- **Works where MCP is blocked.** Many company Macs block MCP servers. The
+  file bridge needs none, so it works there too.
+- **Nothing to configure.** No config file and no MCP server to add. In
+  Claude Code, one allow rule stops the approval prompts.
+
+An MCP mode exists only for chat apps that cannot run a command, such as
+the chat in Claude Desktop. See [MCP setup](docs/mcp-clients.md).
+
 ## Why I made it
 
 I build in Figma with AI agents every day, and two things kept getting in
@@ -95,7 +114,7 @@ worrying about the cost.
 turbofig can run any script a Figma plugin could run, so variables,
 components, component sets and styles all work. Scriptable too: any process that
 can write a job file to the bridge folder can drive turbofig, not only a
-chat agent. Creative technologists: see [the 4 tools and `turbofig_execute` examples](docs/tools.md).
+chat agent. Creative technologists: see [the 4 operations, with `turbofig js` examples](docs/tools.md).
 
 ## Get started
 
@@ -138,8 +157,8 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
 3. **Connect your agent.** In the plugin panel, press the link icon next
    to the file name (Copy connect prompt), and paste the prompt into Claude
    Code, Cursor, Copilot, or any other agent with local file access. This
-   needs no MCP setup. Using Claude Desktop? Use its Code tab (the file
-   bridge), or set up MCP with [docs/mcp-clients.md](docs/mcp-clients.md). See
+   needs no MCP setup. Using Claude Desktop? Use its Code tab: it runs the
+   file bridge. Only its chat needs [MCP setup](docs/mcp-clients.md). See
    [docs/agents.md](docs/agents.md) for an agent-neutral version of the
    same prompt. The prompt is tiny: it tells the agent to run
    `turbofig js --guide`, which prints the full guide for your installed
@@ -164,8 +183,7 @@ Claude Code, Cursor or Copilot CLI). A chat app in a browser does not work.
 **Update.** Run `brew upgrade turbofig`. turbofig restarts itself on the new
 version within about 30 seconds. You do not need Terminal, and the menu bar
 app follows. Figma reloads the plugin by itself, or the plugin shows
-"turbofig was updated" with a **Reload** button (press ⌥⌘P to reopen it). If
-you added the HTTP MCP transport by hand, switch **Connection** to MCP once.
+"turbofig was updated" with a **Reload** button (press ⌥⌘P to reopen it).
 
 **Uninstall.** Run `turbofig uninstall` (add `--purge` to remove settings),
 then `brew uninstall turbofig`. Homebrew alone leaves the app and the login
@@ -184,9 +202,11 @@ Install turbofig for me. Run `brew install LukeHawkins/tap/turbofig`, then run `
 
 An agent cannot click in Figma. It will hand steps 2 and 3 back to you.
 
-**Prefer MCP? (developers)** MCP is a standard way for AI apps to add
-tools. See [docs/mcp-clients.md](docs/mcp-clients.md) for the MCP setup.
-Set up MCP only when the user asks for it. The default needs no MCP setup.
+**MCP (only for chat apps).** An app that cannot run a command, such as
+the chat in Claude Desktop, can connect through MCP instead. It costs more
+per session (see [the file bridge beats MCP](#the-file-bridge-beats-mcp)).
+Setup: [docs/mcp-clients.md](docs/mcp-clients.md). Agents: set up MCP only
+when the user asks for it.
 
 ## How turbofig compares
 
@@ -200,7 +220,7 @@ Set up MCP only when the user asks for it. The default needs no MCP setup.
 | AI memory the tools take | ✓ **0.3%** | ✗ 18% | ✗ 14.5% est. (96 tools) | ✗ 10.3% (41 tools) |
 | Ready when your AI starts | ✓ **Under 0.1 s** | ✗ About 2 s (30 s first run) | Hosted, no local start | Hosted, no local start |
 | Cost and limits | ✓ **Free, no limits** | ✓ Free | ✓ Free | ✗ Paid seat to edit (Full, or Dev in your drafts only), no writing on free Starter, read quotas, usage-based pricing coming (Figma's docs, 2026-11-25) |
-| Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files (an MCP server is there too, if you prefer) | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
+| Works where MCP servers are blocked, with no MCP approval prompts | ✓ **Yes**, talks through plain files | ✗ No, it is an MCP server | ✗ No, it is an MCP server | ✗ No, it is an MCP server |
 | Needs a Figma access token | ✓ **No** | ✗ Yes, you create one | ✗ Yes, you create one | Sign in with Figma |
 | Extra setup | ✓ **None after one plugin import** | ✗ Node.js, MCP config, Desktop Bridge plugin | ✗ Pair the Desktop Bridge plugin | Connect your AI client |
 | Runs any Figma plugin script | ✓ **Yes** | ✓ Yes | ✓ Yes | ~ Partly: no new images on its own, fonts must be uploaded |
@@ -247,8 +267,7 @@ private because they contain unrelated personal context.
 Install turbofig, import the plugin into Figma Desktop once, then paste
 the connect prompt into your agent. It drives Figma through plain files, with
 no Figma token and no MCP setup. Then ask in plain English, for example
-for a landing page from a written brief. Prefer MCP? See
-[docs/mcp-clients.md](docs/mcp-clients.md). See also
+for a landing page from a written brief. See
 [Get started](#get-started) and [docs/agents.md](docs/agents.md).
 
 ### Can I generate Figma designs with AI for free?
@@ -281,9 +300,10 @@ script cannot read other files on your Mac. See [SECURITY.md](SECURITY.md).
 Yes. turbofig needs no MCP server. Figma's MCP server needs a paid seat to
 edit: a Full seat, or a Dev seat in your own drafts only. A free Starter plan
 cannot write with it (Figma's docs, checked 2026-11-25). turbofig works on a
-free Starter team (tested 2026-10-10), needs no paid seat and has no quota. In MCP mode, its tool
-list is about 61× smaller (597 against about 36,600 tokens, against
-figma-console-mcp in NPX mode). See [docs/comparison.md](docs/comparison.md).
+free Starter team (tested 2026-10-10), needs no paid seat and has no quota.
+Its default file bridge loads no tool list at all. Even its optional MCP
+mode has a tool list about 61× smaller (597 against about 36,600 tokens,
+against figma-console-mcp in NPX mode). See [docs/comparison.md](docs/comparison.md).
 
 ### Does Figma's MCP server have a rate limit?
 
@@ -303,9 +323,10 @@ session it used far fewer tokens and finished sooner. See
 
 ### Does it work with Cursor, Codex, Copilot or other agents?
 
-Yes. Any agent that can read and write files on your Mac can use the file
-bridge, and any MCP client can use `turbofig mcp`. See
-[MCP client setup](docs/mcp-clients.md) and [agent guide](docs/agents.md).
+Yes. Any agent that can run a command or read and write files on your Mac
+uses the file bridge, with no setup. See the [agent guide](docs/agents.md).
+Only a chat app without a shell needs MCP (`turbofig mcp`, see
+[MCP setup](docs/mcp-clients.md)).
 
 ### Which agent is best with turbofig?
 
@@ -343,13 +364,14 @@ No. turbofig needs Figma Desktop on macOS.
 ## For developers
 
 - [docs/how-it-works.md](docs/how-it-works.md): architecture overview.
-- [docs/tools.md](docs/tools.md): the 4 tools, with `turbofig_execute`
-  examples.
-- [docs/mcp-clients.md](docs/mcp-clients.md): Claude Code and other MCP
-  client setup, including the HTTP fallback.
 - [docs/commands.md](docs/commands.md): the full CLI command table,
   including `turbofig js`, which sends JS through the file bridge from a
   shell.
+- [skills/file-bridge.md](skills/file-bridge.md): the file bridge protocol.
+- [docs/tools.md](docs/tools.md): the 4 operations, with `turbofig js`
+  examples.
+- [docs/mcp-clients.md](docs/mcp-clients.md): optional MCP setup for chat
+  apps that cannot run a command, including the HTTP fallback.
 - [docs/configuration.md](docs/configuration.md): environment variables
   and ports.
 - [docs/menu-bar.md](docs/menu-bar.md): the menu bar and its windows.
@@ -359,7 +381,6 @@ No. turbofig needs Figma Desktop on macOS.
 - [docs/comparison.md](docs/comparison.md): the full comparison, with
   sources.
 - [ARCHITECTURE.md](ARCHITECTURE.md) and [DECISIONS.md](DECISIONS.md): the module layout, data flow, and the design reasoning.
-- [skills/file-bridge.md](skills/file-bridge.md): the file bridge protocol.
 - [docs/discoverability](docs/discoverability/README.md): MCP directory listing files and the agent snippet.
 
 ## For teams

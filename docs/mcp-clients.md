@@ -1,12 +1,19 @@
-# Claude Code and other MCP clients
+# MCP setup (optional)
 
-This page is optional. The default connection is the file bridge: run the
-plugin, press the link icon next to the file name (Copy connect prompt),
-and paste the prompt into your agent. AI agents add an MCP
-server only when the user asks for MCP.
+You probably do not need this page. The default connection is the file
+bridge: run the plugin, press the link icon next to the file name (Copy
+connect prompt), and paste the prompt into your agent. That works in Claude
+Code, Cursor, Copilot, Codex and the Code tab of Claude Desktop. AI agents
+add an MCP server only when the user asks for MCP.
 
-On a machine where MCP is not blocked, this is a lighter-weight connection
-than the file bridge, with no clipboard step.
+Use MCP only for an app that cannot run a command, such as the chat in
+Claude Desktop. The file bridge is the better connection: it loads no tool
+list (MCP adds about 600 tokens of tools to every AI call), a design step
+with a screenshot takes 2 tool calls instead of 3, it needs no config, and
+it works on machines that block MCP servers.
+
+Coming from 0.1.0 with the HTTP transport added by hand? Switch Connection
+to MCP once (below): since 0.2.0 the daemon serves `/mcp` only in MCP mode.
 
 **First step: switch Connection to MCP.** Open turbofig Settings (menu bar
 icon, Settings…) and pick MCP in the Connection control, or pick MCP in the
@@ -16,7 +23,8 @@ refuses `/mcp` over HTTP and returns 404) and for which prompt the plugin
 copies. Stdio setups such as the stdio server below (`turbofig mcp`) work in
 either mode, including Claude Desktop.
 
-**Claude Code:**
+**Claude Code:** it runs commands, so the file bridge is the better fit and
+needs no setup. Add MCP only if you want it anyway:
 
 ```bash
 claude mcp add turbofig -- turbofig mcp
@@ -80,7 +88,7 @@ claude mcp add --transport http turbofig http://127.0.0.1:18846/mcp \
   --header "Authorization: Bearer $(cat ~/.turbofig/token)"
 ```
 
-The recommended path (`claude mcp add turbofig -- turbofig mcp`, above)
+Within MCP, the stdio path (`claude mcp add turbofig -- turbofig mcp`, above)
 needs no header: the stdio proxy reads the token itself.
 
 On a Mac with other user accounts, use the stdio proxy, not this HTTP
