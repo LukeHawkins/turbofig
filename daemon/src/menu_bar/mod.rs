@@ -938,6 +938,7 @@ mod tests {
             .expect("lock must be free at the start of the test");
 
         let slept = std::cell::Cell::new(Duration::ZERO);
+        let started = std::time::Instant::now();
         let restarted = quit_running_app_and_wait_for_exit(
             &home,
             Duration::from_millis(30),
@@ -946,7 +947,11 @@ mod tests {
         );
 
         assert!(restarted);
-        assert!(slept.get() >= Duration::from_millis(30));
+        // The deadline is on the real clock, so check real time: it gave up
+        // at the deadline, not before. The fake sleeper's sum depends on how
+        // many rounds fit in 30 ms, which is fewer on a loaded machine.
+        assert!(started.elapsed() >= Duration::from_millis(30));
+        assert!(slept.get() > Duration::ZERO, "it polled with the sleeper");
         drop(held_lock);
     }
 
