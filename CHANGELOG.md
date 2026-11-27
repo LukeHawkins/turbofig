@@ -9,6 +9,11 @@ Releases are listed below, newest first. Unreleased changes go under [Unreleased
 
 ## [0.2.1] - 2026-11-27
 
+### Added
+
+- FigJam: the plugin manifest now lists FigJam too, so turbofig runs in
+  FigJam boards with FigJam nodes (stickies, connectors) available.
+
 ### Changed
 
 - The plugin's **Copy prompt** now names the file it was copied from as the

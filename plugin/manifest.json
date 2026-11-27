@@ -2,7 +2,7 @@
   "name": "turbofig",
   "id": "turbofig-dev",
   "api": "1.0.0",
-  "editorType": ["figma"],
+  "editorType": ["figma", "figjam"],
   "main": "dist/code.js",
   "ui": "dist/ui.html",
   "documentAccess": "dynamic-page",

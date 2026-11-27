@@ -24,7 +24,8 @@ turbofig is a free, open-source Figma plugin and bridge that lets AI agents desi
 **Designers and creative technologists:** ask Claude Code, Cursor, Codex or
 Copilot to design in Figma in plain English. Get a landing page, a slide
 deck or a component library from a written brief, built in the file you
-have open. Works on a free Figma Starter team (tested 2026-10-10). An MCP
+have open. Works in Figma Design files and FigJam boards, and on a free
+Figma Starter team (tested 2026-10-10). An MCP
 mode is there if you prefer.
 
 Install in 2 Terminal lines, no coding needed. See [Get started](#get-started).
